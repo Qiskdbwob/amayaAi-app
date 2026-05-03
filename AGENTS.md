@@ -17,6 +17,7 @@
 - Do not modify unrelated modules.
 - Prefer existing patterns over introducing new abstractions.
 - If a task spans extension and Android, inspect both module-level instruction files before editing.
+- For browser automation changes, review `docs/android-browser-use-toolcall.md` and `docs/browser-toolcall-schema.ts` first.
 - When implementing code, prefer standard OOP structure and align with the existing architecture.
 - Do not introduce redundancy, duplicate logic, or dead code.
 - Before building a feature or adding new code paths, inspect the codebase structure first and choose the most natural placement for the change.
@@ -33,13 +34,15 @@
 amaya/
 ├─ AGENTS.md
 ├─ amaya-remote-extension/
+├─ docs/
 └─ app/
 ```
 
 ## File Functions
 - `AGENTS.md`: repo-wide coordination and routing rules.
 - `amaya-remote-extension/AGENTS.md`: extension-specific rules for TypeScript, controllers, IDE abstraction, and tests.
-- `app/AGENTS.md`: Android-wide rules for Compose, Gradle, Hilt, persistence, and runtime services.
+- `docs/`: browser toolcall notes and schema references for the Android browser runtime.
+- `app/AGENTS.md`: Android-wide rules for Compose, Gradle, Hilt, persistence, runtime services, and browser UI/runtime work.
 - `app/src/main/java/com/amaya/intelligence/data/remote/AGENTS.md`: Android remote API, settings, and model mapping guidance.
 - `app/src/main/java/com/amaya/intelligence/data/local/AGENTS.md`: Android local storage and database guidance.
 - `app/src/main/java/com/amaya/intelligence/impl/ide/antigravity/AGENTS.md`: Antigravity remote runtime guidance.
@@ -55,4 +58,10 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/data/remote/`: remote API clients, settings, and transport-facing models.
 - `app/src/main/java/com/amaya/intelligence/data/local/`: local entities, DAOs, and storage-backed state.
 - `app/src/main/java/com/amaya/intelligence/impl/ide/antigravity/`: Antigravity provider, protocol, client, and event mapping.
-- `app/src/main/java/com/amaya/intelligence/impl/local/`: local runtime, service, and tool execution flow.
+- `app/src/main/java/com/amaya/intelligence/impl/local/`: local runtime, browser automation, service, and tool execution flow.
+- `app/src/main/java/com/amaya/intelligence/ui/activities/browser/`: fullscreen browser operator entry point.
+- `app/src/main/java/com/amaya/intelligence/ui/screens/browser/`: browser operator Compose screen and control dock.
+- `app/src/main/java/com/amaya/intelligence/ui/components/shared/BrowserToolCallCard.kt`: browser parent tool renderer in chat.
+- `app/src/main/java/com/amaya/intelligence/tools/BrowserUseToolset.kt`: parent browser tool wrapper and legacy aliases.
+- `app/src/main/java/com/amaya/intelligence/utils/LocalStreamPerfLog.kt`: temporary local streaming profiler.
+- `app/src/main/java/com/amaya/intelligence/impl/local/browser/`: WebView controller, session manager, DOM inspection, and safety guard.

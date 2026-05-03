@@ -41,6 +41,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.domain.models.ConnectionState
+import com.amaya.intelligence.domain.models.ToolExecution
 import com.amaya.intelligence.ui.components.shared.ConfirmationDialog
 import com.amaya.intelligence.ui.components.shared.ConversationModeSheet
 import com.amaya.intelligence.ui.components.shared.LocalhostLinkBottomSheet
@@ -86,19 +87,19 @@ fun ChatScreen(
     val workspaces by viewModel.workspaces.collectAsState()
 
     // Action delegates
-    val doSendMessage: (String) -> Unit = { viewModel.sendMessage(it) }
-    val doSendMessageWithImage: (String, String, String, String) -> Unit = { content, base64, mime, name ->
-        viewModel.sendMessageWithImage(content, base64, mime, name)
+    val doSendMessage: (String) -> Unit = remember(viewModel) { { viewModel.sendMessage(it) } }
+    val doSendMessageWithImage: (String, String, String, String) -> Unit = remember(viewModel) {
+        { content, base64, mime, name -> viewModel.sendMessageWithImage(content, base64, mime, name) }
     }
-    val doStopGeneration: () -> Unit = { viewModel.stopGeneration() }
-    val doClearConversation: () -> Unit = { viewModel.clearConversation() }
-    val doRespondToConfirmation: (Boolean) -> Unit = { viewModel.respondToConfirmation(it) }
-    val doSetSelectedAgent: (String) -> Unit = { viewModel.setSelectedAgent(it) }
-    val doLoadConversation: (Long) -> Unit = { viewModel.loadConversation(it) }
-    val doDeleteConversation: (Long) -> Unit = { viewModel.deleteConversation(it) }
-    val doClearError: () -> Unit = { viewModel.clearError() }
-    val doHasMoreConversations: () -> Boolean = { viewModel.hasMoreConversations() }
-    val doLoadMoreConversations: () -> Unit = { viewModel.loadMoreConversations() }
+    val doStopGeneration: () -> Unit = remember(viewModel) { { viewModel.stopGeneration() } }
+    val doClearConversation: () -> Unit = remember(viewModel) { { viewModel.clearConversation() } }
+    val doRespondToConfirmation: (Boolean) -> Unit = remember(viewModel) { { viewModel.respondToConfirmation(it) } }
+    val doSetSelectedAgent: (String) -> Unit = remember(viewModel) { { viewModel.setSelectedAgent(it) } }
+    val doLoadConversation: (Long) -> Unit = remember(viewModel) { { viewModel.loadConversation(it) } }
+    val doDeleteConversation: (Long) -> Unit = remember(viewModel) { { viewModel.deleteConversation(it) } }
+    val doClearError: () -> Unit = remember(viewModel) { { viewModel.clearError() } }
+    val doHasMoreConversations: () -> Boolean = remember(viewModel) { { viewModel.hasMoreConversations() } }
+    val doLoadMoreConversations: () -> Unit = remember(viewModel) { { viewModel.loadMoreConversations() } }
 
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -239,6 +240,13 @@ fun ChatScreen(
     val streamingLabel = config?.streamingLabel ?: "Streaming"
     val idleLabel = config?.idleLabel ?: "Idle"
 
+    val onToolAccept: ((ToolExecution) -> Unit)? = remember(isRemoteMode, viewModel) {
+        if (isRemoteMode) ({ execution: ToolExecution -> viewModel.respondToToolInteraction(execution.toolCallId, true) }) else null
+    }
+    val onToolDecline: ((ToolExecution) -> Unit)? = remember(isRemoteMode, viewModel) {
+        if (isRemoteMode) ({ execution: ToolExecution -> viewModel.respondToToolInteraction(execution.toolCallId, false) }) else null
+    }
+
     val displayMessages = remember(uiState.messages) {
         uiState.messages.filter {
             it.content.isNotBlank() ||
@@ -314,7 +322,7 @@ fun ChatScreen(
         if (!uiState.isStreaming || !shouldAutoScroll) return@LaunchedEffect
         while (true) {
             performScrollToBottom(false)
-            delay(50)
+            delay(120)
         }
     }
 
@@ -366,7 +374,9 @@ fun ChatScreen(
             ChatDrawerContent(
                 drawerState = drawerState,
                 isRemoteMode = isRemoteMode,
-                uiState = uiState,
+                sessionMode = uiState.sessionMode,
+                workspacePath = uiState.workspacePath,
+                isLoadingConversations = uiState.isLoadingConversations,
                 connectionState = connectionState,
                 conversations = conversations,
                 onLoadConversation = doLoadConversation,
@@ -416,12 +426,13 @@ fun ChatScreen(
                     listState = listState,
                     displayMessages = displayMessages,
                     isLoading = uiState.isLoading,
+                    isStreaming = uiState.isStreaming,
                     isRemoteMode = isRemoteMode,
                     headerDp = headerDp,
                     inputBarHeight = inputBarHeight,
                     drawerOpen = drawerOpen,
-                    onToolAccept = if (isRemoteMode) { execution -> viewModel.respondToToolInteraction(execution.toolCallId, true) } else null,
-                    onToolDecline = if (isRemoteMode) { execution -> viewModel.respondToToolInteraction(execution.toolCallId, false) } else null,
+                    onToolAccept = onToolAccept,
+                    onToolDecline = onToolDecline,
                     onLocalhostLinkClick = { annotationItem ->
                         selectedLocalhostLink = LocalhostLinkInfoParser.parse(annotationItem, serverIp)
                         showLocalhostLinkSheet = true

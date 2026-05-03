@@ -53,6 +53,9 @@ fun AgentEditSheet(
     var maxTokensStr by remember(config.id, isNew) {
         mutableStateOf(if (isNew) "" else config.maxTokens.toString())
     }
+    var maxIterationsStr by remember(config.id, isNew) {
+        mutableStateOf(if (isNew) "" else config.maxIterations.toString())
+    }
     var showKey by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var providerExpanded by remember { mutableStateOf(false) }
@@ -197,6 +200,18 @@ fun AgentEditSheet(
                     leadingIcon = { Icon(Icons.Default.Tune, null, modifier = Modifier.size(18.dp)) }
                 )
 
+                OutlinedTextField(
+                    value = maxIterationsStr,
+                    onValueChange = { v -> if (v.all { it.isDigit() }) maxIterationsStr = v },
+                    label = { Text("Max Iterations") },
+                    placeholder = { Text("Tool loop limit, default 10") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    leadingIcon = { Icon(Icons.Default.Repeat, null, modifier = Modifier.size(18.dp)) }
+                )
+
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -256,7 +271,8 @@ fun AgentEditSheet(
                                             baseUrl = baseUrl.trim(),
                                             modelId = modelId.trim(),
                                             enabled = enabled,
-                                            maxTokens = maxTokensStr.toIntOrNull()?.coerceIn(256, 64000) ?: config.maxTokens
+                                            maxTokens = maxTokensStr.toIntOrNull()?.coerceIn(256, 64000) ?: config.maxTokens,
+                                            maxIterations = maxIterationsStr.toIntOrNull()?.coerceIn(1, 50) ?: config.maxIterations
                                         ),
                                         key.trim()
                                     )

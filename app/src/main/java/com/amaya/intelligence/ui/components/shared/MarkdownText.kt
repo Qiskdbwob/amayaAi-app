@@ -3,6 +3,7 @@
 package com.amaya.intelligence.ui.components.shared
 
 import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -36,6 +37,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.amaya.intelligence.utils.LocalStreamPerfLog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -85,7 +87,17 @@ fun MarkdownText(
     onLocalhostLinkClick: ((String) -> Unit)? = null,
     enableFileReferenceIcons: Boolean = false
 ) {
-    val blocks = remember(text) { parseBlocks(text) }
+    val blocks = remember(text) {
+        val startNs = System.nanoTime()
+        val parsed = parseBlocks(text)
+        LocalStreamPerfLog.onMarkdownParsed(
+            textChars = text.length,
+            blocks = parsed.size,
+            elapsedMs = (System.nanoTime() - startNs) / 1_000_000,
+            compact = compact
+        )
+        parsed
+    }
     val scheme   = MaterialTheme.colorScheme
     val typo     = MaterialTheme.typography
     val spacing  = if (compact) 4.dp else 12.dp
@@ -141,8 +153,13 @@ fun MarkdownText(
                     val isLight   = !isSystemInDarkTheme()
                     val bgColor   = if (isLight) Color(0xFFF2F2F7) else Color(0xFF1C1C1E)
                     val codeColor = if (isLight) Color(0xFF3A3A3C) else Color(0xFFD1D1D6)
-                    Surface(shape = RoundedCornerShape(if (compact) 6.dp else 8.dp), color = bgColor,
-                        modifier = Modifier.fillMaxWidth()) {
+                    val blockBorderColor = if (isLight) Color.Black.copy(alpha = 0.08f) else Color.White.copy(alpha = 0.08f)
+                    Surface(
+                        shape = RoundedCornerShape(if (compact) 8.dp else 10.dp),
+                        color = bgColor,
+                        border = BorderStroke(1.dp, blockBorderColor),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Column {
                             if (block.lang.isNotBlank() && !compact) {
                                 Row(
@@ -164,7 +181,7 @@ fun MarkdownText(
                                             modifier = Modifier.size(14.dp), tint = codeColor.copy(alpha = 0.6f))
                                     }
                                 }
-                                HorizontalDivider(color = codeColor.copy(alpha = 0.12f))
+                                HorizontalDivider(color = blockBorderColor)
                             }
                             val codeFontSize = if (compact) 10.sp else 12.sp
                             val codeLineHeight = if (compact) 14.sp else 18.sp
@@ -256,33 +273,83 @@ fun MarkdownText(
                 }
 
                 is MdBlock.Table -> {
-                    if (!compact) {
-                        // Full table only in normal mode
-                        Surface(shape = RoundedCornerShape(8.dp),
-                            color = scheme.surfaceContainerLow, modifier = Modifier.fillMaxWidth()) {
-                            Column {
-                                Row(modifier = Modifier.fillMaxWidth().background(scheme.surfaceContainerHigh).padding(horizontal = 8.dp, vertical = 6.dp)) {
-                                    block.headers.forEach { h ->
-                                        Text(h, modifier = Modifier.weight(1f), style = typo.labelSmall,
-                                            color = color, fontWeight = FontWeight.Bold)
+                    val isLight = !isSystemInDarkTheme()
+                    val tableBorderColor = if (isLight) Color.Black.copy(alpha = 0.08f) else Color.White.copy(alpha = 0.08f)
+                    val headerBg = scheme.surfaceContainerHigh
+                    val cellBg = scheme.surfaceContainerLow
+                    val baseColumnWidths = remember(block.headers, block.rows, compact) { tableColumnWidthValues(block.headers, block.rows, compact) }
+                    val tablePaddingH = if (compact) 8.dp else 10.dp
+                    val tablePaddingV = if (compact) 6.dp else 8.dp
+                    val cellSpacing = if (compact) 6.dp else 8.dp
+                    val scrollState = rememberScrollState()
+
+                    Surface(
+                        shape = RoundedCornerShape(if (compact) 8.dp else 10.dp),
+                        color = cellBg,
+                        border = BorderStroke(1.dp, tableBorderColor),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        BoxWithConstraints(Modifier.fillMaxWidth()) {
+                            val spacingWidth = cellSpacing.value * (block.headers.size - 1).coerceAtLeast(0) + tablePaddingH.value * 2
+                            val rawTableWidth = (baseColumnWidths.sum() + spacingWidth).dp
+                            val tableWidth = maxOf(maxWidth, rawTableWidth)
+                            val extraWidth = (tableWidth.value - rawTableWidth.value).coerceAtLeast(0f)
+                            val expandable = baseColumnWidths.map { it >= if (compact) 96f else 120f }
+                            val expandableCount = expandable.count { it }.takeIf { it > 0 } ?: block.headers.size.coerceAtLeast(1)
+                            val columnWidths = baseColumnWidths.mapIndexed { index, width ->
+                                width + if (expandable.getOrElse(index) { false } || expandable.none { it }) extraWidth / expandableCount else 0f
+                            }
+
+                            Box(modifier = Modifier.horizontalScroll(scrollState)) {
+                                Column(modifier = Modifier.width(tableWidth)) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(headerBg)
+                                            .padding(horizontal = tablePaddingH, vertical = tablePaddingV),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(cellSpacing)
+                                    ) {
+                                        block.headers.forEachIndexed { index, h ->
+                                            Text(
+                                                tableWrapText(h),
+                                                style = if (compact) typo.labelSmall.copy(fontSize = 9.sp, lineHeight = 12.sp) else typo.labelSmall,
+                                                color = color,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.width(columnWidths[index].dp)
+                                            )
+                                        }
                                     }
-                                }
-                                block.rows.forEach { row ->
-                                    HorizontalDivider(color = scheme.outlineVariant.copy(alpha = 0.3f))
-                                    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
-                                        row.forEach { cell ->
-                                            InlineText(cell, color = color, style = typo.bodySmall,
-                                                modifier = Modifier.weight(1f), compact = false, onLocalhostLinkClick = onLocalhostLinkClick, enableFileReferenceIcons = enableFileReferenceIcons)
+                                    block.rows.forEachIndexed { idx, row ->
+                                        HorizontalDivider(color = tableBorderColor.copy(alpha = 0.65f), thickness = 0.5.dp)
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .then(if (idx % 2 == 1) Modifier.background(scheme.surfaceContainerLowest) else Modifier)
+                                                .padding(horizontal = tablePaddingH, vertical = tablePaddingV),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(cellSpacing)
+                                        ) {
+                                            repeat(block.headers.size) { index ->
+                                                val cell = row.getOrElse(index) { "" }
+                                                InlineText(
+                                                    tableWrapText(cell),
+                                                    color = color.copy(alpha = 0.84f),
+                                                    style = if (compact) typo.bodySmall.copy(fontSize = 9.sp, lineHeight = 13.sp) else typo.bodySmall,
+                                                    modifier = Modifier.width(columnWidths[index].dp),
+                                                    compact = compact,
+                                                    onLocalhostLinkClick = onLocalhostLinkClick,
+                                                    enableFileReferenceIcons = enableFileReferenceIcons
+                                                )
+                                            }
+                                        }
+                                        if (idx < block.rows.lastIndex) {
+                                            HorizontalDivider(color = tableBorderColor.copy(alpha = 0.35f), thickness = 0.5.dp)
                                         }
                                     }
                                 }
                             }
                         }
-                    } else {
-                        // Compact: just show as plain text
-                        val flat = (listOf(block.headers) + block.rows).joinToString("\n") { it.joinToString(" | ") }
-                        Text(flat, style = typo.bodySmall.copy(fontSize = 10.sp, fontFamily = FontFamily.Monospace),
-                            color = color.copy(alpha = 0.8f))
                     }
                 }
 
@@ -836,11 +903,13 @@ private fun CodeBlockCard(language: String, code: String) {
     val codeTextColor   = scheme.onSurface
     val codeCopiedColor = scheme.primary
 
+    val borderColor = if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(10.dp),
         color = codeBackground,
-        shadowElevation = 2.dp
+        border = BorderStroke(1.dp, borderColor),
+        shadowElevation = 0.dp
     ) {
         Column {
             // Header
@@ -906,6 +975,39 @@ private fun CodeBlockCard(language: String, code: String) {
 //  Table card
 // ═══════════════════════════════════════════════════════════════════
 
+private fun tableColumnWidthValues(headers: List<String>, rows: List<List<String>>, compact: Boolean): List<Float> {
+    val columnCount = headers.size
+    if (columnCount == 0) return emptyList()
+    val minShort = if (compact) 44f else 56f
+    val minMedium = if (compact) 72f else 88f
+    val minLong = if (compact) 112f else 144f
+    val maxLong = if (compact) 190f else 260f
+
+    return List(columnCount) { column ->
+        val values = buildList {
+            add(headers.getOrElse(column) { "" })
+            rows.forEach { add(it.getOrElse(column) { "" }) }
+        }
+        val maxChars = values.maxOfOrNull { it.trim().length } ?: 0
+        val longestWord = values.flatMap { it.split(Regex("\\s+")) }.maxOfOrNull { it.length } ?: 0
+        when {
+            maxChars <= 3 && longestWord <= 3 -> minShort
+            maxChars <= 8 && longestWord <= 8 -> minMedium
+            else -> (minLong + longestWord.coerceAtMost(24) * if (compact) 3.2f else 4.2f).coerceAtMost(maxLong)
+        }
+    }
+}
+
+private fun tableWrapText(value: String, chunkSize: Int = 28): String {
+    if (value.length <= chunkSize) return value
+    val breakable = Regex("[/._?&=#:-]").replace(value) { it.value + "\u200B" }
+    return Regex("\\S+|\\s+").findAll(breakable).joinToString("") { match ->
+        val part = match.value
+        if (part.isBlank() || part.length <= chunkSize) part
+        else part.chunked(chunkSize).joinToString("\u200B")
+    }
+}
+
 @Composable
 private fun TableCard(
     headers: List<String>,
@@ -914,67 +1016,69 @@ private fun TableCard(
     scheme: ColorScheme
 ) {
     val colCount = headers.size
+    val baseColumnWidths = remember(headers, rows) { tableColumnWidthValues(headers, rows, compact = false) }
+    val cellPaddingH = 12.dp
+    val scrollState = rememberScrollState()
+    val borderColor = if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(10.dp),
         color = scheme.surfaceContainerLow,
-        tonalElevation = 1.dp
+        border = BorderStroke(1.dp, borderColor),
+        tonalElevation = 0.dp
     ) {
-        Column {
-            // Header row
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(scheme.surfaceContainerHigh)
-                    .padding(vertical = 10.dp)
-            ) {
-                headers.forEach { h ->
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 12.dp)
-                    ) {
-                        InlineText(
-                            text = h,
-                            color = textColor,
-                            style = MaterialTheme.typography.labelMedium.copy(
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                    }
-                }
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val rawTableWidth = (baseColumnWidths.sum() + cellPaddingH.value * 2 * colCount).dp
+            val tableWidth = maxOf(maxWidth, rawTableWidth)
+            val extraWidth = (tableWidth.value - rawTableWidth.value).coerceAtLeast(0f)
+            val expandable = baseColumnWidths.map { it >= 120f }
+            val expandableCount = expandable.count { it }.takeIf { it > 0 } ?: colCount.coerceAtLeast(1)
+            val columnWidths = baseColumnWidths.mapIndexed { index, width ->
+                width + if (expandable.getOrElse(index) { false } || expandable.none { it }) extraWidth / expandableCount else 0f
             }
-            HorizontalDivider(color = scheme.outlineVariant.copy(alpha = 0.3f))
 
-            // Data rows
-            rows.forEachIndexed { idx, row ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .then(
-                            if (idx % 2 == 1) Modifier.background(scheme.surfaceContainerLowest)
-                            else Modifier
-                        )
-                        .padding(vertical = 8.dp)
-                ) {
-                    // Pad row to match column count
-                    for (c in 0 until colCount) {
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 12.dp)
-                        ) {
+            Box(modifier = Modifier.horizontalScroll(scrollState)) {
+                Column(modifier = Modifier.width(tableWidth)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(scheme.surfaceContainerHigh)
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        headers.forEachIndexed { index, h ->
                             InlineText(
-                                text = row.getOrElse(c) { "" },
-                                color = textColor.copy(alpha = 0.85f),
-                                style = MaterialTheme.typography.bodySmall
+                                text = tableWrapText(h),
+                                color = textColor,
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                modifier = Modifier.width(columnWidths[index].dp).padding(horizontal = cellPaddingH)
                             )
                         }
                     }
-                }
-                if (idx < rows.lastIndex) {
-                    HorizontalDivider(color = scheme.outlineVariant.copy(alpha = 0.12f))
+                    HorizontalDivider(color = borderColor)
+
+                    rows.forEachIndexed { idx, row ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(if (idx % 2 == 1) Modifier.background(scheme.surfaceContainerLowest) else Modifier)
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            for (c in 0 until colCount) {
+                                InlineText(
+                                    text = tableWrapText(row.getOrElse(c) { "" }),
+                                    color = textColor.copy(alpha = 0.85f),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.width(columnWidths[c].dp).padding(horizontal = cellPaddingH)
+                                )
+                            }
+                        }
+                        if (idx < rows.lastIndex) {
+                            HorizontalDivider(color = borderColor.copy(alpha = 0.35f))
+                        }
+                    }
                 }
             }
         }

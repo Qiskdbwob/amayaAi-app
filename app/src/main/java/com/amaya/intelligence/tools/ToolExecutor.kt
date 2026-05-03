@@ -33,6 +33,9 @@ class ToolExecutor @Inject constructor(
     private val updateTodoTool: UpdateTodoTool,
     // Subagent tool
     private val invokeSubagentsTool: InvokeSubagentsTool,
+    // Web search / browser tools
+    private val webSearchTool: WebSearchTool,
+    private val browserUseToolset: BrowserUseToolset,
     private val commandValidator: CommandValidator
 ) {
     
@@ -50,8 +53,9 @@ class ToolExecutor @Inject constructor(
             createReminderTool.name to createReminderTool,
             updateMemoryTool.name   to updateMemoryTool,
             updateTodoTool.name     to updateTodoTool,
-            invokeSubagentsTool.name to invokeSubagentsTool
-        )
+            invokeSubagentsTool.name to invokeSubagentsTool,
+            webSearchTool.name      to webSearchTool
+        ) + browserUseToolset.tools.associateBy { it.name }
     }
     
     /**
@@ -86,6 +90,9 @@ class ToolExecutor @Inject constructor(
             // Auto-inject workspace as default working_dir for run_shell
             if (toolName == "run_shell" && workspacePath != null && arguments["working_dir"] == null) {
                 put("working_dir", workspacePath)
+            }
+            if (browserUseToolset.isBrowserTool(toolName) && toolCallId != null) {
+                put("__toolCallId", toolCallId)
             }
             // Inject emitter context for invoke_subagents
             if (toolName == "invoke_subagents") {
@@ -291,6 +298,17 @@ class ToolExecutor @Inject constructor(
                     )
                 )
             ),
+            ToolDefinition(
+                name = "web_search",
+                description = "Search the web and fetch result pages as extracted readable text only. Safe for deep research: the AI may call many web_search tools in parallel. Returns one JSON object with search_results and pages[].text; raw DOM, HTML, screenshots, and browser state are omitted. Use urls[] to fetch known links directly, or query to discover links first.",
+                parameters = listOf(
+                    ToolParameter("query", "string", "Search query. Optional when urls is provided.", required = false),
+                    ToolParameter("urls", "array", "Known URLs to fetch directly. Can be combined with query results.", required = false, items = "string"),
+                    ToolParameter("max_results", "integer", "Maximum search results to collect (default: 5, max: 10).", required = false),
+                    ToolParameter("max_pages", "integer", "Maximum result/URL pages to fetch and extract (default: max_results, max: 10).", required = false),
+                    ToolParameter("max_chars_per_page", "integer", "Maximum extracted text characters per page (default: 5000, max: 12000).", required = false)
+                )
+            ),
             // ── Todo / Task list tool ──────────────────────────────────────────────
             ToolDefinition(
                 name = "update_todo",
@@ -334,7 +352,7 @@ class ToolExecutor @Inject constructor(
                         required = false)
                 )
             )
-        )
+        ) + browserUseToolset.getToolDefinitions()
     }
 }
 

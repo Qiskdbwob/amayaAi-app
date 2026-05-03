@@ -47,6 +47,8 @@ class RemoteSessionClient @Inject constructor(
     private val maxPendingCommands = 64
     private var lastForegroundUpdateAt = 0L
     private val minForegroundUpdateInterval = 1200L // Rate limit updates to ~1Hz
+    private var lastSeqPersistAt = 0L
+    private var lastPersistedSeqId = -1
 
     companion object {
         private const val PREFS_NAME = "amaya_remote_session"
@@ -55,13 +57,25 @@ class RemoteSessionClient @Inject constructor(
         private const val KEY_LAST_SEQ_ID = "last_seq_id"
         private const val KEY_LAST_SERVER_SESSION_ID = "last_server_session_id"
         private const val INITIAL_RECONNECT_DELAY = 1000L
+        private const val SEQ_PERSIST_INTERVAL_MS = 1000L
+        private const val SEQ_PERSIST_MIN_DELTA = 64
     }
 
     init {
         lastIp = prefs?.getString(KEY_LAST_IP, null)
         lastPort = prefs?.getInt(KEY_LAST_PORT, 0)?.takeIf { it > 0 }
         lastSeqId = prefs?.getInt(KEY_LAST_SEQ_ID, -1) ?: -1
+        lastPersistedSeqId = lastSeqId
         lastServerSessionId = prefs?.getString(KEY_LAST_SERVER_SESSION_ID, null)
+    }
+
+    private fun persistSeqCursorIfNeeded(seqId: Int, force: Boolean = false) {
+        if (seqId < 0) return
+        val now = System.currentTimeMillis()
+        if (!force && seqId - lastPersistedSeqId < SEQ_PERSIST_MIN_DELTA && now - lastSeqPersistAt < SEQ_PERSIST_INTERVAL_MS) return
+        lastPersistedSeqId = seqId
+        lastSeqPersistAt = now
+        prefs?.edit()?.putInt(KEY_LAST_SEQ_ID, seqId)?.apply()
     }
 
     // Connection state
@@ -167,7 +181,9 @@ class RemoteSessionClient @Inject constructor(
                 ?: json.optString("type").takeIf { it.isNotBlank() } 
                 ?: return@runCatching
             
-            android.util.Log.v("RemoteSessionClient", "Received message: $type (seq=${json.optInt("seqId", -1)})")
+            if (type != "text_delta" && type != "stream_progress" && type != "tool_activity") {
+                android.util.Log.v("RemoteSessionClient", "Received message: $type (seq=${json.optInt("seqId", -1)})")
+            }
 
             // Update session ID if present (check both serverSessionId and sessionId)
             val sid = json.optNullableString("serverSessionId") ?: json.optNullableString("sessionId")
@@ -178,9 +194,10 @@ class RemoteSessionClient @Inject constructor(
                         "Server session changed ($lastServerSessionId -> $newSid). Resetting seq cursor."
                     )
                     lastServerSessionId = newSid
-                    prefs?.edit()?.putString(KEY_LAST_SERVER_SESSION_ID, newSid)?.apply()
+                    prefs?.edit()?.putString(KEY_LAST_SERVER_SESSION_ID, newSid)?.putInt(KEY_LAST_SEQ_ID, -1)?.apply()
                     lastSeqId = -1 // Reset sequence on new session
-                    prefs?.edit()?.putInt(KEY_LAST_SEQ_ID, -1)?.apply()
+                    lastPersistedSeqId = -1
+                    lastSeqPersistAt = System.currentTimeMillis()
                 }
             }
 
@@ -188,7 +205,7 @@ class RemoteSessionClient @Inject constructor(
             if (shouldSkipEvent(seqId, sid ?: lastServerSessionId)) return@runCatching
             if (seqId > lastSeqId) {
                 lastSeqId = seqId
-                prefs?.edit()?.putInt(KEY_LAST_SEQ_ID, lastSeqId)?.apply()
+                persistSeqCursorIfNeeded(seqId, force = type == "stream_done" || type == "error")
             }
 
             // Handle Heartbeat

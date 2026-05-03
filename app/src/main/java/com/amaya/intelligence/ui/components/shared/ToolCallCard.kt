@@ -4,6 +4,7 @@ import com.amaya.intelligence.domain.models.*
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -42,12 +43,41 @@ private object ToolCallMotion {
     val exit = shrinkVertically(animationSpec = motionSpec) + fadeOut(tween(durationMillis = 140, easing = FastOutSlowInEasing))
 }
 
+@Composable
+internal fun ToolLeadIconPill(
+    icon: ToolInfoIcon,
+    tint: Color = MaterialTheme.colorScheme.primary
+) {
+    Surface(
+        shape = CircleShape,
+        color = tint.copy(alpha = 0.12f),
+        border = BorderStroke(1.dp, tint.copy(alpha = 0.18f))
+    ) {
+        Box(
+            modifier = Modifier.size(width = 28.dp, height = 20.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = mapToolIcon(icon),
+                contentDescription = null,
+                modifier = Modifier.size(13.dp),
+                tint = tint.copy(alpha = 0.88f)
+            )
+        }
+    }
+}
+
 private fun resolveToolCallHeaderText(
     execution: ToolExecution,
     uiMeta: ToolUiMetadata?,
     showApprovalActions: Boolean,
     approvalPending: Boolean
 ): String {
+    if (execution.isSyntheticThinkingCard()) {
+        val explicit = uiMeta?.label?.takeIf { it.isNotBlank() && !it.equals("Thinking", ignoreCase = true) }
+        return explicit ?: deriveThinkingTitle(execution.result) ?: "Thinking"
+    }
+
     if (!execution.isShellTool()) return uiMeta?.label ?: execution.name
 
     val command = execution.arguments["command"]?.toString()
@@ -62,6 +92,32 @@ private fun resolveToolCallHeaderText(
         ?.let { truncateTerminalHeaderCommand(it) }
         ?: uiMeta?.label
         ?: execution.name
+}
+
+private fun deriveThinkingTitle(raw: String?): String? {
+    val lines = raw
+        ?.replace(Regex("</?think>", RegexOption.IGNORE_CASE), " ")
+        ?.trim()
+        ?.lines()
+        ?.map { it.trim().removePrefix("- ").removePrefix("* ").trim() }
+        ?.filter { it.isNotBlank() }
+        .orEmpty()
+    if (lines.isEmpty()) return null
+
+    val first = lines.first()
+        .replace(Regex("^#{1,6}\\s+"), "")
+        .replace(Regex("^(?:\\*\\*|__)(.+?)(?:\\*\\*|__)\\s*:?.*$")) { it.groupValues[1] }
+        .trim()
+        .removeSuffix(":")
+        .trim()
+
+    val sentenceEnd = first.indexOfAny(charArrayOf('.', '!', '?'))
+    val sentence = if (sentenceEnd in 2..80) first.substring(0, sentenceEnd + 1) else first
+    return sentence
+        .replace(Regex("\\s+"), " ")
+        .take(56)
+        .trim()
+        .takeIf { it.length >= 3 }
 }
 
 private fun truncateTerminalHeaderCommand(command: String, maxLength: Int = 88): String {
@@ -97,7 +153,8 @@ fun ToolCallCard(
     onAccept: (() -> Unit)? = null,
     onDecline: (() -> Unit)? = null,
     onLocalhostLinkClick: ((String) -> Unit)? = null,
-    onInteraction: () -> Unit = {}
+    onInteraction: () -> Unit = {},
+    embeddedText: String? = null
 ) {
     val shouldAnimate = execution.metadata["animateOnMount"].equals("true", ignoreCase = true)
     var visible by remember(execution.toolCallId) { mutableStateOf(!shouldAnimate) }
@@ -113,10 +170,10 @@ fun ToolCallCard(
             visible = visible,
             enter = ToolCallMotion.mountFadeIn
         ) {
-            ToolCardContent(execution, onAccept, onDecline, onLocalhostLinkClick, onInteraction)
+            ToolCardContent(execution, onAccept, onDecline, onLocalhostLinkClick, onInteraction, embeddedText)
         }
     } else {
-        ToolCardContent(execution, onAccept, onDecline, onLocalhostLinkClick, onInteraction)
+        ToolCardContent(execution, onAccept, onDecline, onLocalhostLinkClick, onInteraction, embeddedText)
     }
 }
 
@@ -128,8 +185,14 @@ internal fun ToolCardContent(
     onAccept: (() -> Unit)? = null,
     onDecline: (() -> Unit)? = null,
     onLocalhostLinkClick: ((String) -> Unit)? = null,
-    onInteraction: () -> Unit = {}
+    onInteraction: () -> Unit = {},
+    embeddedText: String? = null
 ) {
+    if (execution.name == "browser") {
+        BrowserToolCallCard(execution = execution, onInteraction = onInteraction, embeddedText = embeddedText)
+        return
+    }
+
     val isThinkingCard = execution.isSyntheticThinkingCard()
     var expanded by remember(execution.toolCallId) { mutableStateOf(false) }
     var approvalDismissed by remember(execution.toolCallId) { mutableStateOf(false) }
@@ -148,6 +211,7 @@ internal fun ToolCardContent(
     val iosRed   = MaterialTheme.colorScheme.error
 
     val isSubagent = execution.name == "invoke_subagents"
+    val isWebSearch = execution.name == "web_search" || execution.name == "search_web" || execution.name == "websearch"
     val canExpand  = (execution.status == ToolStatus.SUCCESS || execution.status == ToolStatus.ERROR) &&
         (execution.result != null || execution.children.isNotEmpty())
     val showChildren = isSubagent && execution.children.isNotEmpty() &&
@@ -174,6 +238,7 @@ internal fun ToolCardContent(
         ToolStatus.ERROR   -> Icons.Default.Close
     }
     val metaColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+    val blockBorderColor = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
 
     val shouldShimmer = execution.status == ToolStatus.RUNNING ||
         execution.children.any { it.status == ToolStatus.RUNNING }
@@ -212,7 +277,7 @@ internal fun ToolCardContent(
     val shouldShowResult = !isThinkingCard && (execution.result != null && execution.result.isNotBlank() && 
         !isTaskBoundary && 
         execution.uiMetadata?.actionIcon != ToolInfoIcon.MESSAGE &&
-        (!isGenericResult || hasInjectedPreview || isTerminal))
+        (isWebSearch || !isGenericResult || hasInjectedPreview || isTerminal))
 
     val thinkingVisible = isThinkingCard && !execution.result.isNullOrBlank() && (execution.status == ToolStatus.RUNNING || expanded)
     val hasResultDetails = expanded && !isSubagent && !isThinkingCard && execution.result != null
@@ -235,77 +300,16 @@ internal fun ToolCardContent(
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // ACTION ICON
-                uiMeta?.actionIcon?.let { iconType ->
-                    Icon(
-                        imageVector = mapToolIcon(iconType),
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                    )
-                }
-
-                // BADGES
-                uiMeta?.badges?.forEach { badgeText ->
-                    val badgeColor = when (badgeText) {
-                        "PLANNING"    -> iosBlue
-                        "EXECUTION"   -> iosGreen
-                        "VERIFICATION" -> Color(0xFFAF52DE) // Purple
-                        "OVERWRITE"   -> Color(0xFFF2994A) // Orange
-                        "ERROR", "DELETE" -> iosRed
-                        else -> MaterialTheme.colorScheme.primary
-                    }
-                    BadgeLabel(badgeText, badgeColor)
-                }
+                ToolLeadIconPill(uiMeta?.actionIcon ?: ToolInfoIcon.TASK)
 
                 Text(
                     text = ">",
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
                 )
 
-                // TARGET ICON
-                uiMeta?.targetIcon?.let { iconType ->
-                    if (iconType == ToolInfoIcon.FILE) {
-                        val fileTypePath = remember(execution.toolCallId, execution.arguments) {
-                            resolveFileTypeSourcePath(execution)
-                        }
-                        val context = LocalContext.current
-                        val fileTypeAssetNames = remember(context) { loadFileTypeIconAssetNames(context) }
-                        val fileTypeAsset = remember(fileTypePath, fileTypeAssetNames) {
-                            fileTypePath?.let { resolveFileTypeIconAssetName(it, fileTypeAssetNames) }
-                        }
-
-                        if (fileTypePath != null && fileTypeAsset != null) {
-                            FileTypeHeaderIcon(
-                                filePath = fileTypePath,
-                                resolvedAssetName = fileTypeAsset,
-                                modifier = Modifier.size(15.dp)
-                            )
-                        } else {
-                            Icon(
-                                imageVector = mapToolIcon(iconType),
-                                contentDescription = null,
-                                modifier = Modifier.size(15.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                            )
-                        }
-                    } else {
-                        Icon(
-                            imageVector = mapToolIcon(iconType),
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                        )
-                    }
-                }
-
                 Text(
-                    text       = when {
-                        execution.isShellTool() -> headerText
-                        isThinkingCard -> headerText
-                        else -> "'$headerText'"
-                    },
+                    text       = headerText,
                     style      = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Normal,
                     color      = MaterialTheme.colorScheme.onSurface,
@@ -357,8 +361,9 @@ internal fun ToolCardContent(
 
             ToolCallAnimatedSection(visible = thinkingVisible) {
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(8.dp),
                     color = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7),
+                    border = BorderStroke(1.dp, blockBorderColor),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
@@ -466,7 +471,7 @@ internal fun ToolCardContent(
                     modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
                 )
 
-                if (execution.arguments.isNotEmpty()) {
+                if (execution.arguments.isNotEmpty() && !isWebSearch) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -517,6 +522,7 @@ internal fun ToolCardContent(
                 Surface(
                     shape    = RoundedCornerShape(8.dp),
                     color    = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7),
+                    border   = BorderStroke(1.dp, blockBorderColor),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(start = 12.dp, end = 12.dp, bottom = 12.dp)
@@ -704,6 +710,7 @@ internal fun SubagentChildCard(
                     Surface(
                         shape    = RoundedCornerShape(8.dp),
                         color    = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7),
+                        border   = BorderStroke(1.dp, if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {

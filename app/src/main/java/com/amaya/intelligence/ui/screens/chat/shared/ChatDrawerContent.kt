@@ -35,9 +35,9 @@ import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.domain.ai.displayName
 import com.amaya.intelligence.data.local.entity.ConversationEntity
-import com.amaya.intelligence.domain.models.ChatUiState
 import com.amaya.intelligence.domain.models.ConnectionState
 import com.amaya.intelligence.ui.res.UiStrings
 import kotlinx.coroutines.CoroutineScope
@@ -65,7 +65,9 @@ private fun groupConversationsByWorkspace(conversations: List<ConversationEntity
 fun ChatDrawerContent(
     drawerState: DrawerState,
     isRemoteMode: Boolean,
-    uiState: ChatUiState,
+    sessionMode: IntelligenceSessionManager.SessionMode,
+    workspacePath: String?,
+    isLoadingConversations: Boolean,
     connectionState: ConnectionState,
     conversations: List<ConversationEntity>,
     onLoadConversation: (Long) -> Unit,
@@ -164,7 +166,9 @@ fun ChatDrawerContent(
             ) {
                 DrawerNormalContent(
                     isRemoteMode = isRemoteMode,
-                    uiState = uiState,
+                    sessionMode = sessionMode,
+                    workspacePath = workspacePath,
+                    isLoadingConversations = isLoadingConversations,
                     conversations = filteredConversations,
                     conversationListState = conversationListState,
                     onClearConversation = {
@@ -482,7 +486,9 @@ private fun DrawerSearchContent(
 @Composable
 private fun DrawerNormalContent(
     isRemoteMode: Boolean,
-    uiState: ChatUiState,
+    sessionMode: IntelligenceSessionManager.SessionMode,
+    workspacePath: String?,
+    isLoadingConversations: Boolean,
     conversations: List<ConversationEntity>,
     conversationListState: androidx.compose.foundation.lazy.LazyListState,
     onClearConversation: () -> Unit,
@@ -507,7 +513,7 @@ private fun DrawerNormalContent(
                 .padding(start = 24.dp, end = 16.dp, top = 20.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val headerTitle = uiState.sessionMode.displayName()
+            val headerTitle = sessionMode.displayName()
             Text(
                 text = headerTitle,
                 style = MaterialTheme.typography.titleLarge,
@@ -635,8 +641,8 @@ private fun DrawerNormalContent(
 
         Spacer(Modifier.height(20.dp))
 
-        val wsPath = remember(uiState.workspacePath) {
-            normalizeWorkspacePath(uiState.workspacePath)
+        val wsPath = remember(workspacePath) {
+            normalizeWorkspacePath(workspacePath)
         }
         val groupedConversations = remember(conversations) {
             groupConversationsByWorkspace(conversations)
@@ -695,7 +701,7 @@ private fun DrawerNormalContent(
             contentPadding = PaddingValues(bottom = 80.dp)
         ) {
             when {
-                uiState.isLoadingConversations -> {
+                isLoadingConversations -> {
                     items(5) {
                         Row(
                             modifier = Modifier

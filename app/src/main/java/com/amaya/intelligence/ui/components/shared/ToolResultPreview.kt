@@ -1,5 +1,7 @@
 package com.amaya.intelligence.ui.components.shared
 
+import android.content.Intent
+import android.net.Uri
 import com.amaya.intelligence.domain.models.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -11,11 +13,13 @@ import androidx.compose.runtime.*
 import com.amaya.intelligence.ui.components.shared.MarkdownText
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.json.JSONObject
 
 /**
  * Renders a per-tool-type expanded result preview inside an expanded ToolCallCard.
@@ -34,6 +38,7 @@ fun ToolResultPreview(
     val codeBlockBg   = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
     val codeTextColor = if (isDark) Color(0xFFD1D1D6) else Color(0xFF3A3A3C)
     val metaColor     = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+    val blockBorderColor = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
 
     val redBg = Color(0xFFFF3B30).copy(alpha = 0.12f)
     val greenBg = Color(0xFF34C759).copy(alpha = 0.12f)
@@ -56,7 +61,7 @@ fun ToolResultPreview(
         Surface(
             shape = RoundedCornerShape(8.dp),
             color = codeBlockBg,
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.05f)),
+            border = BorderStroke(1.dp, blockBorderColor),
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(vertical = 4.dp)) {
@@ -118,16 +123,21 @@ fun ToolResultPreview(
                     if (diffText.isNotBlank()) {
                         DiffBlock(diffText)
                     } else if (result.isNotBlank() && !result.lowercase().contains("file updated") && !result.lowercase().contains("success")) {
-                        GenericResultBlock(result, codeBlockBg, codeTextColor, onLocalhostLinkClick)
+                        GenericResultBlock(result, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
                     }
                 } else if (result.isNotBlank()) {
-                    GenericResultBlock(result, codeBlockBg, codeTextColor, onLocalhostLinkClick)
+                    GenericResultBlock(result, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
                 }
             }
 
             ToolCategory.SHELL -> {
                 if (result.isNotBlank()) {
-                    Surface(shape = RoundedCornerShape(8.dp), color = codeBlockBg, modifier = Modifier.fillMaxWidth()) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = codeBlockBg,
+                        border = BorderStroke(1.dp, blockBorderColor),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Text(result.trim().take(4096).let { if (result.length > 4096) "$it…" else it },
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontFamily = FontFamily.Monospace, lineHeight = 18.sp, fontSize = 11.sp),
@@ -140,7 +150,12 @@ fun ToolResultPreview(
             ToolCategory.SEARCH -> {
                 val lines = result.lines().filter { it.isNotBlank() }
                 if (lines.isNotEmpty()) {
-                    Surface(shape = RoundedCornerShape(8.dp), color = codeBlockBg, modifier = Modifier.fillMaxWidth()) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = codeBlockBg,
+                        border = BorderStroke(1.dp, blockBorderColor),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Column(modifier = Modifier.padding(10.dp)) {
                             lines.take(30).forEach { line ->
                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 1.dp)) {
@@ -160,7 +175,11 @@ fun ToolResultPreview(
 
             ToolCategory.WEB -> {
                 if (result.isNotBlank()) {
-                    GenericResultBlock(result, codeBlockBg, codeTextColor, onLocalhostLinkClick)
+                    if (toolName == "web_search" || toolName == "search_web" || toolName == "websearch") {
+                        WebSearchResultBlock(result, codeBlockBg, codeTextColor, metaColor, blockBorderColor)
+                    } else {
+                        GenericResultBlock(result, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
+                    }
                 }
             }
 
@@ -169,7 +188,87 @@ fun ToolResultPreview(
 
             ToolCategory.UNKNOWN -> {
                 if (result.isNotBlank() && !result.lowercase().contains("success")) {
-                    GenericResultBlock(result, codeBlockBg, codeTextColor, onLocalhostLinkClick)
+                    GenericResultBlock(result, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WebSearchResultBlock(
+    result: String,
+    codeBlockBg: Color,
+    codeTextColor: Color,
+    metaColor: Color,
+    blockBorderColor: Color
+) {
+    val parsed = remember(result) { runCatching { JSONObject(result) }.getOrNull() }
+    val pages = parsed?.optJSONArray("pages")
+    if (parsed == null || pages == null) {
+        GenericResultBlock(result, codeBlockBg, codeTextColor, blockBorderColor)
+        return
+    }
+
+    val context = LocalContext.current
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        val summary = parsed.optString("summary")
+        if (summary.isNotBlank()) {
+            Text(summary, style = MaterialTheme.typography.labelSmall, color = metaColor)
+        }
+
+        repeat(pages.length().coerceAtMost(5)) { index ->
+            val page = pages.optJSONObject(index) ?: return@repeat
+            val title = page.optString("title").ifBlank { "Result ${index + 1}" }
+            val url = page.optString("url")
+            val snippet = page.optString("snippet")
+            val error = page.optString("error")
+
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = codeBlockBg,
+                border = BorderStroke(1.dp, blockBorderColor),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = url.isNotBlank()) {
+                        runCatching {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        }
+                    }
+            ) {
+                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Language, null, modifier = Modifier.size(13.dp), tint = metaColor)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = codeTextColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Icon(
+                            Icons.Default.OpenInBrowser,
+                            null,
+                            modifier = Modifier.size(15.dp),
+                            tint = metaColor
+                        )
+                    }
+                    if (url.isNotBlank()) {
+                        Text(url, style = MaterialTheme.typography.labelSmall, color = metaColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    when {
+                        error.isNotBlank() -> Text(error, style = MaterialTheme.typography.bodySmall, color = Color(0xFFFF453A), fontSize = 10.sp)
+                        snippet.isNotBlank() -> Text(
+                            snippet.take(180),
+                            style = MaterialTheme.typography.bodySmall.copy(lineHeight = 15.sp, fontSize = 10.sp),
+                            color = codeTextColor.copy(alpha = 0.78f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
         }
@@ -181,9 +280,15 @@ private fun GenericResultBlock(
     result: String,
     codeBlockBg: Color,
     codeTextColor: Color,
+    blockBorderColor: Color,
     onLocalhostLinkClick: ((String) -> Unit)? = null
 ) {
-    Surface(shape = RoundedCornerShape(8.dp), color = codeBlockBg, modifier = Modifier.fillMaxWidth()) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = codeBlockBg,
+        border = BorderStroke(1.dp, blockBorderColor),
+        modifier = Modifier.fillMaxWidth()
+    ) {
         MarkdownText(text = result.trim(), color = codeTextColor, modifier = Modifier.padding(10.dp), compact = true, onLocalhostLinkClick = onLocalhostLinkClick)
     }
 }

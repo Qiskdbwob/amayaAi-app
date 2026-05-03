@@ -14,28 +14,35 @@ class StreamingEventHandler(
     private val stateManager: StreamingStateManager,
     private val onUiStateUpdate: ((ChatUiState) -> ChatUiState) -> Unit
 ) {
+    companion object {
+        private const val TEXT_UI_EMIT_INTERVAL_MS = 120L
+        private const val TEXT_UI_EMIT_MIN_CHARS = 160
+    }
+
+    private var lastTextUiEmitAt = 0L
+    private var lastTextUiEmitLength = 0
+    private var pendingTextContent: String? = null
+    private var pendingTextStepIndex: String? = null
+
     fun handleTextDelta(event: RemoteEvent.TextDelta, currentConversationId: String?): Boolean {
         if (!isForActiveConversation(event.conversationId, currentConversationId)) return false
-        
-        onUiStateUpdate { state ->
-            val lastAssistant = state.messages.lastOrNull()
-            if (lastAssistant?.role == MessageRole.ASSISTANT &&
-                lastAssistant.content.isBlank() &&
-                hasSyntheticThinkingTool(lastAssistant)
-            ) {
-                val updatedMsgs = finalizeRunningThinkingOnLastAssistant(state.messages)
-                val withNewBubble = ensureAssistantMessage(updatedMsgs, force = true)
-                val textContent = if (event.stepIndex != null) event.text else stateManager.mergeStreamingSegment(event.text)
-                return@onUiStateUpdate state.copy(
-                    messages = updateLastAssistantContent(withNewBubble, textContent, null, false, null, event.stepIndex)
-                )
-            }
-            
-            val msgs = ensureAssistantMessage(state.messages, force = false)
-            stateManager.setPhase(StreamingStateManager.StreamPhase.TEXT)
-            val textContent = if (event.stepIndex != null) event.text else stateManager.mergeStreamingSegment(event.text)
-            state.copy(messages = updateLastAssistantContent(msgs, textContent, null, false, null, event.stepIndex))
+
+        stateManager.setPhase(StreamingStateManager.StreamPhase.TEXT)
+        val textLength = if (event.stepIndex != null) {
+            pendingTextContent = event.text
+            event.text.length
+        } else {
+            pendingTextContent = null
+            stateManager.mergeStreamingSegmentInPlace(event.text)
         }
+        pendingTextStepIndex = event.stepIndex
+
+        val now = System.currentTimeMillis()
+        val shouldEmit = now - lastTextUiEmitAt >= TEXT_UI_EMIT_INTERVAL_MS ||
+            kotlin.math.abs(textLength - lastTextUiEmitLength) >= TEXT_UI_EMIT_MIN_CHARS
+        if (!shouldEmit) return true
+
+        emitPendingText(forceNewBubbleAfterThinking = true)
         return true
     }
     
@@ -66,14 +73,52 @@ class StreamingEventHandler(
     
     fun handleStreamDone(event: RemoteEvent.StreamDone, currentConversationId: String?): Boolean {
         if (!isForActiveConversation(event.conversationId, currentConversationId)) return false
+        emitPendingText(forceNewBubbleAfterThinking = true)
         onUiStateUpdate { state ->
-            val finalizedMsgs = finalizeRunningThinkingOnLastAssistant(state.messages)
+            val finalizedMsgs = markLastAssistantCompleted(finalizeRunningThinkingOnLastAssistant(state.messages))
             state.copy(isStreaming = false, isLoading = false, messages = finalizedMsgs)
         }
+        pendingTextContent = null
+        pendingTextStepIndex = null
+        lastTextUiEmitAt = 0L
+        lastTextUiEmitLength = 0
         stateManager.clearAll()
         return true
     }
+
+    private fun emitPendingText(forceNewBubbleAfterThinking: Boolean) {
+        val content = pendingTextContent ?: stateManager.currentText
+        if (content.isBlank()) return
+        val stepIndex = pendingTextStepIndex
+        onUiStateUpdate { state ->
+            val lastAssistant = state.messages.lastOrNull()
+            val needsNewBubble = forceNewBubbleAfterThinking &&
+                lastAssistant?.role == MessageRole.ASSISTANT &&
+                lastAssistant.content.isBlank() &&
+                hasSyntheticThinkingTool(lastAssistant)
+
+            val baseMessages = if (needsNewBubble) {
+                ensureAssistantMessage(finalizeRunningThinkingOnLastAssistant(state.messages), force = true)
+            } else {
+                ensureAssistantMessage(state.messages, force = false)
+            }
+
+            state.copy(messages = updateLastAssistantContent(baseMessages, content, null, false, null, stepIndex))
+        }
+        lastTextUiEmitAt = System.currentTimeMillis()
+        lastTextUiEmitLength = content.length
+    }
     
+    private fun markLastAssistantCompleted(messages: List<UiMessage>): List<UiMessage> {
+        val idx = messages.indexOfLast { it.role == MessageRole.ASSISTANT }
+        if (idx == -1) return messages
+        val msg = messages[idx]
+        if (msg.metadata["completedAt"] != null) return messages
+        return messages.toMutableList().apply {
+            this[idx] = msg.copy(metadata = msg.metadata + ("completedAt" to System.currentTimeMillis().toString()))
+        }
+    }
+
     private fun isForActiveConversation(eventConversationId: String?, currentConversationId: String?): Boolean {
         if (eventConversationId.isNullOrBlank()) return true
         if (currentConversationId.isNullOrBlank()) return true

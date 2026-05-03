@@ -119,7 +119,7 @@ object ToolUiMapper {
             )
 
             // -- Web ---------------------------------------------------------
-            "search_web" -> ToolUiMetadata(
+            "search_web", "web_search" -> ToolUiMetadata(
                 category = ToolCategory.WEB,
                 label = safeArgs["query"]?.toString()?.take(30) ?: "Search",
                 actionIcon = ToolInfoIcon.SEARCH,
@@ -153,9 +153,18 @@ object ToolUiMapper {
                 targetIcon = ToolInfoIcon.IMAGE,
                 badges = listOf("GENERATE")
             )
-            "browser", "browser_subagent", "chrome-devtools" -> ToolUiMetadata(
+            "browser", "browser_subagent", "chrome-devtools",
+            "open_url", "new_page", "close_page", "click_element", "type_text", "clear_input",
+            "scroll_page", "get_dom", "get_visible_text", "get_screenshot", "find_element",
+            "wait_for_element", "go_back", "go_forward", "reload_page", "cancel_action",
+            "pause_session", "resume_session" -> ToolUiMetadata(
                 category = ToolCategory.WEB,
-                label = safeArgs["task"]?.toString()?.take(30) ?: safeArgs["TaskName"]?.toString() ?: "Browser",
+                label = safeArgs["url"]?.toString()?.substringAfter("://")?.substringBefore("/")
+                    ?: safeArgs["selector"]?.toString()?.take(30)
+                    ?: safeArgs["query"]?.toString()?.take(30)
+                    ?: safeArgs["task"]?.toString()?.take(30)
+                    ?: safeArgs["TaskName"]?.toString()
+                    ?: "Browser",
                 actionIcon = ToolInfoIcon.BROWSER,
                 targetIcon = ToolInfoIcon.MOUSE,
                 badges = listOf("BROWSER")

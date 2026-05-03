@@ -41,7 +41,8 @@ object LocalToolMapper {
         "grep_search", "grep", "search" -> "grep_search"
         
         // Web
-        "search_web", "web_search" -> "search_web"
+        "web_search", "websearch" -> "web_search"
+        "search_web" -> "search_web"
         "read_url_content", "fetch_url" -> "read_url_content"
         "browser" -> "browser"
         

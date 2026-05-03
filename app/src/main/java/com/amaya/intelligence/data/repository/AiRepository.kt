@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import org.json.JSONObject
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -163,7 +165,11 @@ class AiRepository @Inject constructor(
         
         var continueLoop = true
         var iterations = 0
-        val maxIterations = 10 // Prevent infinite loops
+        val maxIterations = agentConfig.maxIterations.coerceIn(1, 50) // Prevent infinite loops
+        val browserTaskId = "browser_task_turn_${UUID.randomUUID().toString().take(8)}"
+        var browserTaskStarted = false
+        var lastBrowserErrorSignature: String? = null
+        var repeatedBrowserErrors = 0
         
         while (continueLoop && iterations < maxIterations) {
             iterations++
@@ -252,9 +258,23 @@ class AiRepository @Inject constructor(
                 // Execute each tool call
                 for (toolCall in toolCalls) {
                     val channel = this
+                    val executionArguments = if (toolCall.name == "browser") {
+                        val shouldResetBrowserTask = !browserTaskStarted
+                        browserTaskStarted = true
+                        buildMap<String, Any?> {
+                            putAll(toolCall.arguments)
+                            put("parent_call_id", browserTaskId)
+                            if (shouldResetBrowserTask && toolCall.arguments["reset_task"] == null) {
+                                put("reset_task", true)
+                            }
+                        }
+                    } else {
+                        toolCall.arguments
+                    }
+
                     val result = mcpToolExecutor.execute(
                         toolName = toolCall.name,
-                        arguments = toolCall.arguments,
+                        arguments = executionArguments,
                         workspacePath = workspacePath,
                         toolCallId = toolCall.id,
                         // FIX: Use channel.send() — channelFlow's ProducerScope is thread-safe,
@@ -293,6 +313,22 @@ class AiRepository @Inject constructor(
                             metadata = resultMetadata
                         )
                     )
+
+                    if (toolCall.name == "browser") {
+                        val signature = browserErrorSignature(resultContent)
+                        if (signature != null) {
+                            repeatedBrowserErrors = if (signature == lastBrowserErrorSignature) repeatedBrowserErrors + 1 else 1
+                            lastBrowserErrorSignature = signature
+                            if (repeatedBrowserErrors >= 2) {
+                                send(AgentEvent.Error("Browser repeated the same failure ($signature). Stopping to avoid a tool loop; inspect agent.interactive_elements or ask the user for the target.", retryable = true))
+                                continueLoop = false
+                                break
+                            }
+                        } else {
+                            lastBrowserErrorSignature = null
+                            repeatedBrowserErrors = 0
+                        }
+                    }
                 }
             }
         }
@@ -304,6 +340,16 @@ class AiRepository @Inject constructor(
         send(AgentEvent.Done)
     }
     
+    private fun browserErrorSignature(resultContent: String): String? {
+        val root = runCatching { JSONObject(resultContent) }.getOrNull() ?: return null
+        val status = root.optString("status")
+        if (status != "error" && status != "cancelled" && status != "timeout") return null
+        val error = root.optJSONObject("agent")?.optJSONObject("error") ?: root.optJSONObject("error")
+        val code = error?.optString("code")?.takeIf { it.isNotBlank() } ?: status
+        val message = error?.optString("message")?.takeIf { it.isNotBlank() } ?: root.optJSONObject("agent")?.optString("latest_summary").orEmpty()
+        return "$code:${message.take(120)}"
+    }
+
     /**
      * Build system prompt with project context.
      *
@@ -346,6 +392,20 @@ class AiRepository @Inject constructor(
             - Each item needs: id (int, 1-based), status ("pending"/"in_progress"/"completed"), content (imperative label), active_form (present-continuous label shown when collapsed, optional).
             - As you work, call update_todo with merge=true to update individual item statuses by id.
             - This shows the user a live progress bar above the chat input — keep it up to date.
+            
+            TOOLS — BROWSER (browser):
+            - Use exactly ONE parent tool named browser for real Android browser automation.
+            - Prefer steps[] for related browser work so the UI shows one Browser card with nested child actions.
+            - Public actions are intentionally small: open_url, observe, click, type, press_key, scroll, search, evaluate_script, go_back, reload.
+            - Good first call for web tasks: browser({task:"...", steps:[{action:"open_url",params:{url:"..."}}, {action:"observe",params:{}}], reset_task:true}).
+            - Continue the same browser job with browser({task:"same short task", action:"click", params:{element_id:"el_..."}}) or another steps[] batch.
+            - Do not call legacy/internal names like get_dom, tap, swipe, focus, clear_input, click_element, find_element, wait_for_element unless debugging an old conversation.
+            - Read browser result from top-level agent object first: agent.latest_status, agent.page, agent.interactive_elements, agent.element, agent.error. Avoid digging through old sub_toolcalls unless debugging.
+            - Use element_id from agent.interactive_elements or agent.element for click/type. Use type with submit=true instead of separate focus/clear/enter when possible.
+            - If normal actions fail, you may call browser action evaluate_script with params.script to run a small page-local JavaScript helper that returns JSON/string. Keep scripts short, read/act only on the current page, and do not extract sensitive values.
+            - observe returns a compact interactive summary, not HTML. Never ask for raw HTML unless user explicitly enables debug.
+            - If safety.status is paused or sensitive_detected=true, stop and wait for user. Never send password, OTP, token, or payment data.
+            - For simple lookup tasks, batch: open_url -> observe -> search/click/type. Avoid many separate browser calls.
             
             TOOLS — SUBAGENTS (invoke_subagents):
             - Use invoke_subagents when a task has INDEPENDENT sub-tasks that can run IN PARALLEL.

@@ -11,8 +11,10 @@ import com.amaya.intelligence.data.repository.AiRepository
 import com.amaya.intelligence.data.repository.AgentEvent
 import com.amaya.intelligence.domain.models.*
 import com.amaya.intelligence.impl.common.mappers.AgentUiMapper
+import com.amaya.intelligence.impl.local.browser.BrowserSessionManager
 import com.amaya.intelligence.impl.local.tools.LocalToolMapper
 import com.amaya.intelligence.di.ApplicationScope
+import com.amaya.intelligence.utils.LocalStreamPerfLog
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -32,6 +34,7 @@ class LocalIntelligenceService @Inject constructor(
     private val aiRepository: AiRepository,
     private val conversationDao: ConversationDao,
     private val settingsManager: AiSettingsManager,
+    private val browserSessionManager: BrowserSessionManager,
     @ApplicationScope private val scope: CoroutineScope
 ) : IntelligenceService {
 
@@ -49,6 +52,9 @@ class LocalIntelligenceService @Inject constructor(
     private var chatJob: Job? = null
     private var currentConversationId: Long? = null
     private var currentAssistantMessageId: String? = null
+    private val assistantTextBuffer = StringBuilder()
+    private var lastAssistantTextUiEmitAt = 0L
+    private var browserConversationKey: String? = null
     private val conversationSaveMutex = Mutex()
 
     init {
@@ -76,17 +82,27 @@ class LocalIntelligenceService @Inject constructor(
     override fun sendMessage(content: String) {
         chatJob?.cancel()
         currentAssistantMessageId = null
+        assistantTextBuffer.clear()
+        lastAssistantTextUiEmitAt = 0L
         
         val currentState = _uiState.value
+        LocalStreamPerfLog.startTurn(
+            messageChars = content.length,
+            historyMessages = currentState.messages.size,
+            model = currentState.selectedModel.ifBlank { currentState.activeAgentId }
+        )
         val userMsg = UiMessage(
             role = MessageRole.USER,
             content = content
         )
+        ensureBrowserConversationSession(userMsg.id)
+        browserSessionManager.onAssistantStreamingChanged(true)
         
         // Optimistic update
         _uiState.update { it.copy(
             messages = it.messages + userMsg,
-            isLoading = true
+            isLoading = true,
+            isStreaming = true
         )}
 
         // Persist first user message immediately so the conversation appears in sidebar.
@@ -104,12 +120,16 @@ class LocalIntelligenceService @Inject constructor(
                     conversationHistory = history.dropLast(1), // Exclude the one we just added
                     workspacePath = currentState.workspacePath,
                     activeAgentId = currentState.activeAgentId,
+                    conversationId = currentConversationId,
                     selectedModel = currentState.selectedModel
                 ).collect { event ->
                     handleAgentEvent(event)
                 }
             } catch (e: Exception) {
-                _uiState.update { it.copy(error = e.message, isLoading = false) }
+                flushAssistantTextBuffer()
+                browserSessionManager.onAssistantStreamingChanged(false)
+                _uiState.update { it.copy(error = e.message, isLoading = false, isStreaming = false) }
+                LocalStreamPerfLog.endTurn("exception:${e.message.orEmpty().take(80)}", _uiState.value.messages.size, currentAssistantTextLength())
             }
         }
     }
@@ -117,19 +137,11 @@ class LocalIntelligenceService @Inject constructor(
     private fun handleAgentEvent(event: AgentEvent) {
         when (event) {
             is AgentEvent.TextDelta -> {
-                ensureAssistantMessage()
-                updateCurrentAssistantMessage { msg ->
-                    val newContent = msg.content + event.text
-                    val lastStep = msg.steps.lastOrNull()
-                    val newSteps = if (lastStep is MessageStep.Text) {
-                        msg.steps.dropLast(1) + lastStep.copy(content = lastStep.content + event.text)
-                    } else {
-                        msg.steps + MessageStep.Text(content = event.text)
-                    }
-                    msg.copy(content = newContent, steps = newSteps)
-                }
+                browserSessionManager.onAssistantTextDelta(event.text)
+                bufferAssistantTextDelta(event.text)
             }
             is AgentEvent.ToolCallStart -> {
+                flushAssistantTextBuffer()
                 val normalizedName = LocalToolMapper.mapToolName(event.name)
                 val normalizedArgs = LocalToolMapper.mapToolArgs(event.name, event.arguments)
                 val toolExec = ToolExecution(
@@ -152,6 +164,7 @@ class LocalIntelligenceService @Inject constructor(
                 }
             }
             is AgentEvent.ToolCallResult -> {
+                flushAssistantTextBuffer()
                 updateCurrentAssistantMessage { msg ->
                     val updatedTools = msg.toolExecutions.map {
                         if (it.toolCallId == event.toolCallId) {
@@ -175,14 +188,58 @@ class LocalIntelligenceService @Inject constructor(
                 }
             }
             is AgentEvent.Error -> {
-                _uiState.update { it.copy(error = event.message, isLoading = false) }
+                flushAssistantTextBuffer()
+                browserSessionManager.onAssistantStreamingChanged(false)
+                _uiState.update { it.copy(error = event.message, isLoading = false, isStreaming = false) }
+                LocalStreamPerfLog.endTurn("error:${event.message.take(80)}", _uiState.value.messages.size, currentAssistantTextLength())
             }
             is AgentEvent.Done -> {
-                _uiState.update { it.copy(isLoading = false) }
+                flushAssistantTextBuffer()
+                markCurrentAssistantCompleted()
+                browserSessionManager.onAssistantStreamingChanged(false)
+                _uiState.update { it.copy(isLoading = false, isStreaming = false) }
+                LocalStreamPerfLog.endTurn("done", _uiState.value.messages.size, currentAssistantTextLength())
                 saveCurrentConversation()
             }
             else -> {}
         }
+    }
+
+    private fun bufferAssistantTextDelta(delta: String) {
+        if (delta.isBlank()) return
+        assistantTextBuffer.append(delta)
+        LocalStreamPerfLog.onInboundDelta(delta.length, assistantTextBuffer.length)
+        flushAssistantTextBuffer(System.currentTimeMillis())
+    }
+
+    private fun flushAssistantTextBuffer(now: Long = System.currentTimeMillis()) {
+        if (assistantTextBuffer.isEmpty()) return
+        val chunk = assistantTextBuffer.toString()
+        assistantTextBuffer.clear()
+        lastAssistantTextUiEmitAt = now
+        val startNs = System.nanoTime()
+        var totalAssistantChars = 0
+        var stepCount = 0
+        ensureAssistantMessage()
+        updateCurrentAssistantMessage { msg ->
+            val newContent = msg.content + chunk
+            val lastStep = msg.steps.lastOrNull()
+            val newSteps = if (lastStep is MessageStep.Text) {
+                msg.steps.dropLast(1) + lastStep.copy(content = lastStep.content + chunk)
+            } else {
+                msg.steps + MessageStep.Text(content = chunk)
+            }
+            totalAssistantChars = newContent.length
+            stepCount = newSteps.size
+            msg.copy(content = newContent, steps = newSteps)
+        }
+        LocalStreamPerfLog.onUiFlush(
+            chunkChars = chunk.length,
+            totalAssistantChars = totalAssistantChars,
+            messages = _uiState.value.messages.size,
+            steps = stepCount,
+            updateMs = (System.nanoTime() - startNs) / 1_000_000
+        )
     }
 
     private fun ensureAssistantMessage() {
@@ -209,6 +266,13 @@ class LocalIntelligenceService @Inject constructor(
         }
         _uiState.value = state.copy(messages = msgs)
     }
+    private fun ensureBrowserConversationSession(seedMessageId: String) {
+        if (browserConversationKey != null) return
+        val key = currentConversationId?.let { "conversation:$it" } ?: "draft:$seedMessageId"
+        browserConversationKey = key
+        browserSessionManager.resetForConversation(key)
+    }
+
     private fun currentAssistantMetadata(): Map<String, String> {
         val state = _uiState.value
         val agent = state.agentConfigs.firstOrNull { it.id == state.activeAgentId }
@@ -221,6 +285,18 @@ class LocalIntelligenceService @Inject constructor(
             if (!containsKey("agent_name")) {
                 agent?.id?.takeIf { it.isNotBlank() }?.let { put("agent_name", it) }
             }
+        }
+    }
+
+    private fun currentAssistantTextLength(): Int {
+        val assistantId = currentAssistantMessageId ?: return 0
+        return _uiState.value.messages.lastOrNull { it.id == assistantId }?.content?.length ?: 0
+    }
+
+    private fun markCurrentAssistantCompleted() {
+        val completedAt = System.currentTimeMillis().toString()
+        updateCurrentAssistantMessage { msg ->
+            if (msg.metadata["completedAt"] != null) msg else msg.copy(metadata = msg.metadata + ("completedAt" to completedAt))
         }
     }
 
@@ -239,18 +315,25 @@ class LocalIntelligenceService @Inject constructor(
 
     override fun stopGeneration() {
         chatJob?.cancel()
-        _uiState.update { it.copy(isLoading = false) }
+        flushAssistantTextBuffer()
+        browserSessionManager.onAssistantStreamingChanged(false)
+        _uiState.update { it.copy(isLoading = false, isStreaming = false) }
     }
 
     override fun clearConversation() {
         chatJob?.cancel()
         currentConversationId = null
         currentAssistantMessageId = null
+        assistantTextBuffer.clear()
+        lastAssistantTextUiEmitAt = 0L
+        browserConversationKey = null
+        browserSessionManager.resetEphemeral()
         _uiState.update { it.copy(
             conversationId = null,
             messages = emptyList(),
             error = null,
-            isLoading = false
+            isLoading = false,
+            isStreaming = false
         )}
     }
 
@@ -261,6 +344,10 @@ class LocalIntelligenceService @Inject constructor(
             entity?.let { conv ->
                 currentConversationId = conv.id
                 currentAssistantMessageId = null
+                assistantTextBuffer.clear()
+                lastAssistantTextUiEmitAt = 0L
+                browserConversationKey = "conversation:${conv.id}"
+                browserSessionManager.resetForConversation(browserConversationKey!!)
                 val messages = parseMessagesFromJson(conv.messagesJson)
                 _uiState.update { it.copy(
                     conversationId = conv.id.toString(),
@@ -598,6 +685,7 @@ class LocalIntelligenceService @Inject constructor(
             }
         }
     }
+
 }
 
 // Extension to map domain to repository model

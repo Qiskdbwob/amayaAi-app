@@ -65,37 +65,52 @@ class StreamingStateManager {
     }
     
     fun mergeStreamingSegment(incoming: String): String {
-        val current = streamingText.toString()
-        if (incoming.isBlank()) return current
-        if (current.isBlank()) {
+        mergeStreamingSegmentInPlace(incoming)
+        return streamingText.toString()
+    }
+
+    fun mergeStreamingSegmentInPlace(incoming: String): Int {
+        if (incoming.isBlank()) return streamingText.length
+        if (streamingText.isEmpty()) {
+            streamingText.append(incoming)
+            return streamingText.length
+        }
+
+        // If the incoming text contains the entirety of the current text (pure replacement delta mode).
+        // Compare directly against the builder to avoid copying the full stream on every tiny chunk.
+        if (incoming.length >= streamingText.length && incomingStartsWithCurrent(incoming)) {
             streamingText.clear()
             streamingText.append(incoming)
-            return incoming
+            return streamingText.length
         }
-        
-        // If the incoming text contains the entirety of the current text (pure replacement delta mode)
-        if (incoming.startsWith(current)) {
-            streamingText.clear()
-            streamingText.append(incoming)
-            return incoming
-        }
-        
-        // Find if incoming overlaps exactly with the end of current
-        // e.g. current = "I want to", incoming = "to go" => overlap = "to", merged = "I want to go"
-        // E.g. current = "abc", incoming = "d" => no overlap
+
+        // Find if incoming overlaps exactly with the end of current.
         var overlapLength = 0
-        val maxPossibleOverlap = minOf(current.length, incoming.length)
+        val maxPossibleOverlap = minOf(streamingText.length, incoming.length)
         for (i in maxPossibleOverlap downTo 1) {
-            if (current.endsWith(incoming.substring(0, i))) {
+            if (currentEndsWithIncomingPrefix(incoming, i)) {
                 overlapLength = i
                 break
             }
         }
-        
-        val merged = current + incoming.substring(overlapLength)
-        streamingText.clear()
-        streamingText.append(merged)
-        return merged
+
+        streamingText.append(incoming, overlapLength, incoming.length)
+        return streamingText.length
+    }
+
+    private fun incomingStartsWithCurrent(incoming: String): Boolean {
+        for (i in 0 until streamingText.length) {
+            if (incoming[i] != streamingText[i]) return false
+        }
+        return true
+    }
+
+    private fun currentEndsWithIncomingPrefix(incoming: String, prefixLength: Int): Boolean {
+        val currentStart = streamingText.length - prefixLength
+        for (i in 0 until prefixLength) {
+            if (streamingText[currentStart + i] != incoming[i]) return false
+        }
+        return true
     }
     
     companion object {

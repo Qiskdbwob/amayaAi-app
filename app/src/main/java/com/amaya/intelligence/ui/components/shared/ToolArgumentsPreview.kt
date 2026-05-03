@@ -1,6 +1,7 @@
 package com.amaya.intelligence.ui.components.shared
 
 import com.amaya.intelligence.domain.models.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -53,6 +54,7 @@ fun ToolArgumentsPreview(
     val metaColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
     val codeBg = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
     val codeColor = if (isDark) Color(0xFFD1D1D6) else Color(0xFF3A3A3C)
+    val blockBorderColor = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
     
     @Suppress("UNCHECKED_CAST")
     val args = arguments
@@ -121,7 +123,12 @@ fun ToolArgumentsPreview(
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     DescriptionPayload(args)
                     if (cwd.isNotBlank()) {
-                        Surface(shape = RoundedCornerShape(8.dp), color = codeBg, modifier = Modifier.fillMaxWidth().clipToBounds()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = codeBg,
+                            border = BorderStroke(1.dp, blockBorderColor),
+                            modifier = Modifier.fillMaxWidth().clipToBounds()
+                        ) {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -220,7 +227,12 @@ fun ToolArgumentsPreview(
                 )
                 val relevantArgs = args.filterKeys { !it.startsWith("_") && it !in internalKeys }
                 if (relevantArgs.isNotEmpty()) {
-                    Surface(shape = RoundedCornerShape(8.dp), color = codeBg, modifier = Modifier.fillMaxWidth()) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = codeBg,
+                        border = BorderStroke(1.dp, blockBorderColor),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Column(modifier = Modifier.padding(10.dp)) {
                             relevantArgs.entries.take(8).forEach { (k, v) ->
                                 val valueStr = v.toString()
@@ -270,7 +282,14 @@ private fun MetaRow(text: String, icon: androidx.compose.ui.graphics.vector.Imag
 
 @Composable
 private fun CommandBlock(command: String, codeBg: Color, codeColor: Color) {
-    Surface(shape = RoundedCornerShape(8.dp), color = codeBg, modifier = Modifier.fillMaxWidth()) {
+    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val blockBorderColor = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = codeBg,
+        border = BorderStroke(1.dp, blockBorderColor),
+        modifier = Modifier.fillMaxWidth()
+    ) {
         Text(command,
             style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
             fontSize = 11.sp, color = codeColor, modifier = Modifier.padding(10.dp))

@@ -27,6 +27,7 @@ import com.amaya.intelligence.ui.components.shared.MessageBubble
 import com.amaya.intelligence.ui.components.shared.extractMarkdownFilePaths
 import com.amaya.intelligence.ui.components.shared.prefetchFileTypeIcons
 import com.amaya.intelligence.ui.components.shared.resolveFileTypeSourcePath
+import com.amaya.intelligence.utils.LocalStreamPerfLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -43,6 +44,7 @@ fun ChatMessageList(
     listState: LazyListState,
     displayMessages: List<UiMessage>,
     isLoading: Boolean,
+    isStreaming: Boolean = false,
     isRemoteMode: Boolean,
     headerDp: Dp,
     inputBarHeight: Int,
@@ -57,10 +59,10 @@ fun ChatMessageList(
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
-    var windowStart by remember(displayMessages) {
+    var windowStart by remember {
         mutableIntStateOf(max(0, displayMessages.size - CHAT_WINDOW_PAGE_SIZE))
     }
-    var windowEnd by remember(displayMessages) {
+    var windowEnd by remember {
         mutableIntStateOf(displayMessages.size)
     }
 
@@ -93,7 +95,27 @@ fun ChatMessageList(
             }
         }
     }
-    val fileIconPrefetchPaths = remember(windowedMessages) {
+    SideEffect {
+        if (!isRemoteMode) {
+            val info = listState.layoutInfo
+            LocalStreamPerfLog.onChatListComposed(
+                messages = displayMessages.size,
+                lastChars = displayMessages.lastOrNull()?.content?.length ?: 0,
+                visibleItems = info.visibleItemsInfo.size,
+                totalItems = info.totalItemsCount,
+                isStreaming = isStreaming
+            )
+        }
+    }
+
+    val fileIconPrefetchKey = remember(windowedMessages) {
+        windowedMessages.joinToString(separator = "|") { msg ->
+            val content = msg.formattedContent ?: msg.content
+            val fileContentVersion = if (content.contains("](file:///")) content.length else 0
+            "${msg.id}:${msg.steps.size}:${msg.toolExecutions.size}:$fileContentVersion"
+        }
+    }
+    val fileIconPrefetchPaths = remember(fileIconPrefetchKey) {
         val fromTools = windowedMessages
             .asSequence()
             .flatMap { msg -> msg.steps.filterIsInstance<MessageStep.ToolCall>().map { it.execution }.asSequence() }

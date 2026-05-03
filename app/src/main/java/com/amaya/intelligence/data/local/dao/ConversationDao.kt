@@ -6,10 +6,18 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ConversationDao {
-    @Query("SELECT * FROM conversations ORDER BY updated_at DESC")
+    @Query("""
+        SELECT id, title, workspace_path, created_at, updated_at, '' AS messages_json
+        FROM conversations
+        ORDER BY updated_at DESC
+    """)
     fun getAllConversations(): Flow<List<ConversationEntity>>
 
-    @Query("SELECT * FROM conversations ORDER BY updated_at DESC")
+    @Query("""
+        SELECT id, title, workspace_path, created_at, updated_at, '' AS messages_json
+        FROM conversations
+        ORDER BY updated_at DESC
+    """)
     fun observeAllConversations(): Flow<List<ConversationEntity>>
 
     @Query("SELECT * FROM conversations WHERE id = :id")

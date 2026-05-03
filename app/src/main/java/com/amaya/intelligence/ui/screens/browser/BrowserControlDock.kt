@@ -1,0 +1,722 @@
+package com.amaya.intelligence.ui.screens.browser
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Autorenew
+import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.amaya.intelligence.domain.models.ToolInfoIcon
+import com.amaya.intelligence.impl.local.browser.BrowserAgentStatus
+import com.amaya.intelligence.impl.local.browser.BrowserToolLog
+import com.amaya.intelligence.impl.local.browser.BrowserUiState
+import com.amaya.intelligence.ui.components.shared.MarkdownText
+import com.amaya.intelligence.ui.components.shared.ToolLeadIconPill
+import com.amaya.intelligence.ui.components.shared.mapToolIcon
+import java.net.URI
+
+@Composable
+fun BrowserControlDock(
+    state: BrowserUiState,
+    address: String,
+    onAddressChange: (String) -> Unit,
+    onGo: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var autoDoneExpanded by remember { mutableStateOf(false) }
+    val logs = remember(state.logs, state.assistantStreamText, state.assistantStreamUpdatedAt) { browserLiveLogs(state) }
+
+    val isDark = isSystemInDarkTheme()
+    val bgMain = if (isDark) Color(0xFF17171A) else Color(0xFFF9F9F9)
+    val cardBorder = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
+    val cardBg = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
+
+    val duration = remember(logs, state.status, state.isAssistantStreaming) {
+        if (logs.isEmpty()) return@remember "0s"
+        val firstTime = logs.first().timestamp
+        val lastTime = logs.last().timestamp
+        val elapsed = if (state.isAssistantStreaming || state.status == BrowserAgentStatus.BROWSING) {
+            System.currentTimeMillis() - firstTime
+        } else {
+            lastTime - firstTime
+        }
+        val seconds = (elapsed / 1000).coerceAtLeast(1L)
+        val minutes = seconds / 60
+        val secs = seconds % 60
+        if (minutes > 0) "${minutes}m ${secs}s" else "${secs}s"
+    }
+
+    val toolCount = remember(logs) {
+        logs.count { !it.toolName.equals("assistant", true) && !it.toolName.equals("thinking", true) && it.id != "stream_active" }
+    }
+
+    val subtitle = "Worked for $duration${if (toolCount > 0) " · $toolCount tool${if (toolCount == 1) "" else "s"}" else ""}"
+
+    var wasStreaming by remember { mutableStateOf(false) }
+    LaunchedEffect(state.isAssistantStreaming, state.status) {
+        if (state.isAssistantStreaming) {
+            autoDoneExpanded = false
+        }
+        if (!state.isAssistantStreaming && state.status == BrowserAgentStatus.COMPLETED) {
+            expanded = true
+            autoDoneExpanded = true
+        }
+        if (wasStreaming && !state.isAssistantStreaming && state.assistantStreamText.isNotBlank()) {
+            expanded = true
+            autoDoneExpanded = true
+        }
+        wasStreaming = state.isAssistantStreaming
+    }
+
+    val borderMain = if (isDark) Color.White.copy(alpha = 0.10f) else Color.Black.copy(alpha = 0.08f)
+    val textPrimary = if (isDark) Color.White.copy(alpha = 0.90f) else Color.Black.copy(alpha = 0.88f)
+    val textSecondary = if (isDark) Color.White.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.50f)
+    val textTertiary = if (isDark) Color.White.copy(alpha = 0.42f) else Color.Black.copy(alpha = 0.38f)
+
+    Surface(
+        shape = RoundedCornerShape(28.dp),
+        color = bgMain,
+        border = BorderStroke(1.dp, borderMain),
+        shadowElevation = 16.dp,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            if (!autoDoneExpanded) {
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = cardBg,
+                    border = BorderStroke(1.dp, cardBorder),
+                    modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 44.dp)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                    val isDone = state.status == BrowserAgentStatus.COMPLETED
+                    if (expanded || isDone) {
+                        ToolLeadIconPill(ToolInfoIcon.TASK)
+                        Text(
+                            text = subtitle,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    } else {
+                        val liveText = state.assistantStreamText
+                        val isThinking = liveText.contains("<think>") && !liveText.contains("</think>")
+                        val latestLog = logs.lastOrNull()
+
+                        if (state.isAssistantStreaming && liveText.isNotBlank()) {
+                            if (isThinking) {
+                                Icon(Icons.Default.Psychology, null, modifier = Modifier.size(14.dp), tint = Color(0xFFA259FF))
+                                Text(text = cleanStreamText(liveText).ifBlank { "Thinking..." }, style = MaterialTheme.typography.labelMedium, color = textPrimary, maxLines = 1, modifier = Modifier.weight(1f).basicMarquee())
+                            } else {
+                                Text(text = cleanStreamText(liveText), style = MaterialTheme.typography.labelMedium, color = textPrimary, maxLines = 1, modifier = Modifier.weight(1f).basicMarquee())
+                            }
+                        } else if (latestLog != null) {
+                            val isText = latestLog.toolName.equals("thinking", true) || latestLog.toolName.equals("assistant", true)
+                            if (isText) {
+                                val cText = cleanStreamText(latestLog.message)
+                                if (cText.isNotBlank()) {
+                                    Text(cText, style = MaterialTheme.typography.labelMedium, color = textPrimary, maxLines = 1, modifier = Modifier.weight(1f).basicMarquee())
+                                } else {
+                                    ToolLeadIconPill(ToolInfoIcon.TASK)
+                                    Text(subtitle, style = MaterialTheme.typography.labelMedium, color = textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                }
+                            } else {
+                                val sc = browserStatusColor(latestLog.status)
+                                Box(modifier = Modifier.size(20.dp), contentAlignment = Alignment.Center) {
+                                    Surface(shape = CircleShape, color = sc.copy(alpha = 0.14f), border = BorderStroke(1.dp, sc.copy(alpha = 0.16f)), modifier = Modifier.matchParentSize()) {}
+                                    Icon(browserLogIcon(latestLog), null, modifier = Modifier.size(12.dp), tint = sc)
+                                }
+                                val label = browserActionLabel(latestLog.toolName)
+                                Text(text = label, style = MaterialTheme.typography.labelMedium, color = textPrimary, maxLines = 1, modifier = Modifier.weight(1f).basicMarquee())
+                            }
+                        } else {
+                            ToolLeadIconPill(ToolInfoIcon.TASK)
+                            Text(text = subtitle, style = MaterialTheme.typography.labelMedium, color = textPrimary, maxLines = 1, modifier = Modifier.weight(1f))
+                        }
+                    }
+                    Icon(
+                        if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        null,
+                        modifier = Modifier.size(16.dp),
+                        tint = textSecondary
+                    )
+                }
+                }
+            }
+
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)) + fadeIn(),
+                exit = shrinkVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)) + fadeOut()
+            ) {
+                Column {
+                    if (!autoDoneExpanded) Spacer(Modifier.height(12.dp))
+                    if (logs.isNotEmpty()) {
+                        val scrollState = rememberScrollState()
+                        LaunchedEffect(logs.size) { scrollState.animateScrollTo(scrollState.maxValue) }
+                        Column(modifier = Modifier.heightIn(max = 340.dp).verticalScroll(scrollState), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            val timelineItems = mutableListOf<BrowserDockTimelineItem>()
+                            val normalTextLogs = mutableListOf<@Composable () -> Unit>()
+                            val normalTextTotal = logs.sumOf { log ->
+                                if (log.toolName.equals("thinking", true) || log.toolName.equals("assistant", true)) {
+                                    parseBrowserThinkingTags(log.message).count { part -> part.text.isNotBlank() && !part.isThinking }
+                                } else 0
+                            }
+                            var normalTextIndex = 0
+
+                            logs.forEach { log ->
+                                val isText = log.toolName.equals("thinking", true) || log.toolName.equals("assistant", true)
+                                if (isText) {
+                                    parseBrowserThinkingTags(log.message).forEach { part ->
+                                        if (part.text.isBlank()) return@forEach
+                                        if (part.isThinking) {
+                                            val thinkingBlock: @Composable () -> Unit = {
+                                                BrowserDockThinkingBlock(text = part.text, isDark = isDark, cardBorder = cardBorder, textPrimary = textPrimary, textTertiary = textTertiary)
+                                            }
+                                            timelineItems.add(BrowserDockTimelineItem(isTool = false, content = thinkingBlock))
+                                        } else {
+                                            normalTextIndex++
+                                            val isLatestText = autoDoneExpanded && normalTextIndex == normalTextTotal
+                                            val textBlock: @Composable () -> Unit = {
+                                                Surface(shape = RoundedCornerShape(12.dp), color = cardBg, modifier = Modifier.fillMaxWidth()) {
+                                                    if (isLatestText) {
+                                                        MarkdownText(
+                                                            text = part.text,
+                                                            color = if (isDark) Color.White.copy(alpha = 0.88f) else Color.Black.copy(alpha = 0.86f),
+                                                            compact = false,
+                                                            fontSize = 17.sp,
+                                                            lineHeight = 25.sp,
+                                                            modifier = Modifier.padding(12.dp)
+                                                        )
+                                                    } else {
+                                                        MarkdownText(
+                                                            text = part.text,
+                                                            color = if (isDark) Color.White.copy(alpha = 0.82f) else Color.Black.copy(alpha = 0.80f),
+                                                            compact = true,
+                                                            fontSize = 13.sp,
+                                                            lineHeight = 19.sp,
+                                                            modifier = Modifier.padding(9.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            if (isLatestText) {
+                                                normalTextLogs.add(textBlock)
+                                            } else {
+                                                timelineItems.add(BrowserDockTimelineItem(isTool = false, content = textBlock))
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    val toolBlock: @Composable () -> Unit = {
+                                        val sc = browserStatusColor(log.status)
+                                        Surface(shape = RoundedCornerShape(12.dp), color = cardBg, modifier = Modifier.fillMaxWidth()) {
+                                            Row(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                BrowserDockSubtoolLeadIcon(tool = log.toolName, status = log.status, color = sc)
+                                                Column(Modifier.weight(1f)) {
+                                                    val label = browserActionLabel(log.toolName)
+                                                    Text(text = label, style = MaterialTheme.typography.labelMedium, color = textPrimary.copy(alpha = 0.84f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                }
+                                                Surface(shape = CircleShape, color = sc, modifier = Modifier.size(6.dp)) {}
+                                            }
+                                        }
+                                    }
+                                    timelineItems.add(BrowserDockTimelineItem(isTool = true, content = toolBlock))
+                                }
+                            }
+
+                            if (timelineItems.isNotEmpty()) {
+                                if (autoDoneExpanded) {
+                                    BrowserDockWorkSummaryCard(
+                                        subtitle = subtitle,
+                                        cardBg = cardBg,
+                                        cardBorder = cardBorder,
+                                        textPrimary = textPrimary,
+                                        textSecondary = textSecondary,
+                                        textTertiary = textTertiary,
+                                        initiallyExpanded = false
+                                    ) {
+                                        BrowserDockTimelineItems(
+                                            items = timelineItems,
+                                            cardBorder = cardBorder,
+                                            textPrimary = textPrimary,
+                                            textTertiary = textTertiary
+                                        )
+                                    }
+                                } else {
+                                    timelineItems.forEach { it.content() }
+                                }
+                            }
+                            normalTextLogs.forEach { it() }
+                        }
+                    } else {
+                        Column(modifier = Modifier.heightIn(max = 340.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) { BrowserEmptyText("No browser activity yet.") }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            Surface(shape = RoundedCornerShape(20.dp), color = cardBg, border = BorderStroke(1.dp, cardBorder), modifier = Modifier.fillMaxWidth()) {
+                Row(modifier = Modifier.padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(shape = CircleShape, color = Color(0xFF0A84FF).copy(alpha = 0.14f), border = BorderStroke(1.dp, Color(0xFF0A84FF).copy(alpha = 0.18f))) {
+                        Box(modifier = Modifier.size(22.dp), contentAlignment = Alignment.Center) {
+                            Icon(if (state.activeUrl.startsWith("https://")) Icons.Default.Lock else Icons.Default.Public, null, modifier = Modifier.size(12.dp), tint = if (state.activeUrl.startsWith("https://")) Color(0xFF34C759).copy(alpha = 0.7f) else textSecondary)
+                        }
+                    }
+                    Box(modifier = Modifier.weight(1f)) {
+                        BasicTextField(
+                            value = address,
+                            onValueChange = onAddressChange,
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = textPrimary),
+                            cursorBrush = SolidColor(Color(0xFF0A84FF)),
+                            decorationBox = { inner ->
+                                if (address.isEmpty()) Text("Search or enter address", style = MaterialTheme.typography.bodyMedium, color = textTertiary)
+                                inner()
+                            }
+                        )
+                    }
+                    MiniButton("Go", onGo, isDark)
+                    IconButton(onClick = onClose, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Close, null, tint = textSecondary) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MiniButton(label: String, onClick: () -> Unit, isDark: Boolean = true) {
+    val bg = if (isDark) Color.White.copy(alpha = 0.05f) else Color.Black.copy(alpha = 0.05f)
+    val border = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
+    val textColor = if (isDark) Color.White.copy(alpha = 0.84f) else Color.Black.copy(alpha = 0.80f)
+    Surface(shape = RoundedCornerShape(999.dp), color = bg, border = BorderStroke(1.dp, border), modifier = Modifier.clickable { onClick() }) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = textColor, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
+    }
+}
+
+@Composable
+private fun BrowserEmptyText(text: String) {
+    Text(text, style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.58f), modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
+}
+
+private fun browserLiveLogs(state: BrowserUiState): List<BrowserToolLog> {
+    val completed = state.logs.sortedBy { it.timestamp }
+    if (state.assistantStreamText.isNotBlank()) {
+        val streamText = state.assistantStreamText.trim()
+        val alreadySnapshotted = completed.any {
+            (it.toolName.equals("thinking", true) || it.toolName.equals("assistant", true)) &&
+                it.message.trim() == streamText
+        }
+        if (!alreadySnapshotted) {
+            val toolName = if (streamText.contains("<think>") && !streamText.contains("</think>")) "thinking" else "assistant"
+            return completed + BrowserToolLog(
+                id = if (state.isAssistantStreaming) "stream_active" else "stream_final",
+                toolName = toolName,
+                argumentsPreview = "",
+                status = if (state.isAssistantStreaming) "running" else "completed",
+                message = streamText,
+                timestamp = state.assistantStreamUpdatedAt.takeIf { it > 0L } ?: System.currentTimeMillis()
+            )
+        }
+    }
+    return completed
+}
+
+private fun browserLiveTitle(state: BrowserUiState, logs: List<BrowserToolLog>): String {
+    val liveText = cleanStreamText(state.assistantStreamText)
+    if (liveText.isNotBlank()) return liveText
+    val latest = logs.lastOrNull()
+    if (latest != null) {
+        val message = cleanStreamText(latest.message)
+        if (message.isNotBlank()) return message
+        val target = browserLogTarget(latest)
+        if (target.isNotBlank()) return browserActionLabel(latest.toolName) + " · $target"
+        return browserActionLabel(latest.toolName)
+    }
+    return state.activeTitle.takeIf { it.isNotBlank() } ?: "Page"
+}
+
+private fun dockStatusColor(state: BrowserUiState): Color = when {
+    state.isCancelled -> Color(0xFFFF453A)
+    state.lastError != null -> Color(0xFFFF453A)
+    state.isPaused -> Color(0xFFFFB340)
+    state.isAssistantStreaming && state.browserAccessActive -> Color(0xFF0A84FF)
+    state.isAssistantStreaming -> Color(0xFF64D2FF)
+    state.status == BrowserAgentStatus.BROWSING -> Color(0xFF0A84FF)
+    state.status == BrowserAgentStatus.COMPLETED -> Color(0xFF34C759)
+    else -> Color(0xFF8E8E93)
+}
+
+private fun dockStatusLabel(state: BrowserUiState): String = when {
+    state.isCancelled -> "Cancelled"
+    state.lastError != null -> "Error"
+    state.isPaused -> "Paused"
+    state.isAssistantStreaming && state.browserAccessActive -> "Agent browsing"
+    state.isAssistantStreaming -> "Thinking"
+    state.status == BrowserAgentStatus.BROWSING -> "Browsing"
+    state.status == BrowserAgentStatus.COMPLETED -> "Done"
+    else -> "Ready"
+}
+
+private fun browserStatusColor(status: String): Color = when (status.lowercase()) {
+    "success" -> Color(0xFF34C759)
+    "running" -> Color(0xFF0A84FF)
+    "paused", "waiting" -> Color(0xFFFFB340)
+    "error", "cancelled" -> Color(0xFFFF453A)
+    else -> Color(0xFF8E8E93)
+}
+
+@Composable
+private fun BrowserDockSubtoolLeadIcon(tool: String, status: String, color: Color) {
+    Surface(
+        shape = CircleShape,
+        color = color.copy(alpha = 0.12f),
+        border = BorderStroke(1.dp, color.copy(alpha = 0.18f))
+    ) {
+        Box(modifier = Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+            if (status.equals("running", true)) {
+                CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp, color = color)
+            } else {
+                Icon(
+                    imageVector = mapToolIcon(browserDockToolIcon(tool)),
+                    contentDescription = null,
+                    modifier = Modifier.size(13.dp),
+                    tint = color.copy(alpha = 0.88f)
+                )
+            }
+        }
+    }
+}
+
+private fun browserDockToolIcon(tool: String): ToolInfoIcon {
+    val normalized = tool.removePrefix("browser.").lowercase()
+    return when (normalized) {
+        "open_url", "new_page", "new_tab", "reload", "reload_page", "go_back", "go_forward" -> ToolInfoIcon.WORLD
+        "get_dom", "analyze_page", "observe", "get_visible_text" -> ToolInfoIcon.READ
+        "click", "click_element", "tap", "press_key" -> ToolInfoIcon.MOUSE
+        "type", "type_text", "clear_input" -> ToolInfoIcon.EDIT
+        "scroll", "scroll_page", "swipe" -> ToolInfoIcon.MOUSE
+        "search", "find_element", "wait_for_element" -> ToolInfoIcon.SEARCH
+        "evaluate_script" -> ToolInfoIcon.COMMAND
+        "get_screenshot", "screenshot" -> ToolInfoIcon.IMAGE
+        else -> ToolInfoIcon.BROWSER
+    }
+}
+
+private fun browserLogIcon(log: BrowserToolLog) = when (log.toolName.lowercase()) {
+    "thinking" -> Icons.Default.Psychology
+    "assistant" -> Icons.Default.Build
+    "open_url", "new_page", "new_tab" -> Icons.Default.Public
+    "get_dom", "analyze_page", "observe" -> Icons.Default.Check
+    "click_element", "click", "tap" -> Icons.Default.PlayArrow
+    "type_text", "type", "search" -> Icons.Default.PlayArrow
+    "scroll_page", "scroll", "swipe" -> Icons.Default.Autorenew
+    "evaluate_script" -> Icons.Default.Check
+    else -> when (log.status.lowercase()) {
+        "error", "cancelled" -> Icons.Default.Stop
+        "paused", "waiting" -> Icons.Default.Pause
+        else -> Icons.Default.Autorenew
+    }
+}
+
+private fun browserActionLabel(name: String): String {
+    val normalized = name.removePrefix("browser.").lowercase()
+    return when (normalized) {
+        "new_page", "new_tab" -> "Open new tab"
+        "open_url" -> "Open page"
+        "get_dom", "analyze_page", "observe" -> "Observe page"
+        "get_visible_text" -> "Read visible text"
+        "click", "click_element" -> "Click element"
+        "tap" -> "Tap screen"
+        "type", "type_text" -> "Type text"
+        "clear_input" -> "Clear field"
+        "press_key" -> "Press key"
+        "scroll", "scroll_page", "swipe" -> "Scroll page"
+        "search" -> "Search page"
+        "find_element" -> "Find element"
+        "wait_for_element" -> "Wait for element"
+        "evaluate_script" -> "Evaluate script"
+        "get_screenshot", "screenshot" -> "Capture screenshot"
+        "go_back" -> "Go back"
+        "go_forward" -> "Go forward"
+        "reload_page", "reload" -> "Reload page"
+        else -> normalized.split('_', '-').filter { it.isNotBlank() }.joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
+    }
+}
+
+private fun browserLogTarget(log: BrowserToolLog): String {
+    val source = listOf(log.argumentsPreview, log.message).joinToString(" ")
+    Regex("https?://[^\\s,]+", RegexOption.IGNORE_CASE).find(source)?.value?.let { url ->
+        return runCatching { URI(url).host ?: url }.getOrDefault(url).removePrefix("www.")
+    }
+    Regex("url=([^,\\s]+)", RegexOption.IGNORE_CASE).find(source)?.groupValues?.getOrNull(1)?.let { return it }
+    Regex("query=([^,]+)", RegexOption.IGNORE_CASE).find(source)?.groupValues?.getOrNull(1)?.let { return it.trim() }
+    Regex("text=([^,]+)", RegexOption.IGNORE_CASE).find(source)?.groupValues?.getOrNull(1)?.let { return it.trim() }
+    return ""
+}
+
+private fun cleanStreamText(raw: String): String {
+    if (raw.isBlank()) return ""
+    var text = raw.replace(Regex("<think>(.*?)</think>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))) { match -> match.groupValues.getOrNull(1).orEmpty() }
+    text = text.replace(Regex("</?think>", RegexOption.IGNORE_CASE), "")
+    return text.trim()
+}
+
+private data class BrowserTextPart(val text: String, val isThinking: Boolean)
+
+private fun parseBrowserThinkingTags(raw: String): List<BrowserTextPart> {
+    if (raw.isBlank()) return emptyList()
+    val parts = mutableListOf<BrowserTextPart>()
+    var cursor = 0
+    val tagRegex = Regex("</?think>", RegexOption.IGNORE_CASE)
+    var inThinking = false
+    tagRegex.findAll(raw).forEach { match ->
+        raw.substring(cursor, match.range.first).takeIf { it.isNotBlank() }?.let { parts += BrowserTextPart(it.trim(), isThinking = inThinking) }
+        inThinking = !match.value.startsWith("</", ignoreCase = true)
+        cursor = match.range.last + 1
+    }
+    raw.substring(cursor).takeIf { it.isNotBlank() }?.let { parts += BrowserTextPart(it.trim(), isThinking = inThinking) }
+    return parts.ifEmpty { listOf(BrowserTextPart(raw, isThinking = false)) }
+}
+
+@Composable
+private fun BrowserDockWorkSummaryCard(
+    subtitle: String,
+    cardBg: Color,
+    cardBorder: Color,
+    textPrimary: Color,
+    textSecondary: Color,
+    textTertiary: Color,
+    initiallyExpanded: Boolean = false,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
+) {
+    var expanded by remember(initiallyExpanded) { mutableStateOf(initiallyExpanded) }
+    Surface(shape = RoundedCornerShape(12.dp), color = cardBg, border = BorderStroke(1.dp, cardBorder), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ToolLeadIconPill(ToolInfoIcon.TASK)
+                Text(">", style = MaterialTheme.typography.labelSmall, color = textTertiary)
+                Text(text = subtitle, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium, color = textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Icon(if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(16.dp), tint = textTertiary)
+            }
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)) + fadeIn(),
+                exit = shrinkVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)) + fadeOut()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    HorizontalDivider(color = cardBorder, modifier = Modifier.padding(bottom = 4.dp))
+                    content()
+                }
+            }
+        }
+    }
+}
+
+private data class BrowserDockTimelineItem(
+    val isTool: Boolean,
+    val content: @Composable () -> Unit
+)
+
+@Composable
+private fun BrowserDockTimelineItems(
+    items: List<BrowserDockTimelineItem>,
+    cardBorder: Color,
+    textPrimary: Color,
+    textTertiary: Color
+) {
+    val pendingTools = mutableListOf<@Composable () -> Unit>()
+
+    @Composable
+    fun androidx.compose.foundation.layout.ColumnScope.flushTools() {
+        if (pendingTools.isEmpty()) return
+        val group = pendingTools.toList()
+        if (group.size > 1) {
+            BrowserDockNestedSummaryCard(
+                title = "${group.size} tools used",
+                cardBorder = cardBorder,
+                textPrimary = textPrimary,
+                textTertiary = textTertiary
+            ) {
+                group.forEach { it() }
+            }
+        } else {
+            group.first().invoke()
+        }
+        pendingTools.clear()
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        items.forEach { item ->
+            if (item.isTool) {
+                pendingTools.add(item.content)
+            } else {
+                flushTools()
+                item.content()
+            }
+        }
+        flushTools()
+    }
+}
+
+@Composable
+private fun BrowserDockNestedSummaryCard(
+    title: String,
+    cardBorder: Color,
+    textPrimary: Color,
+    textTertiary: Color,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = Color.Transparent,
+        border = BorderStroke(1.dp, cardBorder),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ToolLeadIconPill(ToolInfoIcon.TASK)
+                Text(">", style = MaterialTheme.typography.labelSmall, color = textTertiary)
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = textPrimary.copy(alpha = 0.78f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    null,
+                    modifier = Modifier.size(16.dp),
+                    tint = textTertiary
+                )
+            }
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)) + fadeIn(),
+                exit = shrinkVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)) + fadeOut()
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    HorizontalDivider(color = cardBorder, modifier = Modifier.padding(bottom = 4.dp))
+                    content()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BrowserDockThinkingBlock(
+    text: String,
+    isDark: Boolean,
+    cardBorder: Color,
+    textPrimary: Color,
+    textTertiary: Color
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val cardBg = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
+    Surface(shape = RoundedCornerShape(12.dp), color = cardBg, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth()) {
+            Row(modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ToolLeadIconPill(ToolInfoIcon.BRAIN)
+                Text(">", style = MaterialTheme.typography.labelSmall, color = textTertiary)
+                Text(text = text, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Normal, color = textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Icon(if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(16.dp), tint = textTertiary)
+            }
+            AnimatedVisibility(visible = expanded, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                Column(Modifier.fillMaxWidth()) {
+                    HorizontalDivider(color = cardBorder, modifier = Modifier.padding(horizontal = 10.dp))
+                    MarkdownText(text = text, color = textPrimary.copy(alpha = 0.82f), compact = true, fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(9.dp))
+                }
+            }
+        }
+    }
+}

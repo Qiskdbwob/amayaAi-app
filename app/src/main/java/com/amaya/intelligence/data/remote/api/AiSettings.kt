@@ -40,7 +40,8 @@ data class AgentConfig(
     val baseUrl:      String  = "",
     val modelId:      String  = "",
     val enabled:      Boolean = true,
-    val maxTokens:    Int     = 8192
+    val maxTokens:    Int     = 8192,
+    val maxIterations:Int     = 10
 )
 
 private val Context.dataStore by preferencesDataStore(name = "ai_settings")
@@ -243,7 +244,8 @@ class AiSettingsManager @Inject constructor(
                     baseUrl      = obj.optString("baseUrl", ""),
                     modelId      = obj.optString("modelId", ""),
                     enabled      = obj.optBoolean("enabled", true),
-                    maxTokens    = obj.optInt("maxTokens", 8192)
+                    maxTokens    = obj.optInt("maxTokens", 8192),
+                    maxIterations= obj.optInt("maxIterations", 10)
                 )
             }
         }
@@ -260,6 +262,7 @@ class AiSettingsManager @Inject constructor(
                     put("modelId",      c.modelId)
                     put("enabled",      c.enabled)
                     put("maxTokens",    c.maxTokens)
+                    put("maxIterations",c.maxIterations)
                 })
             }
         }.toString()
