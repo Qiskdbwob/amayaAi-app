@@ -24,6 +24,7 @@ import com.amaya.intelligence.ui.screens.settings.shared.SettingsItemCard
 import com.amaya.intelligence.ui.screens.settings.shared.SettingsSectionCard
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.amaya.intelligence.ui.screens.amaya.AmayaViewModel
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -33,10 +34,15 @@ fun LocalSettingsScreen(
     currentWorkspace: String?,
     onNavigateToWorkspace: () -> Unit,
     aiSettingsManager: AiSettingsManager,
-    onNavigateToPersona: () -> Unit,
     onNavigateToAgents: () -> Unit,
     onNavigateToReminders: () -> Unit,
-    onNavigateToMcp: () -> Unit
+    onNavigateToMcp: () -> Unit,
+    onNavigateToPersona: () -> Unit,
+    onNavigateToMemory: () -> Unit,
+    onNavigateToSkills: () -> Unit,
+    onNavigateToContextRecall: () -> Unit,
+    onNavigateToReview: () -> Unit,
+    onNavigateToPrivacy: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -45,6 +51,8 @@ fun LocalSettingsScreen(
     )
     val isDark = isSystemInDarkTheme()
     val gradients = LocalAmayaGradients.current
+    val amayaViewModel: AmayaViewModel = hiltViewModel()
+    val amayaState by amayaViewModel.uiState.collectAsState()
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -82,14 +90,59 @@ fun LocalSettingsScreen(
                     )
                 }
 
-                SettingsSectionCard("Persona") {
+                SettingsSectionCard("Amaya") {
                     SettingsItemCard(
                         icon = Icons.Default.Person,
                         iconBrush = gradients.iconPalettes[2],
-                        title = UiStrings.Settings.PERSONALITY_MEMORY,
-                        subtitle = UiStrings.Settings.PERSONALITY_MEMORY_SUBTITLE,
-                        isFirst = true, isLast = true,
+                        title = "Persona",
+                        subtitle = "Voice, tone, and behavior",
+                        isFirst = true, isLast = false,
                         onClick = onNavigateToPersona
+                    )
+                    AssistantDivider()
+                    SettingsItemCard(
+                        icon = Icons.Default.Memory,
+                        iconBrush = gradients.iconPalettes[0],
+                        title = "Memory",
+                        subtitle = "${amayaState.totalMemoryCount} saved · ${if (amayaState.settings.memory.autoSaveSafeMemory) "auto-save" else "review first"}",
+                        isFirst = false, isLast = false,
+                        onClick = onNavigateToMemory
+                    )
+                    AssistantDivider()
+                    SettingsItemCard(
+                        icon = Icons.Default.Psychology,
+                        iconBrush = gradients.iconPalettes[5],
+                        title = "Skills",
+                        subtitle = "${amayaState.enabledSkills} enabled · ${amayaState.activeSkills} active",
+                        isFirst = false, isLast = false,
+                        onClick = onNavigateToSkills
+                    )
+                    AssistantDivider()
+                    SettingsItemCard(
+                        icon = Icons.Default.TravelExplore,
+                        iconBrush = gradients.iconPalettes[7],
+                        title = "Context & Recall",
+                        subtitle = "${amayaState.settings.context.enabledCount()} sources enabled",
+                        isFirst = false, isLast = false,
+                        onClick = onNavigateToContextRecall
+                    )
+                    AssistantDivider()
+                    SettingsItemCard(
+                        icon = Icons.Default.AutoAwesome,
+                        iconBrush = gradients.iconPalettes[3],
+                        title = "Review",
+                        subtitle = "${amayaState.pendingProposals.size} pending suggestion${if (amayaState.pendingProposals.size == 1) "" else "s"}",
+                        isFirst = false, isLast = false,
+                        onClick = onNavigateToReview
+                    )
+                    AssistantDivider()
+                    SettingsItemCard(
+                        icon = Icons.Default.Security,
+                        iconBrush = gradients.iconPalettes[6],
+                        title = "Privacy & Safety",
+                        subtitle = "Local memory rules and confirmations",
+                        isFirst = false, isLast = true,
+                        onClick = onNavigateToPrivacy
                     )
                 }
 
@@ -272,4 +325,15 @@ fun LocalSettingsScreen(
             )
         }
     }
+}
+
+private fun com.amaya.intelligence.data.repository.ContextRecallSettings.enabledCount(): Int =
+    listOf(pastChatRecallEnabled, workspaceContextEnabled, relevantMemoryEnabled).count { it }
+
+@Composable
+private fun AssistantDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(start = 78.dp, end = 20.dp),
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+    )
 }

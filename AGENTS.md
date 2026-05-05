@@ -56,12 +56,17 @@ amaya/
 - `amaya-remote-extension/test/`: raw captures, debug harnesses, and reverse-engineering scripts.
 - `app/src/main/java/com/amaya/intelligence/domain/`: shared models, interfaces, and app-level contracts.
 - `app/src/main/java/com/amaya/intelligence/data/remote/`: remote API clients, settings, and transport-facing models.
-- `app/src/main/java/com/amaya/intelligence/data/local/`: local entities, DAOs, and storage-backed state.
+- `app/src/main/java/com/amaya/intelligence/data/local/`: local entities, DAOs, Room database, and file-backed stores.
+- `app/src/main/java/com/amaya/intelligence/data/repository/`: repositories and orchestration for AI, persona, memory, skills, session recall, and maintenance.
+- `app/src/main/java/com/amaya/intelligence/domain/memory/`: memory classification, safety, normalization, proposals, dedupe, and compaction domain logic.
+- `app/src/main/java/com/amaya/intelligence/domain/skills/`: reusable skill domain models and patch/usage helpers.
 - `app/src/main/java/com/amaya/intelligence/impl/ide/antigravity/`: Antigravity provider, protocol, client, and event mapping.
 - `app/src/main/java/com/amaya/intelligence/impl/local/`: local runtime, browser automation, service, and tool execution flow.
 - `app/src/main/java/com/amaya/intelligence/ui/activities/browser/`: fullscreen browser operator entry point.
 - `app/src/main/java/com/amaya/intelligence/ui/screens/browser/`: browser operator Compose screen and control dock.
 - `app/src/main/java/com/amaya/intelligence/ui/components/shared/BrowserToolCallCard.kt`: browser parent tool renderer in chat.
 - `app/src/main/java/com/amaya/intelligence/tools/BrowserUseToolset.kt`: parent browser tool wrapper and legacy aliases.
+- `app/src/main/java/com/amaya/intelligence/tools/MemoryManageTool.kt`: saved-memory list/search/update/remove tool.
+- `app/src/main/java/com/amaya/intelligence/tools/SkillManageTool.kt`: explicit reusable-skill management tool.
 - `app/src/main/java/com/amaya/intelligence/utils/LocalStreamPerfLog.kt`: temporary local streaming profiler.
 - `app/src/main/java/com/amaya/intelligence/impl/local/browser/`: WebView controller, session manager, DOM inspection, and safety guard.

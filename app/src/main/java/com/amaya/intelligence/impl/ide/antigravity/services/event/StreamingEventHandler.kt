@@ -49,7 +49,7 @@ class StreamingEventHandler(
     fun handleAiThinking(event: RemoteEvent.AiThinking, currentConversationId: String?): Boolean {
         if (!isForActiveConversation(event.conversationId, currentConversationId)) return false
         
-        stateManager.setPhase(StreamingStateManager.StreamPhase.TOOL)
+        stateManager.setPhase(StreamingStateManager.StreamPhase.THINKING)
         
         if (event.stepIndex.isNotBlank() && event.stepIndex != stateManager.currentStepIndex) {
             stateManager.clearThinking()
@@ -60,12 +60,13 @@ class StreamingEventHandler(
             stateManager.setThinking(event.text)
         }
         
+        val currentThinking = stateManager.currentThinking
         onUiStateUpdate { state ->
             state.copy(messages = upsertThinkingToolOnLastAssistant(
-                state.messages, 
-                stateManager.currentThinking, 
-                event.isRunning, 
-                stateManager.currentStepIndex ?: ""
+                messages = state.messages,
+                thinkingText = currentThinking,
+                isRunning = thinkingIsRunning(currentThinking, event.isRunning),
+                stepIndex = stateManager.currentStepIndex ?: ""
             ))
         }
         return true
@@ -117,6 +118,12 @@ class StreamingEventHandler(
         return messages.toMutableList().apply {
             this[idx] = msg.copy(metadata = msg.metadata + ("completedAt" to System.currentTimeMillis().toString()))
         }
+    }
+
+    private fun thinkingIsRunning(text: String, fallback: Boolean): Boolean {
+        val open = Regex("<think>", RegexOption.IGNORE_CASE).findAll(text).lastOrNull()?.range?.first
+        val close = Regex("</think>", RegexOption.IGNORE_CASE).findAll(text).lastOrNull()?.range?.first
+        return if (open != null || close != null) open != null && (close == null || open > close) else fallback
     }
 
     private fun isForActiveConversation(eventConversationId: String?, currentConversationId: String?): Boolean {
@@ -294,7 +301,7 @@ class StreamingEventHandler(
                 uiMetadata = ToolUiMetadata(
                     category = ToolCategory.TASK_MANAGEMENT,
                     label = thoughtTitle ?: "Thinking",
-                    actionIcon = ToolInfoIcon.BRAIN,
+                    actionIcon = ToolInfoIcon.LIGHTBULB,
                     targetIcon = ToolInfoIcon.GENERATE,
                     badges = listOf("THINKING")
                 )

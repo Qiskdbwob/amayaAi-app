@@ -34,10 +34,10 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.HorizontalDivider
@@ -167,12 +167,12 @@ fun BrowserControlDock(
                         )
                     } else {
                         val liveText = state.assistantStreamText
-                        val isThinking = liveText.contains("<think>") && !liveText.contains("</think>")
+                        val isThinking = hasOpenThinkingTag(liveText)
                         val latestLog = logs.lastOrNull()
 
                         if (state.isAssistantStreaming && liveText.isNotBlank()) {
                             if (isThinking) {
-                                Icon(Icons.Default.Psychology, null, modifier = Modifier.size(14.dp), tint = Color(0xFFA259FF))
+                                Icon(Icons.Default.Lightbulb, null, modifier = Modifier.size(14.dp), tint = Color(0xFFFFB300))
                                 Text(text = cleanStreamText(liveText).ifBlank { "Thinking..." }, style = MaterialTheme.typography.labelMedium, color = textPrimary, maxLines = 1, modifier = Modifier.weight(1f).basicMarquee())
                             } else {
                                 Text(text = cleanStreamText(liveText), style = MaterialTheme.typography.labelMedium, color = textPrimary, maxLines = 1, modifier = Modifier.weight(1f).basicMarquee())
@@ -376,12 +376,13 @@ private fun browserLiveLogs(state: BrowserUiState): List<BrowserToolLog> {
                 it.message.trim() == streamText
         }
         if (!alreadySnapshotted) {
-            val toolName = if (streamText.contains("<think>") && !streamText.contains("</think>")) "thinking" else "assistant"
+            val isThinking = hasOpenThinkingTag(streamText)
+            val toolName = if (isThinking) "thinking" else "assistant"
             return completed + BrowserToolLog(
                 id = if (state.isAssistantStreaming) "stream_active" else "stream_final",
                 toolName = toolName,
                 argumentsPreview = "",
-                status = if (state.isAssistantStreaming) "running" else "completed",
+                status = if (isThinking) "running" else "completed",
                 message = streamText,
                 timestamp = state.assistantStreamUpdatedAt.takeIf { it > 0L } ?: System.currentTimeMillis()
             )
@@ -456,6 +457,12 @@ private fun BrowserDockSubtoolLeadIcon(tool: String, status: String, color: Colo
     }
 }
 
+private fun hasOpenThinkingTag(text: String): Boolean {
+    val open = Regex("<think>", RegexOption.IGNORE_CASE).findAll(text).lastOrNull()?.range?.first
+    val close = Regex("</think>", RegexOption.IGNORE_CASE).findAll(text).lastOrNull()?.range?.first
+    return open != null && (close == null || open > close)
+}
+
 private fun browserDockToolIcon(tool: String): ToolInfoIcon {
     val normalized = tool.removePrefix("browser.").lowercase()
     return when (normalized) {
@@ -472,7 +479,7 @@ private fun browserDockToolIcon(tool: String): ToolInfoIcon {
 }
 
 private fun browserLogIcon(log: BrowserToolLog) = when (log.toolName.lowercase()) {
-    "thinking" -> Icons.Default.Psychology
+    "thinking" -> Icons.Default.Lightbulb
     "assistant" -> Icons.Default.Build
     "open_url", "new_page", "new_tab" -> Icons.Default.Public
     "get_dom", "analyze_page", "observe" -> Icons.Default.Check
@@ -706,7 +713,7 @@ private fun BrowserDockThinkingBlock(
     Surface(shape = RoundedCornerShape(12.dp), color = cardBg, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth()) {
             Row(modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ToolLeadIconPill(ToolInfoIcon.BRAIN)
+                ToolLeadIconPill(ToolInfoIcon.LIGHTBULB)
                 Text(">", style = MaterialTheme.typography.labelSmall, color = textTertiary)
                 Text(text = text, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Normal, color = textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 Icon(if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(16.dp), tint = textTertiary)

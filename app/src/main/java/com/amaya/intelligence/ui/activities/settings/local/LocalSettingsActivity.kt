@@ -9,11 +9,16 @@ import com.amaya.intelligence.ui.screens.settings.local.LocalSettingsScreen
 import com.amaya.intelligence.ui.theme.AmayaTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
-import com.amaya.intelligence.ui.activities.persona.local.LocalPersonaActivity
 import com.amaya.intelligence.ui.activities.agent.local.LocalAgentActivity
 import com.amaya.intelligence.ui.activities.mcp.local.LocalMcpActivity
 import com.amaya.intelligence.ui.activities.cronjob.local.LocalCronJobActivity
 import com.amaya.intelligence.ui.activities.project.local.LocalProjectActivity
+import com.amaya.intelligence.ui.activities.amaya.local.LocalContextRecallActivity
+import com.amaya.intelligence.ui.activities.amaya.local.LocalMemoryActivity
+import com.amaya.intelligence.ui.activities.amaya.local.LocalPrivacySafetyActivity
+import com.amaya.intelligence.ui.activities.amaya.local.LocalReviewActivity
+import com.amaya.intelligence.ui.activities.amaya.local.LocalSkillsActivity
+import com.amaya.intelligence.ui.activities.persona.local.LocalPersonaActivity
 
 @AndroidEntryPoint
 class LocalSettingsActivity : AppCompatActivity() {
@@ -66,9 +71,6 @@ class LocalSettingsActivity : AppCompatActivity() {
                         LocalProjectActivity.startForResult(this)
                     },
                     aiSettingsManager = aiSettingsManager,
-                    onNavigateToPersona = {
-                        LocalPersonaActivity.start(this)
-                    },
                     onNavigateToAgents = {
                         LocalAgentActivity.start(this)
                     },
@@ -77,6 +79,24 @@ class LocalSettingsActivity : AppCompatActivity() {
                     },
                     onNavigateToMcp = {
                         LocalMcpActivity.start(this)
+                    },
+                    onNavigateToPersona = {
+                        LocalPersonaActivity.start(this)
+                    },
+                    onNavigateToMemory = {
+                        LocalMemoryActivity.start(this)
+                    },
+                    onNavigateToSkills = {
+                        LocalSkillsActivity.start(this)
+                    },
+                    onNavigateToContextRecall = {
+                        LocalContextRecallActivity.start(this)
+                    },
+                    onNavigateToReview = {
+                        LocalReviewActivity.start(this)
+                    },
+                    onNavigateToPrivacy = {
+                        LocalPrivacySafetyActivity.start(this)
                     }
                 )
             }

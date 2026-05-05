@@ -2,11 +2,10 @@ package com.amaya.intelligence.ui.components.shared
 
 import com.amaya.intelligence.domain.models.ToolCategory
 import com.amaya.intelligence.domain.models.ToolExecution
-import com.amaya.intelligence.domain.models.ToolInfoIcon
 
 internal fun ToolExecution.isSyntheticThinkingCard(): Boolean {
+    if (name.equals("thinking", ignoreCase = true)) return true
     if (uiMetadata?.badges?.any { it.equals("THINKING", ignoreCase = true) } == true) return true
-    if (uiMetadata?.actionIcon == ToolInfoIcon.BRAIN) return true
     return uiMetadata?.label.equals("Thinking", ignoreCase = true)
 }
 

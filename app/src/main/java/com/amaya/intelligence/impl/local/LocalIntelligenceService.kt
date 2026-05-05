@@ -15,6 +15,7 @@ import com.amaya.intelligence.impl.local.browser.BrowserSessionManager
 import com.amaya.intelligence.impl.local.tools.LocalToolMapper
 import com.amaya.intelligence.di.ApplicationScope
 import com.amaya.intelligence.utils.LocalStreamPerfLog
+import com.amaya.intelligence.tools.ConfirmationRequest
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
@@ -22,7 +23,9 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
+import kotlin.coroutines.resume
 import javax.inject.Singleton
 
 /**
@@ -56,6 +59,7 @@ class LocalIntelligenceService @Inject constructor(
     private var lastAssistantTextUiEmitAt = 0L
     private var browserConversationKey: String? = null
     private val conversationSaveMutex = Mutex()
+    private val pendingToolConfirmations = ConcurrentHashMap<String, CancellableContinuation<Boolean>>()
 
     init {
         // Observe conversations from DB
@@ -105,14 +109,10 @@ class LocalIntelligenceService @Inject constructor(
             isStreaming = true
         )}
 
-        // Persist first user message immediately so the conversation appears in sidebar.
-        if (currentConversationId == null && _uiState.value.messages.size == 1) {
-            saveCurrentConversation()
-        }
-
         chatJob = scope.launch {
             try {
-                // Map UiMessage to ChatMessage for repository
+                // Persist before starting the model turn so session-memory uses the real conversation id.
+                val conversationIdForTurn = persistCurrentConversation()
                 val history = _uiState.value.messages.map { it.toChatMessage() }
                 
                 aiRepository.chat(
@@ -120,8 +120,9 @@ class LocalIntelligenceService @Inject constructor(
                     conversationHistory = history.dropLast(1), // Exclude the one we just added
                     workspacePath = currentState.workspacePath,
                     activeAgentId = currentState.activeAgentId,
-                    conversationId = currentConversationId,
-                    selectedModel = currentState.selectedModel
+                    conversationId = conversationIdForTurn,
+                    selectedModel = currentState.selectedModel,
+                    onConfirmation = { request -> awaitInlineToolConfirmation(request) }
                 ).collect { event ->
                     handleAgentEvent(event)
                 }
@@ -202,6 +203,42 @@ class LocalIntelligenceService @Inject constructor(
                 saveCurrentConversation()
             }
             else -> {}
+        }
+    }
+
+    private suspend fun awaitInlineToolConfirmation(request: ConfirmationRequest): Boolean {
+        val toolCallId = request.toolCallId ?: return false
+        updateToolExecution(toolCallId) { tool ->
+            tool.copy(
+                status = ToolStatus.PENDING,
+                metadata = tool.metadata + mapOf(
+                    "approvalRequired" to "true",
+                    "approvalState" to "pending",
+                    "approvalReason" to request.reason,
+                    "approvalDetails" to request.details,
+                    "riskLevel" to request.riskLevel.name.lowercase()
+                )
+            )
+        }
+        return suspendCancellableCoroutine { continuation ->
+            pendingToolConfirmations[toolCallId] = continuation
+            continuation.invokeOnCancellation {
+                pendingToolConfirmations.remove(toolCallId)
+            }
+        }
+    }
+
+    private fun updateToolExecution(toolCallId: String, transform: (ToolExecution) -> ToolExecution) {
+        updateCurrentAssistantMessage { msg ->
+            val updatedTools = msg.toolExecutions.map { tool ->
+                if (tool.toolCallId == toolCallId) transform(tool) else tool
+            }
+            val updatedSteps = msg.steps.map { step ->
+                if (step is MessageStep.ToolCall && step.execution.toolCallId == toolCallId) {
+                    step.copy(execution = transform(step.execution))
+                } else step
+            }
+            msg.copy(toolExecutions = updatedTools, steps = updatedSteps)
         }
     }
 
@@ -402,7 +439,15 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     override fun respondToToolInteraction(executionId: String, confirmed: Boolean) {
-        // Local tool interaction logic if needed
+        val continuation = pendingToolConfirmations.remove(executionId) ?: return
+        updateToolExecution(executionId) { tool ->
+            tool.copy(
+                status = if (confirmed) ToolStatus.RUNNING else ToolStatus.ERROR,
+                result = if (confirmed) tool.result else "User declined: ${tool.metadata["approvalReason"].orEmpty()}",
+                metadata = tool.metadata + ("approvalState" to if (confirmed) "accepted" else "declined")
+            )
+        }
+        continuation.resume(confirmed)
     }
 
     private fun parseMessagesFromJson(json: String): List<UiMessage> {
@@ -499,48 +544,59 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     private fun saveCurrentConversation() {
-        scope.launch {
-            conversationSaveMutex.withLock {
-                val messages = _uiState.value.messages
-                if (messages.isEmpty()) return@withLock
-                val hasContent = messages.any { it.role == MessageRole.ASSISTANT && it.content.isNotBlank() } ||
-                    messages.any { it.role == MessageRole.USER && it.content.isNotBlank() }
-                if (!hasContent) return@withLock
+        scope.launch { persistCurrentConversation() }
+    }
 
-                try {
-                    val firstUserMsg = messages.firstOrNull { it.role == MessageRole.USER }?.content ?: "New Conversation"
-                    val title = firstUserMsg.split("\\s+".toRegex()).take(5).joinToString(" ").take(50)
-                    val now = System.currentTimeMillis()
-                    val messagesJson = serializeMessagesToJson(messages)
+    private suspend fun persistCurrentConversation(): Long? = conversationSaveMutex.withLock {
+        val messages = _uiState.value.messages
+        if (messages.isEmpty()) return@withLock currentConversationId
+        val hasContent = messages.any { it.role == MessageRole.ASSISTANT && it.content.isNotBlank() } ||
+            messages.any { it.role == MessageRole.USER && it.content.isNotBlank() }
+        if (!hasContent) return@withLock currentConversationId
 
-                    if (currentConversationId != null) {
-                        val existing = conversationDao.getConversationById(currentConversationId!!)
-                        if (existing != null) {
-                            conversationDao.updateConversation(
-                                existing.copy(
-                                    messagesJson = messagesJson,
-                                    updatedAt = now
-                                )
-                            )
-                        }
-                    } else {
-                        val newId = conversationDao.insertConversation(
-                            ConversationEntity(
-                                id = 0,
-                                title = title,
-                                workspacePath = _uiState.value.workspacePath,
-                                messagesJson = messagesJson,
-                                createdAt = now,
-                                updatedAt = now
-                            )
+        return@withLock try {
+            val firstUserMsg = messages.firstOrNull { it.role == MessageRole.USER }?.content ?: "New Conversation"
+            val title = firstUserMsg.split("\\s+".toRegex()).take(5).joinToString(" ").take(50)
+            val now = System.currentTimeMillis()
+            val messagesJson = serializeMessagesToJson(messages)
+
+            val existingId = currentConversationId
+            if (existingId != null) {
+                val existing = conversationDao.getConversationById(existingId)
+                if (existing != null) {
+                    conversationDao.updateConversation(
+                        existing.copy(
+                            messagesJson = messagesJson,
+                            updatedAt = now
                         )
-                        currentConversationId = newId
-                        _uiState.update { it.copy(conversationId = newId.toString()) }
-                    }
-                } catch (_: Exception) {
+                    )
+                    existingId
+                } else {
+                    currentConversationId = null
+                    insertConversationLocked(title, messagesJson, now)
                 }
+            } else {
+                insertConversationLocked(title, messagesJson, now)
             }
+        } catch (_: Exception) {
+            currentConversationId
         }
+    }
+
+    private suspend fun insertConversationLocked(title: String, messagesJson: String, now: Long): Long {
+        val newId = conversationDao.insertConversation(
+            ConversationEntity(
+                id = 0,
+                title = title,
+                workspacePath = _uiState.value.workspacePath,
+                messagesJson = messagesJson,
+                createdAt = now,
+                updatedAt = now
+            )
+        )
+        currentConversationId = newId
+        _uiState.update { it.copy(conversationId = newId.toString()) }
+        return newId
     }
 
     private fun serializeMessagesToJson(messages: List<UiMessage>): String {

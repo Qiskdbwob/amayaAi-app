@@ -43,6 +43,10 @@ enum class ErrorType {
     SECURITY_VIOLATION   // Security guardrail triggered
 }
 
+enum class ToolVisibility {
+    MODEL
+}
+
 /**
  * Information about a file for tool responses.
  */
@@ -62,6 +66,7 @@ data class FileInfo(
 interface Tool {
     val name: String
     val description: String
+    val visibility: ToolVisibility get() = ToolVisibility.MODEL
     
     suspend fun execute(arguments: Map<String, Any?>): ToolResult
 }

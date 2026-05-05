@@ -372,7 +372,7 @@ private fun BrowserTimelineThinking(text: String, onInteraction: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                ToolLeadIconPill(ToolInfoIcon.BRAIN)
+                ToolLeadIconPill(ToolInfoIcon.LIGHTBULB)
                 Text(
                     text = ">",
                     style = MaterialTheme.typography.labelSmall,

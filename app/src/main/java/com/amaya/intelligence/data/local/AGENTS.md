@@ -4,10 +4,12 @@
 - This file applies to `app/src/main/java/com/amaya/intelligence/data/local/` and its children.
 
 ## Local Data Rules
-- Keep local persistence, database entities, DAOs, and cached state in this subtree.
+- Keep local persistence, database entities, DAOs, file stores, and cached state in this subtree.
 - Treat this layer as device-local storage only.
 - Keep remote API clients, network transport, and provider logic out of this subtree.
 - Prefer the existing Room and storage patterns used by the app.
+- File-backed stores belong under `files/` and should expose file locations only; repository logic, classification, and orchestration stay outside this subtree.
+- Do not name plain file stores as databases; reserve `db/` and database terminology for Room database classes.
 
 ## Coordination
 - Coordinate with `impl/local/` for runtime behavior that consumes local storage.
@@ -19,6 +21,9 @@ data/local/
 ├─ AGENTS.md
 ├─ dao/
 ├─ entity/
+├─ files/
+│	├─ FileSessionStore.kt
+│	└─ FileSkillStore.kt
 └─ db/
 	├─ migrations/
 	└─ AppDatabase.kt
@@ -30,6 +35,8 @@ data/local/
 - `dao/`: Room DAO interfaces for data access.
 - `db/AppDatabase.kt`: Room database definition and wiring.
 - `db/migrations/`: Database migration scripts.
+- `files/FileSessionStore.kt`: file locations for session recall records and summaries.
+- `files/FileSkillStore.kt`: file locations and safe names for local reusable skill documents.
 
 ## Key Source Code
 - `entity/ProjectEntity.kt`: persisted project metadata.
@@ -43,3 +50,5 @@ data/local/
 - `dao/ConversationDao.kt`: conversation persistence access.
 - `dao/CronJobDao.kt`: cron job persistence access.
 - `db/AppDatabase.kt`: database configuration and migration wiring.
+- `files/FileSessionStore.kt`: file-backed session recall root, JSONL record file, summary file, and legacy `sessions.db` migration.
+- `files/FileSkillStore.kt`: file-backed skill root, `SKILL.md`, metadata file, and skill-name sanitization.

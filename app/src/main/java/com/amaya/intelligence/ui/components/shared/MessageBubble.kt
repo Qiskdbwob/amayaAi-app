@@ -483,7 +483,8 @@ private fun attachBrowserTimeline(
 
 private data class AssistantTextPart(
     val text: String,
-    val isThinking: Boolean
+    val isThinking: Boolean,
+    val isOpen: Boolean = false
 )
 
 private fun parseThinkingTags(raw: String): List<AssistantTextPart> {
@@ -502,7 +503,7 @@ private fun parseThinkingTags(raw: String): List<AssistantTextPart> {
     }
 
     raw.substring(cursor).takeIf { it.isNotBlank() }?.let {
-        parts += AssistantTextPart(it.trim(), isThinking = inThinking)
+        parts += AssistantTextPart(it.trim(), isThinking = inThinking, isOpen = inThinking)
     }
     return parts.ifEmpty { listOf(AssistantTextPart(raw, isThinking = false)) }
 }
@@ -530,12 +531,12 @@ fun AssistantTextWithThinking(
                             name = "thinking",
                             arguments = mapOf("source" to "think_tag"),
                             result = part.text,
-                            status = ToolStatus.SUCCESS,
+                            status = if (part.isOpen) ToolStatus.RUNNING else ToolStatus.SUCCESS,
                             metadata = mapOf("syntheticThinking" to "true"),
                             uiMetadata = ToolUiMetadata(
                                 category = ToolCategory.TASK_MANAGEMENT,
                                 label = "Thinking",
-                                actionIcon = ToolInfoIcon.BRAIN,
+                                actionIcon = ToolInfoIcon.LIGHTBULB,
                                 targetIcon = ToolInfoIcon.GENERATE,
                                 badges = listOf("THINKING")
                             )

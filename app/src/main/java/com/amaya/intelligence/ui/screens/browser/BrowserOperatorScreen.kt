@@ -56,7 +56,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Stop
@@ -567,8 +567,8 @@ private fun BrowserLogOverlay(
     val liveLog = if (streamText.isNotBlank() && state.assistantStreamUpdatedAt > 0L) {
         BrowserToolLog(
             id = "live_stream",
-            toolName = if (state.assistantStreamText.contains("<think", true) && !state.assistantStreamText.contains("</think>", true)) "thinking" else "assistant",
-            argumentsPreview = "", status = "running", message = streamText,
+            toolName = if (hasOpenThinkingTag(state.assistantStreamText)) "thinking" else "assistant",
+            argumentsPreview = "", status = if (hasOpenThinkingTag(state.assistantStreamText)) "running" else "completed", message = streamText,
             timestamp = state.assistantStreamUpdatedAt
         )
     } else null
@@ -689,8 +689,14 @@ private fun BrowserLogPill(
     }
 }
 
+private fun hasOpenThinkingTag(text: String): Boolean {
+    val open = Regex("<think>", RegexOption.IGNORE_CASE).findAll(text).lastOrNull()?.range?.first
+    val close = Regex("</think>", RegexOption.IGNORE_CASE).findAll(text).lastOrNull()?.range?.first
+    return open != null && (close == null || open > close)
+}
+
 private fun browserLogIcon(log: BrowserToolLog) = when (log.toolName.lowercase()) {
-    "thinking" -> Icons.Default.Psychology
+    "thinking" -> Icons.Default.Lightbulb
     "assistant" -> Icons.Default.Public
     "open_url", "new_page", "new_tab" -> Icons.Default.Public
     "get_dom", "analyze_page", "observe" -> Icons.Default.Check

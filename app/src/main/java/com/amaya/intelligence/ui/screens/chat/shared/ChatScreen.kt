@@ -240,11 +240,11 @@ fun ChatScreen(
     val streamingLabel = config?.streamingLabel ?: "Streaming"
     val idleLabel = config?.idleLabel ?: "Idle"
 
-    val onToolAccept: ((ToolExecution) -> Unit)? = remember(isRemoteMode, viewModel) {
-        if (isRemoteMode) ({ execution: ToolExecution -> viewModel.respondToToolInteraction(execution.toolCallId, true) }) else null
+    val onToolAccept: ((ToolExecution) -> Unit)? = remember(viewModel) {
+        { execution: ToolExecution -> viewModel.respondToToolInteraction(execution.toolCallId, true) }
     }
-    val onToolDecline: ((ToolExecution) -> Unit)? = remember(isRemoteMode, viewModel) {
-        if (isRemoteMode) ({ execution: ToolExecution -> viewModel.respondToToolInteraction(execution.toolCallId, false) }) else null
+    val onToolDecline: ((ToolExecution) -> Unit)? = remember(viewModel) {
+        { execution: ToolExecution -> viewModel.respondToToolInteraction(execution.toolCallId, false) }
     }
 
     val displayMessages = remember(uiState.messages) {

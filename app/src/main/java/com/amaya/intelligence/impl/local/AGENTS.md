@@ -8,9 +8,10 @@
 - This is the correct place for local tool orchestration, background services, browser control, and non-remote behaviors.
 - Keep remote API assumptions out of this layer.
 - Prefer Android-native patterns for services, background work, and local state.
+- Local chat must persist or resolve the active conversation id before starting a model turn when downstream session-memory or reflection code needs a stable session id.
 
 ## Coordination
-- Coordinate with `data/local/` for storage-backed behavior and with `tools/` and `service/` for execution/runtime behavior.
+- Coordinate with `data/local/` for storage-backed behavior, `data/repository/` for memory/skill/session repositories, and with `tools/` and `service/` for execution/runtime behavior.
 - If a change needs remote integration, move the remote-specific part to the remote instruction subtree instead of broadening this file.
 
 ## File Tree
@@ -31,7 +32,7 @@ impl/local/
 - `providers/`: local provider adapters and implementation-specific helpers.
 
 ## Key Source Code
-- `LocalIntelligenceService.kt`: local conversation flow, persistence, and repository integration.
+- `LocalIntelligenceService.kt`: local conversation flow, stable conversation-id persistence before model turns, and repository integration.
 - `browser/AndroidBrowserController.kt`: WebView interaction, navigation, and DOM-safe browser actions.
 - `browser/BrowserSessionManager.kt`: parent browser task state, pause/resume/cancel flow, and shared WebView ownership.
 - `browser/DomInspector.kt`: safe DOM summaries, selector mapping, and interaction helpers.

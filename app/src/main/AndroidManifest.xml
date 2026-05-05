@@ -102,6 +102,48 @@
             android:exported="false"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Amaya" />
+
+        <activity
+            android:name=".ui.activities.amaya.local.LocalAmayaActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya" />
+
+        <activity
+            android:name=".ui.activities.amaya.local.LocalMemoryActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya" />
+
+        <activity
+            android:name=".ui.activities.amaya.local.LocalMemoryAreaActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya" />
+
+        <activity
+            android:name=".ui.activities.amaya.local.LocalSkillsActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya" />
+
+        <activity
+            android:name=".ui.activities.amaya.local.LocalReviewActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya" />
+
+        <activity
+            android:name=".ui.activities.amaya.local.LocalContextRecallActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya" />
+
+        <activity
+            android:name=".ui.activities.amaya.local.LocalPrivacySafetyActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya" />
         
         <activity
             android:name=".ui.activities.project.local.LocalProjectActivity"
@@ -111,6 +153,12 @@
         
         <activity
             android:name=".ui.activities.settings.local.LocalSettingsActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya" />
+
+        <activity
+            android:name=".ui.activities.selfimprovement.local.LocalSelfImprovementActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Amaya" />

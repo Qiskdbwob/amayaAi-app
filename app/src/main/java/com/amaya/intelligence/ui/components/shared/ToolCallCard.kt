@@ -212,6 +212,7 @@ internal fun ToolCardContent(
 
     val isSubagent = execution.name == "invoke_subagents"
     val isWebSearch = execution.name == "web_search" || execution.name == "search_web" || execution.name == "websearch"
+    val isMemoryManage = execution.name == "memory_manage"
     val canExpand  = (execution.status == ToolStatus.SUCCESS || execution.status == ToolStatus.ERROR) &&
         (execution.result != null || execution.children.isNotEmpty())
     val showChildren = isSubagent && execution.children.isNotEmpty() &&
@@ -394,7 +395,7 @@ internal fun ToolCardContent(
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (isTerminal && execution.arguments.isNotEmpty()) {
+                    if ((isTerminal || execution.uiMetadata?.category == ToolCategory.MEMORY || execution.uiMetadata?.category == ToolCategory.SKILL) && execution.arguments.isNotEmpty()) {
                         ToolArgumentsPreview(
                             toolName = execution.name,
                             arguments = execution.arguments,
@@ -471,7 +472,7 @@ internal fun ToolCardContent(
                     modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp)
                 )
 
-                if (execution.arguments.isNotEmpty() && !isWebSearch) {
+                if (execution.arguments.isNotEmpty() && !isWebSearch && !isMemoryManage) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -482,7 +483,8 @@ internal fun ToolCardContent(
                             arguments = execution.arguments,
                             isDark    = isDark,
                             category  = execution.uiMetadata?.category ?: ToolCategory.UNKNOWN,
-                            uiMetadata = execution.uiMetadata
+                            uiMetadata = execution.uiMetadata,
+                            result = execution.result
                         )
                     }
                     if (shouldShowResult) {
@@ -771,5 +773,6 @@ fun mapToolIcon(icon: ToolInfoIcon): ImageVector {
         ToolInfoIcon.IMAGE     -> Icons.Default.Image
         ToolInfoIcon.DELETE    -> Icons.Default.Delete
         ToolInfoIcon.BRAIN     -> Icons.Default.Psychology
+        ToolInfoIcon.LIGHTBULB -> Icons.Default.Lightbulb
     }
 }

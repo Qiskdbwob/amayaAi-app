@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.json.JSONObject
 
 /**
  * Shared badge component for status/mode labels.
@@ -49,7 +50,8 @@ fun ToolArgumentsPreview(
     arguments: Map<String, Any?>,
     isDark: Boolean,
     category: ToolCategory = ToolCategory.UNKNOWN,
-    uiMetadata: ToolUiMetadata? = null
+    uiMetadata: ToolUiMetadata? = null,
+    result: String? = null
 ) {
     val metaColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
     val codeBg = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
@@ -58,6 +60,11 @@ fun ToolArgumentsPreview(
     
     @Suppress("UNCHECKED_CAST")
     val args = arguments
+    val effectiveCategory = when (toolName) {
+        "update_memory", "memory_manage" -> ToolCategory.MEMORY
+        "skill_manage", "skill_view" -> ToolCategory.SKILL
+        else -> category
+    }
 
     fun withSoftBreaks(text: String): String = text
             .replace("\\\\", "\\\\\u200B")
@@ -73,6 +80,13 @@ fun ToolArgumentsPreview(
         } else {
             normalized.substringAfterLast("\\")
         }
+    }
+
+    fun memoryResultValue(key: String): String? {
+        val parsed = result?.takeIf { it.isNotBlank() }?.let { runCatching { JSONObject(it) }.getOrNull() }
+        val nested = parsed?.optJSONObject("proposal") ?: parsed?.optJSONObject("memory")
+        return nested?.optString(key)?.takeIf { it.isNotBlank() }
+            ?: parsed?.optString(key)?.takeIf { it.isNotBlank() }
     }
 
     fun summarizeTerminalPath(path: String, maxSegments: Int = 3): String {
@@ -112,7 +126,7 @@ fun ToolArgumentsPreview(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        when (category) {
+        when (effectiveCategory) {
             ToolCategory.SHELL -> {
                 val command = args["command"]?.toString().orEmpty()
                 val cwd = args["cwd"]?.toString().orEmpty()
@@ -196,21 +210,68 @@ fun ToolArgumentsPreview(
 
             ToolCategory.SYSTEM, ToolCategory.TASK_MANAGEMENT, ToolCategory.MEMORY -> {
                 val status = args["taskStatus"]?.toString()?.takeIf { it.isNotBlank() && !it.contains("%SAME%") }
+                val content = if (toolName == "update_memory") {
+                    memoryResultValue("content") ?: args["content"]?.toString()?.takeIf { it.isNotBlank() }
+                } else {
+                    args["content"]?.toString()?.takeIf { it.isNotBlank() }
+                }
 
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (status != null) {
-                        Row(verticalAlignment = Alignment.Top) {
-                            Icon(
-                                imageVector = Icons.Default.Info,
-                                contentDescription = null,
-                                modifier = Modifier.size(13.dp).padding(top = 2.dp),
-                                tint = metaColor
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (effectiveCategory == ToolCategory.MEMORY && toolName == "update_memory" && content != null) {
+                        MetaRow("Content: $content", Icons.AutoMirrored.Filled.Subject, metaColor)
+                    } else if (effectiveCategory == ToolCategory.MEMORY && (content != null || args["query"] != null || args["id"] != null)) {
+                        content?.let { MetaRow("Content: $it", Icons.AutoMirrored.Filled.Subject, metaColor) }
+                        args["query"]?.toString()?.takeIf { it.isNotBlank() }?.let { MetaRow("Query: $it", Icons.Default.Search, metaColor) }
+                        args["id"]?.toString()?.takeIf { it.isNotBlank() }?.let { MetaRow("ID: $it", Icons.Default.Fingerprint, metaColor) }
+                    } else {
+                        if (status != null) {
+                            Row(verticalAlignment = Alignment.Top) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(13.dp).padding(top = 2.dp),
+                                    tint = metaColor
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        DescriptionPayload(args, showIcon = status == null)
+                    }
+                }
+            }
+
+            ToolCategory.SKILL -> {
+                val action = args["action"]?.toString()?.lowercase().orEmpty()
+                val name = args["name"]?.toString()?.takeIf { it.isNotBlank() }
+                val description = args["description"]?.toString()?.takeIf { it.isNotBlank() }
+                val reason = args["reason"]?.toString()?.takeIf { it.isNotBlank() }
+                val summary = args["summary"]?.toString()?.takeIf { it.isNotBlank() }
+                val tags = (args["tags"] as? List<*>)?.mapNotNull { it?.toString()?.takeIf(String::isNotBlank) }.orEmpty()
+                val content = args["content"]?.toString()?.takeIf { it.isNotBlank() }
+
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (toolName == "skill_view" && name != null) {
+                        MetaRow("Name: $name", Icons.Default.Book, metaColor)
+                    } else {
+                        when (action) {
+                            "create" -> {
+                                description?.let { MetaRow("Description: $it", Icons.Default.Info, metaColor) }
+                                if (tags.isNotEmpty()) MetaRow("Tags: ${tags.joinToString(" · ")}", Icons.Default.LocalOffer, metaColor)
+                            }
+                            "update", "patch" -> {
+                                reason?.let { MetaRow("Why: $it", Icons.Default.Info, metaColor) }
+                                summary?.let { MetaRow("Added / changed: $it", Icons.AutoMirrored.Filled.Subject, metaColor) }
+                                if (reason == null && summary == null && content != null) {
+                                    MetaRow("Content preview: ${content.lineSequence().filter { it.isNotBlank() }.take(3).joinToString(" ").take(220)}", Icons.AutoMirrored.Filled.Subject, metaColor)
+                                }
+                            }
+                            else -> {
+                                name?.let { MetaRow("Name: $it", Icons.Default.Book, metaColor) }
+                                DescriptionPayload(args, showIcon = name == null)
+                            }
                         }
                     }
-                    DescriptionPayload(args, showIcon = status == null)
                 }
             }
 

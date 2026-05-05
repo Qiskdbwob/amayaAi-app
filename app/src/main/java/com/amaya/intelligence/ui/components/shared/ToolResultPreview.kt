@@ -45,6 +45,11 @@ fun ToolResultPreview(
 
     @Suppress("UNCHECKED_CAST")
     val args = arguments
+    val effectiveCategory = when (toolName) {
+        "update_memory", "memory_manage" -> ToolCategory.MEMORY
+        "skill_manage", "skill_view" -> ToolCategory.SKILL
+        else -> category
+    }
 
     fun findArg(vararg keys: String): String? {
         keys.forEach { key ->
@@ -54,6 +59,11 @@ fun ToolResultPreview(
             }
         }
         return null
+    }
+
+    fun truncateBlock(text: String, maxChars: Int = 1800): String {
+        val trimmed = text.trim()
+        return if (trimmed.length <= maxChars) trimmed else trimmed.take(maxChars).trimEnd() + "\n… truncated"
     }
 
     @Composable
@@ -94,7 +104,7 @@ fun ToolResultPreview(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        when (category) {
+        when (effectiveCategory) {
             ToolCategory.FILE_IO -> {
                 if (arguments.hasCanonicalFileDiff()) {
                     val target = findArg("targetContent", "TargetContent")
@@ -160,7 +170,7 @@ fun ToolResultPreview(
                             lines.take(30).forEach { line ->
                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 1.dp)) {
                                     val icon = uiMetadata?.targetIcon?.let { mapToolIcon(it) }
-                                        ?: if (category == ToolCategory.SEARCH) Icons.Default.Search else Icons.Default.Link
+                                        ?: if (effectiveCategory == ToolCategory.SEARCH) Icons.Default.Search else Icons.Default.Link
                                     Icon(icon, null, modifier = Modifier.size(12.dp), tint = metaColor)
                                     Spacer(Modifier.width(6.dp))
                                     val displayLine = line.trim()
@@ -183,12 +193,249 @@ fun ToolResultPreview(
                 }
             }
 
-            ToolCategory.SYSTEM, ToolCategory.TASK_MANAGEMENT, ToolCategory.MEMORY -> {
+            ToolCategory.SYSTEM, ToolCategory.TASK_MANAGEMENT -> {
+            }
+
+            ToolCategory.SKILL -> {
+                SkillResultBlock(
+                    toolName = toolName,
+                    result = result,
+                    codeBlockBg = codeBlockBg,
+                    codeTextColor = codeTextColor,
+                    metaColor = metaColor,
+                    blockBorderColor = blockBorderColor,
+                    truncateBlock = { text, max -> truncateBlock(text, max) },
+                    diffBlock = { diff -> DiffBlock(diff) }
+                )
+            }
+
+            ToolCategory.MEMORY -> {
+                if (toolName == "update_memory" && result.isNotBlank()) {
+                    MemoryReasonBlock(result, codeBlockBg, codeTextColor, metaColor, blockBorderColor)
+                } else if (toolName == "memory_manage" && result.isNotBlank()) {
+                    MemoryManageResultBlock(result, codeBlockBg, codeTextColor, metaColor, blockBorderColor)
+                }
             }
 
             ToolCategory.UNKNOWN -> {
                 if (result.isNotBlank() && !result.lowercase().contains("success")) {
                     GenericResultBlock(result, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SkillResultBlock(
+    toolName: String,
+    result: String,
+    codeBlockBg: Color,
+    codeTextColor: Color,
+    metaColor: Color,
+    blockBorderColor: Color,
+    truncateBlock: (String, Int) -> String,
+    diffBlock: @Composable (String) -> Unit
+) {
+    val parsed = remember(result) { runCatching { JSONObject(result) }.getOrNull() }
+    if (parsed == null) {
+        if (result.contains("User declined", ignoreCase = true)) {
+            SkillSummaryCard("Declined", "", "Skill was not changed.", emptyList(), codeBlockBg, codeTextColor, metaColor, blockBorderColor)
+        } else {
+            GenericResultBlock(truncateBlock(result, 1800), codeBlockBg, codeTextColor, blockBorderColor)
+        }
+        return
+    }
+
+    val action = parsed.optString("action").ifBlank { if (toolName == "skill_view") "view" else "skill" }
+    val name = parsed.optString("name")
+    val description = parsed.optString("description")
+    val content = parsed.optString("content")
+    val diff = parsed.optString("diff")
+    val status = parsed.optString("status")
+    val summary = parsed.optString("summary")
+    val metadata = parsed.optJSONObject("metadata")
+    val tagsArray = parsed.optJSONArray("tags") ?: metadata?.optJSONArray("tags")
+    val tags = tagsArray?.let { array -> List(array.length()) { idx -> array.optString(idx) }.filter { it.isNotBlank() } }.orEmpty()
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        when (action.lowercase()) {
+            "create" -> {
+                Text("SKILL.md", style = MaterialTheme.typography.labelSmall, color = metaColor)
+                if (content.isNotBlank()) {
+                    GenericResultBlock(truncateBlock(content, 1800), codeBlockBg, codeTextColor, blockBorderColor)
+                } else {
+                    SkillSummaryCard("Created", name, description, tags, codeBlockBg, codeTextColor, metaColor, blockBorderColor)
+                }
+            }
+            "update", "patch" -> {
+                if (diff.isNotBlank()) {
+                    Text("Diff", style = MaterialTheme.typography.labelSmall, color = metaColor)
+                    diffBlock(truncateBlock(diff, 2200))
+                } else if (content.isNotBlank()) {
+                    Text("SKILL.md", style = MaterialTheme.typography.labelSmall, color = metaColor)
+                    GenericResultBlock(truncateBlock(content, 1800), codeBlockBg, codeTextColor, blockBorderColor)
+                }
+                if (summary.isNotBlank()) {
+                    Text(summary, style = MaterialTheme.typography.labelSmall, color = metaColor)
+                }
+            }
+            "view" -> {
+                val displayName = name.ifBlank { metadata?.optString("name").orEmpty() }
+                val displayDescription = description.ifBlank { metadata?.optString("description").orEmpty() }
+                val displayStatus = metadata?.optString("status").orEmpty()
+                val used = metadata?.optInt("usageCount", 0) ?: 0
+                SkillSummaryCard(
+                    title = displayName.ifBlank { "Skill" },
+                    subtitle = displayDescription,
+                    tags = tags + listOfNotNull(
+                        displayStatus.takeIf { it.isNotBlank() }?.replaceFirstChar { it.uppercase() },
+                        "Used $used"
+                    ),
+                    codeBlockBg = codeBlockBg,
+                    codeTextColor = codeTextColor,
+                    metaColor = metaColor,
+                    blockBorderColor = blockBorderColor
+                )
+            }
+            "delete", "archive" -> {
+                val label = when {
+                    status.equals("declined", ignoreCase = true) -> "Declined"
+                    action.equals("delete", ignoreCase = true) -> "Deleted"
+                    else -> "Archived"
+                }
+                SkillSummaryCard(label, name, if (status.equals("declined", true)) "Skill was not deleted." else "Skill operation completed.", emptyList(), codeBlockBg, codeTextColor, metaColor, blockBorderColor)
+            }
+            else -> SkillSummaryCard(action.replaceFirstChar { it.uppercase() }, name, description, tags, codeBlockBg, codeTextColor, metaColor, blockBorderColor)
+        }
+    }
+}
+
+@Composable
+private fun SkillSummaryCard(
+    title: String,
+    subtitle: String,
+    description: String = "",
+    tags: List<String> = emptyList(),
+    codeBlockBg: Color,
+    codeTextColor: Color,
+    metaColor: Color,
+    blockBorderColor: Color
+) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = codeBlockBg,
+        border = BorderStroke(1.dp, blockBorderColor),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Text(title, style = MaterialTheme.typography.labelMedium, color = codeTextColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            subtitle.takeIf { it.isNotBlank() }?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = codeTextColor.copy(alpha = 0.82f), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            description.takeIf { it.isNotBlank() }?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall.copy(lineHeight = 15.sp, fontSize = 10.sp), color = metaColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            if (tags.isNotEmpty()) {
+                Text(tags.take(5).joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = metaColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+@Composable
+private fun MemoryReasonBlock(
+    result: String,
+    codeBlockBg: Color,
+    codeTextColor: Color,
+    metaColor: Color,
+    blockBorderColor: Color
+) {
+    val parsed = remember(result) { runCatching { JSONObject(result) }.getOrNull() }
+    val proposal = parsed?.optJSONObject("proposal") ?: parsed?.optJSONObject("memory")
+    val reason = proposal?.optString("reason")?.takeIf { it.isNotBlank() }
+        ?: parsed?.optString("reason")?.takeIf { it.isNotBlank() }
+        ?: result.takeIf { it.isNotBlank() && !it.trim().startsWith("{") }
+        ?: return
+
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = codeBlockBg,
+        border = BorderStroke(1.dp, blockBorderColor),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                text = "Reason",
+                style = MaterialTheme.typography.labelSmall,
+                color = metaColor
+            )
+            Text(
+                text = reason,
+                style = MaterialTheme.typography.bodySmall.copy(lineHeight = 16.sp),
+                color = codeTextColor
+            )
+        }
+    }
+}
+
+@Composable
+private fun MemoryManageResultBlock(
+    result: String,
+    codeBlockBg: Color,
+    codeTextColor: Color,
+    metaColor: Color,
+    blockBorderColor: Color
+) {
+    val parsed = remember(result) { runCatching { JSONObject(result) }.getOrNull() }
+    if (parsed == null) {
+        GenericResultBlock(result, codeBlockBg, codeTextColor, blockBorderColor)
+        return
+    }
+
+    val records = remember(parsed) {
+        val list = mutableListOf<JSONObject>()
+        val results = parsed.optJSONArray("results")
+        if (results != null) {
+            repeat(results.length()) { index ->
+                results.optJSONObject(index)?.let { list += it }
+            }
+        } else if (parsed.has("id") || parsed.has("content") || parsed.has("type")) {
+            list += parsed
+        }
+        list
+    }
+
+    if (records.isEmpty()) {
+        Text("No saved memory found.", style = MaterialTheme.typography.labelSmall, color = metaColor)
+        return
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (records.size > 5) {
+            Text(
+                "Showing 5 of ${records.size} memories. Results truncated.",
+                style = MaterialTheme.typography.labelSmall,
+                color = metaColor
+            )
+        }
+        records.take(5).forEach { memory ->
+            val content = memory.optString("content")
+            if (content.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(7.dp),
+                    color = codeBlockBg,
+                    border = BorderStroke(1.dp, blockBorderColor),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        content,
+                        style = MaterialTheme.typography.labelSmall.copy(lineHeight = 14.sp, fontSize = 10.sp),
+                        color = codeTextColor.copy(alpha = 0.84f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                    )
                 }
             }
         }

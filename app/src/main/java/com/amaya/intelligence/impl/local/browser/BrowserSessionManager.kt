@@ -136,7 +136,15 @@ class BrowserSessionManager @Inject constructor(
             controller?.hideSoftKeyboard()
         }
         _uiState.update { state ->
+            val finalizedLogs = if (!streaming) {
+                state.logs.map { log ->
+                    if (log.toolName.equals("thinking", ignoreCase = true) && log.status == "running") {
+                        log.copy(status = "completed")
+                    } else log
+                }
+            } else state.logs
             state.copy(
+                logs = finalizedLogs,
                 isAssistantStreaming = streaming,
                 browserAccessActive = if (streaming) state.browserAccessActive else false,
                 agentTouchX = if (streaming) state.agentTouchX else null,
@@ -169,6 +177,12 @@ class BrowserSessionManager @Inject constructor(
                 isAssistantStreaming = true
             )
         }
+    }
+
+    private fun hasOpenThinkingTag(text: String): Boolean {
+        val open = Regex("<think>", RegexOption.IGNORE_CASE).findAll(text).lastOrNull()?.range?.first
+        val close = Regex("</think>", RegexOption.IGNORE_CASE).findAll(text).lastOrNull()?.range?.first
+        return open != null && (close == null || open > close)
     }
 
     fun onAgentTouch(x: Float, y: Float) {
@@ -659,12 +673,11 @@ class BrowserSessionManager @Inject constructor(
             // before adding a new tool, creating natural text↔tool interleaving.
             val streamSnap = state.assistantStreamText.trim()
             val snapshotLog = if (streamSnap.isNotBlank() && existingRunningIndex < 0 && status == "running") {
-                val isThinking = streamSnap.contains("<think", ignoreCase = true) &&
-                        !streamSnap.contains("</think>", ignoreCase = true)
+                val isThinking = hasOpenThinkingTag(streamSnap)
                 listOf(BrowserToolLog(
                     toolName = if (isThinking) "thinking" else "assistant",
                     argumentsPreview = "",
-                    status = "completed",
+                    status = if (isThinking) "running" else "completed",
                     message = streamSnap,
                     timestamp = System.currentTimeMillis() - 1
                 ))

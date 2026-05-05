@@ -61,7 +61,7 @@ object AntigravityMessageMapper {
                     uiMetadata = ToolUiMetadata(
                         category = ToolCategory.TASK_MANAGEMENT,
                         label = thoughtTitle ?: "Thinking",
-                        actionIcon = ToolInfoIcon.BRAIN,
+                        actionIcon = ToolInfoIcon.LIGHTBULB,
                         targetIcon = ToolInfoIcon.GENERATE,
                         badges = listOf("THINKING")
                     )

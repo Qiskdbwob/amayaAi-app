@@ -26,9 +26,13 @@ class ToolExecutor @Inject constructor(
     private val editFileTool: EditFileTool,           // now includes apply_diff
     private val findFilesTool: FindFilesTool,         // now includes search_files
     private val undoChangeTool: UndoChangeTool,
-    // Memory & reminder tools
+    // Memory, skills, session recall & reminder tools
     private val createReminderTool: CreateReminderTool,
     private val updateMemoryTool: UpdateMemoryTool,
+    private val memoryManageTool: MemoryManageTool,
+    private val skillViewTool: SkillViewTool,
+    private val skillManageTool: SkillManageTool,
+    private val sessionSearchTool: SessionSearchTool,
     // Todo tool
     private val updateTodoTool: UpdateTodoTool,
     // Subagent tool
@@ -52,6 +56,10 @@ class ToolExecutor @Inject constructor(
             undoChangeTool.name     to undoChangeTool,
             createReminderTool.name to createReminderTool,
             updateMemoryTool.name   to updateMemoryTool,
+            memoryManageTool.name   to memoryManageTool,
+            skillViewTool.name      to skillViewTool,
+            skillManageTool.name    to skillManageTool,
+            sessionSearchTool.name  to sessionSearchTool,
             updateTodoTool.name     to updateTodoTool,
             invokeSubagentsTool.name to invokeSubagentsTool,
             webSearchTool.name      to webSearchTool
@@ -78,9 +86,15 @@ class ToolExecutor @Inject constructor(
     ): ToolResult {
         val tool = tools[toolName]
             ?: return ToolResult.Error(
-                "Unknown tool: $toolName. Available: ${tools.keys.joinToString()}",
+                "Unknown tool: $toolName. Available: ${getModelCallableTools().map { it.name }.joinToString()}",
                 ErrorType.VALIDATION_ERROR
             )
+        if (tool.visibility != ToolVisibility.MODEL) {
+            return ToolResult.Error(
+                "Tool '$toolName' is ${tool.visibility.name.lowercase()} and is not callable from the normal model tool loop.",
+                ErrorType.PERMISSION_ERROR
+            )
+        }
 
         // FIX 1.6/3.6: Pass eventEmitter and toolCallId via arguments map (per-call context)
         // instead of mutating mutable singleton fields on InvokeSubagentsTool.
@@ -121,7 +135,8 @@ class ToolExecutor @Inject constructor(
                         toolName = toolName,
                         reason = validation.reason,
                         details = finalArguments.toString(),
-                        riskLevel = validation.riskLevel
+                        riskLevel = validation.riskLevel,
+                        toolCallId = toolCallId
                     )
                 )
                 
@@ -146,7 +161,8 @@ class ToolExecutor @Inject constructor(
                     toolName = toolName,
                     reason = result.reason,
                     details = result.details,
-                    riskLevel = RiskLevel.MEDIUM
+                    riskLevel = RiskLevel.MEDIUM,
+                    toolCallId = toolCallId
                 )
             )
             
@@ -169,12 +185,13 @@ class ToolExecutor @Inject constructor(
      * Get all available tools.
      */
     fun getTools(): List<Tool> = tools.values.toList()
+    fun getModelCallableTools(): List<Tool> = tools.values.filter { it.visibility == ToolVisibility.MODEL }
     
     /**
-     * Get tool definitions for AI prompts (JSON Schema format).
+     * Get model-callable tool definitions for AI prompts (JSON Schema format).
      */
     fun getToolDefinitions(): List<ToolDefinition> {
-        return listOf(
+        val definitions = listOf(
             ToolDefinition(
                 name = "list_files",
                 description = "List files and directories in the specified path using native APIs for high performance.",
@@ -343,16 +360,68 @@ class ToolExecutor @Inject constructor(
             ),
             ToolDefinition(
                 name = "update_memory",
-                description = "Persist important info for future sessions. Call when user shares name, preferences, goals, or asks to remember something.",
+                description = "Store explicit durable memory requested by the user. Classifies and dedupes before writing to user memory, important memory, project memory, or daily notes. Never store secrets; use create_reminder for reminders.",
                 parameters = listOf(
-                    ToolParameter("content", "string", "What to remember — clear self-contained sentence", required = true),
-                    ToolParameter("target", "string", "'daily' = today's log, 'long' = MEMORY.md permanent storage",
-                        required = false, enum = listOf("daily", "long")),
-                    ToolParameter("section", "string", "Section in MEMORY.md (default: 'Important Facts'). Only for target='long'",
-                        required = false)
+                    ToolParameter("title", "string", "Short professional memory title/header, 2-7 words", required = false),
+                    ToolParameter("content", "string", "Final durable memory summary. Do not copy raw user commands or include phrases like remember/tolong ingat/user asked", required = true),
+                    ToolParameter("type", "string", "user_profile, long_term_memory, daily_log, reminder, workspace_fact", required = false,
+                        enum = listOf("user_profile", "long_term_memory", "daily_log", "reminder", "workspace_fact")),
+                    ToolParameter("action", "string", "add, replace, remove, or ignore", required = false,
+                        enum = listOf("add", "replace", "remove", "ignore")),
+                    ToolParameter("scope", "string", "global, user, persona, workspace, or session", required = false,
+                        enum = listOf("global", "user", "persona", "workspace", "session")),
+                    ToolParameter("reason", "string", "Specific reason this memory is durable", required = false),
+                    ToolParameter("confidence", "number", "0.0-1.0 confidence; low-confidence proposals are ignored", required = false),
+                    ToolParameter("importance", "number", "0.0-1.0 importance", required = false),
+                    ToolParameter("target", "string", "Legacy: daily or long", required = false, enum = listOf("daily", "long"))
+                )
+            ),
+            ToolDefinition(
+                name = "memory_manage",
+                description = "List/search saved memory and update or remove a memory by stable id. Use when the user asks what Amaya remembers or asks to change/forget a specific saved memory. For list/search, include title: a concise 3-5 word header explaining why memory is being opened.",
+                parameters = listOf(
+                    ToolParameter("title", "string", "List/search header, 3-5 words explaining why memory is opened (e.g. Review saved preferences)", required = false),
+                    ToolParameter("action", "string", "list, search, remove, update", required = true,
+                        enum = listOf("list", "search", "remove", "update")),
+                    ToolParameter("id", "string", "Memory id for remove/update", required = false),
+                    ToolParameter("query", "string", "Search query for list/search", required = false),
+                    ToolParameter("type", "string", "user_profile, long_term_memory, daily_log, workspace_fact", required = false,
+                        enum = listOf("user_profile", "long_term_memory", "daily_log", "workspace_fact")),
+                    ToolParameter("content", "string", "Replacement content for update", required = false),
+                    ToolParameter("limit", "integer", "Max results, default 20", required = false)
+                )
+            ),
+            ToolDefinition(
+                name = "skill_view",
+                description = "Load full content and metadata for one relevant reusable skill. Use when the skill index says a skill may apply.",
+                parameters = listOf(ToolParameter("name", "string", "Skill name", required = true))
+            ),
+            ToolDefinition(
+                name = "skill_manage",
+                description = "Create, update, patch, archive, delete, or record usage for reusable procedural skills only when the user explicitly asks to manage or save a skill/workflow. Do not create trivial or duplicate skills; never store credentials.",
+                parameters = listOf(
+                    ToolParameter("action", "string", "create, update, patch, archive, delete, record_usage", required = true,
+                        enum = listOf("create", "update", "patch", "archive", "delete", "record_usage")),
+                    ToolParameter("name", "string", "Skill name", required = true),
+                    ToolParameter("content", "string", "SKILL.md content or patch text", required = false),
+                    ToolParameter("description", "string", "Short skill description for create", required = false),
+                    ToolParameter("reason", "string", "Why this skill is being created or changed", required = false),
+                    ToolParameter("summary", "string", "What was added or changed", required = false),
+                    ToolParameter("tags", "array", "Skill tags", required = false, items = "string"),
+                    ToolParameter("success", "boolean", "Usage outcome for record_usage", required = false)
+                )
+            ),
+            ToolDefinition(
+                name = "session_search",
+                description = "Search previous sessions by query. Use this for recall instead of expecting old sessions/daily logs in the prompt.",
+                parameters = listOf(
+                    ToolParameter("query", "string", "Search query", required = true),
+                    ToolParameter("limit", "integer", "Max results, default 10", required = false)
                 )
             )
         ) + browserUseToolset.getToolDefinitions()
+        val modelToolNames = getModelCallableTools().map { it.name }.toSet()
+        return definitions.filter { it.name in modelToolNames }
     }
 }
 
@@ -363,7 +432,8 @@ data class ConfirmationRequest(
     val toolName: String,
     val reason: String,
     val details: String,
-    val riskLevel: RiskLevel
+    val riskLevel: RiskLevel,
+    val toolCallId: String? = null
 )
 
 /**

@@ -181,10 +181,66 @@ object ToolUiMapper {
             "thinking" -> ToolUiMetadata(
                 category = ToolCategory.TASK_MANAGEMENT,
                 label = safeText(safeMeta["thoughtTitle"] ?: safeArgs["thoughtTitle"], 50) ?: "Thinking",
-                actionIcon = ToolInfoIcon.BRAIN,
+                actionIcon = ToolInfoIcon.LIGHTBULB,
                 targetIcon = ToolInfoIcon.GENERATE,
                 badges = listOf("THINKING")
             )
+
+            // -- Memory --------------------------------------------------------
+            "update_memory" -> ToolUiMetadata(
+                category = ToolCategory.MEMORY,
+                label = safeText(safeArgs["title"] ?: safeArgs["content"], 64) ?: "Memory",
+                actionIcon = ToolInfoIcon.BRAIN,
+                targetIcon = ToolInfoIcon.PERSON,
+                badges = listOf((safeArgs["action"]?.toString() ?: "SAVE").uppercase())
+            )
+            "memory_manage" -> {
+                val action = safeArgs["action"]?.toString()?.lowercase().orEmpty()
+                val target = safeText(safeArgs["title"] ?: safeArgs["content"] ?: safeArgs["query"] ?: safeArgs["id"], 56)
+                val label = when (action) {
+                    "remove", "delete" -> "Delete: ${target ?: "memory"}"
+                    "update", "replace" -> "Update: ${target ?: "memory"}"
+                    "search" -> target ?: "Search memory"
+                    "list" -> target ?: "Review memory"
+                    else -> target ?: "Memory"
+                }
+                ToolUiMetadata(
+                    category = ToolCategory.MEMORY,
+                    label = label,
+                    actionIcon = ToolInfoIcon.BRAIN,
+                    targetIcon = ToolInfoIcon.PERSON,
+                    badges = listOf((safeArgs["action"]?.toString() ?: "MEMORY").uppercase())
+                )
+            }
+
+            // -- Skills --------------------------------------------------------
+            "skill_view" -> ToolUiMetadata(
+                category = ToolCategory.SKILL,
+                label = "View: ${safeText(safeArgs["name"], 64) ?: "skill"}",
+                actionIcon = ToolInfoIcon.BOOK,
+                targetIcon = ToolInfoIcon.BOOK,
+                badges = listOf("VIEW")
+            )
+            "skill_manage" -> {
+                val action = safeArgs["action"]?.toString()?.lowercase().orEmpty()
+                val name = safeText(safeArgs["name"], 64) ?: "skill"
+                val verb = when (action) {
+                    "create" -> "Create"
+                    "update" -> "Update"
+                    "patch" -> "Patch"
+                    "archive" -> "Archive"
+                    "delete" -> "Delete"
+                    "record_usage" -> "Record"
+                    else -> "Skill"
+                }
+                ToolUiMetadata(
+                    category = ToolCategory.SKILL,
+                    label = "$verb: $name",
+                    actionIcon = ToolInfoIcon.BOOK,
+                    targetIcon = ToolInfoIcon.BOOK,
+                    badges = listOf((safeArgs["action"]?.toString() ?: "SKILL").uppercase())
+                )
+            }
 
             // -- Internal Tasks ------------------------------------------------
             "update_todo" -> ToolUiMetadata(

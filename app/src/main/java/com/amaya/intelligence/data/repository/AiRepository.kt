@@ -10,6 +10,8 @@ import com.amaya.intelligence.util.debugLog
 import com.amaya.intelligence.util.errorLog
 
 import com.amaya.intelligence.di.ApplicationScope
+import com.amaya.intelligence.domain.memory.MemoryType
+import com.amaya.intelligence.domain.memory.MemoryClassifier
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
@@ -44,6 +46,12 @@ class AiRepository @Inject constructor(
     private val mcpToolExecutor: com.amaya.intelligence.data.remote.mcp.McpToolExecutor,
     private val fileIndexRepository: FileIndexRepository,
     private val personaRepository: PersonaRepository,
+    private val memoryRepository: MemoryRepository,
+    private val brainSettingsRepository: BrainSettingsRepository,
+    private val sessionMemoryRepository: SessionMemoryRepository,
+    private val selfImprovementPipeline: SelfImprovementPipeline,
+    private val contextRecallOrchestrator: ContextRecallOrchestrator,
+    private val memoryClassifier: MemoryClassifier,
     private val mcpClientManager: McpClientManager,
     // FIX 5.11: Inject application-scoped coroutine scope — no more manual SupervisorJob leak
     @ApplicationScope private val repoScope: CoroutineScope
@@ -151,8 +159,17 @@ class AiRepository @Inject constructor(
         }
         debugLog("AiRepository") { "chat() resolved model=$model (from UI: $selectedModel, agent: ${agentConfig?.modelId}, datastore: ${settings.activeModel})" }
         
+        val sessionId = conversationId?.toString() ?: "session_${UUID.randomUUID()}"
+        val completedUserMessages = mutableListOf(message)
+        val completedAssistantMessages = mutableListOf<String>()
+        val completedToolCalls = mutableListOf<String>()
+        val completedToolResults = mutableListOf<String>()
+        runCatching {
+            sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "user", content = message))
+        }.onFailure { errorLog("AiRepository", "Failed to save user session message", it) }
+
         // Build system prompt with project context
-        val systemPrompt = buildSystemPrompt(projectId, workspacePath, conversationId)
+        val systemPrompt = buildSystemPrompt(message, projectId, workspacePath, conversationId)
         
         // Build tool definitions
         val tools = buildToolDefinitions()
@@ -244,6 +261,14 @@ class AiRepository @Inject constructor(
                 }
             }
             
+            if (textBuffer.isNotBlank()) {
+                val assistantText = textBuffer.toString()
+                completedAssistantMessages.add(assistantText)
+                runCatching {
+                    sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "assistant", content = assistantText))
+                }.onFailure { errorLog("AiRepository", "Failed to save assistant session message", it) }
+            }
+
             if (!hasToolCalls) {
                 // No tool calls, we're done
                 continueLoop = false
@@ -272,6 +297,7 @@ class AiRepository @Inject constructor(
                         toolCall.arguments
                     }
 
+                    completedToolCalls.add("${toolCall.name}: ${toolCall.arguments}")
                     val result = mcpToolExecutor.execute(
                         toolName = toolCall.name,
                         arguments = executionArguments,
@@ -292,6 +318,19 @@ class AiRepository @Inject constructor(
                         is ToolResult.RequiresConfirmation -> "Confirmation required: ${result.reason}"
                     }
                     
+                    completedToolResults.add("${toolCall.name}: $resultContent")
+                    runCatching {
+                        sessionMemoryRepository.saveToolCall(
+                            SessionToolCall(
+                                sessionId = sessionId,
+                                toolCallId = toolCall.id,
+                                toolName = toolCall.name,
+                                argumentsJson = JSONObject(toolCall.arguments).toString(),
+                                resultJson = resultContent
+                            )
+                        )
+                    }.onFailure { errorLog("AiRepository", "Failed to save session tool call", it) }
+
                     send(AgentEvent.ToolCallResult(
                         toolCallId = toolCall.id,
                         toolName = toolCall.name,
@@ -336,8 +375,23 @@ class AiRepository @Inject constructor(
         if (iterations >= maxIterations) {
             send(AgentEvent.Error("Maximum iterations reached", retryable = false))
         }
-        
+
+        val reflectionContext = CompletedInteractionContext(
+            sessionId = sessionId,
+            userMessages = completedUserMessages.toList(),
+            assistantMessages = completedAssistantMessages.toList(),
+            toolCalls = completedToolCalls.toList(),
+            toolResults = completedToolResults.toList(),
+            timestamp = System.currentTimeMillis()
+        )
+
         send(AgentEvent.Done)
+
+        repoScope.launch {
+            runCatching {
+                selfImprovementPipeline.analyzeAndImprove(reflectionContext)
+            }.onFailure { errorLog("AiRepository", "Post-chat reflection failed", it) }
+        }
     }
     
     private fun browserErrorSignature(resultContent: String): String? {
@@ -351,119 +405,133 @@ class AiRepository @Inject constructor(
     }
 
     /**
-     * Build system prompt with project context.
-     *
-     * When Pro mode is active, the persona MD files (AGENTS.md, SOUL.md, IDENTITY.md, etc.)
-     * provide all identity/behavior rules — so the base prompt is kept minimal to avoid
-     * redundancy. In Simple/no-persona mode, the full base prompt is used.
+     * Build a stable layered system prompt. Persona is simple-only; memory, skills,
+     * workspace context, daily notes, and tools are injected as separate layers.
      */
-    private suspend fun buildSystemPrompt(projectId: Long?, workspacePath: String?, conversationId: Long? = null): String {
+    private suspend fun buildSystemPrompt(userMessage: String, projectId: Long?, workspacePath: String?, conversationId: Long? = null): String {
         val now = java.time.LocalDateTime.now()
         val dateStr = now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"))
         val timeStr = now.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
         val tz = java.util.TimeZone.getDefault().id
+        migrateLegacyPersonaFactsIfNeeded()
+        val brainSettings = brainSettingsRepository.getBrainSettings()
+        val personaPrompt = personaRepository.buildPersonaPrompt()
+        val recall = contextRecallOrchestrator.buildRecall(userMessage, workspacePath)
+        val userMemory = recall.userMemory
+        val importantMemory = recall.importantMemory
+        val projectMemory = recall.projectMemory
+        val recentDailyNotes = recall.dailyNotesHint
+        val skillIndex = recall.skillIndex
+        val memoryRules = """
+            Memory, skills, and context are separate from persona.
+            - Use update_memory only when the user explicitly asks you to remember, replace, or forget a durable preference or stable fact.
+            - update_memory must include a short title/header when possible, plus polished durable content and a specific reason.
+            - update_memory content must be a polished durable summary, not copied user wording. Never include command phrases like "remember", "tolong ingat", "user asked/discussed", or "user preference/profile" in stored content.
+            - Good: title="Response language preference", content="The user prefers English for responses.", reason="The user explicitly asked Amaya to remember their response-language preference." Bad: content="pakai bahasa Inggris tolong ingat".
+            - update_memory reason must be specific and dynamic, explaining why the fact is durable.
+            - For explicit forget/remove requests, prefer memory_manage(action=search) then memory_manage(action=remove, id=...) when an existing memory id is available; otherwise call update_memory with action=remove and a clear target memory.
+            - Use memory_manage(action=list/search) when the user asks what you remember. Include title as a concise 3-5 word header explaining why memory is being opened, e.g. "Review saved preferences" or "Find memory to remove".
+            - Do not use update_memory for inferred guesses such as "the user seems to prefer...".
+            - Use create_reminder for reminders; do not put reminders in memory.
+            - Never store secrets, credentials, tokens, OTPs, cookies, or payment data.
+            - New memory suggestions enabled: ${brainSettings.memory.suggestNewMemories}; safe structured auto-save: ${brainSettings.memory.autoSaveSafeMemory}; daily notes: ${brainSettings.memory.dailyNotesEnabled}.
+            - Self-improvement is memory/context only; it never creates or updates skills automatically.
+            - Use skill_manage only when the user explicitly asks to create, save, edit, archive, delete, or record usage for a reusable skill/workflow.
+            - For skill_manage create/update/patch, include description when useful, plus reason and summary describing why the skill changed and what was added or changed.
+            - Do not create skills for inferred patterns or routine tasks.
+            - Use session_search for past conversations; do not expect all old sessions or daily notes in the prompt.
+            - Use skill_view before relying on a skill from the skill index.
+        """.trimIndent()
 
-        val workspaceContext = if (workspacePath != null) {
-            """
+        val workspaceContext = recall.workspaceContext
 
-            CURRENT WORKSPACE:
-            Path: $workspacePath
-            
-            When the user asks to list files, read files, or perform any file operation,
-            use this workspace path as the base directory.
-            """.trimIndent()
-        } else ""
+        val toolsSection = """
+            Available model-callable memory/skill/recall tools:
 
-        val personaFragment = personaRepository.buildPromptFragment()
-        val isProMode = personaRepository.getMode() == com.amaya.intelligence.data.repository.PersonaMode.PRO
+            1. update_memory
+            Use only for explicit durable user preferences, stable facts, or explicit memory removal/replacement. Pass title as the short header and content as the final memory summary, not raw user text. For forget requests use action=remove. Do not store secrets, tokens, passwords, OTPs, cookies, payment data, or temporary guesses. Do not use it for inferred memory.
 
-        // FIX 4.5: Extract shared tools section to eliminate ~40 lines of duplication
-        // between Pro mode and Simple mode prompt branches.
-        val sharedToolsSection = """
-            TOOLS — MEMORY & REMINDERS:
-            - Use update_memory(content, target="daily") to log important events from this session
-            - Use update_memory(content, target="long") to persist user preferences/facts permanently
-            - Use create_reminder(title, message, datetime, conversation_id=$conversationId, session_mode=...) when user asks to be reminded — ALWAYS pass conversation_id so replies come back to this chat
-            - session_mode="continue" (default): when reminder fires, AI reply is appended to THIS conversation (id=$conversationId). Best for reminders related to ongoing tasks.
-            - session_mode="new": when reminder fires, a brand new conversation is created. Best for standalone/recurring reminders unrelated to current context.
-            
+            2. memory_manage
+            Use to list/search saved memory and update/remove by stable memory id. Prefer this for "what do you remember?", precise memory cleanup, and forget requests that refer to existing saved memory. For list/search, pass title as a 3-5 word UI header explaining why memory is being opened.
+
+            3. skill_view
+            Use to load full content of a relevant skill from the skill index. Do not assume full skill content from the index alone.
+
+            4. skill_manage
+            Use for explicit user-requested skill administration: create/save a reusable workflow, update/patch existing skill content, archive/delete a skill, or record usage. For update/patch, pass reason and summary so the UI can explain why it changed and what was added. Do not use it for inferred self-improvement.
+
+            5. session_search
+            Use to search previous conversations when the user refers to past discussions. Old sessions and daily logs are not fully injected.
+
+            Automatic memory suggestions are saved only when safe, explicit, important, and structured; noisy or uncertain candidates are ignored or queued depending on settings. Context recall and maintenance are handled outside the normal chat tool loop. Skills are not part of automatic self-improvement.
+            Use create_reminder for reminders; do not put reminders in memory. create_reminder(title, message, datetime, conversation_id=$conversationId, session_mode=...) should pass conversation_id when available.
+
             TOOLS — TASK PROGRESS (update_todo):
             - For any multi-step task, call update_todo at the START with merge=false to set your full plan.
-            - Each item needs: id (int, 1-based), status ("pending"/"in_progress"/"completed"), content (imperative label), active_form (present-continuous label shown when collapsed, optional).
             - As you work, call update_todo with merge=true to update individual item statuses by id.
-            - This shows the user a live progress bar above the chat input — keep it up to date.
-            
+
             TOOLS — BROWSER (browser):
             - Use exactly ONE parent tool named browser for real Android browser automation.
             - Prefer steps[] for related browser work so the UI shows one Browser card with nested child actions.
-            - Public actions are intentionally small: open_url, observe, click, type, press_key, scroll, search, evaluate_script, go_back, reload.
-            - Good first call for web tasks: browser({task:"...", steps:[{action:"open_url",params:{url:"..."}}, {action:"observe",params:{}}], reset_task:true}).
-            - Continue the same browser job with browser({task:"same short task", action:"click", params:{element_id:"el_..."}}) or another steps[] batch.
-            - Do not call legacy/internal names like get_dom, tap, swipe, focus, clear_input, click_element, find_element, wait_for_element unless debugging an old conversation.
-            - Read browser result from top-level agent object first: agent.latest_status, agent.page, agent.interactive_elements, agent.element, agent.error. Avoid digging through old sub_toolcalls unless debugging.
-            - Use element_id from agent.interactive_elements or agent.element for click/type. Use type with submit=true instead of separate focus/clear/enter when possible.
-            - If normal actions fail, you may call browser action evaluate_script with params.script to run a small page-local JavaScript helper that returns JSON/string. Keep scripts short, read/act only on the current page, and do not extract sensitive values.
-            - observe returns a compact interactive summary, not HTML. Never ask for raw HTML unless user explicitly enables debug.
-            - If safety.status is paused or sensitive_detected=true, stop and wait for user. Never send password, OTP, token, or payment data.
-            - For simple lookup tasks, batch: open_url -> observe -> search/click/type. Avoid many separate browser calls.
-            
+            - Public actions: open_url, observe, click, type, press_key, scroll, search, evaluate_script, go_back, reload.
+            - If safety.status is paused or sensitive_detected=true, stop and wait for user.
+            - Pause before credential input, payment/checkout, or irreversible form submission. Never store login data.
+            - Do not bypass website security restrictions.
+
             TOOLS — SUBAGENTS (invoke_subagents):
-            - Use invoke_subagents when a task has INDEPENDENT sub-tasks that can run IN PARALLEL.
-            - Perfect for: reading multiple folders at once, auditing different layers, generating multiple independent files.
-            - Each subagent gets its own task description — include ALL context (file paths, project info, what to look for).
-            - Subagents do NOT see conversation history — be explicit and self-contained in each task.
-            - Max 4 subagents per call. Results returned as a combined summary.
-            - Example: scan 4 different folders simultaneously, each subagent reads its folder and reports findings.
-            - DO NOT use for tasks that depend on each other (A must finish before B starts).
-            
+            - Use invoke_subagents for independent parallel sub-tasks only. Subagents do not see conversation history, so include all context.
+
             FALLBACK STRATEGY:
-            If a native tool call fails, try using the run_shell tool as an alternative.
+            If a native tool call fails, try a safe alternative. Ask for clarification rather than guessing sensitive facts.
         """.trimIndent()
 
-        val basePrompt = if (isProMode && personaFragment.isNotBlank()) {
-            // Pro mode: MD files define identity/rules — base provides only environment facts
-            """
-            Current date: $dateStr | Time: $timeStr | Timezone: $tz
-            
-            ENVIRONMENT:
-            - Platform: Android (mobile device)
-            - Shell commands available via run_shell tool
-            - Internal and external storage access
-            
-            $sharedToolsSection
-            $personaFragment
-            $workspaceContext
-            """.trimIndent()
-        } else {
-            // Simple/no persona: full base prompt
-            """
-            You are Amaya, a versatile AI assistant that can help with any task,
-            especially those related to the user's workspace. You can manage files,
-            write code, draft documents, answer questions, and more.
-            
-            Current date: $dateStr | Time: $timeStr | Timezone: $tz
-            
-            ENVIRONMENT:
-            - Platform: Android (mobile device)
-            - Shell commands available via run_shell tool
-            - Internal and external storage access
-            
-            GUIDELINES:
-            1. Always explain what you're doing before using tools
-            2. Use native file tools instead of shell commands when possible
-            3. Create backups before modifying important files
-            4. Ask for confirmation before destructive operations
-            5. Keep responses concise but informative
-            6. When writing code, follow the project's existing style
-            
-            $sharedToolsSection
-            Always find a way to complete the task. Never give up on the first failure.
-            $personaFragment
-            $workspaceContext
-            """.trimIndent()
-        }
+        return buildString {
+            appendLayer("PERSONA", personaPrompt)
+            appendLayer("OPERATING RULES", baseOperatingRules())
+            appendLayer("USER MEMORY", userMemory)
+            appendLayer("IMPORTANT MEMORY", importantMemory)
+            appendLayer("PROJECT CONTEXT", workspaceContext)
+            appendLayer("PROJECT MEMORY", projectMemory)
+            appendLayer("RELEVANT DAILY NOTES", recentDailyNotes)
+            appendLayer("RELEVANT PAST SESSIONS", recall.pastSessions)
+            appendLayer("SKILL INDEX", skillIndex)
+            appendLayer("MEMORY / SKILL RULES", memoryRules)
+            appendLayer("TOOLS", toolsSection)
+            appendLayer("CURRENT TIME", "Current date: $dateStr | Time: $timeStr | Timezone: $tz")
+        }.trim()
+    }
 
-        return basePrompt
+    private suspend fun migrateLegacyPersonaFactsIfNeeded() {
+        val facts = personaRepository.extractLegacyMemoryFacts()
+        if (facts.isEmpty()) return
+        facts.forEach { fact ->
+            val proposal = memoryClassifier.classify(
+                content = fact,
+                requestedType = MemoryType.USER_PROFILE,
+                reason = "Migrated legacy persona user fact into Memory.",
+                confidence = 0.9,
+                importance = 0.7
+            )
+            memoryRepository.applyProposal(proposal)
+        }
+        personaRepository.clearLegacyMemoryFacts()
+    }
+
+    private fun baseOperatingRules(): String = """
+        - Be helpful, honest, and clear.
+        - Ask for clarification when needed.
+        - Ask for confirmation before destructive or irreversible actions.
+        - Keep responses concise by default, but include enough detail to solve the task.
+        - Follow the user's communication style.
+        - Respect privacy and local data boundaries.
+    """.trimIndent()
+
+    private fun StringBuilder.appendLayer(title: String, content: String) {
+        if (content.isNotBlank()) {
+            appendLine("[$title]")
+            appendLine(content.trim())
+            appendLine()
+        }
     }
     
     /**
