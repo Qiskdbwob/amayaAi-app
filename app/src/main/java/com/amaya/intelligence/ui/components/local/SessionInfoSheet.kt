@@ -32,9 +32,13 @@ fun SessionInfoSheet(
     totalTokens: Int,
     activeModel: String,
     activeReminderCount: Int,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    inputTokens: Int = 0,
+    outputTokens: Int = 0
 ) {
-    val contextWindow = ContextWindowUtils.getContextWindow(activeModel)
+    val contextWindow = ContextWindowUtils.getContextWindowInfo(activeModel)
+    val remainingTokens = contextWindow.tokens?.let { (it - totalTokens).coerceAtLeast(0) }
+    val usagePercent = contextWindow.tokens?.takeIf { it > 0 }?.let { totalTokens.toFloat() / it.toFloat() } ?: 0f
 
     val scope = rememberCoroutineScope()
     val sheetState = rememberLockedModalBottomSheetState()
@@ -67,16 +71,35 @@ fun SessionInfoSheet(
                     label = "Tokens used",
                     value = if (totalTokens > 0) ContextWindowUtils.formatTokenCount(totalTokens) else "0",
                     valueColor = when {
-                        totalTokens > 100_000 -> MaterialTheme.colorScheme.error
-                        totalTokens > 50_000  -> Color(0xFFFF9800)
+                        usagePercent >= 0.90f -> MaterialTheme.colorScheme.error
+                        usagePercent >= 0.70f -> Color(0xFFFF9800)
                         else                  -> MaterialTheme.colorScheme.onSurface
                     }
                 )
 
+                if (inputTokens > 0 || outputTokens > 0) {
+                    SessionInfoRow(
+                        icon = Icons.Default.Login,
+                        label = "Input tokens",
+                        value = ContextWindowUtils.formatTokenCount(inputTokens)
+                    )
+                    SessionInfoRow(
+                        icon = Icons.Default.Logout,
+                        label = "Output tokens",
+                        value = ContextWindowUtils.formatTokenCount(outputTokens)
+                    )
+                }
+
                 SessionInfoRow(
                     icon = Icons.Default.DataUsage,
                     label = "Context window",
-                    value = contextWindow
+                    value = contextWindow.label
+                )
+
+                SessionInfoRow(
+                    icon = Icons.Default.HourglassEmpty,
+                    label = "Approx. remaining",
+                    value = remainingTokens?.let { ContextWindowUtils.formatTokenCount(it) } ?: "-"
                 )
 
                 SessionInfoRow(

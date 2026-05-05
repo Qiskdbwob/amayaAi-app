@@ -47,10 +47,9 @@ class AiRepository @Inject constructor(
     private val fileIndexRepository: FileIndexRepository,
     private val personaRepository: PersonaRepository,
     private val memoryRepository: MemoryRepository,
-    private val brainSettingsRepository: BrainSettingsRepository,
     private val sessionMemoryRepository: SessionMemoryRepository,
     private val selfImprovementPipeline: SelfImprovementPipeline,
-    private val contextRecallOrchestrator: ContextRecallOrchestrator,
+    private val contextManager: ContextManager,
     private val memoryClassifier: MemoryClassifier,
     private val mcpClientManager: McpClientManager,
     // FIX 5.11: Inject application-scoped coroutine scope — no more manual SupervisorJob leak
@@ -168,17 +167,26 @@ class AiRepository @Inject constructor(
             sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "user", content = message))
         }.onFailure { errorLog("AiRepository", "Failed to save user session message", it) }
 
-        // Build system prompt with project context
-        val systemPrompt = buildSystemPrompt(message, projectId, workspacePath, conversationId)
+        // Build final prompt with Phase 5 context management:
+        // retrieve relevant context, keep skill/session sources as indexes when possible,
+        // and compress long conversation history before provider submission.
+        migrateLegacyPersonaFactsIfNeeded()
+        val managedContext = contextManager.buildContext(
+            ContextBuildRequest(
+                userMessage = message,
+                conversationHistory = conversationHistory,
+                workspacePath = workspacePath,
+                conversationId = conversationId,
+                maxOutputTokens = agentConfig.maxTokens
+            )
+        )
+        val systemPrompt = managedContext.systemPrompt
         
         // Build tool definitions
         val tools = buildToolDefinitions()
         
         // Start conversation loop
-        var messages = conversationHistory + ChatMessage(
-            role = MessageRole.USER,
-            content = message
-        )
+        var messages = managedContext.messages
         
         var continueLoop = true
         var iterations = 0
@@ -404,102 +412,6 @@ class AiRepository @Inject constructor(
         return "$code:${message.take(120)}"
     }
 
-    /**
-     * Build a stable layered system prompt. Persona is simple-only; memory, skills,
-     * workspace context, daily notes, and tools are injected as separate layers.
-     */
-    private suspend fun buildSystemPrompt(userMessage: String, projectId: Long?, workspacePath: String?, conversationId: Long? = null): String {
-        val now = java.time.LocalDateTime.now()
-        val dateStr = now.format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"))
-        val timeStr = now.format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
-        val tz = java.util.TimeZone.getDefault().id
-        migrateLegacyPersonaFactsIfNeeded()
-        val brainSettings = brainSettingsRepository.getBrainSettings()
-        val personaPrompt = personaRepository.buildPersonaPrompt()
-        val recall = contextRecallOrchestrator.buildRecall(userMessage, workspacePath)
-        val userMemory = recall.userMemory
-        val importantMemory = recall.importantMemory
-        val projectMemory = recall.projectMemory
-        val recentDailyNotes = recall.dailyNotesHint
-        val skillIndex = recall.skillIndex
-        val memoryRules = """
-            Memory, skills, and context are separate from persona.
-            - Use update_memory only when the user explicitly asks you to remember, replace, or forget a durable preference or stable fact.
-            - update_memory must include a short title/header when possible, plus polished durable content and a specific reason.
-            - update_memory content must be a polished durable summary, not copied user wording. Never include command phrases like "remember", "tolong ingat", "user asked/discussed", or "user preference/profile" in stored content.
-            - Good: title="Response language preference", content="The user prefers English for responses.", reason="The user explicitly asked Amaya to remember their response-language preference." Bad: content="pakai bahasa Inggris tolong ingat".
-            - update_memory reason must be specific and dynamic, explaining why the fact is durable.
-            - For explicit forget/remove requests, prefer memory_manage(action=search) then memory_manage(action=remove, id=...) when an existing memory id is available; otherwise call update_memory with action=remove and a clear target memory.
-            - Use memory_manage(action=list/search) when the user asks what you remember. Include title as a concise 3-5 word header explaining why memory is being opened, e.g. "Review saved preferences" or "Find memory to remove".
-            - Do not use update_memory for inferred guesses such as "the user seems to prefer...".
-            - Use create_reminder for reminders; do not put reminders in memory.
-            - Never store secrets, credentials, tokens, OTPs, cookies, or payment data.
-            - New memory suggestions enabled: ${brainSettings.memory.suggestNewMemories}; safe structured auto-save: ${brainSettings.memory.autoSaveSafeMemory}; daily notes: ${brainSettings.memory.dailyNotesEnabled}.
-            - Self-improvement is memory/context only; it never creates or updates skills automatically.
-            - Use skill_manage only when the user explicitly asks to create, save, edit, archive, delete, or record usage for a reusable skill/workflow.
-            - For skill_manage create/update/patch, include description when useful, plus reason and summary describing why the skill changed and what was added or changed.
-            - Do not create skills for inferred patterns or routine tasks.
-            - Use session_search for past conversations; do not expect all old sessions or daily notes in the prompt.
-            - Use skill_view before relying on a skill from the skill index.
-        """.trimIndent()
-
-        val workspaceContext = recall.workspaceContext
-
-        val toolsSection = """
-            Available model-callable memory/skill/recall tools:
-
-            1. update_memory
-            Use only for explicit durable user preferences, stable facts, or explicit memory removal/replacement. Pass title as the short header and content as the final memory summary, not raw user text. For forget requests use action=remove. Do not store secrets, tokens, passwords, OTPs, cookies, payment data, or temporary guesses. Do not use it for inferred memory.
-
-            2. memory_manage
-            Use to list/search saved memory and update/remove by stable memory id. Prefer this for "what do you remember?", precise memory cleanup, and forget requests that refer to existing saved memory. For list/search, pass title as a 3-5 word UI header explaining why memory is being opened.
-
-            3. skill_view
-            Use to load full content of a relevant skill from the skill index. Do not assume full skill content from the index alone.
-
-            4. skill_manage
-            Use for explicit user-requested skill administration: create/save a reusable workflow, update/patch existing skill content, archive/delete a skill, or record usage. For update/patch, pass reason and summary so the UI can explain why it changed and what was added. Do not use it for inferred self-improvement.
-
-            5. session_search
-            Use to search previous conversations when the user refers to past discussions. Old sessions and daily logs are not fully injected.
-
-            Automatic memory suggestions are saved only when safe, explicit, important, and structured; noisy or uncertain candidates are ignored or queued depending on settings. Context recall and maintenance are handled outside the normal chat tool loop. Skills are not part of automatic self-improvement.
-            Use create_reminder for reminders; do not put reminders in memory. create_reminder(title, message, datetime, conversation_id=$conversationId, session_mode=...) should pass conversation_id when available.
-
-            TOOLS — TASK PROGRESS (update_todo):
-            - For any multi-step task, call update_todo at the START with merge=false to set your full plan.
-            - As you work, call update_todo with merge=true to update individual item statuses by id.
-
-            TOOLS — BROWSER (browser):
-            - Use exactly ONE parent tool named browser for real Android browser automation.
-            - Prefer steps[] for related browser work so the UI shows one Browser card with nested child actions.
-            - Public actions: open_url, observe, click, type, press_key, scroll, search, evaluate_script, go_back, reload.
-            - If safety.status is paused or sensitive_detected=true, stop and wait for user.
-            - Pause before credential input, payment/checkout, or irreversible form submission. Never store login data.
-            - Do not bypass website security restrictions.
-
-            TOOLS — SUBAGENTS (invoke_subagents):
-            - Use invoke_subagents for independent parallel sub-tasks only. Subagents do not see conversation history, so include all context.
-
-            FALLBACK STRATEGY:
-            If a native tool call fails, try a safe alternative. Ask for clarification rather than guessing sensitive facts.
-        """.trimIndent()
-
-        return buildString {
-            appendLayer("PERSONA", personaPrompt)
-            appendLayer("OPERATING RULES", baseOperatingRules())
-            appendLayer("USER MEMORY", userMemory)
-            appendLayer("IMPORTANT MEMORY", importantMemory)
-            appendLayer("PROJECT CONTEXT", workspaceContext)
-            appendLayer("PROJECT MEMORY", projectMemory)
-            appendLayer("RELEVANT DAILY NOTES", recentDailyNotes)
-            appendLayer("RELEVANT PAST SESSIONS", recall.pastSessions)
-            appendLayer("SKILL INDEX", skillIndex)
-            appendLayer("MEMORY / SKILL RULES", memoryRules)
-            appendLayer("TOOLS", toolsSection)
-            appendLayer("CURRENT TIME", "Current date: $dateStr | Time: $timeStr | Timezone: $tz")
-        }.trim()
-    }
 
     private suspend fun migrateLegacyPersonaFactsIfNeeded() {
         val facts = personaRepository.extractLegacyMemoryFacts()
@@ -517,22 +429,6 @@ class AiRepository @Inject constructor(
         personaRepository.clearLegacyMemoryFacts()
     }
 
-    private fun baseOperatingRules(): String = """
-        - Be helpful, honest, and clear.
-        - Ask for clarification when needed.
-        - Ask for confirmation before destructive or irreversible actions.
-        - Keep responses concise by default, but include enough detail to solve the task.
-        - Follow the user's communication style.
-        - Respect privacy and local data boundaries.
-    """.trimIndent()
-
-    private fun StringBuilder.appendLayer(title: String, content: String) {
-        if (content.isNotBlank()) {
-            appendLine("[$title]")
-            appendLine(content.trim())
-            appendLine()
-        }
-    }
     
     /**
      * Parse tool calls from plain text response.

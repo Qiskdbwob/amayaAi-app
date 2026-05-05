@@ -188,6 +188,14 @@ class LocalIntelligenceService @Inject constructor(
                     msg.copy(toolExecutions = updatedTools, steps = updatedSteps)
                 }
             }
+            is AgentEvent.Usage -> {
+                _uiState.update {
+                    it.copy(
+                        totalInputTokens = it.totalInputTokens + event.inputTokens,
+                        totalOutputTokens = it.totalOutputTokens + event.outputTokens
+                    )
+                }
+            }
             is AgentEvent.Error -> {
                 flushAssistantTextBuffer()
                 browserSessionManager.onAssistantStreamingChanged(false)
@@ -370,7 +378,9 @@ class LocalIntelligenceService @Inject constructor(
             messages = emptyList(),
             error = null,
             isLoading = false,
-            isStreaming = false
+            isStreaming = false,
+            totalInputTokens = 0,
+            totalOutputTokens = 0
         )}
     }
 

@@ -666,7 +666,9 @@ fun ChatScreen(
             totalTokens = uiState.totalInputTokens + uiState.totalOutputTokens,
             activeModel = selectedModel,
             activeReminderCount = effectiveReminderCount,
-            onDismiss = { showSessionInfo = false }
+            onDismiss = { showSessionInfo = false },
+            inputTokens = uiState.totalInputTokens,
+            outputTokens = uiState.totalOutputTokens
         )
     }
 }
