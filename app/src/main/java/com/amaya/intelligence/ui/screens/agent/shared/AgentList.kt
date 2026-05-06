@@ -23,8 +23,12 @@ fun AgentList(
     topPadding: androidx.compose.ui.unit.Dp = 72.dp,
     modifier: Modifier = Modifier
 ) {
-    val subscriptionProviderIds = AmayaProviderRegistry.providers.filter { it.isSubscription }.map { it.id }.toSet()
-    val subscriptionAgents = agentConfigs.filter { it.providerId in subscriptionProviderIds }
+    val subscriptionProviders = AmayaProviderRegistry.providers.filter { it.isSubscription }
+    val subscriptionProviderIds = subscriptionProviders.map { it.id }.toSet()
+    val subscriptionAgents = subscriptionProviders.mapNotNull { provider ->
+        agentConfigs.filter { it.providerId == provider.id }
+            .maxByOrNull { subscriptionEnabledModelCount(it) }
+    }
     val regularAgents = agentConfigs.filter { it.providerId !in subscriptionProviderIds }
     val enabledAgents = regularAgents.filter { it.enabled }
     val disabledAgents = regularAgents.filter { !it.enabled }
@@ -146,7 +150,7 @@ private fun SubscriptionConnectionCard(
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.SemiBold
                 )
-                val count = config.enabledModelIds.filter { it.isNotBlank() && it != config.providerId }.distinct().size
+                val count = subscriptionEnabledModelCount(config)
                 Text(
                     if (count > 0) "$count models enabled" else "No models enabled",
                     style = MaterialTheme.typography.bodyMedium,
@@ -156,3 +160,8 @@ private fun SubscriptionConnectionCard(
         }
     }
 }
+
+private fun subscriptionEnabledModelCount(config: AgentConfig): Int = config.enabledModelIds
+    .filter { it.isNotBlank() && it != config.providerId }
+    .distinct()
+    .size

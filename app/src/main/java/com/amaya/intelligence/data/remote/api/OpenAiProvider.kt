@@ -74,14 +74,14 @@ class OpenAiProvider @Inject constructor(
             settingsManager.getAgentApiKey(agentId)
         }
         if (isCodexSubscription && apiKey.isBlank()) {
-            trySend(ChatResponse.Error("Codex subscription is not signed in. Open AI Agents → OpenAI / ChatGPT / Codex and sign in first.", retryable = false))
+            trySend(ChatResponse.Error("OpenAI subscription is not signed in. Open AI Agents → OpenAI and sign in first.", retryable = false))
             close()
             return@callbackFlow
         }
         if (isCodexSubscription) {
             val accountId = codexAuthManager.getChatGptAccountId()
             if (accountId.isNullOrBlank()) {
-                trySend(ChatResponse.Error("Codex account ID was not found in the ChatGPT token. Sign out and sign in again.", retryable = false))
+                trySend(ChatResponse.Error("OpenAI account ID was not found in the token. Sign out and sign in again.", retryable = false))
                 close()
                 return@callbackFlow
             }
@@ -136,7 +136,7 @@ class OpenAiProvider @Inject constructor(
                     }
                 } catch (e: Exception) {
                     if (!codexCall.isCanceled()) {
-                        trySend(ChatResponse.Error("Codex request failed: ${e.message}", retryable = true))
+                        trySend(ChatResponse.Error("OpenAI request failed: ${e.message}", retryable = true))
                     }
                     close()
                 }
@@ -579,11 +579,11 @@ class OpenAiProvider @Inject constructor(
             obj.optJSONObject("error")?.optString("message")
                 ?: obj.optJSONObject("response")?.optJSONObject("error")?.optString("message")
         }.getOrNull()?.takeIf { it.isNotBlank() }
-        val message = parsedMessage ?: fallback ?: raw.ifBlank { "Unknown Codex error" }
+        val message = parsedMessage ?: fallback ?: raw.ifBlank { "Unknown OpenAI error" }
         val lower = message.lowercase()
         val modelHint = model?.takeIf { it.isNotBlank() }?.let { " Selected model: $it." }.orEmpty()
-        val compatibilityHint = " Try a Codex subscription model such as gpt-5.5, gpt-5.4, gpt-5.3-codex, or gpt-5.1-codex-max."
-        val prefix = code?.let { "Codex API error $it: " } ?: "Codex API error: "
+        val compatibilityHint = " Try an OpenAI subscription model such as gpt-5.5 or gpt-5.4."
+        val prefix = code?.let { "OpenAI API error $it: " } ?: "OpenAI API error: "
         return when {
             "model" in lower && ("not found" in lower || "unsupported" in lower || "does not exist" in lower || "invalid" in lower) ->
                 "$prefix$message$modelHint$compatibilityHint"

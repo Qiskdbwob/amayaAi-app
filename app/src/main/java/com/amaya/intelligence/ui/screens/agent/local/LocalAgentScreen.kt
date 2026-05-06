@@ -151,7 +151,7 @@ fun LocalAgentScreen(
             onCodexLogoutClick = if (codexAuthManager != null) {
                 {
                     codexAuthManager.logout()
-                    scope.launch { snackbarHostState.showSnackbar("Codex signed out") }
+                    scope.launch { snackbarHostState.showSnackbar("OpenAI signed out") }
                 }
             } else null,
             onQuickSave = { updatedConfig, key ->
@@ -179,14 +179,14 @@ fun LocalAgentScreen(
         )
     }
 
-    // Codex Auth Sheet
+    // OpenAI Auth Sheet
     if (showCodexAuthSheet && codexAuthManager != null) {
         CodexAuthSheet(
             codexAuthManager = codexAuthManager,
             onDismiss = { showCodexAuthSheet = false },
             onAuthenticated = {
                 showCodexAuthSheet = false
-                scope.launch { snackbarHostState.showSnackbar("Codex signed in ✓") }
+                scope.launch { snackbarHostState.showSnackbar("OpenAI signed in ✓") }
             }
         )
     }

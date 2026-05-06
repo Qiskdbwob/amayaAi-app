@@ -91,7 +91,11 @@ class LocalIntelligenceService @Inject constructor(
                 val configuredModelKeys = runnableAgents.map { it.providerId to it.modelId }.toSet()
                 val enabledCatalogModelKeys = settings.agentConfigs
                     .flatMap { config ->
-                        val enabledModels = config.enabledModelIds.ifEmpty { listOf(config.modelId) }
+                        val enabledModels = if (config.providerId in subscriptionProviderIds) {
+                            config.enabledModelIds
+                        } else {
+                            config.enabledModelIds.ifEmpty { listOf(config.modelId) }
+                        }
                         enabledModels
                             .filter { it.isNotBlank() && it != config.providerId }
                             .map { config.providerId to it }
@@ -110,7 +114,7 @@ class LocalIntelligenceService @Inject constructor(
                             iconType = AgentMapper.getIconTypeForProvider(entry.providerId) ?: AgentMapper.getIconType(entry.modelId) ?: "default",
                             providerId = entry.providerId,
                             providerName = entry.metadata["providerName"] ?: AmayaProviderRegistry.displayName(entry.providerId),
-                            statusLabel = if (entry.providerId == "openai_codex_bridge" && entry.metadata["codexCompatibility"] == "may_require_access") "May need Codex access" else "Enabled model",
+                            statusLabel = if (entry.providerId == "openai_codex_bridge" && entry.metadata["codexCompatibility"] == "may_require_access") "May need OpenAI access" else "Enabled model",
                             capabilityLabels = entry.capabilities.map { it.label }.take(4),
                             contextWindowLabel = entry.contextWindow?.let { formatTokenCount(it).uppercase() },
                             sourceLabel = if (entry.source.name == "MODELS_DEV") "models.dev" else entry.source.name.lowercase(),

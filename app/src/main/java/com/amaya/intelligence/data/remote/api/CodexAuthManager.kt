@@ -419,7 +419,7 @@ class CodexAuthManager @Inject constructor(
         <head>
           <meta charset="utf-8" />
           <meta name="viewport" content="width=device-width,initial-scale=1" />
-          <title>Amaya Codex Login</title>
+          <title>Amaya OpenAI Login</title>
           <style>
             body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f0e;color:#f6fffb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
             .card{width:min(420px,calc(100vw - 40px));padding:32px;border-radius:28px;background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,.04));box-shadow:0 24px 80px rgba(0,0,0,.36);text-align:center;border:1px solid rgba(255,255,255,.12)}
@@ -431,8 +431,8 @@ class CodexAuthManager @Inject constructor(
           <main class="card">
             <div class="icon">✓</div>
             <h1>Successfully logged in</h1>
-            <p class="muted">Amaya received the Codex authorization. You can close this tab and return to Amaya.</p>
-            <div class="brand">Amaya Codex</div>
+            <p class="muted">Amaya received the OpenAI authorization. You can close this tab and return to Amaya.</p>
+            <div class="brand">Amaya OpenAI</div>
           </main>
         </body>
         </html>
@@ -441,7 +441,7 @@ class CodexAuthManager @Inject constructor(
     private fun codexCallbackErrorHtml(message: String): String = """
         <!doctype html>
         <html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
-        <title>Amaya Codex Login</title></head>
+        <title>Amaya OpenAI Login</title></head>
         <body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#160b0b;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
           <main style="width:min(420px,calc(100vw - 40px));padding:32px;border-radius:28px;background:rgba(255,255,255,.08);text-align:center;border:1px solid rgba(255,255,255,.12)">
             <div style="font-size:34px;margin-bottom:14px">!</div>

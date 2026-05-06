@@ -84,7 +84,6 @@ fun StandardModalBottomSheet(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .ignoreNestedScrollForBottomSheet()
                     .padding(horizontal = 20.dp)
                     .padding(top = 10.dp, bottom = 18.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -92,6 +91,7 @@ fun StandardModalBottomSheet(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
                         .padding(top = 2.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -105,6 +105,9 @@ fun StandardModalBottomSheet(
                 }
 
                 Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
                     shape = RoundedCornerShape(28.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
                 ) {
@@ -171,9 +174,16 @@ fun StandardModalBottomSheet(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
 
-                body()
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .ignoreNestedScrollForBottomSheet(),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    body()
 
-                Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(4.dp))
+                }
             }
         }
     }

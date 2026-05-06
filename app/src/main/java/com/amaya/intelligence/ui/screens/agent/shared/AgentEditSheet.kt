@@ -40,6 +40,7 @@ import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
 import com.amaya.intelligence.data.remote.api.KnownModelCatalog
 import com.amaya.intelligence.data.remote.api.ModelCatalogEntry
 import com.amaya.intelligence.data.remote.api.ProviderCategory
+import com.amaya.intelligence.ui.components.shared.ModelSelectionSheet
 import com.amaya.intelligence.ui.components.shared.ignoreNestedScrollForBottomSheet
 import com.amaya.intelligence.ui.components.shared.rememberLockedModalBottomSheetState
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
@@ -97,7 +98,7 @@ fun AgentEditSheet(
     var jsonMode by remember(config.id) { mutableStateOf(config.jsonMode) }
     var streaming by remember(config.id) { mutableStateOf(config.streaming) }
     var enabledModelIds by remember(config.id) {
-        mutableStateOf((config.enabledModelIds.ifEmpty { listOf(config.modelId) }).filter { it.isNotBlank() }.toSet())
+        mutableStateOf(config.enabledModelIds.filter { it.isNotBlank() && it != config.modelId }.toSet())
     }
     var stableModelCatalog by remember(config.id) { mutableStateOf(modelCatalog) }
 
@@ -105,16 +106,6 @@ fun AgentEditSheet(
         if (stableModelCatalog.isEmpty() && modelCatalog.isNotEmpty()) stableModelCatalog = modelCatalog
     }
 
-    LaunchedEffect(selectedProviderId, stableModelCatalog.size) {
-        val provider = AmayaProviderRegistry.find(selectedProviderId)
-        if (provider?.isSubscription == true && (modelId.isBlank() || modelId == provider.id)) {
-            val firstModel = stableModelCatalog.firstOrNull { it.providerId == provider.id }?.modelId
-            if (!firstModel.isNullOrBlank()) {
-                modelId = firstModel
-                enabledModelIds = (enabledModelIds - provider.id + firstModel).filter { it.isNotBlank() }.toSet()
-            }
-        }
-    }
 
     fun closeThen(block: () -> Unit = {}) {
         scope.launch { sheetState.hide() }.invokeOnCompletion {
@@ -129,18 +120,16 @@ fun AgentEditSheet(
         }
     }
 
-    fun buildSubscriptionConfig(provider: com.amaya.intelligence.data.remote.api.ProviderConfig, models: Set<String>, defaultModel: String): AgentConfig {
-        val cleanModels = (models + defaultModel)
+    fun buildSubscriptionConfig(provider: com.amaya.intelligence.data.remote.api.ProviderConfig, models: Set<String>): AgentConfig {
+        val cleanModels = models
             .filter { it.isNotBlank() && it != provider.id }
             .distinct()
-        val cleanDefault = defaultModel.takeIf { it.isNotBlank() && it != provider.id }
-            ?: cleanModels.firstOrNull().orEmpty()
         return config.copy(
             name = name.ifBlank { provider.displayName },
             providerId = provider.id,
             providerType = AmayaProviderRegistry.legacyProviderType(provider.id).name,
             baseUrl = "",
-            modelId = cleanDefault,
+            modelId = "",
             enabled = provider.id != "openai_codex_bridge" || codexAuthenticated,
             toolCalling = provider.supportsTools,
             vision = provider.supportsVision,
@@ -149,10 +138,10 @@ fun AgentEditSheet(
         )
     }
 
-    fun quickSaveSubscription(models: Set<String>, defaultModel: String = modelId) {
+    fun quickSaveSubscription(models: Set<String>) {
         val provider = selectedProvider ?: return
         if (!provider.isSubscription) return
-        onQuickSave?.invoke(buildSubscriptionConfig(provider, models, defaultModel), "")
+        onQuickSave?.invoke(buildSubscriptionConfig(provider, models), "")
     }
 
     LaunchedEffect(stepKey) {
@@ -185,124 +174,131 @@ fun AgentEditSheet(
                 Spacer(Modifier.height(96.dp))
                 AnimatedContent(
                     targetState = stepKey,
-                    transitionSpec = { modalStepTransition() },
+                    transitionSpec = { modalStepTransition(initialState, targetState) },
                     label = "agent_step_transition"
-                ) { _ ->
+                ) { activeStepKey ->
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                    when {
-                        isNew && wizardCategory == null -> CategoryStep { wizardCategory = it }
-                        isNew && selectedProvider == null -> ProviderStep(
-                            category = wizardCategory ?: AgentWizardCategory.API_KEY,
-                            onSelect = { provider ->
-                            selectedProviderId = provider.id
-                            name = provider.displayName
-                            if (provider.defaultBaseUrl != null) baseUrl = provider.defaultBaseUrl
-                            toolCalling = provider.supportsTools
-                            vision = provider.supportsVision
-                            embeddings = provider.supportsEmbeddings
-                            streaming = provider.supportsStreaming
-                            if (modelId.isBlank()) {
-                                modelId = stableModelCatalog.firstOrNull { it.providerId == provider.id }?.modelId
-                                    ?: KnownModelCatalog.entries.firstOrNull { it.providerId == provider.id }?.modelId.orEmpty()
+                        when {
+                            activeStepKey == "category" -> CategoryStep { wizardCategory = it }
+                            activeStepKey.startsWith("provider_") -> ProviderStep(
+                                category = if (activeStepKey.endsWith(AgentWizardCategory.SUBSCRIPTION.name)) {
+                                    AgentWizardCategory.SUBSCRIPTION
+                                } else {
+                                    AgentWizardCategory.API_KEY
+                                },
+                                onSelect = { provider ->
+                                    selectedProviderId = provider.id
+                                    name = provider.displayName
+                                    if (provider.defaultBaseUrl != null) baseUrl = provider.defaultBaseUrl
+                                    toolCalling = provider.supportsTools
+                                    vision = provider.supportsVision
+                                    embeddings = provider.supportsEmbeddings
+                                    streaming = provider.supportsStreaming
+                                    if (provider.isSubscription) {
+                                        modelId = ""
+                                        enabledModelIds = emptySet()
+                                    } else if (modelId.isBlank()) {
+                                        modelId = stableModelCatalog.firstOrNull { it.providerId == provider.id }?.modelId
+                                            ?: KnownModelCatalog.entries.firstOrNull { it.providerId == provider.id }?.modelId.orEmpty()
+                                    }
+                                }
+                            )
+                            activeStepKey.startsWith("subscription_") -> {
+                                val stepProviderId = activeStepKey.removePrefix("subscription_")
+                                val stepProvider = AmayaProviderRegistry.find(stepProviderId) ?: selectedProvider
+                                if (stepProvider != null) {
+                                    SubscriptionStep(
+                                        providerId = stepProvider.id,
+                                        providerName = stepProvider.displayName,
+                                        modelCatalog = stableModelCatalog.filter { it.providerId == stepProvider.id },
+                                        enabledModelIds = enabledModelIds,
+                                        onEnabledModelIds = { selectedModels ->
+                                            val clean = selectedModels.filter { it.isNotBlank() && it != stepProvider.id }.toSet()
+                                            enabledModelIds = clean
+                                            quickSaveSubscription(clean)
+                                        },
+                                        codexAuthenticated = codexAuthenticated,
+                                        codexEmail = codexEmail,
+                                        onCodexLoginClick = onCodexLoginClick,
+                                        onCodexLogoutClick = onCodexLogoutClick,
+                                        onDelete = onDelete?.let { { showDeleteConfirm = true } }
+                                    )
+                                }
                             }
-                            enabledModelIds = setOf(modelId).filter { it.isNotBlank() }.toSet()
-                        }
-                        )
-                        selectedProvider?.isSubscription == true -> SubscriptionStep(
-                        providerId = selectedProvider.id,
-                        providerName = selectedProvider.displayName,
-                        modelId = modelId,
-                        onModelId = { selectedModel ->
-                            modelId = selectedModel
-                            val next = (enabledModelIds + selectedModel).filter { it.isNotBlank() }.toSet()
-                            enabledModelIds = next
-                            quickSaveSubscription(next, selectedModel)
-                        },
-                        modelCatalog = stableModelCatalog.filter { it.providerId == selectedProvider.id },
-                        enabledModelIds = enabledModelIds,
-                        onEnabledModelIds = { selectedModels ->
-                            val clean = selectedModels.filter { it.isNotBlank() && it != selectedProvider.id }.toSet()
-                            val nextDefault = modelId.takeIf { it in clean } ?: clean.firstOrNull().orEmpty()
-                            modelId = nextDefault
-                            enabledModelIds = clean
-                            quickSaveSubscription(clean, nextDefault)
-                        },
-                        codexAuthenticated = codexAuthenticated,
-                        codexEmail = codexEmail,
-                        onCodexLoginClick = onCodexLoginClick,
-                        onCodexLogoutClick = onCodexLogoutClick,
-                        onDelete = onDelete?.let { { showDeleteConfirm = true } }
-                        )
-                        else -> ApiProviderForm(
-                        config = config,
-                        isNew = isNew,
-                        providerId = selectedProviderId ?: config.providerId,
-                        name = name,
-                        onName = { name = it },
-                        key = key,
-                        onKey = { key = it },
-                        showKey = showKey,
-                        onToggleShowKey = { showKey = !showKey },
-                        baseUrl = baseUrl,
-                        onBaseUrl = { baseUrl = it },
-                        modelId = modelId,
-                        onModelId = { modelId = it },
-                        maxTokensStr = maxTokensStr,
-                        onMaxTokens = { v -> if (v.all { it.isDigit() }) maxTokensStr = v },
-                        maxIterationsStr = maxIterationsStr,
-                        onMaxIterations = { v -> if (v.all { it.isDigit() }) maxIterationsStr = v },
-                        enabled = enabled,
-                        onEnabled = { enabled = it },
-                        toolCalling = toolCalling,
-                        onToolCalling = { toolCalling = it },
-                        vision = vision,
-                        onVision = { vision = it },
-                        reasoning = reasoning,
-                        onReasoning = { reasoning = it },
-                        structuredOutput = structuredOutput,
-                        onStructuredOutput = { structuredOutput = it },
-                        embeddings = embeddings,
-                        onEmbeddings = { embeddings = it },
-                        jsonMode = jsonMode,
-                        onJsonMode = { jsonMode = it },
-                        streaming = streaming,
-                        onStreaming = { streaming = it },
-                        modelCatalog = stableModelCatalog.filter { it.providerId == (selectedProviderId ?: config.providerId) },
-                        enabledModelIds = enabledModelIds,
-                        onEnabledModelIds = { enabledModelIds = it },
-                        onDelete = onDelete?.let { { showDeleteConfirm = true } },
-                        onSave = {
-                            val providerId = selectedProviderId ?: config.providerId.ifBlank { "openai" }
-                            val provider = AmayaProviderRegistry.find(providerId)
-                            closeThen {
-                                onSave(
-                                    config.copy(
-                                        name = name.trim(),
-                                        providerType = AmayaProviderRegistry.legacyProviderType(providerId).name,
-                                        providerId = providerId,
-                                        baseUrl = baseUrl.trim().ifBlank { provider?.defaultBaseUrl.orEmpty() },
-                                        modelId = modelId.trim(),
-                                        enabled = enabled,
-                                        maxTokens = maxTokensStr.toIntOrNull()?.coerceIn(256, 128_000) ?: config.maxTokens,
-                                        maxIterations = maxIterationsStr.toIntOrNull()?.coerceIn(1, 50) ?: config.maxIterations,
-                                        toolCalling = toolCalling,
-                                        vision = vision,
-                                        reasoning = reasoning,
-                                        structuredOutput = structuredOutput,
-                                        embeddings = embeddings,
-                                        jsonMode = jsonMode,
-                                        streaming = streaming,
-                                        enabledModelIds = (enabledModelIds + modelId.trim()).filter { it.isNotBlank() }.distinct()
-                                    ),
-                                    key.trim()
+                            else -> {
+                                val stepProviderId = activeStepKey.removePrefix("api_").ifBlank {
+                                    selectedProviderId ?: config.providerId.ifBlank { "openai" }
+                                }
+                                ApiProviderForm(
+                                    config = config,
+                                    isNew = isNew,
+                                    providerId = stepProviderId,
+                                    name = name,
+                                    onName = { name = it },
+                                    key = key,
+                                    onKey = { key = it },
+                                    showKey = showKey,
+                                    onToggleShowKey = { showKey = !showKey },
+                                    baseUrl = baseUrl,
+                                    onBaseUrl = { baseUrl = it },
+                                    modelId = modelId,
+                                    onModelId = { modelId = it },
+                                    maxTokensStr = maxTokensStr,
+                                    onMaxTokens = { v -> if (v.all { it.isDigit() }) maxTokensStr = v },
+                                    maxIterationsStr = maxIterationsStr,
+                                    onMaxIterations = { v -> if (v.all { it.isDigit() }) maxIterationsStr = v },
+                                    enabled = enabled,
+                                    onEnabled = { enabled = it },
+                                    toolCalling = toolCalling,
+                                    onToolCalling = { toolCalling = it },
+                                    vision = vision,
+                                    onVision = { vision = it },
+                                    reasoning = reasoning,
+                                    onReasoning = { reasoning = it },
+                                    structuredOutput = structuredOutput,
+                                    onStructuredOutput = { structuredOutput = it },
+                                    embeddings = embeddings,
+                                    onEmbeddings = { embeddings = it },
+                                    jsonMode = jsonMode,
+                                    onJsonMode = { jsonMode = it },
+                                    streaming = streaming,
+                                    onStreaming = { streaming = it },
+                                    modelCatalog = stableModelCatalog.filter { it.providerId == stepProviderId },
+                                    enabledModelIds = enabledModelIds,
+                                    onEnabledModelIds = { enabledModelIds = it },
+                                    onDelete = onDelete?.let { { showDeleteConfirm = true } },
+                                    onSave = {
+                                        val provider = AmayaProviderRegistry.find(stepProviderId)
+                                        closeThen {
+                                            onSave(
+                                                config.copy(
+                                                    name = name.trim(),
+                                                    providerType = AmayaProviderRegistry.legacyProviderType(stepProviderId).name,
+                                                    providerId = stepProviderId,
+                                                    baseUrl = baseUrl.trim().ifBlank { provider?.defaultBaseUrl.orEmpty() },
+                                                    modelId = modelId.trim(),
+                                                    enabled = enabled,
+                                                    maxTokens = maxTokensStr.toIntOrNull()?.coerceIn(256, 128_000) ?: config.maxTokens,
+                                                    maxIterations = maxIterationsStr.toIntOrNull()?.coerceIn(1, 50) ?: config.maxIterations,
+                                                    toolCalling = toolCalling,
+                                                    vision = vision,
+                                                    reasoning = reasoning,
+                                                    structuredOutput = structuredOutput,
+                                                    embeddings = embeddings,
+                                                    jsonMode = jsonMode,
+                                                    streaming = streaming,
+                                                    enabledModelIds = (enabledModelIds + modelId.trim()).filter { it.isNotBlank() }.distinct()
+                                                ),
+                                                key.trim()
+                                            )
+                                        }
+                                    }
                                 )
                             }
                         }
-                        )
-                    }
                     }
                 }
             }
@@ -339,7 +335,7 @@ fun AgentEditSheet(
 
 @Composable
 private fun CategoryStep(onSelect: (AgentWizardCategory) -> Unit) {
-    PickerCard(Icons.Default.AccountCircle, "Subscription", "ChatGPT, Google, or GitHub", onClick = { onSelect(AgentWizardCategory.SUBSCRIPTION) })
+    PickerCard(Icons.Default.AccountCircle, "Subscription", "OpenAI, Google, or GitHub", onClick = { onSelect(AgentWizardCategory.SUBSCRIPTION) })
     PickerCard(Icons.Default.Key, "API key", "OpenAI-compatible, Gemini, local, or custom", onClick = { onSelect(AgentWizardCategory.API_KEY) })
 }
 
@@ -363,7 +359,7 @@ private fun ProviderStep(category: AgentWizardCategory, onSelect: (com.amaya.int
 }
 
 private fun providerSubtitle(provider: com.amaya.intelligence.data.remote.api.ProviderConfig): String = when (provider.id) {
-    "openai_codex_bridge" -> "ChatGPT subscription models"
+    "openai_codex_bridge" -> "OpenAI subscription models"
     "google_subscription" -> "Google account"
     "github_copilot" -> "GitHub Copilot account"
     else -> provider.defaultBaseUrl ?: provider.apiFormat.name.lowercase().replace('_', ' ')
@@ -373,8 +369,6 @@ private fun providerSubtitle(provider: com.amaya.intelligence.data.remote.api.Pr
 private fun SubscriptionStep(
     providerId: String,
     providerName: String,
-    modelId: String,
-    onModelId: (String) -> Unit,
     modelCatalog: List<ModelCatalogEntry>,
     enabledModelIds: Set<String>,
     onEnabledModelIds: (Set<String>) -> Unit,
@@ -384,6 +378,14 @@ private fun SubscriptionStep(
     onCodexLogoutClick: (() -> Unit)?,
     onDelete: (() -> Unit)? = null
 ) {
+    val sortedModels = remember(modelCatalog) { modelCatalog.distinctBy { it.modelId }.sortedBy { it.displayName.lowercase() } }
+    val catalogModelIds = remember(sortedModels) { sortedModels.map { it.modelId }.toSet() }
+    val normalizedEnabledModelIds = remember(enabledModelIds, catalogModelIds) {
+        enabledModelIds.filter { it.isNotBlank() && it in catalogModelIds }.distinct().toSet()
+    }
+    val enabledCount = remember(normalizedEnabledModelIds) { normalizedEnabledModelIds.size }
+    var showModelSelectionSheet by remember(providerId) { mutableStateOf(false) }
+
     when (providerId) {
         "openai_codex_bridge" -> {
             CodexSubscriptionConnectionCard(
@@ -392,18 +394,38 @@ private fun SubscriptionStep(
                 onLoginClick = onCodexLoginClick,
                 onLogoutClick = onCodexLogoutClick
             )
-            if (modelCatalog.isNotEmpty()) {
-                ManageProviderModelsSection(
-                    providerName = providerName,
-                    modelCatalog = modelCatalog,
-                    defaultModelId = modelId,
-                    enabledModelIds = enabledModelIds,
-                    onEnabledModelIds = onEnabledModelIds,
-                    onSetDefaultModel = onModelId,
-                    showDefaultControls = false
+            if (sortedModels.isNotEmpty()) {
+                Text(
+                    if (enabledCount > 0) "$enabledCount enabled" else "No models enabled",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                SubscriptionModelsSummaryCard(
+                    modelCatalog = sortedModels,
+                    enabledModelIds = normalizedEnabledModelIds,
+                    expanded = showModelSelectionSheet,
+                    onEditSelection = { showModelSelectionSheet = true }
                 )
             } else {
-                Text("Codex models are not synced yet. Try opening this modal again after models.dev sync finishes.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "OpenAI subscription models are not synced yet. Try opening this modal again after models.dev sync finishes.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (showModelSelectionSheet) {
+                ModelSelectionSheet(
+                    title = "Edit selection",
+                    subtitle = null,
+                    modelCatalog = sortedModels,
+                    selectedModelIds = normalizedEnabledModelIds,
+                    onSelectedModelIdsChange = { next ->
+                        val clean = next.filter { it.isNotBlank() && it in catalogModelIds }.toSet()
+                        onEnabledModelIds(clean)
+                    },
+                    onDismiss = { showModelSelectionSheet = false }
+                )
             }
         }
         "github_copilot", "google_subscription" -> Text("This subscription provider is not available in this build.", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -418,6 +440,102 @@ private fun SubscriptionStep(
             Icon(Icons.Default.Delete, null)
             Spacer(Modifier.width(8.dp))
             Text("Delete subscription")
+        }
+    }
+}
+@Composable
+private fun SubscriptionModelsSummaryCard(
+    modelCatalog: List<ModelCatalogEntry>,
+    enabledModelIds: Set<String>,
+    expanded: Boolean,
+    onEditSelection: () -> Unit
+) {
+    val selectedModels = remember(modelCatalog, enabledModelIds) {
+        modelCatalog.filter { it.modelId in enabledModelIds }
+    }
+    val previewModels = selectedModels.take(3)
+    val moreCount = (selectedModels.size - previewModels.size).coerceAtLeast(0)
+
+    ElevatedCard(
+        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            if (selectedModels.isEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Box(
+                        modifier = Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Psychology, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                    }
+                    Text("No models selected yet", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                previewModels.forEachIndexed { index, entry ->
+                    SubscriptionModelRow(entry = entry)
+                    if (index < previewModels.lastIndex) {
+                        HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                    }
+                }
+                if (moreCount > 0) {
+                    HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("+", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        }
+                        Text("+$moreCount more models", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.weight(1f))
+                        Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+            TextButton(
+                onClick = onEditSelection,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(0.dp)
+            ) {
+                Text(if (expanded) "Hide selection" else "Edit selection")
+                Spacer(Modifier.width(8.dp))
+                Icon(
+                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubscriptionModelRow(entry: ModelCatalogEntry) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Box(
+            modifier = Modifier.size(36.dp).clip(CircleShape).background(Color(0xFF10A37F).copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10A37F), modifier = Modifier.size(20.dp))
+        }
+        Text(entry.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.weight(1f))
+        entry.contextWindow?.let {
+            Text(formatTokenCountLocal(it), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -453,9 +571,9 @@ private fun CodexSubscriptionConnectionCard(
                 )
             }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text("ChatGPT / Codex login", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                Text(if (authenticated) "Connected" else "Not connected", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                 Text(
-                    if (authenticated) email ?: "Connected to OpenAI auth" else "Connect once, then use it from Codex subscription agents.",
+                    if (authenticated) email ?: "Connected to OpenAI auth" else "Sign in once to enable OpenAI subscription models.",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (authenticated) Color(0xFF10A37F) else MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -577,10 +695,20 @@ private fun ManageProviderModelsSection(
         .take(80)
 
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-    Text("Manage Models", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    Text(
+        if (showDefaultControls) "Manage Models" else "Edit selection",
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold
+    )
     if (showDefaultControls) {
         Text(
             "Only checked $providerName models will appear in Select Agent. Your default model is always kept enabled.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    } else {
+        Text(
+            "Choose which $providerName models show up in the agent picker.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -728,13 +856,22 @@ private fun CapabilitySwitch(title: String, subtitle: String, checked: Boolean, 
     }
 }
 
-private fun modalStepTransition(): ContentTransform {
+private fun modalStepDepth(stepKey: String): Int = when {
+    stepKey == "category" -> 0
+    stepKey.startsWith("provider_") -> 1
+    else -> 2
+}
+
+private fun modalStepTransition(initialStepKey: String, targetStepKey: String): ContentTransform {
     val spec = spring<IntOffset>(
         dampingRatio = Spring.DampingRatioNoBouncy,
         stiffness = Spring.StiffnessMediumLow
     )
-    return (slideInHorizontally(spec) { it / 5 } + fadeIn(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))) togetherWith
-        (slideOutHorizontally(spec) { -it / 8 } + fadeOut(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)))
+    val forward = modalStepDepth(targetStepKey) >= modalStepDepth(initialStepKey)
+    val enterOffset: (Int) -> Int = if (forward) ({ it / 5 }) else ({ -it / 5 })
+    val exitOffset: (Int) -> Int = if (forward) ({ -it / 8 }) else ({ it / 8 })
+    return (slideInHorizontally(spec, initialOffsetX = enterOffset) + fadeIn(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))) togetherWith
+        (slideOutHorizontally(spec, targetOffsetX = exitOffset) + fadeOut(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -747,7 +884,12 @@ private fun SheetHeader(
     modifier: Modifier,
     sheetState: SheetState
 ) {
-    Column(modifier = modifier.fillMaxWidth().background(gradient)) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(gradient)
+            .verticalScroll(rememberScrollState())
+    ) {
         Box(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 24.dp), contentAlignment = Alignment.Center) {
             Box(
                 modifier = Modifier

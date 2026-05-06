@@ -51,7 +51,7 @@ private fun List<ModelCatalogEntry>.withCodexSubscriptionEntries(): List<ModelCa
             inputPricePerMillionTokens = null,
             outputPricePerMillionTokens = null,
             metadata = entry.metadata + mapOf(
-                "providerName" to "OpenAI / ChatGPT / Codex",
+                "providerName" to "OpenAI",
                 "sourceProviderId" to entry.providerId,
                 "codexCompatibility" to if (entry.modelId.isLikelyCodexSubscriptionModel()) "verified" else "may_require_access"
             )

@@ -72,9 +72,9 @@ fun CodexAuthSheet(
             codexAuthManager.cancel()
             onDismiss()
         },
-        title = "Codex Login",
+        title = "OpenAI Login",
         icon = Icons.Default.Key,
-        subtitle = "Sign in with ChatGPT subscription"
+        subtitle = "Sign in with OpenAI subscription"
     ) {
         when (val state = authState) {
             is CodexAuthState.Idle,
@@ -197,7 +197,7 @@ private fun CodexAuthMethodPicker(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "Sign in with your ChatGPT Plus, Pro, or Enterprise account to use Codex models with your subscription.",
+                    text = "Sign in with your OpenAI account to use subscription models.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 18.sp
@@ -398,7 +398,7 @@ private fun DeviceCodeView(
                 Surface(
                     onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("Codex Code", userCode))
+                        clipboard.setPrimaryClip(ClipData.newPlainText("OpenAI Code", userCode))
                         copied = true
                     },
                     shape = RoundedCornerShape(10.dp),

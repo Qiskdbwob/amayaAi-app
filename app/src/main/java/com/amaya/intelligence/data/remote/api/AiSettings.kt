@@ -174,8 +174,9 @@ class AiSettingsManager @Inject constructor(
         encryptedPrefs.edit().putString("$ENC_AGENT_KEY_PREFIX${config.id}", apiKey).apply()
         context.dataStore.edit { prefs ->
             val list = parseAgentConfigs(prefs[KEY_AGENT_CONFIGS] ?: "[]").toMutableList()
-            val idx = list.indexOfFirst { it.id == config.id }
-            if (idx >= 0) list[idx] = config else list.add(config)
+            val normalized = config.normalizeEnabledModelIds()
+            val idx = list.indexOfFirst { it.id == normalized.id }
+            if (idx >= 0) list[idx] = normalized else list.add(normalized)
             prefs[KEY_AGENT_CONFIGS] = serializeAgentConfigs(list)
         }
     }
@@ -272,7 +273,7 @@ class AiSettingsManager @Inject constructor(
                     enabledModelIds = obj.optJSONArray("enabledModelIds")?.let { arr ->
                         (0 until arr.length()).mapNotNull { idx -> arr.optString(idx).takeIf { it.isNotBlank() } }
                     }.orEmpty()
-                )
+                ).normalizeEnabledModelIds()
             }
         }
     } catch (_: Exception) { emptyList() }
@@ -317,6 +318,14 @@ class AiSettingsManager @Inject constructor(
             value.contains("lmstudio") || value.contains("lm-studio") || value.contains("localhost:1234") -> "lm_studio"
             else -> "openai"
         }
+    }
+}
+
+private fun AgentConfig.normalizeEnabledModelIds(): AgentConfig {
+    val normalizedEnabled = enabledModelIds.filter { it.isNotBlank() }.distinct()
+    return when (providerId) {
+        "openai_codex_bridge" -> copy(modelId = "", enabledModelIds = normalizedEnabled)
+        else -> copy(enabledModelIds = normalizedEnabled)
     }
 }
 
