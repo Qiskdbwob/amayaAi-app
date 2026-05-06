@@ -6,6 +6,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.data.remote.api.CodexAuthManager
+import com.amaya.intelligence.data.remote.api.GitHubCopilotAuthManager
 import com.amaya.intelligence.data.repository.ModelCatalogRepository
 import com.amaya.intelligence.ui.screens.agent.local.LocalAgentScreen
 import com.amaya.intelligence.ui.theme.AmayaTheme
@@ -22,6 +23,9 @@ class LocalAgentActivity : AppCompatActivity() {
     lateinit var codexAuthManager: CodexAuthManager
 
     @Inject
+    lateinit var githubCopilotAuthManager: GitHubCopilotAuthManager
+
+    @Inject
     lateinit var modelCatalogRepository: ModelCatalogRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -33,6 +37,7 @@ class LocalAgentActivity : AppCompatActivity() {
                     onNavigateBack = { finish() },
                     aiSettingsManager = aiSettingsManager,
                     codexAuthManager = codexAuthManager,
+                    githubCopilotAuthManager = githubCopilotAuthManager,
                     modelCatalogRepository = modelCatalogRepository
                 )
             }

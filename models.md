@@ -440,6 +440,48 @@ ProviderEngine.GATEWAY_ENGINE
 
 ---
 
+## 3.1.1 Subscription Auth UI Standard
+
+Semua subscription provider harus memakai modal/sheet yang sama seperti OpenAI auth UI global di Amaya.
+
+```txt
+- Container: modal bottom sheet
+- Header: drag handle + centered title + back/dismiss icon
+- Scrim: pakai `modalTopScrim` dan `bottomScrim` dari theme global
+- Layout: padding horizontal 24dp, kartu 18dp radius, tombol 16dp radius, tinggi 52-56dp
+- Motion: transisi step halus seperti `modalStepTransition`
+- State: Methods -> Waiting -> Device Code -> Error
+- Primary action: browser/OAuth sign in
+- Fallback: device code
+- Jangan bikin halaman auth terpisah untuk provider subscription
+```
+
+Flow standar:
+
+```txt
+Browser flow
+1. buka auth URL di Custom Tab
+2. tunggu callback / token exchange
+3. update state ke Authenticated
+
+Device code flow
+1. request device code
+2. tampilkan user code + verification URI
+3. copy code + open verification page
+4. poll sampai auth success/error
+```
+
+Provider yang wajib ikut layout ini:
+
+```txt
+ChatGPT / Codex
+Claude Code
+Google Gemini CLI
+GitHub Copilot
+```
+
+---
+
 ## 3.2 API Key / Credentials Provider
 
 API provider dipakai untuk request backend/gateway langsung.
@@ -495,7 +537,7 @@ Provider Center
 │  │  └─ Engine: Tool Bridge
 │  │
 │  └─ GitHub Copilot
-│     ├─ Auth: GitHub OAuth / Copilot subscription
+│     ├─ Auth: GitHub OAuth (browser/PKCE) + device code fallback
 │     ├─ Runtime: Copilot CLI / Copilot SDK Bridge
 │     └─ Engine: Tool Bridge
 │
@@ -799,7 +841,7 @@ val githubCopilotProvider = ProviderConfig(
     displayName = "GitHub Copilot",
     category = ProviderCategory.SUBSCRIPTION_LOGIN,
     engine = ProviderEngine.TOOL_BRIDGE,
-    authModes = listOf(AuthMode.OAUTH, AuthMode.DEVICE_FLOW),
+    authModes = listOf(AuthMode.OAUTH, AuthMode.BROWSER_LOGIN, AuthMode.DEVICE_FLOW),
     apiFormat = ApiFormat.TOOL_BRIDGE,
     defaultBaseUrl = null,
     requiredFields = listOf(
@@ -808,7 +850,7 @@ val githubCopilotProvider = ProviderConfig(
             label = "Copilot Runtime",
             type = ProviderFieldType.SELECT,
             required = true,
-            description = "Copilot CLI atau Copilot SDK Bridge."
+            description = "Copilot CLI atau Copilot SDK Bridge yang berjalan lokal."
         )
     ),
     optionalFields = listOf(
@@ -816,16 +858,29 @@ val githubCopilotProvider = ProviderConfig(
             key = "githubAccount",
             label = "GitHub Account",
             type = ProviderFieldType.TEXT,
-            required = false
+            required = false,
+            description = "Label akun setelah OAuth berhasil."
         ),
         ProviderField(
             key = "organization",
             label = "GitHub Organization",
             type = ProviderFieldType.TEXT,
             required = false
+        ),
+        ProviderField(
+            key = "cliPath",
+            label = "Copilot CLI Path",
+            type = ProviderFieldType.PATH,
+            required = false
+        ),
+        ProviderField(
+            key = "workspacePath",
+            label = "Default Workspace Path",
+            type = ProviderFieldType.PATH,
+            required = false
         )
     ),
-    credentialStorage = CredentialStorage.EXTERNAL_CLI,
+    credentialStorage = CredentialStorage.LOCAL_SECURE_STORAGE,
     supportsModelSync = false,
     modelCatalogSources = listOf(ModelCatalogSource.SUBSCRIPTION_TOOL),
     supportsStreaming = true,
@@ -834,7 +889,7 @@ val githubCopilotProvider = ProviderConfig(
     supportsEmbeddings = false,
     supportsImageGeneration = false,
     supportsLocalRuntime = true,
-    notes = "Subscription login untuk Copilot workflow. Bedakan dari GitHub Models API."
+    notes = "Pakai modal auth subscription yang sama seperti OpenAI: browser/OAuth sebagai utama, device code sebagai fallback, dan simpan token terenkripsi lokal. Bedakan dari GitHub Models API."
 )
 ```
 

@@ -62,24 +62,15 @@ internal fun SubscriptionAuthStepContent(authUi: AgentSubscriptionAuthUi?) {
     when (step) {
         is SubscriptionAuthStep.Waiting -> SubscriptionAuthWaitingStep(
             label = step.label,
-            onDeviceCodeLogin = authUi?.onDeviceCodeSignIn,
-            onCancel = authUi?.onCancel
-        )
-        is SubscriptionAuthStep.DeviceCode -> SubscriptionDeviceCodeStep(
-            userCode = step.userCode,
-            verificationUri = step.verificationUri,
-            expiresInSeconds = step.expiresInSeconds,
             onCancel = authUi?.onCancel
         )
         is SubscriptionAuthStep.Error -> SubscriptionAuthMethodsStep(
             errorMessage = step.message,
-            onBrowserLogin = authUi?.onBrowserSignIn,
-            onDeviceCodeLogin = authUi?.onDeviceCodeSignIn
+            onBrowserLogin = authUi?.onBrowserSignIn
         )
         SubscriptionAuthStep.Methods -> SubscriptionAuthMethodsStep(
             errorMessage = null,
-            onBrowserLogin = authUi?.onBrowserSignIn,
-            onDeviceCodeLogin = authUi?.onDeviceCodeSignIn
+            onBrowserLogin = authUi?.onBrowserSignIn
         )
     }
 }
@@ -119,8 +110,7 @@ internal fun SubscriptionConnectionCard(authUi: AgentSubscriptionAuthUi?) {
 @Composable
 private fun SubscriptionAuthMethodsStep(
     errorMessage: String?,
-    onBrowserLogin: (() -> Unit)?,
-    onDeviceCodeLogin: (() -> Unit)?
+    onBrowserLogin: (() -> Unit)?
 ) {
     errorMessage?.takeIf { it.isNotBlank() }?.let { message ->
         Surface(
@@ -139,23 +129,14 @@ private fun SubscriptionAuthMethodsStep(
     AuthActionCard(
         icon = Icons.Default.OpenInBrowser,
         title = "Sign in with browser",
-        subtitle = "Recommended",
         onClick = { onBrowserLogin?.invoke() },
         enabled = onBrowserLogin != null
-    )
-    AuthActionCard(
-        icon = Icons.Default.PhonelinkSetup,
-        title = "Use device code",
-        subtitle = "Fallback",
-        onClick = { onDeviceCodeLogin?.invoke() },
-        enabled = onDeviceCodeLogin != null
     )
 }
 
 @Composable
 private fun SubscriptionAuthWaitingStep(
     label: String,
-    onDeviceCodeLogin: (() -> Unit)?,
     onCancel: (() -> Unit)?
 ) {
     ElevatedCard(
@@ -171,91 +152,17 @@ private fun SubscriptionAuthWaitingStep(
             Text(label, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
         }
     }
-    OutlinedButton(
-        onClick = { onDeviceCodeLogin?.invoke() },
-        enabled = onDeviceCodeLogin != null,
-        modifier = Modifier.fillMaxWidth().height(52.dp),
-        shape = RoundedCornerShape(16.dp)
-    ) { Text("Use device code instead") }
     TextButton(
         onClick = { onCancel?.invoke() },
         modifier = Modifier.fillMaxWidth().height(48.dp)
     ) { Text("Cancel") }
 }
 
-@Composable
-private fun SubscriptionDeviceCodeStep(
-    userCode: String,
-    verificationUri: String,
-    expiresInSeconds: Int,
-    onCancel: (() -> Unit)?
-) {
-    val context = LocalContext.current
-    var copied by remember(userCode) { mutableStateOf(false) }
-    var remainingSeconds by remember(expiresInSeconds) { mutableIntStateOf(expiresInSeconds) }
-
-    LaunchedEffect(expiresInSeconds) {
-        while (remainingSeconds > 0) {
-            kotlinx.coroutines.delay(1000)
-            remainingSeconds--
-        }
-    }
-
-    ElevatedCard(
-        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(18.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Text(
-                userCode,
-                style = MaterialTheme.typography.headlineMedium.copy(
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 3.sp
-                ),
-                textAlign = TextAlign.Center
-            )
-            val minutes = remainingSeconds / 60
-            val seconds = remainingSeconds % 60
-            Text("Expires in $minutes:${"%02d".format(seconds)}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            TextButton(
-                onClick = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    clipboard.setPrimaryClip(ClipData.newPlainText("Subscription code", userCode))
-                    copied = true
-                }
-            ) {
-                Icon(if (copied) Icons.Default.Check else Icons.Default.ContentCopy, null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(if (copied) "Copied" else "Copy code")
-            }
-        }
-    }
-    Button(
-        onClick = { CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(verificationUri)) },
-        modifier = Modifier.fillMaxWidth().height(52.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF10A37F), contentColor = Color.White)
-    ) {
-        Icon(Icons.Default.OpenInBrowser, null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(8.dp))
-        Text("Open verification page")
-    }
-    TextButton(
-        onClick = { onCancel?.invoke() },
-        modifier = Modifier.fillMaxWidth().height(48.dp)
-    ) { Text("Cancel") }
-}
 
 @Composable
 private fun AuthActionCard(
     icon: ImageVector,
     title: String,
-    subtitle: String,
     onClick: () -> Unit,
     enabled: Boolean
 ) {
@@ -279,7 +186,6 @@ private fun AuthActionCard(
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(title, fontWeight = FontWeight.SemiBold)
-                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }

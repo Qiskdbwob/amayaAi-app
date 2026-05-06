@@ -18,6 +18,8 @@ import com.amaya.intelligence.data.remote.api.AgentConfig
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.data.remote.api.CodexAuthManager
 import com.amaya.intelligence.data.remote.api.CodexAuthState
+import com.amaya.intelligence.data.remote.api.GitHubCopilotAuthManager
+import com.amaya.intelligence.data.remote.api.GitHubCopilotAuthState
 import com.amaya.intelligence.data.repository.ModelCatalogRepository
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.screens.agent.shared.AgentEditSheet
@@ -30,6 +32,7 @@ fun LocalAgentScreen(
     onNavigateBack: () -> Unit,
     aiSettingsManager: AiSettingsManager,
     codexAuthManager: CodexAuthManager? = null,
+    githubCopilotAuthManager: GitHubCopilotAuthManager? = null,
     modelCatalogRepository: ModelCatalogRepository? = null
 ) {
     val scope = rememberCoroutineScope()
@@ -46,26 +49,50 @@ fun LocalAgentScreen(
     val codexState = codexAuthManager?.authState?.collectAsState()
     val codexAuthenticated = codexState?.value is CodexAuthState.Authenticated || codexAuthManager?.isAuthenticated() == true
     val codexEmail = (codexState?.value as? CodexAuthState.Authenticated)?.email ?: codexAuthManager?.getAccountEmail()
-    val subscriptionAuth = codexAuthManager?.let { manager ->
-        openAiSubscriptionAuthUi(
-            authState = codexState?.value,
-            authenticated = codexAuthenticated,
-            accountLabel = codexEmail,
-            onBrowserSignIn = { manager.startLocalServerLogin(context) },
-            onDeviceCodeSignIn = { manager.startDeviceCodeLogin() },
-            onCancel = { manager.cancel() },
-            onSignOut = {
-                manager.logout()
-                editingConfig = null
-                scope.launch {
-                    settings.agentConfigs
-                        .filter { it.providerId == OpenAiSubscriptionProviderId }
-                        .forEach { aiSettingsManager.deleteAgentConfig(it.id) }
-                    snackbarHostState.showSnackbar("OpenAI signed out")
+    val githubCopilotState = githubCopilotAuthManager?.authState?.collectAsState()
+    val githubCopilotAuthenticated = githubCopilotState?.value is GitHubCopilotAuthState.Authenticated || githubCopilotAuthManager?.isAuthenticated() == true
+    val githubCopilotAccount = (githubCopilotState?.value as? GitHubCopilotAuthState.Authenticated)?.displayName
+        ?: githubCopilotAuthManager?.getAccountLabel()
+    val subscriptionAuths = listOfNotNull(
+        codexAuthManager?.let { manager ->
+            openAiSubscriptionAuthUi(
+                authState = codexState?.value,
+                authenticated = codexAuthenticated,
+                accountLabel = codexEmail,
+                onBrowserSignIn = { manager.startLocalServerLogin(context) },
+                onCancel = { manager.cancel() },
+                onSignOut = {
+                    manager.logout()
+                    editingConfig = null
+                    scope.launch {
+                        settings.agentConfigs
+                            .filter { it.providerId == OpenAiSubscriptionProviderId }
+                            .forEach { aiSettingsManager.deleteAgentConfig(it.id) }
+                        snackbarHostState.showSnackbar("OpenAI signed out")
+                    }
                 }
-            }
-        )
-    }
+            )
+        },
+        githubCopilotAuthManager?.let { manager ->
+            githubCopilotSubscriptionAuthUi(
+                authState = githubCopilotState?.value,
+                authenticated = githubCopilotAuthenticated,
+                accountLabel = githubCopilotAccount,
+                onBrowserSignIn = { manager.startBrowserLogin(context) },
+                onCancel = { manager.cancel() },
+                onSignOut = {
+                    manager.logout()
+                    editingConfig = null
+                    scope.launch {
+                        settings.agentConfigs
+                            .filter { it.providerId == GitHubCopilotSubscriptionProviderId }
+                            .forEach { aiSettingsManager.deleteAgentConfig(it.id) }
+                        snackbarHostState.showSnackbar("GitHub Copilot signed out")
+                    }
+                }
+            )
+        }
+    )
     val modelCatalog by (modelCatalogRepository?.observeCatalog()?.collectAsState(initial = emptyList())
         ?: remember { mutableStateOf(emptyList()) })
     LaunchedEffect(modelCatalogRepository) {
@@ -162,7 +189,7 @@ fun LocalAgentScreen(
             onDismiss = {
                 editingConfig = null
             },
-            subscriptionAuth = subscriptionAuth,
+            subscriptionAuths = subscriptionAuths,
             onQuickSave = { updatedConfig, key ->
                 scope.launch { aiSettingsManager.saveAgentConfig(updatedConfig, key) }
             },

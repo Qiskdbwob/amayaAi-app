@@ -57,7 +57,7 @@ fun AgentEditSheet(
     maxSheetHeight: Dp,
     modelCatalog: List<ModelCatalogEntry> = emptyList(),
     onDismiss: () -> Unit,
-    subscriptionAuth: AgentSubscriptionAuthUi? = null,
+    subscriptionAuths: List<AgentSubscriptionAuthUi> = emptyList(),
     onQuickSave: ((AgentConfig, String) -> Unit)? = null,
     onSave: (AgentConfig, String) -> Unit,
     onDelete: (() -> Unit)?,
@@ -74,10 +74,13 @@ fun AgentEditSheet(
     var showAdvancedSettings by remember(config.id, isNew) { mutableStateOf(false) }
     var showModelPicker by remember(config.id, isNew) { mutableStateOf(false) }
     val selectedProvider = AmayaProviderRegistry.find(selectedProviderId)
+    val selectedSubscriptionAuth = selectedProvider?.id?.let { providerId ->
+        subscriptionAuths.firstOrNull { it.providerId == providerId }
+    }
     val stepKey = when {
         isNew && wizardCategory == null -> "category"
         isNew && selectedProvider == null -> "provider_${wizardCategory?.name.orEmpty()}"
-        showSubscriptionAuthFlow && selectedProvider?.id == subscriptionAuth?.providerId -> subscriptionAuthStepKey(subscriptionAuth)
+        showSubscriptionAuthFlow && selectedProvider?.id == selectedSubscriptionAuth?.providerId -> subscriptionAuthStepKey(selectedSubscriptionAuth)
         selectedProvider?.isSubscription == true && showModelPicker -> "models_${selectedProvider.id}"
         selectedProvider?.isSubscription == true -> "subscription_${selectedProvider.id}"
         showModelPicker -> "models_${selectedProviderId ?: config.providerId}"
@@ -120,7 +123,7 @@ fun AgentEditSheet(
 
     fun goBack() {
         when {
-            showSubscriptionAuthFlow && subscriptionAuth?.step !is SubscriptionAuthStep.Methods && subscriptionAuth?.step !is SubscriptionAuthStep.Error -> subscriptionAuth?.onCancel?.invoke()
+            showSubscriptionAuthFlow && selectedSubscriptionAuth?.step !is SubscriptionAuthStep.Methods && selectedSubscriptionAuth?.step !is SubscriptionAuthStep.Error -> selectedSubscriptionAuth?.onCancel?.invoke()
             showSubscriptionAuthFlow -> showSubscriptionAuthFlow = false
             showModelPicker -> showModelPicker = false
             showAdvancedSettings -> showAdvancedSettings = false
@@ -139,7 +142,7 @@ fun AgentEditSheet(
             providerType = AmayaProviderRegistry.legacyProviderType(provider.id).name,
             baseUrl = "",
             modelId = "",
-            enabled = subscriptionAuth?.let { auth -> provider.id != auth.providerId || auth.authenticated } ?: true,
+            enabled = selectedSubscriptionAuth?.let { auth -> provider.id != auth.providerId || auth.authenticated } ?: true,
             toolCalling = provider.supportsTools,
             vision = provider.supportsVision,
             streaming = provider.supportsStreaming,
@@ -193,8 +196,8 @@ fun AgentEditSheet(
         }
     }
 
-    LaunchedEffect(subscriptionAuth?.authenticated) {
-        if (subscriptionAuth?.authenticated == true) showSubscriptionAuthFlow = false
+    LaunchedEffect(selectedSubscriptionAuth?.authenticated) {
+        if (selectedSubscriptionAuth?.authenticated == true) showSubscriptionAuthFlow = false
     }
 
     LaunchedEffect(stepKey) {
@@ -270,7 +273,7 @@ fun AgentEditSheet(
                                             enabledModelIds = clean
                                             quickSaveSubscription(clean)
                                         },
-                                        authUi = subscriptionAuth?.takeIf { it.providerId == stepProvider.id }?.copy(
+                                        authUi = selectedSubscriptionAuth?.takeIf { it.providerId == stepProvider.id }?.copy(
                                             onBrowserSignIn = { showSubscriptionAuthFlow = true }
                                         ),
                                         onOpenModels = { showModelPicker = true }
@@ -295,7 +298,7 @@ fun AgentEditSheet(
                                     useDefaultModel = stepProvider?.isSubscription != true
                                 )
                             }
-                            activeStepKey.startsWith("auth_") -> SubscriptionAuthStepContent(subscriptionAuth)
+                            activeStepKey.startsWith("auth_") -> SubscriptionAuthStepContent(selectedSubscriptionAuth)
                             activeStepKey.startsWith("advanced_") -> {
                                 val stepProviderId = activeStepKey.removePrefix("advanced_").ifBlank {
                                     selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() }
@@ -353,7 +356,7 @@ fun AgentEditSheet(
                 title = when {
                     isNew && wizardCategory == null -> "New Agent"
                     isNew && selectedProvider == null -> if (wizardCategory == AgentWizardCategory.SUBSCRIPTION) "Subscription Provider" else "API Provider"
-                    showSubscriptionAuthFlow -> subscriptionAuthTitle(subscriptionAuth)
+                    showSubscriptionAuthFlow -> subscriptionAuthTitle(selectedSubscriptionAuth)
                     showModelPicker -> "Models"
                     showAdvancedSettings -> "Advanced"
                     selectedProvider?.isSubscription == true -> selectedProvider.displayName

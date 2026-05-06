@@ -11,7 +11,6 @@ internal fun openAiSubscriptionAuthUi(
     authenticated: Boolean,
     accountLabel: String?,
     onBrowserSignIn: (() -> Unit)?,
-    onDeviceCodeSignIn: (() -> Unit)?,
     onCancel: (() -> Unit)?,
     onSignOut: (() -> Unit)?
 ): AgentSubscriptionAuthUi = AgentSubscriptionAuthUi(
@@ -21,7 +20,6 @@ internal fun openAiSubscriptionAuthUi(
     accountLabel = accountLabel,
     step = authState.toSubscriptionAuthStep(),
     onBrowserSignIn = onBrowserSignIn,
-    onDeviceCodeSignIn = onDeviceCodeSignIn,
     onCancel = onCancel,
     onSignOut = onSignOut
 )
@@ -30,11 +28,6 @@ private fun CodexAuthState?.toSubscriptionAuthStep(): SubscriptionAuthStep = whe
     is CodexAuthState.Starting -> SubscriptionAuthStep.Waiting("Opening browser…")
     is CodexAuthState.WaitingForBrowser -> SubscriptionAuthStep.Waiting("Waiting for browser…")
     is CodexAuthState.ExchangingToken -> SubscriptionAuthStep.Waiting("Finishing sign in…")
-    is CodexAuthState.DeviceCodeReady -> SubscriptionAuthStep.DeviceCode(
-        userCode = userCode,
-        verificationUri = verificationUri,
-        expiresInSeconds = expiresInSeconds
-    )
     is CodexAuthState.Error -> SubscriptionAuthStep.Error(message)
     else -> SubscriptionAuthStep.Methods
 }

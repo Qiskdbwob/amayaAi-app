@@ -164,8 +164,11 @@ class AiSettingsManager @Inject constructor(
     fun getAgentApiKey(agentId: String): String =
         encryptedPrefs.getString("$ENC_AGENT_KEY_PREFIX$agentId", "") ?: ""
 
-    /** Expose encrypted prefs for Codex token storage (used by [CodexAuthManager]). */
-    fun getEncryptedPrefsForCodex(): android.content.SharedPreferences = encryptedPrefs
+    /** Expose encrypted prefs for subscription token storage (Codex, GitHub Copilot, etc.). */
+    fun getEncryptedPrefsForProviderAuth(providerId: String): android.content.SharedPreferences = encryptedPrefs
+
+    /** Backwards-compatible alias for the existing OpenAI/Codex flow. */
+    fun getEncryptedPrefsForCodex(): android.content.SharedPreferences = getEncryptedPrefsForProviderAuth("openai_codex_bridge")
 
     // ── Write ────────────────────────────────────────────────────────
 
@@ -310,6 +313,7 @@ class AiSettingsManager @Inject constructor(
         return when {
             value.contains("anthropic") || value.contains("claude") -> "anthropic"
             value.contains("gemini") || value.contains("google") -> "google_gemini_api"
+            value.contains("copilot") -> "github_copilot"
             value.contains("openrouter") -> "openrouter"
             value.contains("groq") -> "groq"
             value.contains("deepseek") -> "deepseek"

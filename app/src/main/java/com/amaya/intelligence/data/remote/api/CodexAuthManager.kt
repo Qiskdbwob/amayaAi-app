@@ -6,20 +6,28 @@ import android.util.Base64
 import android.util.Log
 import androidx.browser.customtabs.CustomTabsIntent
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import okhttp3.*
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.FormBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
-import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.net.URLDecoder
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -29,11 +37,7 @@ import javax.inject.Singleton
 /**
  * Manages Codex (OpenAI/ChatGPT subscription) authentication for the Android app.
  *
- * Supports two flows:
- * 1. **Local Server PKCE** — spins up a lightweight localhost HTTP server, opens
- *    the OpenAI auth page in Custom Tabs, and catches the redirect callback.
- * 2. **Device Code** (RFC 8628) — requests a device code, shows a user code for
- *    the user to enter in a browser, and polls until authorization completes.
+ * Supports the browser-based PKCE flow.
  *
  * Tokens are stored encrypted via [AiSettingsManager.encryptedPrefs] alongside
  * the existing agent key infrastructure.
@@ -45,16 +49,16 @@ class CodexAuthManager @Inject constructor(
     private val settingsManager: AiSettingsManager
 ) {
     companion object {
-        private const val TAG = "CodexAuthManager"
+        private const val TAG = "AmayaAuthManager"
 
         // OpenAI public Codex client — used by the official CLI (Apache-2.0 licensed)
         const val CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
         private const val AUTH_URL = "https://auth.openai.com/oauth/authorize"
         private const val TOKEN_URL = "https://auth.openai.com/oauth/token"
-        private const val DEVICE_AUTH_URL = "https://auth.openai.com/oauth/device/authorize"
         private const val SCOPE = "openid profile email offline_access"
 
         // Local callback server ports (same as Codex CLI)
+        private const val CALLBACK_HOST = "localhost"
         private val CALLBACK_PORTS = intOf(1455, 1457, 1459)
 
         // Encrypted prefs keys
@@ -75,7 +79,6 @@ class CodexAuthManager @Inject constructor(
     private val authScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var callbackServer: ServerSocket? = null
     private var loginJob: Job? = null
-    private var pollingJob: Job? = null
 
     // ── Local Server PKCE Flow ──────────────────────────────────────
 
@@ -90,11 +93,11 @@ class CodexAuthManager @Inject constructor(
 
             // Try to bind a local server
             val (server, port) = tryBindServer() ?: run {
-                _authState.value = CodexAuthState.Error("Could not bind localhost server. Try Device Code instead.")
+                _authState.value = CodexAuthState.Error("Could not bind localhost server. Please try again.")
                 return@launch
             }
             callbackServer = server
-            val redirectUri = "http://localhost:$port/auth/callback"
+            val redirectUri = "http://$CALLBACK_HOST:$port/auth/callback"
 
             // Build auth URL
             val authUri = Uri.parse(AUTH_URL).buildUpon()
@@ -107,7 +110,8 @@ class CodexAuthManager @Inject constructor(
                 .appendQueryParameter("state", state)
                 .appendQueryParameter("id_token_add_organizations", "true")
                 .appendQueryParameter("codex_cli_simplified_flow", "true")
-                .appendQueryParameter("originator", "pi")
+                .appendQueryParameter("originator", "amaya")
+                .appendQueryParameter("prompt", "consent")
                 .build()
 
             // Open Custom Tabs
@@ -127,147 +131,72 @@ class CodexAuthManager @Inject constructor(
 
             // Wait for callback (blocking on IO thread)
             try {
-                server.soTimeout = 300_000 // 5 minute timeout
-                val socket = server.accept()
-                val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
-                val requestLine = reader.readLine() ?: ""
-                // Parse GET /auth/callback?code=...&state=...
-                val params = parseCallbackParams(requestLine)
-                val code = params["code"]
-                val returnedState = params["state"]
-                val error = params["error"]
+                server.soTimeout = 15_000
+                val deadlineMs = System.currentTimeMillis() + 300_000L
+                while (isActive && System.currentTimeMillis() < deadlineMs) {
+                    val socket = try {
+                        server.accept()
+                    } catch (_: SocketTimeoutException) {
+                        continue
+                    }
 
-                if (!error.isNullOrBlank()) {
-                    writeHtmlResponse(socket, codexCallbackErrorHtml("OpenAI returned: $error"))
-                    server.close()
-                    callbackServer = null
-                    _authState.value = CodexAuthState.Error("OpenAI authorization failed: $error")
-                    return@launch
+                    val acceptedSocket = socket
+                    try {
+                        val reader = BufferedReader(InputStreamReader(acceptedSocket.getInputStream()))
+                        val requestLine = reader.readLine().orEmpty()
+                        val requestPath = parseRequestPath(requestLine)
+
+                        if (requestPath != "/auth/callback") {
+                            writeHtmlResponse(acceptedSocket, codexCallbackErrorHtml("Invalid callback path."), status = "404 Not Found")
+                        } else {
+                            val params = parseCallbackParams(requestLine)
+                            val code = params["code"]
+                            val returnedState = params["state"]
+                            val error = params["error"]
+
+                            if (!error.isNullOrBlank()) {
+                                writeHtmlResponse(acceptedSocket, codexCallbackErrorHtml("Authorization returned: $error"))
+                                server.close()
+                                callbackServer = null
+                                _authState.value = CodexAuthState.Error("Authorization failed: $error")
+                                return@launch
+                            }
+
+                            if (code == null || returnedState != state) {
+                                writeHtmlResponse(acceptedSocket, codexCallbackErrorHtml("The callback was missing a valid authorization code."))
+                                server.close()
+                                callbackServer = null
+                                _authState.value = CodexAuthState.Error("Invalid callback: state mismatch or missing code.")
+                                return@launch
+                            }
+
+                            // The browser cannot see token-exchange state, so show the controlled success page once
+                            // a valid authorization callback reaches Amaya.
+                            writeHtmlResponse(acceptedSocket, codexCallbackSuccessHtml())
+                            server.close()
+                            callbackServer = null
+
+                            // Exchange code for token
+                            _authState.value = CodexAuthState.ExchangingToken
+                            exchangeCodeForToken(code, verifier, redirectUri)
+                            return@launch
+                        }
+                    } finally {
+                        runCatching { acceptedSocket.close() }
+                    }
                 }
 
-                if (code == null || returnedState != state) {
-                    writeHtmlResponse(socket, codexCallbackErrorHtml("The callback was missing a valid authorization code."))
-                    server.close()
-                    callbackServer = null
-                    _authState.value = CodexAuthState.Error("Invalid callback: state mismatch or missing code.")
-                    return@launch
+                if (isActive) {
+                    _authState.value = CodexAuthState.Error("Callback timeout. Please try again.")
                 }
-
-                // The browser cannot see token-exchange state, so show the controlled success page once
-                // a valid authorization callback reaches Amaya.
-                writeHtmlResponse(socket, codexCallbackSuccessHtml())
                 server.close()
                 callbackServer = null
-
-                // Exchange code for token
-                _authState.value = CodexAuthState.ExchangingToken
-                exchangeCodeForToken(code, verifier, redirectUri)
-
             } catch (e: Exception) {
                 if (!isActive) return@launch
                 Log.e(TAG, "Local server error", e)
                 _authState.value = CodexAuthState.Error("Callback timeout or error: ${e.message}")
                 server.close()
                 callbackServer = null
-            }
-        }
-    }
-
-    // ── Device Code Flow ────────────────────────────────────────────
-
-    fun startDeviceCodeLogin() {
-        _authState.value = CodexAuthState.Starting
-
-        pollingJob?.cancel()
-        pollingJob = authScope.launch {
-            try {
-                // 1. Request device code
-                val formBody = FormBody.Builder()
-                    .add("client_id", CLIENT_ID)
-                    .add("scope", SCOPE)
-                    .build()
-                val request = Request.Builder()
-                    .url(DEVICE_AUTH_URL)
-                    .post(formBody)
-                    .build()
-
-                val response = httpClient.newCall(request).execute()
-                val body = response.body?.string() ?: throw Exception("Empty response")
-
-                if (!response.isSuccessful) {
-                    _authState.value = CodexAuthState.Error("Device code request failed: ${response.code} — $body")
-                    return@launch
-                }
-
-                val json = JSONObject(body)
-                val deviceCode = json.getString("device_code")
-                val userCode = json.getString("user_code")
-                val verificationUri = json.optString("verification_uri_complete",
-                    json.optString("verification_uri", "https://chatgpt.com/device"))
-                val interval = json.optInt("interval", 5)
-                val expiresIn = json.optInt("expires_in", 600)
-
-                _authState.value = CodexAuthState.DeviceCodeReady(
-                    userCode = userCode,
-                    verificationUri = verificationUri,
-                    expiresInSeconds = expiresIn
-                )
-
-                // 2. Poll for token
-                val deadline = System.currentTimeMillis() + (expiresIn * 1000L)
-                var pollInterval = interval.toLong()
-
-                while (isActive && System.currentTimeMillis() < deadline) {
-                    delay(pollInterval * 1000L)
-
-                    val tokenBody = FormBody.Builder()
-                        .add("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
-                        .add("device_code", deviceCode)
-                        .add("client_id", CLIENT_ID)
-                        .build()
-                    val tokenRequest = Request.Builder()
-                        .url(TOKEN_URL)
-                        .post(tokenBody)
-                        .build()
-
-                    val tokenResponse = httpClient.newCall(tokenRequest).execute()
-                    val tokenBodyStr = tokenResponse.body?.string() ?: continue
-
-                    if (tokenResponse.isSuccessful) {
-                        val tokenJson = JSONObject(tokenBodyStr)
-                        saveTokens(tokenJson)
-                        _authState.value = CodexAuthState.Authenticated(
-                            email = tokenJson.optString("id_token")
-                                .let { parseEmailFromIdToken(it) }
-                        )
-                        return@launch
-                    }
-
-                    // Handle error cases per RFC 8628
-                    val errorJson = runCatching { JSONObject(tokenBodyStr) }.getOrNull()
-                    when (errorJson?.optString("error")) {
-                        "authorization_pending" -> continue
-                        "slow_down" -> { pollInterval += 5; continue }
-                        "expired_token" -> {
-                            _authState.value = CodexAuthState.Error("Device code expired. Please try again.")
-                            return@launch
-                        }
-                        "access_denied" -> {
-                            _authState.value = CodexAuthState.Error("Authorization denied by user.")
-                            return@launch
-                        }
-                        else -> continue
-                    }
-                }
-
-                if (isActive) {
-                    _authState.value = CodexAuthState.Error("Device code expired. Please try again.")
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.e(TAG, "Device code flow error", e)
-                _authState.value = CodexAuthState.Error("Device code error: ${e.message}")
             }
         }
     }
@@ -374,8 +303,6 @@ class CodexAuthManager @Inject constructor(
     fun cancel() {
         loginJob?.cancel()
         loginJob = null
-        pollingJob?.cancel()
-        pollingJob = null
         callbackServer?.close()
         callbackServer = null
         _authState.value = CodexAuthState.Idle
@@ -386,15 +313,21 @@ class CodexAuthManager @Inject constructor(
     private fun tryBindServer(): Pair<ServerSocket, Int>? {
         for (port in CALLBACK_PORTS) {
             try {
-                val server = ServerSocket(port, 1, InetAddress.getByName("127.0.0.1"))
+                val server = ServerSocket()
+                server.reuseAddress = true
+                server.bind(InetSocketAddress(port))
                 return server to port
             } catch (_: Exception) { /* port busy, try next */ }
         }
         return null
     }
 
-    private fun parseCallbackParams(requestLine: String): Map<String, String> {
+    private fun parseRequestPath(requestLine: String): String? {
         // "GET /auth/callback?code=abc&state=xyz HTTP/1.1"
+        return requestLine.split(" ").getOrNull(1)?.substringBefore("?")
+    }
+
+    private fun parseCallbackParams(requestLine: String): Map<String, String> {
         val pathAndQuery = requestLine.split(" ").getOrNull(1) ?: return emptyMap()
         val queryStr = pathAndQuery.substringAfter("?", "")
         return queryStr.split("&").mapNotNull {
@@ -406,7 +339,7 @@ class CodexAuthManager @Inject constructor(
     private fun writeHtmlResponse(socket: Socket, html: String, status: String = "200 OK") {
         val bytes = html.toByteArray(Charsets.UTF_8)
         val writer = PrintWriter(socket.getOutputStream(), true)
-        writer.print("HTTP/1.1 $status\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n")
+        writer.print("HTTP/1.1 $status\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store, no-cache, must-revalidate\r\nPragma: no-cache\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n")
         writer.flush()
         socket.getOutputStream().write(bytes)
         socket.getOutputStream().flush()
@@ -414,42 +347,184 @@ class CodexAuthManager @Inject constructor(
     }
 
     private fun codexCallbackSuccessHtml(): String = """
-        <!doctype html>
+        <!DOCTYPE html>
         <html lang="en">
         <head>
-          <meta charset="utf-8" />
-          <meta name="viewport" content="width=device-width,initial-scale=1" />
-          <title>Amaya OpenAI Login</title>
-          <style>
-            body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f0e;color:#f6fffb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
-            .card{width:min(420px,calc(100vw - 40px));padding:32px;border-radius:28px;background:linear-gradient(180deg,rgba(255,255,255,.10),rgba(255,255,255,.04));box-shadow:0 24px 80px rgba(0,0,0,.36);text-align:center;border:1px solid rgba(255,255,255,.12)}
-            .icon{width:64px;height:64px;margin:0 auto 18px;border-radius:50%;display:grid;place-items:center;background:rgba(16,163,127,.18);color:#20d6aa;font-size:34px}
-            h1{font-size:24px;margin:0 0 10px}.muted{color:rgba(246,255,251,.68);line-height:1.5;margin:0}.brand{margin-top:18px;color:#20d6aa;font-weight:700;font-size:13px;letter-spacing:.04em;text-transform:uppercase}
-          </style>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            <title>Sign In Successful</title>
+            <style>
+                * { box-sizing: border-box; }
+                html, body {
+                    width: 100%;
+                    height: 100%;
+                    margin: 0;
+                    overflow: hidden;
+                    background: #ffffff;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                }
+                body {
+                    min-height: 100dvh;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 16px;
+                }
+                .wrap {
+                    width: min(100%, 360px);
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    text-align: center;
+                }
+                .icon {
+                    width: 112px;
+                    height: 112px;
+                    border-radius: 9999px;
+                    background: #f3f4f6;
+                    color: #111827;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    margin-bottom: 32px;
+                    flex: none;
+                }
+                .icon svg { width: 48px; height: 48px; }
+                h1 {
+                    margin: 0 0 20px;
+                    color: #111827;
+                    font-size: clamp(26px, 7vw, 30px);
+                    font-weight: 400;
+                    line-height: 1.15;
+                    letter-spacing: -0.02em;
+                }
+                .body {
+                    color: #4b5563;
+                    font-size: 16px;
+                    line-height: 1.55;
+                    margin-bottom: 32px;
+                }
+                .body p { margin: 0; }
+                .body p + p { margin-top: 6px; }
+                .button {
+                    appearance: none;
+                    border: 0;
+                    border-radius: 9999px;
+                    background: #111827;
+                    color: #fff;
+                    padding: 14px 32px;
+                    font-size: 14px;
+                    font-weight: 500;
+                    cursor: pointer;
+                    box-shadow: 0 1px 2px rgba(0,0,0,.08);
+                }
+            </style>
         </head>
         <body>
-          <main class="card">
-            <div class="icon">✓</div>
-            <h1>Successfully logged in</h1>
-            <p class="muted">Amaya received the OpenAI authorization. You can close this tab and return to Amaya.</p>
-            <div class="brand">Amaya OpenAI</div>
-          </main>
+            <main class="wrap">
+                <div class="icon" aria-hidden="true">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                    </svg>
+                </div>
+                <h1>Sign In Successful</h1>
+                <div class="body">
+                    <p>Authorization received.</p>
+                    <p>You can close this tab and return to the app.</p>
+                </div>
+                <button class="button" onclick="window.close()">Close tab</button>
+            </main>
         </body>
         </html>
     """.trimIndent()
 
     private fun codexCallbackErrorHtml(message: String): String = """
-        <!doctype html>
-        <html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
-        <title>Amaya OpenAI Login</title></head>
-        <body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#160b0b;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-          <main style="width:min(420px,calc(100vw - 40px));padding:32px;border-radius:28px;background:rgba(255,255,255,.08);text-align:center;border:1px solid rgba(255,255,255,.12)">
-            <div style="font-size:34px;margin-bottom:14px">!</div>
-            <h1 style="font-size:24px;margin:0 0 10px">Login not completed</h1>
-            <p style="color:rgba(255,255,255,.72);line-height:1.5;margin:0">${htmlEscape(message)}</p>
-            <p style="color:rgba(255,255,255,.55);line-height:1.5;margin:18px 0 0">Return to Amaya and try Device Code if the browser redirect keeps failing.</p>
-          </main>
-        </body></html>
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            <title>Sign In Failed</title>
+            <style>
+                * { box-sizing: border-box; }
+                html, body {
+                    width: 100%;
+                    height: 100%;
+                    margin: 0;
+                    overflow: hidden;
+                    background: #ffffff;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                }
+                body {
+                    min-height: 100dvh;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 16px;
+                }
+                .wrap {
+                    width: min(100%, 360px);
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    text-align: center;
+                }
+                .icon {
+                    width: 112px;
+                    height: 112px;
+                    border-radius: 9999px;
+                    background: #f3f4f6;
+                    color: #111827;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    margin-bottom: 32px;
+                    font-size: 48px;
+                    font-weight: 400;
+                    flex: none;
+                }
+                h1 {
+                    margin: 0 0 20px;
+                    color: #111827;
+                    font-size: clamp(26px, 7vw, 30px);
+                    font-weight: 400;
+                    line-height: 1.15;
+                    letter-spacing: -0.02em;
+                }
+                .body {
+                    color: #4b5563;
+                    font-size: 16px;
+                    line-height: 1.55;
+                    margin-bottom: 32px;
+                }
+                .body p { margin: 0; }
+                .body p + p { margin-top: 6px; }
+                .button {
+                    appearance: none;
+                    border: 0;
+                    border-radius: 9999px;
+                    background: #111827;
+                    color: #fff;
+                    padding: 14px 32px;
+                    font-size: 14px;
+                    font-weight: 500;
+                    cursor: pointer;
+                    box-shadow: 0 1px 2px rgba(0,0,0,.08);
+                }
+            </style>
+        </head>
+        <body>
+            <main class="wrap">
+                <div class="icon" aria-hidden="true">!</div>
+                <h1>Sign In Failed</h1>
+                <div class="body">
+                    <p>${htmlEscape(message)}</p>
+                    <p>Please return to the app and try again.</p>
+                </div>
+                <button class="button" onclick="window.close()">Close tab</button>
+            </main>
+        </body>
+        </html>
     """.trimIndent()
 
     private fun htmlEscape(value: String): String = value
@@ -563,13 +638,6 @@ sealed class CodexAuthState {
 
     /** Exchanging authorization code for tokens. */
     data object ExchangingToken : CodexAuthState()
-
-    /** Device code is ready — show user_code and verification_uri. */
-    data class DeviceCodeReady(
-        val userCode: String,
-        val verificationUri: String,
-        val expiresInSeconds: Int
-    ) : CodexAuthState()
 
     /** Authentication completed successfully. */
     data class Authenticated(val email: String?) : CodexAuthState()

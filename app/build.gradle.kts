@@ -8,6 +8,14 @@ plugins {
 
 import java.util.Properties
 
+fun String.escapeForBuildConfig(): String = replace("\\", "\\\\").replace("\"", "\\\"")
+
+val keystorePropertiesFile = rootProject.file(".env.local")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(keystorePropertiesFile.inputStream())
+}
+
 android {
     namespace = "com.amaya.intelligence"
     compileSdk = 35
@@ -30,17 +38,13 @@ android {
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        val githubCopilotClientId = keystoreProperties.getProperty("GITHUB_COPILOT_CLIENT_ID", "").escapeForBuildConfig()
+        buildConfigField("String", "GITHUB_COPILOT_CLIENT_ID", "\"$githubCopilotClientId\"")
         
         // Room schema export for migrations
         ksp {
             arg("room.schemaLocation", "$projectDir/schemas")
         }
-    }
-
-    val keystorePropertiesFile = rootProject.file(".env.local")
-    val keystoreProperties = Properties()
-    if (keystorePropertiesFile.exists()) {
-        keystoreProperties.load(keystorePropertiesFile.inputStream())
     }
 
     signingConfigs {

@@ -135,16 +135,54 @@ object AmayaProviderRegistry {
             displayName = "GitHub Copilot",
             category = ProviderCategory.SUBSCRIPTION_LOGIN,
             engine = ProviderEngine.TOOL_BRIDGE,
-            authModes = listOf(AuthMode.OAUTH, AuthMode.DEVICE_FLOW),
+            authModes = listOf(AuthMode.OAUTH, AuthMode.BROWSER_LOGIN, AuthMode.DEVICE_FLOW),
             apiFormat = ApiFormat.TOOL_BRIDGE,
-            credentialStorage = CredentialStorage.BACKEND_VAULT,
+            requiredFields = listOf(
+                ProviderField(
+                    key = "copilotRuntime",
+                    label = "Copilot Runtime",
+                    type = ProviderFieldType.SELECT,
+                    required = true,
+                    description = "Copilot CLI atau Copilot SDK Bridge yang berjalan lokal."
+                )
+            ),
+            optionalFields = listOf(
+                ProviderField(
+                    key = "githubAccount",
+                    label = "GitHub Account",
+                    type = ProviderFieldType.TEXT,
+                    required = false,
+                    description = "Label akun setelah OAuth berhasil."
+                ),
+                ProviderField(
+                    key = "organization",
+                    label = "GitHub Organization",
+                    type = ProviderFieldType.TEXT,
+                    required = false
+                ),
+                ProviderField(
+                    key = "cliPath",
+                    label = "Copilot CLI Path",
+                    type = ProviderFieldType.PATH,
+                    required = false
+                ),
+                ProviderField(
+                    key = "workspacePath",
+                    label = "Default Workspace Path",
+                    type = ProviderFieldType.PATH,
+                    required = false
+                )
+            ),
+            credentialStorage = CredentialStorage.LOCAL_SECURE_STORAGE,
             supportsModelSync = false,
             modelCatalogSources = listOf(ModelCatalogSource.SUBSCRIPTION_TOOL),
             supportsStreaming = true,
             supportsTools = true,
             supportsVision = false,
             supportsEmbeddings = false,
-            notes = "Experimental. Requires Amaya backend bridge; do not scrape Copilot session."
+            supportsImageGeneration = false,
+            supportsLocalRuntime = true,
+            notes = "GitHub OAuth subscription login for Copilot bridge. Keep it separate from GitHub Models API."
         ),
         ProviderConfig(
             id = "openai_codex_bridge",
@@ -244,6 +282,7 @@ object KnownModelCatalog {
     private fun inferProviderId(model: String): String = when {
         model.contains("claude", true) -> "anthropic"
         model.contains("gemini", true) -> "google_gemini_api"
+        model.contains("copilot", true) -> "github_copilot"
         model.contains("deepseek", true) -> "deepseek"
         model.contains("grok", true) -> "xai"
         model.contains("llama", true) -> "groq"

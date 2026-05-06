@@ -12,7 +12,6 @@ data class AgentSubscriptionAuthUi(
     val accountLabel: String? = null,
     val step: SubscriptionAuthStep = SubscriptionAuthStep.Methods,
     val onBrowserSignIn: (() -> Unit)? = null,
-    val onDeviceCodeSignIn: (() -> Unit)? = null,
     val onCancel: (() -> Unit)? = null,
     val onSignOut: (() -> Unit)? = null
 )
@@ -21,21 +20,14 @@ sealed interface SubscriptionAuthStep {
     data object Methods : SubscriptionAuthStep
     data class Error(val message: String) : SubscriptionAuthStep
     data class Waiting(val label: String) : SubscriptionAuthStep
-    data class DeviceCode(
-        val userCode: String,
-        val verificationUri: String,
-        val expiresInSeconds: Int
-    ) : SubscriptionAuthStep
 }
 
 internal fun subscriptionAuthStepKey(authUi: AgentSubscriptionAuthUi?): String = when (authUi?.step) {
     is SubscriptionAuthStep.Waiting -> "auth_wait"
-    is SubscriptionAuthStep.DeviceCode -> "auth_device"
     else -> "auth_methods"
 }
 
 internal fun subscriptionAuthTitle(authUi: AgentSubscriptionAuthUi?): String = when (authUi?.step) {
     is SubscriptionAuthStep.Waiting -> "Waiting for ${authUi.providerName}"
-    is SubscriptionAuthStep.DeviceCode -> "Device Code"
     else -> "${authUi?.providerName ?: "Subscription"} Sign In"
 }
