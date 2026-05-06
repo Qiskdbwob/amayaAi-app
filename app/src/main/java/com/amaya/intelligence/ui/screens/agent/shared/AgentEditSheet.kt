@@ -22,6 +22,7 @@ import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -73,9 +74,12 @@ fun AgentEditSheet(
     var showSubscriptionAuthFlow by remember(config.id, isNew) { mutableStateOf(false) }
     var showAdvancedSettings by remember(config.id, isNew) { mutableStateOf(false) }
     var showModelPicker by remember(config.id, isNew) { mutableStateOf(false) }
-    val selectedProvider = AmayaProviderRegistry.find(selectedProviderId)
-    val selectedSubscriptionAuth = selectedProvider?.id?.let { providerId ->
-        subscriptionAuths.firstOrNull { it.providerId == providerId }
+    var enableStepAnimation by remember(config.id, isNew) { mutableStateOf(false) }
+    val selectedProvider = remember(selectedProviderId) { AmayaProviderRegistry.find(selectedProviderId) }
+    val selectedSubscriptionAuth = remember(selectedProvider?.id, subscriptionAuths) {
+        selectedProvider?.id?.let { providerId ->
+            subscriptionAuths.firstOrNull { it.providerId == providerId }
+        }
     }
     val stepKey = when {
         isNew && wizardCategory == null -> "category"
@@ -200,6 +204,12 @@ fun AgentEditSheet(
         if (selectedSubscriptionAuth?.authenticated == true) showSubscriptionAuthFlow = false
     }
 
+    LaunchedEffect(config.id, isNew) {
+        enableStepAnimation = false
+        withFrameNanos { }
+        enableStepAnimation = true
+    }
+
     LaunchedEffect(stepKey) {
         if (scrollState.value != 0) scrollState.animateScrollTo(0)
     }
@@ -228,127 +238,132 @@ fun AgentEditSheet(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Spacer(Modifier.height(96.dp))
-                AnimatedContent(
-                    targetState = stepKey,
-                    transitionSpec = { modalStepTransition(initialState, targetState) },
-                    label = "agent_step_transition"
-                ) { activeStepKey ->
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        when {
-                            activeStepKey == "category" -> CategoryStep { wizardCategory = it }
-                            activeStepKey.startsWith("provider_") -> ProviderStep(
-                                category = if (activeStepKey.endsWith(AgentWizardCategory.SUBSCRIPTION.name)) {
-                                    AgentWizardCategory.SUBSCRIPTION
-                                } else {
-                                    AgentWizardCategory.API_KEY
-                                },
-                                onSelect = { provider ->
-                                    selectedProviderId = provider.id
-                                    name = provider.displayName
-                                    if (provider.defaultBaseUrl != null) baseUrl = provider.defaultBaseUrl
-                                    toolCalling = provider.supportsTools
-                                    vision = provider.supportsVision
-                                    embeddings = provider.supportsEmbeddings
-                                    streaming = provider.supportsStreaming
-                                    if (provider.isSubscription) {
-                                        modelId = ""
-                                        enabledModelIds = emptySet()
-                                    }
+                if (enableStepAnimation) {
+                    AnimatedContent(
+                        targetState = stepKey,
+                        transitionSpec = { modalStepTransition(initialState, targetState) },
+                        label = "agent_step_transition"
+                    ) { activeStepKey ->
+                        AgentStepContent(
+                            activeStepKey = activeStepKey,
+                            isNew = isNew,
+                            config = config,
+                            selectedProviderId = selectedProviderId,
+                            selectedProvider = selectedProvider,
+                            selectedSubscriptionAuth = selectedSubscriptionAuth,
+                            stableModelCatalog = stableModelCatalog,
+                            name = name,
+                            onNameChange = { name = it },
+                            baseUrl = baseUrl,
+                            onBaseUrlChange = { baseUrl = it },
+                            modelId = modelId,
+                            onModelIdChange = { modelId = it },
+                            key = key,
+                            onKeyChange = { key = it },
+                            showKey = showKey,
+                            onToggleShowKey = { showKey = !showKey },
+                            enabled = enabled,
+                            onEnabledChange = { enabled = it },
+                            maxTokensStr = maxTokensStr,
+                            onMaxTokensChange = { v -> if (v.all { it.isDigit() }) maxTokensStr = v },
+                            maxIterationsStr = maxIterationsStr,
+                            onMaxIterationsChange = { v -> if (v.all { it.isDigit() }) maxIterationsStr = v },
+                            toolCalling = toolCalling,
+                            onToolCallingChange = { toolCalling = it },
+                            vision = vision,
+                            onVisionChange = { vision = it },
+                            reasoning = reasoning,
+                            onReasoningChange = { reasoning = it },
+                            structuredOutput = structuredOutput,
+                            onStructuredOutputChange = { structuredOutput = it },
+                            embeddings = embeddings,
+                            onEmbeddingsChange = { embeddings = it },
+                            jsonMode = jsonMode,
+                            onJsonModeChange = { jsonMode = it },
+                            streaming = streaming,
+                            onStreamingChange = { streaming = it },
+                            enabledModelIds = enabledModelIds,
+                            onEnabledModelIdsChange = { enabledModelIds = it },
+                            onWizardCategoryChange = { wizardCategory = it },
+                            onProviderSelected = { provider ->
+                                selectedProviderId = provider.id
+                                name = provider.displayName
+                                if (provider.defaultBaseUrl != null) baseUrl = provider.defaultBaseUrl
+                                toolCalling = provider.supportsTools
+                                vision = provider.supportsVision
+                                embeddings = provider.supportsEmbeddings
+                                streaming = provider.supportsStreaming
+                                if (provider.isSubscription) {
+                                    modelId = ""
+                                    enabledModelIds = emptySet()
                                 }
-                            )
-                            activeStepKey.startsWith("subscription_") -> {
-                                val stepProviderId = activeStepKey.removePrefix("subscription_")
-                                val stepProvider = AmayaProviderRegistry.find(stepProviderId) ?: selectedProvider
-                                if (stepProvider != null) {
-                                    SubscriptionStep(
-                                        providerId = stepProvider.id,
-                                        providerName = stepProvider.displayName,
-                                        modelCatalog = stableModelCatalog.filter { it.providerId == stepProvider.id },
-                                        enabledModelIds = enabledModelIds,
-                                        onEnabledModelIds = { selectedModels ->
-                                            val clean = selectedModels.filter { it.isNotBlank() && it != stepProvider.id }.toSet()
-                                            enabledModelIds = clean
-                                            quickSaveSubscription(clean)
-                                        },
-                                        authUi = selectedSubscriptionAuth?.takeIf { it.providerId == stepProvider.id }?.copy(
-                                            onBrowserSignIn = { showSubscriptionAuthFlow = true }
-                                        ),
-                                        onOpenModels = { showModelPicker = true }
-                                    )
-                                }
-                            }
-                            activeStepKey.startsWith("models_") -> {
-                                val stepProviderId = activeStepKey.removePrefix("models_").ifBlank {
-                                    selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() }
-                                }
-                                val stepProvider = AmayaProviderRegistry.find(stepProviderId)
-                                val stepCatalog = stableModelCatalog.filter { it.providerId == stepProviderId }
-                                AgentModelsSection(
-                                    modelCatalog = stepCatalog,
-                                    modelId = modelId,
-                                    enabledModelIds = enabledModelIds,
-                                    onModelId = { modelId = it },
-                                    onEnabledModelIds = { next ->
-                                        enabledModelIds = next
-                                        if (stepProvider?.isSubscription == true) quickSaveSubscription(next)
-                                    },
-                                    useDefaultModel = stepProvider?.isSubscription != true
-                                )
-                            }
-                            activeStepKey.startsWith("auth_") -> SubscriptionAuthStepContent(selectedSubscriptionAuth)
-                            activeStepKey.startsWith("advanced_") -> {
-                                val stepProviderId = activeStepKey.removePrefix("advanced_").ifBlank {
-                                    selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() }
-                                }
-                                AgentAdvancedSettingsSection(
-                                    providerId = stepProviderId,
-                                    baseUrl = baseUrl,
-                                    onBaseUrl = { baseUrl = it },
-                                    maxTokensStr = maxTokensStr,
-                                    onMaxTokens = { v -> if (v.all { it.isDigit() }) maxTokensStr = v },
-                                    maxIterationsStr = maxIterationsStr,
-                                    onMaxIterations = { v -> if (v.all { it.isDigit() }) maxIterationsStr = v },
-                                    enabled = enabled,
-                                    onEnabled = { enabled = it },
-                                    toolCalling = toolCalling,
-                                    onToolCalling = { toolCalling = it },
-                                    vision = vision,
-                                    onVision = { vision = it },
-                                    reasoning = reasoning,
-                                    onReasoning = { reasoning = it },
-                                    structuredOutput = structuredOutput,
-                                    onStructuredOutput = { structuredOutput = it },
-                                    embeddings = embeddings,
-                                    onEmbeddings = { embeddings = it },
-                                    jsonMode = jsonMode,
-                                    onJsonMode = { jsonMode = it },
-                                    streaming = streaming,
-                                    onStreaming = { streaming = it }
-                                )
-                            }
-                            else -> {
-                                val stepProviderId = activeStepKey.removePrefix("api_").ifBlank {
-                                    selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() }
-                                }
-                                ApiProviderForm(
-                                    providerId = stepProviderId,
-                                    name = name,
-                                    onName = { name = it },
-                                    key = key,
-                                    onKey = { key = it },
-                                    showKey = showKey,
-                                    onToggleShowKey = { showKey = !showKey },
-                                    modelId = modelId,
-                                    enabledModelIds = enabledModelIds,
-                                    onOpenModels = { showModelPicker = true },
-                                    onAdvanced = { showAdvancedSettings = true }
-                                )
-                            }
-                        }
+                            },
+                            onOpenSubscriptionAuth = { showSubscriptionAuthFlow = true },
+                            onOpenModels = { showModelPicker = true },
+                            onOpenAdvanced = { showAdvancedSettings = true },
+                            onQuickSaveSubscription = { models -> quickSaveSubscription(models) }
+                        )
                     }
+                } else {
+                    AgentStepContent(
+                        activeStepKey = stepKey,
+                        isNew = isNew,
+                        config = config,
+                        selectedProviderId = selectedProviderId,
+                        selectedProvider = selectedProvider,
+                        selectedSubscriptionAuth = selectedSubscriptionAuth,
+                        stableModelCatalog = stableModelCatalog,
+                        name = name,
+                        onNameChange = { name = it },
+                        baseUrl = baseUrl,
+                        onBaseUrlChange = { baseUrl = it },
+                        modelId = modelId,
+                        onModelIdChange = { modelId = it },
+                        key = key,
+                        onKeyChange = { key = it },
+                        showKey = showKey,
+                        onToggleShowKey = { showKey = !showKey },
+                        enabled = enabled,
+                        onEnabledChange = { enabled = it },
+                        maxTokensStr = maxTokensStr,
+                        onMaxTokensChange = { v -> if (v.all { it.isDigit() }) maxTokensStr = v },
+                        maxIterationsStr = maxIterationsStr,
+                        onMaxIterationsChange = { v -> if (v.all { it.isDigit() }) maxIterationsStr = v },
+                        toolCalling = toolCalling,
+                        onToolCallingChange = { toolCalling = it },
+                        vision = vision,
+                        onVisionChange = { vision = it },
+                        reasoning = reasoning,
+                        onReasoningChange = { reasoning = it },
+                        structuredOutput = structuredOutput,
+                        onStructuredOutputChange = { structuredOutput = it },
+                        embeddings = embeddings,
+                        onEmbeddingsChange = { embeddings = it },
+                        jsonMode = jsonMode,
+                        onJsonModeChange = { jsonMode = it },
+                        streaming = streaming,
+                        onStreamingChange = { streaming = it },
+                        enabledModelIds = enabledModelIds,
+                        onEnabledModelIdsChange = { enabledModelIds = it },
+                        onWizardCategoryChange = { wizardCategory = it },
+                        onProviderSelected = { provider ->
+                            selectedProviderId = provider.id
+                            name = provider.displayName
+                            if (provider.defaultBaseUrl != null) baseUrl = provider.defaultBaseUrl
+                            toolCalling = provider.supportsTools
+                            vision = provider.supportsVision
+                            embeddings = provider.supportsEmbeddings
+                            streaming = provider.supportsStreaming
+                            if (provider.isSubscription) {
+                                modelId = ""
+                                enabledModelIds = emptySet()
+                            }
+                        },
+                        onOpenSubscriptionAuth = { showSubscriptionAuthFlow = true },
+                        onOpenModels = { showModelPicker = true },
+                        onOpenAdvanced = { showAdvancedSettings = true },
+                        onQuickSaveSubscription = { models -> quickSaveSubscription(models) }
+                    )
                 }
             }
 
@@ -416,6 +431,160 @@ fun AgentEditSheet(
             },
             dismissButton = { TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") } }
         )
+    }
+}
+
+@Composable
+private fun AgentStepContent(
+    activeStepKey: String,
+    isNew: Boolean,
+    config: AgentConfig,
+    selectedProviderId: String?,
+    selectedProvider: com.amaya.intelligence.data.remote.api.ProviderConfig?,
+    selectedSubscriptionAuth: AgentSubscriptionAuthUi?,
+    stableModelCatalog: List<ModelCatalogEntry>,
+    name: String,
+    onNameChange: (String) -> Unit,
+    baseUrl: String,
+    onBaseUrlChange: (String) -> Unit,
+    modelId: String,
+    onModelIdChange: (String) -> Unit,
+    key: String,
+    onKeyChange: (String) -> Unit,
+    showKey: Boolean,
+    onToggleShowKey: () -> Unit,
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    maxTokensStr: String,
+    onMaxTokensChange: (String) -> Unit,
+    maxIterationsStr: String,
+    onMaxIterationsChange: (String) -> Unit,
+    toolCalling: Boolean,
+    onToolCallingChange: (Boolean) -> Unit,
+    vision: Boolean,
+    onVisionChange: (Boolean) -> Unit,
+    reasoning: Boolean,
+    onReasoningChange: (Boolean) -> Unit,
+    structuredOutput: Boolean,
+    onStructuredOutputChange: (Boolean) -> Unit,
+    embeddings: Boolean,
+    onEmbeddingsChange: (Boolean) -> Unit,
+    jsonMode: Boolean,
+    onJsonModeChange: (Boolean) -> Unit,
+    streaming: Boolean,
+    onStreamingChange: (Boolean) -> Unit,
+    enabledModelIds: Set<String>,
+    onEnabledModelIdsChange: (Set<String>) -> Unit,
+    onWizardCategoryChange: (AgentWizardCategory) -> Unit,
+    onProviderSelected: (com.amaya.intelligence.data.remote.api.ProviderConfig) -> Unit,
+    onOpenSubscriptionAuth: () -> Unit,
+    onOpenModels: () -> Unit,
+    onOpenAdvanced: () -> Unit,
+    onQuickSaveSubscription: (Set<String>) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        when {
+            activeStepKey == "category" -> CategoryStep { onWizardCategoryChange(it) }
+            activeStepKey.startsWith("provider_") -> ProviderStep(
+                category = if (activeStepKey.endsWith(AgentWizardCategory.SUBSCRIPTION.name)) {
+                    AgentWizardCategory.SUBSCRIPTION
+                } else {
+                    AgentWizardCategory.API_KEY
+                },
+                onSelect = { provider -> onProviderSelected(provider) }
+            )
+            activeStepKey.startsWith("subscription_") -> {
+                val stepProviderId = activeStepKey.removePrefix("subscription_")
+                val stepProvider = AmayaProviderRegistry.find(stepProviderId) ?: selectedProvider
+                if (stepProvider != null) {
+                    SubscriptionStep(
+                        providerId = stepProvider.id,
+                        providerName = stepProvider.displayName,
+                        modelCatalog = stableModelCatalog.filter { it.providerId == stepProvider.id },
+                        enabledModelIds = enabledModelIds,
+                        onEnabledModelIds = { selectedModels ->
+                            val clean = selectedModels.filter { it.isNotBlank() && it != stepProvider.id }.toSet()
+                            onEnabledModelIdsChange(clean)
+                            onQuickSaveSubscription(clean)
+                        },
+                        authUi = selectedSubscriptionAuth?.takeIf { it.providerId == stepProvider.id }?.copy(
+                            onBrowserSignIn = { onOpenSubscriptionAuth() }
+                        ),
+                        onOpenModels = { onOpenModels() }
+                    )
+                }
+            }
+            activeStepKey.startsWith("models_") -> {
+                val stepProviderId = activeStepKey.removePrefix("models_").ifBlank {
+                    selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() }
+                }
+                val stepProvider = AmayaProviderRegistry.find(stepProviderId)
+                val stepCatalog = stableModelCatalog.filter { it.providerId == stepProviderId }
+                AgentModelsSection(
+                    modelCatalog = stepCatalog,
+                    modelId = modelId,
+                    enabledModelIds = enabledModelIds,
+                    onModelId = { onModelIdChange(it) },
+                    onEnabledModelIds = { next ->
+                        onEnabledModelIdsChange(next)
+                        if (stepProvider?.isSubscription == true) onQuickSaveSubscription(next)
+                    },
+                    useDefaultModel = stepProvider?.isSubscription != true
+                )
+            }
+            activeStepKey.startsWith("auth_") -> SubscriptionAuthStepContent(selectedSubscriptionAuth)
+            activeStepKey.startsWith("advanced_") -> {
+                val stepProviderId = activeStepKey.removePrefix("advanced_").ifBlank {
+                    selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() }
+                }
+                AgentAdvancedSettingsSection(
+                    providerId = stepProviderId,
+                    baseUrl = baseUrl,
+                    onBaseUrl = onBaseUrlChange,
+                    maxTokensStr = maxTokensStr,
+                    onMaxTokens = onMaxTokensChange,
+                    maxIterationsStr = maxIterationsStr,
+                    onMaxIterations = onMaxIterationsChange,
+                    enabled = enabled,
+                    onEnabled = onEnabledChange,
+                    toolCalling = toolCalling,
+                    onToolCalling = onToolCallingChange,
+                    vision = vision,
+                    onVision = onVisionChange,
+                    reasoning = reasoning,
+                    onReasoning = onReasoningChange,
+                    structuredOutput = structuredOutput,
+                    onStructuredOutput = onStructuredOutputChange,
+                    embeddings = embeddings,
+                    onEmbeddings = onEmbeddingsChange,
+                    jsonMode = jsonMode,
+                    onJsonMode = onJsonModeChange,
+                    streaming = streaming,
+                    onStreaming = onStreamingChange
+                )
+            }
+            else -> {
+                val stepProviderId = activeStepKey.removePrefix("api_").ifBlank {
+                    selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() }
+                }
+                ApiProviderForm(
+                    providerId = stepProviderId,
+                    name = name,
+                    onName = onNameChange,
+                    key = key,
+                    onKey = onKeyChange,
+                    showKey = showKey,
+                    onToggleShowKey = onToggleShowKey,
+                    modelId = modelId,
+                    enabledModelIds = enabledModelIds,
+                    onOpenModels = onOpenModels,
+                    onAdvanced = onOpenAdvanced
+                )
+            }
+        }
     }
 }
 

@@ -7,6 +7,8 @@ import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -23,15 +25,19 @@ fun AgentList(
     topPadding: androidx.compose.ui.unit.Dp = 72.dp,
     modifier: Modifier = Modifier
 ) {
-    val subscriptionProviders = AmayaProviderRegistry.providers.filter { it.isSubscription }
-    val subscriptionProviderIds = subscriptionProviders.map { it.id }.toSet()
-    val subscriptionAgents = subscriptionProviders.mapNotNull { provider ->
-        agentConfigs.filter { it.providerId == provider.id }
-            .maxByOrNull { subscriptionEnabledModelCount(it) }
+    val subscriptionProviders = remember { AmayaProviderRegistry.providers.filter { it.isSubscription } }
+    val subscriptionProviderIds = remember(subscriptionProviders) { subscriptionProviders.map { it.id }.toSet() }
+    val subscriptionAgents = remember(agentConfigs, subscriptionProviders) {
+        subscriptionProviders.mapNotNull { provider ->
+            agentConfigs.filter { it.providerId == provider.id }
+                .maxByOrNull { subscriptionEnabledModelCount(it) }
+        }
     }
-    val regularAgents = agentConfigs.filter { it.providerId !in subscriptionProviderIds }
-    val enabledAgents = regularAgents.filter { it.enabled }
-    val disabledAgents = regularAgents.filter { !it.enabled }
+    val regularAgents = remember(agentConfigs, subscriptionProviderIds) {
+        agentConfigs.filter { it.providerId !in subscriptionProviderIds }
+    }
+    val enabledAgents = remember(regularAgents) { regularAgents.filter { it.enabled } }
+    val disabledAgents = remember(regularAgents) { regularAgents.filter { !it.enabled } }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -78,7 +84,9 @@ fun AgentList(
             item {
                 SettingsSectionCard(title = "Subscription") {
                     subscriptionAgents.forEachIndexed { index, config ->
-                        SubscriptionConnectionCard(config = config, onClick = { onAgentClick(config) })
+                        key(config.id) {
+                            SubscriptionConnectionCard(config = config, onClick = { onAgentClick(config) })
+                        }
                         if (index < subscriptionAgents.size - 1) {
                             HorizontalDivider(
                                 modifier = Modifier.padding(start = 78.dp, end = 20.dp),
@@ -94,11 +102,13 @@ fun AgentList(
             item {
                 SettingsSectionCard(title = "Enabled") {
                     enabledAgents.forEachIndexed { index, config ->
-                        AgentCard(
-                            config = config,
-                            onClick = { onAgentClick(config) },
-                            onToggleEnabled = { enabled -> onToggleEnabled(config, enabled) }
-                        )
+                        key(config.id) {
+                            AgentCard(
+                                config = config,
+                                onClick = { onAgentClick(config) },
+                                onToggleEnabled = { enabled -> onToggleEnabled(config, enabled) }
+                            )
+                        }
                         if (index < enabledAgents.size - 1) {
                             HorizontalDivider(
                                 modifier = Modifier.padding(start = 78.dp, end = 20.dp),
@@ -114,11 +124,13 @@ fun AgentList(
             item {
                 SettingsSectionCard(title = "Disabled") {
                     disabledAgents.forEachIndexed { index, config ->
-                        AgentCard(
-                            config = config,
-                            onClick = { onAgentClick(config) },
-                            onToggleEnabled = { enabled -> onToggleEnabled(config, enabled) }
-                        )
+                        key(config.id) {
+                            AgentCard(
+                                config = config,
+                                onClick = { onAgentClick(config) },
+                                onToggleEnabled = { enabled -> onToggleEnabled(config, enabled) }
+                            )
+                        }
                         if (index < disabledAgents.size - 1) {
                             HorizontalDivider(
                                 modifier = Modifier.padding(start = 78.dp, end = 20.dp),
