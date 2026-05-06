@@ -84,8 +84,10 @@ class AiRepository @Inject constructor(
      * Resolve the AiProvider from an AgentConfig, falling back to DataStore activeProvider.
      */
     private fun resolveProvider(agentConfig: AgentConfig): AiProvider {
-        val type = runCatching { ProviderType.valueOf(agentConfig.providerType) }
-            .getOrElse { ProviderType.OPENAI }
+        val type = AmayaProviderRegistry.legacyProviderType(agentConfig.providerId)
+            .takeIf { agentConfig.providerId.isNotBlank() }
+            ?: runCatching { ProviderType.valueOf(agentConfig.providerType) }
+                .getOrElse { ProviderType.OPENAI }
         return when (type) {
             ProviderType.ANTHROPIC -> anthropicProvider
             ProviderType.OPENAI    -> openAiProvider
@@ -182,8 +184,9 @@ class AiRepository @Inject constructor(
         )
         val systemPrompt = managedContext.systemPrompt
         
-        // Build tool definitions
-        val tools = buildToolDefinitions()
+        // Build tool definitions. New provider capability override: when tool calling is
+        // disabled for the selected agent, keep the model loop text-only.
+        val tools = if (agentConfig.toolCalling) buildToolDefinitions() else emptyList()
         
         // Start conversation loop
         var messages = managedContext.messages
@@ -254,7 +257,7 @@ class AiRepository @Inject constructor(
             // If no native tool calls received, try to parse tool calls from text response.
             // This handles models that don't support native function calling (e.g. StepFun)
             // and instead emit <tool_call> XML or JSON blocks in their text output.
-            if (!hasToolCalls && textBuffer.isNotEmpty()) {
+            if (agentConfig.toolCalling && !hasToolCalls && textBuffer.isNotEmpty()) {
                 val parsed = parseToolCallsFromText(textBuffer.toString())
                 if (parsed.isNotEmpty()) {
                     hasToolCalls = true

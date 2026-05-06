@@ -234,8 +234,12 @@ fun ChatScreen(
     }
 
     val activeAgentId = uiState.activeAgentId
-    val activeAgent = uiState.agentConfigs.find { it.id == activeAgentId } ?: uiState.agentConfigs.firstOrNull()
+    val activeProviderId = uiState.activeProviderId
+    val activeAgent = uiState.agentConfigs.find { it.id == activeAgentId }
     val selectedModel = uiState.selectedModel.ifBlank { activeAgent?.modelId ?: "" }
+    val selectedModelItem = uiState.agentConfigs.firstOrNull { item ->
+        item.modelId == selectedModel && (activeProviderId.isBlank() || item.providerId == activeProviderId)
+    } ?: activeAgent ?: uiState.agentConfigs.firstOrNull()
     val selectedAgentFallbackLabel = config?.selectedAgentFallbackLabel ?: "Select Agent"
     val streamingLabel = config?.streamingLabel ?: "Streaming"
     val idleLabel = config?.idleLabel ?: "Idle"
@@ -494,7 +498,7 @@ fun ChatScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = (activeAgent?.name ?: selectedModel).ifBlank { selectedAgentFallbackLabel }
+                                    text = (selectedModelItem?.name ?: selectedModel).ifBlank { selectedAgentFallbackLabel }
                                         .let { if (it.length > 22) it.take(20) + "…" else it },
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.SemiBold,
@@ -651,6 +655,8 @@ fun ChatScreen(
         ModelSelectorSheet(
             agentItems = uiState.agentConfigs,
             activeAgentId = activeAgentId,
+            activeModel = selectedModel,
+            activeProviderId = activeProviderId.ifBlank { selectedModelItem?.providerId.orEmpty() },
             isRemote = isRemoteMode,
             onRefresh = { viewModel.refreshModels() },
             onSelect = { item ->
@@ -668,7 +674,16 @@ fun ChatScreen(
             activeReminderCount = effectiveReminderCount,
             onDismiss = { showSessionInfo = false },
             inputTokens = uiState.totalInputTokens,
-            outputTokens = uiState.totalOutputTokens
+            outputTokens = uiState.totalOutputTokens,
+            providerId = selectedModelItem?.providerId ?: activeAgent?.providerId,
+            providerNameOverride = selectedModelItem?.providerName,
+            modelDisplayNameOverride = selectedModelItem?.name,
+            sourceLabelOverride = selectedModelItem?.sourceLabel,
+            contextWindowTokensOverride = selectedModelItem?.contextWindowTokens,
+            maxOutputTokensOverride = selectedModelItem?.maxOutputTokens,
+            capabilityLabelsOverride = selectedModelItem?.capabilityLabels.orEmpty(),
+            inputPriceOverride = selectedModelItem?.inputPricePerMillionTokens,
+            outputPriceOverride = selectedModelItem?.outputPricePerMillionTokens
         )
     }
 }

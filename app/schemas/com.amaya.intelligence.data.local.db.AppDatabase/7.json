@@ -1,0 +1,963 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 7,
+    "identityHash": "21066107c626a4acc5d5d18c3611e83f",
+    "entities": [
+      {
+        "tableName": "projects",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `root_path` TEXT NOT NULL, `primary_language` TEXT, `last_scanned_at` INTEGER, `file_count` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, `is_active` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rootPath",
+            "columnName": "root_path",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "primaryLanguage",
+            "columnName": "primary_language",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastScannedAt",
+            "columnName": "last_scanned_at",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "fileCount",
+            "columnName": "file_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isActive",
+            "columnName": "is_active",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_projects_root_path",
+            "unique": true,
+            "columnNames": [
+              "root_path"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_projects_root_path` ON `${TABLE_NAME}` (`root_path`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "files",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `project_id` INTEGER NOT NULL, `relative_path` TEXT NOT NULL, `file_name` TEXT NOT NULL, `extension` TEXT, `content_hash` TEXT NOT NULL, `size_bytes` INTEGER NOT NULL, `last_modified` INTEGER NOT NULL, `indexed_at` INTEGER NOT NULL, `is_directory` INTEGER NOT NULL, FOREIGN KEY(`project_id`) REFERENCES `projects`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "projectId",
+            "columnName": "project_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relative_path",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileName",
+            "columnName": "file_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "extension",
+            "columnName": "extension",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "contentHash",
+            "columnName": "content_hash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sizeBytes",
+            "columnName": "size_bytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastModified",
+            "columnName": "last_modified",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "indexedAt",
+            "columnName": "indexed_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isDirectory",
+            "columnName": "is_directory",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_files_project_id",
+            "unique": false,
+            "columnNames": [
+              "project_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_files_project_id` ON `${TABLE_NAME}` (`project_id`)"
+          },
+          {
+            "name": "index_files_relative_path",
+            "unique": false,
+            "columnNames": [
+              "relative_path"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_files_relative_path` ON `${TABLE_NAME}` (`relative_path`)"
+          },
+          {
+            "name": "index_files_content_hash",
+            "unique": false,
+            "columnNames": [
+              "content_hash"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_files_content_hash` ON `${TABLE_NAME}` (`content_hash`)"
+          },
+          {
+            "name": "index_files_extension",
+            "unique": false,
+            "columnNames": [
+              "extension"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_files_extension` ON `${TABLE_NAME}` (`extension`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "projects",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "project_id"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "ftsVersion": "FTS4",
+        "ftsOptions": {
+          "tokenizer": "simple",
+          "tokenizerArgs": [],
+          "contentTable": "files",
+          "languageIdColumnName": "",
+          "matchInfo": "FTS4",
+          "notIndexedColumns": [],
+          "prefixSizes": [],
+          "preferredOrder": "ASC"
+        },
+        "contentSyncTriggers": [
+          "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_files_fts_BEFORE_UPDATE BEFORE UPDATE ON `files` BEGIN DELETE FROM `files_fts` WHERE `docid`=OLD.`rowid`; END",
+          "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_files_fts_BEFORE_DELETE BEFORE DELETE ON `files` BEGIN DELETE FROM `files_fts` WHERE `docid`=OLD.`rowid`; END",
+          "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_files_fts_AFTER_UPDATE AFTER UPDATE ON `files` BEGIN INSERT INTO `files_fts`(`docid`, `file_name`, `relative_path`) VALUES (NEW.`rowid`, NEW.`file_name`, NEW.`relative_path`); END",
+          "CREATE TRIGGER IF NOT EXISTS room_fts_content_sync_files_fts_AFTER_INSERT AFTER INSERT ON `files` BEGIN INSERT INTO `files_fts`(`docid`, `file_name`, `relative_path`) VALUES (NEW.`rowid`, NEW.`file_name`, NEW.`relative_path`); END"
+        ],
+        "tableName": "files_fts",
+        "createSql": "CREATE VIRTUAL TABLE IF NOT EXISTS `${TABLE_NAME}` USING FTS4(`file_name` TEXT NOT NULL, `relative_path` TEXT NOT NULL, content=`files`)",
+        "fields": [
+          {
+            "fieldPath": "fileName",
+            "columnName": "file_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relative_path",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": []
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "file_metadata",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `file_id` INTEGER NOT NULL, `language` TEXT NOT NULL, `class_names` TEXT, `function_names` TEXT, `imports` TEXT, `loc` INTEGER, `extracted_at` INTEGER NOT NULL, FOREIGN KEY(`file_id`) REFERENCES `files`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileId",
+            "columnName": "file_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "language",
+            "columnName": "language",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "classNames",
+            "columnName": "class_names",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "functionNames",
+            "columnName": "function_names",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "imports",
+            "columnName": "imports",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "linesOfCode",
+            "columnName": "loc",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "extractedAt",
+            "columnName": "extracted_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_file_metadata_file_id",
+            "unique": true,
+            "columnNames": [
+              "file_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_file_metadata_file_id` ON `${TABLE_NAME}` (`file_id`)"
+          },
+          {
+            "name": "index_file_metadata_language",
+            "unique": false,
+            "columnNames": [
+              "language"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_file_metadata_language` ON `${TABLE_NAME}` (`language`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "files",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "file_id"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "conversations",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `title` TEXT NOT NULL, `workspace_path` TEXT, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `messages_json` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "workspacePath",
+            "columnName": "workspace_path",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "messagesJson",
+            "columnName": "messages_json",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "cron_jobs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `title` TEXT NOT NULL, `prompt` TEXT NOT NULL, `trigger_time_millis` INTEGER NOT NULL, `recurring_type` TEXT NOT NULL, `is_active` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, `conversation_id` INTEGER, `fire_count` INTEGER NOT NULL, `session_mode` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "prompt",
+            "columnName": "prompt",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "triggerTimeMillis",
+            "columnName": "trigger_time_millis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recurringType",
+            "columnName": "recurring_type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isActive",
+            "columnName": "is_active",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conversationId",
+            "columnName": "conversation_id",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "fireCount",
+            "columnName": "fire_count",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sessionMode",
+            "columnName": "session_mode",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "provider_connections",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `provider_id` TEXT NOT NULL, `display_name` TEXT NOT NULL, `base_url` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `config_json` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "providerId",
+            "columnName": "provider_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "display_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "baseUrl",
+            "columnName": "base_url",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "configJson",
+            "columnName": "config_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "model_catalog",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `provider_id` TEXT NOT NULL, `model_id` TEXT NOT NULL, `display_name` TEXT NOT NULL, `source` TEXT NOT NULL, `status` TEXT NOT NULL, `capabilities_csv` TEXT NOT NULL, `input_price_per_million_tokens` REAL, `output_price_per_million_tokens` REAL, `context_window` INTEGER, `max_output_tokens` INTEGER, `release_date` TEXT, `knowledge_cutoff` TEXT, `last_synced_at` INTEGER, `metadata_json` TEXT NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "providerId",
+            "columnName": "provider_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelId",
+            "columnName": "model_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "display_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "source",
+            "columnName": "source",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "capabilitiesCsv",
+            "columnName": "capabilities_csv",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "inputPricePerMillionTokens",
+            "columnName": "input_price_per_million_tokens",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "outputPricePerMillionTokens",
+            "columnName": "output_price_per_million_tokens",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "contextWindow",
+            "columnName": "context_window",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "maxOutputTokens",
+            "columnName": "max_output_tokens",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "releaseDate",
+            "columnName": "release_date",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "knowledgeCutoff",
+            "columnName": "knowledge_cutoff",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastSyncedAt",
+            "columnName": "last_synced_at",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "metadataJson",
+            "columnName": "metadata_json",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_model_catalog_provider_id_model_id",
+            "unique": true,
+            "columnNames": [
+              "provider_id",
+              "model_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_model_catalog_provider_id_model_id` ON `${TABLE_NAME}` (`provider_id`, `model_id`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "provider_model_availability",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`provider_connection_id` TEXT NOT NULL, `catalog_model_id` TEXT NOT NULL, `provider_model_id` TEXT NOT NULL, `status` TEXT NOT NULL, `region` TEXT, `deployment_name` TEXT, `error_message` TEXT, `last_checked_at` INTEGER, PRIMARY KEY(`provider_connection_id`, `catalog_model_id`))",
+        "fields": [
+          {
+            "fieldPath": "providerConnectionId",
+            "columnName": "provider_connection_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "catalogModelId",
+            "columnName": "catalog_model_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "providerModelId",
+            "columnName": "provider_model_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "region",
+            "columnName": "region",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "deploymentName",
+            "columnName": "deployment_name",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "errorMessage",
+            "columnName": "error_message",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastCheckedAt",
+            "columnName": "last_checked_at",
+            "affinity": "INTEGER",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "provider_connection_id",
+            "catalog_model_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_provider_model_availability_provider_connection_id",
+            "unique": false,
+            "columnNames": [
+              "provider_connection_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_provider_model_availability_provider_connection_id` ON `${TABLE_NAME}` (`provider_connection_id`)"
+          },
+          {
+            "name": "index_provider_model_availability_catalog_model_id",
+            "unique": false,
+            "columnNames": [
+              "catalog_model_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_provider_model_availability_catalog_model_id` ON `${TABLE_NAME}` (`catalog_model_id`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "manual_model_overrides",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`provider_id` TEXT NOT NULL, `model_id` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `display_name_override` TEXT, `input_price_override` REAL, `output_price_override` REAL, `context_window_override` INTEGER, `capabilities_override_csv` TEXT, `metadata_override_json` TEXT NOT NULL, PRIMARY KEY(`provider_id`, `model_id`))",
+        "fields": [
+          {
+            "fieldPath": "providerId",
+            "columnName": "provider_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelId",
+            "columnName": "model_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayNameOverride",
+            "columnName": "display_name_override",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "inputPriceOverride",
+            "columnName": "input_price_override",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "outputPriceOverride",
+            "columnName": "output_price_override",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "contextWindowOverride",
+            "columnName": "context_window_override",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "capabilitiesOverrideCsv",
+            "columnName": "capabilities_override_csv",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "metadataOverrideJson",
+            "columnName": "metadata_override_json",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "provider_id",
+            "model_id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "model_aliases",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`alias` TEXT NOT NULL, `strategy` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`alias`))",
+        "fields": [
+          {
+            "fieldPath": "alias",
+            "columnName": "alias",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "strategy",
+            "columnName": "strategy",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "alias"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "model_routes",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`alias` TEXT NOT NULL, `provider_id` TEXT NOT NULL, `model_id` TEXT NOT NULL, `priority` INTEGER NOT NULL, `enabled` INTEGER NOT NULL, PRIMARY KEY(`alias`, `provider_id`, `model_id`))",
+        "fields": [
+          {
+            "fieldPath": "alias",
+            "columnName": "alias",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "providerId",
+            "columnName": "provider_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelId",
+            "columnName": "model_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "priority",
+            "columnName": "priority",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "alias",
+            "provider_id",
+            "model_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_model_routes_alias",
+            "unique": false,
+            "columnNames": [
+              "alias"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_model_routes_alias` ON `${TABLE_NAME}` (`alias`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "agent_profiles",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `provider_connection_id` TEXT NOT NULL, `default_model_id` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `max_tokens` INTEGER NOT NULL, `max_iterations` INTEGER NOT NULL, `capability_overrides_json` TEXT NOT NULL, `legacy_agent_config_json` TEXT NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "providerConnectionId",
+            "columnName": "provider_connection_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "defaultModelId",
+            "columnName": "default_model_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maxTokens",
+            "columnName": "max_tokens",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maxIterations",
+            "columnName": "max_iterations",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "capabilityOverridesJson",
+            "columnName": "capability_overrides_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "legacyAgentConfigJson",
+            "columnName": "legacy_agent_config_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '21066107c626a4acc5d5d18c3611e83f')"
+    ]
+  }
+}

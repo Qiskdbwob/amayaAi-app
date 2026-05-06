@@ -21,6 +21,7 @@ data class ChatUiState(
     val isLoadingConversations: Boolean   = false,
     val agentConfigs:  List<AgentSelectorItem> = emptyList(),
     val activeAgentId: String             = "",
+    val activeProviderId: String          = "",
     val conversationId: String?           = null,
     val conversationMode: ConversationMode = ConversationMode.PLANNING,
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
@@ -129,7 +130,17 @@ data class AgentSelectorItem(
     val quotaLabel: String? = null,
     val resetTime: String? = null,
     val isRemote: Boolean = false,
-    val iconType: String = "default" // "openai", "grok", "groq", "kimi", "zai", "deepseek", "meta", "minimax", "mistral", "qwen", "gemini", "claude", "default"
+    val iconType: String = "default", // "openai", "grok", "groq", "kimi", "zai", "deepseek", "meta", "minimax", "mistral", "qwen", "gemini", "claude", "default"
+    val providerId: String = "",
+    val providerName: String = "",
+    val statusLabel: String? = null,
+    val capabilityLabels: List<String> = emptyList(),
+    val contextWindowLabel: String? = null,
+    val sourceLabel: String? = null,
+    val contextWindowTokens: Int? = null,
+    val maxOutputTokens: Int? = null,
+    val inputPricePerMillionTokens: Double? = null,
+    val outputPricePerMillionTokens: Double? = null
 )
 
 // ── Workspace & Projects ──────────────────────────────────────────────────

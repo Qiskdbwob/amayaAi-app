@@ -36,12 +36,24 @@ import javax.inject.Singleton
 data class AgentConfig(
     val id:           String  = java.util.UUID.randomUUID().toString(),
     val name:         String  = "",
-    val providerType: String  = "CUSTOM",
+    /** Legacy runtime provider type used by the current chat adapters. */
+    val providerType: String  = "OPENAI",
+    /** New provider registry id, e.g. openai, openrouter, google_gemini_api, openai_codex_bridge. */
+    val providerId:   String  = "openai",
     val baseUrl:      String  = "",
     val modelId:      String  = "",
     val enabled:      Boolean = true,
     val maxTokens:    Int     = 8192,
-    val maxIterations:Int     = 10
+    val maxIterations:Int     = 10,
+    val toolCalling:  Boolean = true,
+    val vision:       Boolean = true,
+    val reasoning:    Boolean = false,
+    val structuredOutput: Boolean = false,
+    val embeddings:   Boolean = false,
+    val jsonMode:     Boolean = true,
+    val streaming:    Boolean = true,
+    /** Catalog model IDs the user enabled for this provider in Manage Models. Empty keeps only [modelId]. */
+    val enabledModelIds: List<String> = emptyList()
 )
 
 private val Context.dataStore by preferencesDataStore(name = "ai_settings")
@@ -152,6 +164,9 @@ class AiSettingsManager @Inject constructor(
     fun getAgentApiKey(agentId: String): String =
         encryptedPrefs.getString("$ENC_AGENT_KEY_PREFIX$agentId", "") ?: ""
 
+    /** Expose encrypted prefs for Codex token storage (used by [CodexAuthManager]). */
+    fun getEncryptedPrefsForCodex(): android.content.SharedPreferences = encryptedPrefs
+
     // ── Write ────────────────────────────────────────────────────────
 
     /** Add or update an agent config and store its API key encrypted */
@@ -240,12 +255,23 @@ class AiSettingsManager @Inject constructor(
                 AgentConfig(
                     id           = obj.optString("id", java.util.UUID.randomUUID().toString()),
                     name         = obj.optString("name", ""),
-                    providerType = obj.optString("providerType", "CUSTOM"),
+                    providerType = obj.optString("providerType", "OPENAI"),
+                    providerId   = obj.optString("providerId", inferProviderId(obj.optString("providerType", "OPENAI"), obj.optString("baseUrl", ""), obj.optString("modelId", ""))),
                     baseUrl      = obj.optString("baseUrl", ""),
                     modelId      = obj.optString("modelId", ""),
                     enabled      = obj.optBoolean("enabled", true),
                     maxTokens    = obj.optInt("maxTokens", 8192),
-                    maxIterations= obj.optInt("maxIterations", 10)
+                    maxIterations= obj.optInt("maxIterations", 10),
+                    toolCalling  = obj.optBoolean("toolCalling", true),
+                    vision       = obj.optBoolean("vision", true),
+                    reasoning    = obj.optBoolean("reasoning", false),
+                    structuredOutput = obj.optBoolean("structuredOutput", false),
+                    embeddings   = obj.optBoolean("embeddings", false),
+                    jsonMode     = obj.optBoolean("jsonMode", true),
+                    streaming    = obj.optBoolean("streaming", true),
+                    enabledModelIds = obj.optJSONArray("enabledModelIds")?.let { arr ->
+                        (0 until arr.length()).mapNotNull { idx -> arr.optString(idx).takeIf { it.isNotBlank() } }
+                    }.orEmpty()
                 )
             }
         }
@@ -258,14 +284,40 @@ class AiSettingsManager @Inject constructor(
                     put("id",           c.id)
                     put("name",         c.name)
                     put("providerType", c.providerType)
+                    put("providerId",   c.providerId)
                     put("baseUrl",      c.baseUrl)
                     put("modelId",      c.modelId)
                     put("enabled",      c.enabled)
                     put("maxTokens",    c.maxTokens)
                     put("maxIterations",c.maxIterations)
+                    put("toolCalling",  c.toolCalling)
+                    put("vision",       c.vision)
+                    put("reasoning",    c.reasoning)
+                    put("structuredOutput", c.structuredOutput)
+                    put("embeddings",   c.embeddings)
+                    put("jsonMode",     c.jsonMode)
+                    put("streaming",    c.streaming)
+                    put("enabledModelIds", JSONArray(c.enabledModelIds.distinct()))
                 })
             }
         }.toString()
+
+    private fun inferProviderId(providerType: String, baseUrl: String, modelId: String): String {
+        val value = "${providerType.lowercase()} ${baseUrl.lowercase()} ${modelId.lowercase()}"
+        return when {
+            value.contains("anthropic") || value.contains("claude") -> "anthropic"
+            value.contains("gemini") || value.contains("google") -> "google_gemini_api"
+            value.contains("openrouter") -> "openrouter"
+            value.contains("groq") -> "groq"
+            value.contains("deepseek") -> "deepseek"
+            value.contains("x.ai") || value.contains("grok") -> "xai"
+            value.contains("github") -> "github_models"
+            value.contains("vercel") -> "vercel_ai_gateway"
+            value.contains("ollama") -> "ollama"
+            value.contains("lmstudio") || value.contains("lm-studio") || value.contains("localhost:1234") -> "lm_studio"
+            else -> "openai"
+        }
+    }
 }
 
 data class AiSettings(

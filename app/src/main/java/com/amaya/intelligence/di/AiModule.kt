@@ -45,14 +45,16 @@ object AiModule {
     fun provideOpenAiProvider(
         httpClient: OkHttpClient,
         moshi: Moshi,
-        settingsManager: AiSettingsManager
+        settingsManager: AiSettingsManager,
+        codexAuthManager: CodexAuthManager
     ): OpenAiProvider {
         return OpenAiProvider(
             httpClient = httpClient,
             moshi = moshi,
             settingsProvider = { settingsManager.getSettings() },
             // FIX 2.2: Pass settingsManager for per-agent API key and baseUrl lookup
-            settingsManager = settingsManager
+            settingsManager = settingsManager,
+            codexAuthManager = codexAuthManager
         )
     }
     

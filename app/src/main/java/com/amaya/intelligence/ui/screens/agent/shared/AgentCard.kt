@@ -49,7 +49,7 @@ fun AgentCard(
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                val iconSpec = AgentIcon.resolve(config.modelId, isDark)
+                val iconSpec = AgentIcon.resolve(config.modelId, isDark, name = config.name, providerId = config.providerId)
 
                 if (iconSpec != null) {
                     Icon(
@@ -83,7 +83,7 @@ fun AgentCard(
                         if (config.modelId.isNotBlank()) append(config.modelId)
                         else append("No model set")
                         append(" · ")
-                        append(config.providerType.lowercase().replaceFirstChar { it.uppercaseChar() })
+                        append(com.amaya.intelligence.data.remote.api.AmayaProviderRegistry.displayName(config.providerId))
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)

@@ -1,6 +1,20 @@
 package com.amaya.intelligence.impl.common.mappers
 
 object AgentMapper {
+    fun getIconTypeForProvider(providerId: String?): String? {
+        return when (providerId?.lowercase()) {
+            "openai", "openai_codex_bridge" -> "openai"
+            "anthropic" -> "claude"
+            "google_gemini_api", "google_subscription" -> "gemini"
+            "github_models", "github_copilot" -> "github"
+            "openrouter" -> "openrouter"
+            "groq" -> "groq"
+            "deepseek" -> "deepseek"
+            "xai" -> "grok"
+            else -> null
+        }
+    }
+
     fun getIconType(modelId: String): String? {
         val normalized = modelId.lowercase()
         return when {

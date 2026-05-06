@@ -1,18 +1,18 @@
 package com.amaya.intelligence.ui.screens.agent.shared
 
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.remote.api.AgentConfig
+import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
 import com.amaya.intelligence.ui.screens.settings.shared.SettingsSectionCard
 
 @Composable
@@ -23,8 +23,11 @@ fun AgentList(
     topPadding: androidx.compose.ui.unit.Dp = 72.dp,
     modifier: Modifier = Modifier
 ) {
-    val enabledAgents = agentConfigs.filter { it.enabled }
-    val disabledAgents = agentConfigs.filter { !it.enabled }
+    val subscriptionProviderIds = AmayaProviderRegistry.providers.filter { it.isSubscription }.map { it.id }.toSet()
+    val subscriptionAgents = agentConfigs.filter { it.providerId in subscriptionProviderIds }
+    val regularAgents = agentConfigs.filter { it.providerId !in subscriptionProviderIds }
+    val enabledAgents = regularAgents.filter { it.enabled }
+    val disabledAgents = regularAgents.filter { !it.enabled }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -67,6 +70,22 @@ fun AgentList(
             }
         }
 
+        if (subscriptionAgents.isNotEmpty()) {
+            item {
+                SettingsSectionCard(title = "Subscription") {
+                    subscriptionAgents.forEachIndexed { index, config ->
+                        SubscriptionConnectionCard(config = config, onClick = { onAgentClick(config) })
+                        if (index < subscriptionAgents.size - 1) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(start = 78.dp, end = 20.dp),
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         if (enabledAgents.isNotEmpty()) {
             item {
                 SettingsSectionCard(title = "Enabled") {
@@ -104,6 +123,35 @@ fun AgentList(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubscriptionConnectionCard(
+    config: AgentConfig,
+    onClick: () -> Unit
+) {
+    Surface(onClick = onClick, color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.AccountCircle, contentDescription = null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    AmayaProviderRegistry.displayName(config.providerId),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                val count = config.enabledModelIds.filter { it.isNotBlank() && it != config.providerId }.distinct().size
+                Text(
+                    if (count > 0) "$count models enabled" else "No models enabled",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

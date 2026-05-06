@@ -179,6 +179,8 @@ dependencies {
     implementation("androidx.camera:camera-view:$cameraxVersion")
     implementation("com.google.android.gms:play-services-mlkit-barcode-scanning:18.3.1")
 
+    // Custom Tabs for Codex OAuth browser flow
+    implementation("androidx.browser:browser:1.8.0")
 
 
     // Testing

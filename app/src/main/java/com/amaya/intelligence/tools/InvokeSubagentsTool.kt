@@ -3,6 +3,7 @@ package com.amaya.intelligence.tools
 import com.amaya.intelligence.data.remote.api.AgentConfig
 import com.amaya.intelligence.data.remote.api.AiProvider
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
+import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
 import com.amaya.intelligence.data.remote.api.AnthropicProvider
 import com.amaya.intelligence.data.remote.api.ChatMessage
 import com.amaya.intelligence.data.remote.api.ChatRequest
@@ -220,7 +221,8 @@ class SubagentRunner @Inject constructor(
                 ?: settings.agentConfigs.firstOrNull { it.enabled }
         }
         val providerType = activeAgent?.let {
-            runCatching { ProviderType.valueOf(it.providerType) }.getOrNull()
+            AmayaProviderRegistry.legacyProviderType(it.providerId).takeIf { _ -> it.providerId.isNotBlank() }
+                ?: runCatching { ProviderType.valueOf(it.providerType) }.getOrNull()
         } ?: ProviderType.OPENAI
 
         val provider: AiProvider = when (providerType) {
@@ -240,10 +242,15 @@ class SubagentRunner @Inject constructor(
             ${if (isRetry) "NOTE: This is a retry after a rate limit error." else ""}
         """.trimIndent()
 
-        // FIX 4.3: Use shared toAiToolDefinition() extension — removes duplicate mapping from AiRepository
-        val tools = toolExecutor.getToolDefinitions()
-            .filter { it.name != "invoke_subagents" } // no nested subagents
-            .map { it.toAiToolDefinition(truncateDesc = true) }
+        // FIX 4.3: Use shared toAiToolDefinition() extension — removes duplicate mapping from AiRepository.
+        // Respect the selected agent's capability override: text-only agents must not receive tools.
+        val tools = if (activeAgent?.toolCalling == false) {
+            emptyList()
+        } else {
+            toolExecutor.getToolDefinitions()
+                .filter { it.name != "invoke_subagents" } // no nested subagents
+                .map { it.toAiToolDefinition(truncateDesc = true) }
+        }
 
         val messages = mutableListOf(
             ChatMessage(role = MessageRole.USER, content = task.task)

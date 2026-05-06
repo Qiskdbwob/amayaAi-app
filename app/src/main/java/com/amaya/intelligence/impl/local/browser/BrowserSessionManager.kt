@@ -159,7 +159,7 @@ class BrowserSessionManager @Inject constructor(
 
     @Synchronized
     fun onAssistantTextDelta(delta: String) {
-        if (delta.isBlank()) return
+        if (delta.isEmpty()) return
         assistantStreamBuffer.append(delta)
         flushAssistantStreamBuffer(System.currentTimeMillis())
     }

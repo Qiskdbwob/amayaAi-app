@@ -3,13 +3,17 @@ package com.amaya.intelligence.impl.local
 import com.amaya.intelligence.domain.ai.IntelligenceService
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
+import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
 import com.amaya.intelligence.data.remote.api.ChatMessage
 import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.data.local.dao.ConversationDao
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.data.repository.AiRepository
 import com.amaya.intelligence.data.repository.AgentEvent
+import com.amaya.intelligence.data.repository.ModelCatalogRepository
+import com.amaya.intelligence.data.repository.ProviderConnectionRepository
 import com.amaya.intelligence.domain.models.*
+import com.amaya.intelligence.impl.common.mappers.AgentMapper
 import com.amaya.intelligence.impl.common.mappers.AgentUiMapper
 import com.amaya.intelligence.impl.local.browser.BrowserSessionManager
 import com.amaya.intelligence.impl.local.tools.LocalToolMapper
@@ -38,6 +42,8 @@ class LocalIntelligenceService @Inject constructor(
     private val conversationDao: ConversationDao,
     private val settingsManager: AiSettingsManager,
     private val browserSessionManager: BrowserSessionManager,
+    private val modelCatalogRepository: ModelCatalogRepository,
+    private val providerConnectionRepository: ProviderConnectionRepository,
     @ApplicationScope private val scope: CoroutineScope
 ) : IntelligenceService {
 
@@ -62,21 +68,65 @@ class LocalIntelligenceService @Inject constructor(
     private val pendingToolConfirmations = ConcurrentHashMap<String, CancellableContinuation<Boolean>>()
 
     init {
+        scope.launch {
+            modelCatalogRepository.seedBuiltInCatalogIfNeeded()
+            modelCatalogRepository.syncModelsDev()
+        }
+
         // Observe conversations from DB
         scope.launch {
             conversationDao.getAllConversations().collect { list ->
                 _conversations.value = list
             }
         }
-        // Observe settings for agents
+        // Observe settings + live models.dev-backed catalog for agents/model selector.
         scope.launch {
-            settingsManager.settingsFlow.collect { settings ->
-                val selectorItems = settings.agentConfigs.map { 
+            combine(settingsManager.settingsFlow, modelCatalogRepository.observeCatalog()) { settings, catalog ->
+                providerConnectionRepository.mirrorLegacyAgents(settings.agentConfigs)
+                val subscriptionProviderIds = AmayaProviderRegistry.providers
+                    .filter { it.isSubscription }
+                    .map { it.id }
+                    .toSet()
+                val runnableAgents = settings.agentConfigs.filter { it.providerId !in subscriptionProviderIds }
+                val configuredModelKeys = runnableAgents.map { it.providerId to it.modelId }.toSet()
+                val enabledCatalogModelKeys = settings.agentConfigs
+                    .flatMap { config ->
+                        val enabledModels = config.enabledModelIds.ifEmpty { listOf(config.modelId) }
+                        enabledModels
+                            .filter { it.isNotBlank() && it != config.providerId }
+                            .map { config.providerId to it }
+                    }
+                    .toSet()
+                val selectorItems = runnableAgents.map {
                     AgentUiMapper.mapToSelectorItem(it)
-                }
+                } + catalog
+                    .filter { (it.providerId to it.modelId) in enabledCatalogModelKeys }
+                    .filter { (it.providerId to it.modelId) !in configuredModelKeys }
+                    .map { entry ->
+                        AgentSelectorItem(
+                            id = "catalog|${entry.providerId}|${entry.modelId}",
+                            name = entry.displayName,
+                            modelId = entry.modelId,
+                            iconType = AgentMapper.getIconTypeForProvider(entry.providerId) ?: AgentMapper.getIconType(entry.modelId) ?: "default",
+                            providerId = entry.providerId,
+                            providerName = entry.metadata["providerName"] ?: AmayaProviderRegistry.displayName(entry.providerId),
+                            statusLabel = "Enabled model",
+                            capabilityLabels = entry.capabilities.map { it.label }.take(4),
+                            contextWindowLabel = entry.contextWindow?.let { formatTokenCount(it).uppercase() },
+                            sourceLabel = if (entry.source.name == "MODELS_DEV") "models.dev" else entry.source.name.lowercase(),
+                            contextWindowTokens = entry.contextWindow,
+                            maxOutputTokens = entry.maxOutputTokens,
+                            inputPricePerMillionTokens = entry.inputPricePerMillionTokens,
+                            outputPricePerMillionTokens = entry.outputPricePerMillionTokens
+                        )
+                    }
+                val activeProviderId = settings.agentConfigs.firstOrNull { it.id == settings.activeAgentId }?.providerId.orEmpty()
+                Triple(settings, selectorItems, activeProviderId)
+            }.collect { (settings, selectorItems, activeProviderId) ->
                 _uiState.update { it.copy(
                     agentConfigs = selectorItems,
                     activeAgentId = settings.activeAgentId,
+                    activeProviderId = activeProviderId,
                     selectedModel = settings.activeModel
                 )}
             }
@@ -251,7 +301,7 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     private fun bufferAssistantTextDelta(delta: String) {
-        if (delta.isBlank()) return
+        if (delta.isEmpty()) return
         assistantTextBuffer.append(delta)
         LocalStreamPerfLog.onInboundDelta(delta.length, assistantTextBuffer.length)
         flushAssistantTextBuffer(System.currentTimeMillis())
@@ -326,7 +376,8 @@ class LocalIntelligenceService @Inject constructor(
         return buildMap {
             put("source", "local")
             agent?.name?.takeIf { it.isNotBlank() }?.let { put("agent_name", it) }
-            agent?.modelId?.takeIf { it.isNotBlank() }?.let { put("model_id", it) }
+            state.selectedModel.takeIf { it.isNotBlank() }?.let { put("model_id", it) }
+                ?: agent?.modelId?.takeIf { it.isNotBlank() }?.let { put("model_id", it) }
             if (!containsKey("agent_name")) {
                 agent?.id?.takeIf { it.isNotBlank() }?.let { put("agent_name", it) }
             }
@@ -421,6 +472,27 @@ class LocalIntelligenceService @Inject constructor(
     override fun setSelectedAgent(agentId: String) {
         scope.launch {
             val settings = settingsManager.getSettings()
+            if (agentId.startsWith("catalog|")) {
+                val parts = agentId.split('|', limit = 3)
+                val providerId = parts.getOrNull(1).orEmpty()
+                val modelId = parts.getOrNull(2).orEmpty()
+                if (modelId.isBlank()) return@launch
+                val matchingAgent = settings.agentConfigs.firstOrNull { it.enabled && it.providerId == providerId }
+                    ?: settings.agentConfigs.firstOrNull { it.providerId == providerId }
+                if (matchingAgent != null) {
+                    val providerIsSubscription = AmayaProviderRegistry.find(providerId)?.isSubscription == true
+                    if (providerIsSubscription && !matchingAgent.enabled) {
+                        settingsManager.saveAgentConfig(
+                            matchingAgent.copy(enabled = true),
+                            settingsManager.getAgentApiKey(matchingAgent.id)
+                        )
+                    }
+                    settingsManager.setActiveAgent(matchingAgent.id, modelId)
+                } else {
+                    settingsManager.setActiveModel(modelId)
+                }
+                return@launch
+            }
             val agent = settings.agentConfigs.find { it.id == agentId }
             agent?.let {
                 settingsManager.setActiveAgent(it.id, it.modelId)
@@ -448,6 +520,10 @@ class LocalIntelligenceService @Inject constructor(
         // Local project files logic if needed
     }
 
+    override fun refreshModels() {
+        scope.launch { modelCatalogRepository.syncModelsDev() }
+    }
+
     override fun respondToToolInteraction(executionId: String, confirmed: Boolean) {
         val continuation = pendingToolConfirmations.remove(executionId) ?: return
         updateToolExecution(executionId) { tool ->
@@ -458,6 +534,12 @@ class LocalIntelligenceService @Inject constructor(
             )
         }
         continuation.resume(confirmed)
+    }
+
+    private fun formatTokenCount(count: Int): String = when {
+        count >= 1_000_000 -> if (count % 1_000_000 == 0) "${count / 1_000_000}M" else String.format("%.1fM", count / 1_000_000.0)
+        count >= 1_000 -> if (count % 1_000 == 0) "${count / 1_000}k" else String.format("%.1fk", count / 1_000.0)
+        else -> count.toString()
     }
 
     private fun parseMessagesFromJson(json: String): List<UiMessage> {

@@ -10,6 +10,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.amaya.intelligence.data.local.dao.*
 import com.amaya.intelligence.data.local.entity.*
 import com.amaya.intelligence.data.local.db.migrations.MIGRATION_5_6
+import com.amaya.intelligence.data.local.db.migrations.MIGRATION_6_7
 
 @TypeConverters(CronJobTypeConverters::class)
 @Database(
@@ -19,7 +20,14 @@ import com.amaya.intelligence.data.local.db.migrations.MIGRATION_5_6
         FileFtsEntity::class,
         FileMetadataEntity::class,
         ConversationEntity::class,
-        CronJobEntity::class
+        CronJobEntity::class,
+        ProviderConnectionEntity::class,
+        ModelCatalogEntity::class,
+        ProviderModelAvailabilityEntity::class,
+        ManualModelOverrideEntity::class,
+        ModelAliasEntity::class,
+        ModelRouteEntity::class,
+        AgentProfileEntity::class
     ],
     version = AppDatabase.DATABASE_VERSION,
     exportSchema = true
@@ -31,9 +39,12 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun fileMetadataDao(): FileMetadataDao
     abstract fun conversationDao(): ConversationDao
     abstract fun cronJobDao(): CronJobDao
+    abstract fun providerConnectionDao(): ProviderConnectionDao
+    abstract fun modelCatalogDao(): ModelCatalogDao
+    abstract fun agentProfileDao(): AgentProfileDao
 
     companion object {
-        const val DATABASE_VERSION = 6
+        const val DATABASE_VERSION = 7
         private const val DATABASE_NAME = "Amaya_db"
         private const val TAG = "AppDatabase"
 
@@ -64,7 +75,7 @@ abstract class AppDatabase : RoomDatabase() {
                         Log.d(TAG, "Database opened: version ${db.version}")
                     }
                 })
-                .addMigrations(MIGRATION_5_6)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
                 .build()
         }
     }

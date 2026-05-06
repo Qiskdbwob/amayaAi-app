@@ -21,9 +21,10 @@ object AgentIcon {
         modelId: String,
         isDarkTheme: Boolean,
         name: String? = null,
-        isRemote: Boolean = false
+        isRemote: Boolean = false,
+        providerId: String? = null
     ): Spec? {
-        var iconType = getType(modelId)
+        var iconType = AgentMapper.getIconTypeForProvider(providerId) ?: getType(modelId)
         
         // Remote-only fallback: if modelId is unrecognized, try matching the agent name.
         if (iconType == null && isRemote && !name.isNullOrBlank()) {

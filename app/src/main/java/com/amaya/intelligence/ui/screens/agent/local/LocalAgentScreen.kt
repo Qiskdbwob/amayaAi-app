@@ -1,6 +1,5 @@
 package com.amaya.intelligence.ui.screens.agent.local
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -17,8 +16,11 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.remote.api.AgentConfig
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
+import com.amaya.intelligence.data.remote.api.CodexAuthManager
+import com.amaya.intelligence.data.remote.api.CodexAuthState
+import com.amaya.intelligence.data.repository.ModelCatalogRepository
+import com.amaya.intelligence.ui.components.shared.CodexAuthSheet
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
-import com.amaya.intelligence.ui.components.shared.rememberLockedModalBottomSheetState
 import com.amaya.intelligence.ui.screens.agent.shared.AgentEditSheet
 import com.amaya.intelligence.ui.screens.agent.shared.AgentList
 import kotlinx.coroutines.launch
@@ -27,7 +29,9 @@ import kotlinx.coroutines.launch
 @Composable
 fun LocalAgentScreen(
     onNavigateBack: () -> Unit,
-    aiSettingsManager: AiSettingsManager
+    aiSettingsManager: AiSettingsManager,
+    codexAuthManager: CodexAuthManager? = null,
+    modelCatalogRepository: ModelCatalogRepository? = null
 ) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -37,6 +41,18 @@ fun LocalAgentScreen(
     var editingConfig by remember { mutableStateOf<AgentConfig?>(null) }
     var editingIsNew by remember { mutableStateOf(false) }
     val topPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 72.dp
+
+    // Codex auth state
+    var showCodexAuthSheet by remember { mutableStateOf(false) }
+    val codexState = codexAuthManager?.authState?.collectAsState()
+    val codexAuthenticated = codexState?.value is CodexAuthState.Authenticated || codexAuthManager?.isAuthenticated() == true
+    val codexEmail = (codexState?.value as? CodexAuthState.Authenticated)?.email ?: codexAuthManager?.getAccountEmail()
+    val modelCatalog by (modelCatalogRepository?.observeCatalog()?.collectAsState(initial = emptyList())
+        ?: remember { mutableStateOf(emptyList()) })
+    LaunchedEffect(modelCatalogRepository) {
+        modelCatalogRepository?.seedBuiltInCatalogIfNeeded()
+        modelCatalogRepository?.syncModelsDev()
+    }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -114,10 +130,6 @@ fun LocalAgentScreen(
     // BottomSheet drawer for add/edit
     editingConfig?.let { currentConfig ->
         val maxSheetHeight = (0.98f * LocalConfiguration.current.screenHeightDp).dp
-        val sheetState = rememberLockedModalBottomSheetState()
-        BackHandler {
-            editingConfig = null
-        }
         val currentApiKey = remember(currentConfig.id) {
             if (editingIsNew) "" else aiSettingsManager.getAgentApiKey(currentConfig.id)
         }
@@ -127,8 +139,23 @@ fun LocalAgentScreen(
             apiKey = currentApiKey,
             isNew = editingIsNew,
             maxSheetHeight = maxSheetHeight,
+            modelCatalog = modelCatalog,
             onDismiss = {
                 editingConfig = null
+            },
+            codexAuthenticated = codexAuthenticated,
+            codexEmail = codexEmail,
+            onCodexLoginClick = if (codexAuthManager != null) {
+                { showCodexAuthSheet = true }
+            } else null,
+            onCodexLogoutClick = if (codexAuthManager != null) {
+                {
+                    codexAuthManager.logout()
+                    scope.launch { snackbarHostState.showSnackbar("Codex signed out") }
+                }
+            } else null,
+            onQuickSave = { updatedConfig, key ->
+                scope.launch { aiSettingsManager.saveAgentConfig(updatedConfig, key) }
             },
             onSave = { updatedConfig, key ->
                 editingConfig = null
@@ -149,6 +176,18 @@ fun LocalAgentScreen(
                         }
                     }
                 }
+        )
+    }
+
+    // Codex Auth Sheet
+    if (showCodexAuthSheet && codexAuthManager != null) {
+        CodexAuthSheet(
+            codexAuthManager = codexAuthManager,
+            onDismiss = { showCodexAuthSheet = false },
+            onAuthenticated = {
+                showCodexAuthSheet = false
+                scope.launch { snackbarHostState.showSnackbar("Codex signed in ✓") }
+            }
         )
     }
 }

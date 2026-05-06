@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import com.amaya.intelligence.data.remote.api.KnownModelCatalog
 import com.amaya.intelligence.ui.components.shared.ContextWindowUtils
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import com.amaya.intelligence.ui.components.shared.rememberLockedModalBottomSheetState
@@ -34,9 +35,22 @@ fun SessionInfoSheet(
     activeReminderCount: Int,
     onDismiss: () -> Unit,
     inputTokens: Int = 0,
-    outputTokens: Int = 0
+    outputTokens: Int = 0,
+    providerId: String? = null,
+    providerNameOverride: String? = null,
+    modelDisplayNameOverride: String? = null,
+    sourceLabelOverride: String? = null,
+    contextWindowTokensOverride: Int? = null,
+    maxOutputTokensOverride: Int? = null,
+    capabilityLabelsOverride: List<String> = emptyList(),
+    inputPriceOverride: Double? = null,
+    outputPriceOverride: Double? = null
 ) {
-    val contextWindow = ContextWindowUtils.getContextWindowInfo(activeModel)
+    val effectiveModel = KnownModelCatalog.infer(activeModel, providerId)
+    val contextTokens = contextWindowTokensOverride ?: effectiveModel.contextWindow
+    val contextWindow = contextTokens?.let {
+        ContextWindowUtils.ContextWindowInfo(it, ContextWindowUtils.formatTokenCount(it).uppercase(), sourceLabelOverride ?: effectiveModel.sourceLabel)
+    } ?: ContextWindowUtils.getContextWindowInfo(activeModel)
     val remainingTokens = contextWindow.tokens?.let { (it - totalTokens).coerceAtLeast(0) }
     val usagePercent = contextWindow.tokens?.takeIf { it > 0 }?.let { totalTokens.toFloat() / it.toFloat() } ?: 0f
 
@@ -91,6 +105,18 @@ fun SessionInfoSheet(
                 }
 
                 SessionInfoRow(
+                    icon = Icons.Default.AccountTree,
+                    label = "Provider",
+                    value = providerNameOverride ?: effectiveModel.providerName
+                )
+
+                SessionInfoRow(
+                    icon = Icons.Default.Psychology,
+                    label = "Model",
+                    value = modelDisplayNameOverride ?: effectiveModel.displayName
+                )
+
+                SessionInfoRow(
                     icon = Icons.Default.DataUsage,
                     label = "Context window",
                     value = contextWindow.label
@@ -100,6 +126,41 @@ fun SessionInfoSheet(
                     icon = Icons.Default.HourglassEmpty,
                     label = "Approx. remaining",
                     value = remainingTokens?.let { ContextWindowUtils.formatTokenCount(it) } ?: "-"
+                )
+
+                (maxOutputTokensOverride ?: effectiveModel.maxOutputTokens)?.let { maxOutput ->
+                    SessionInfoRow(
+                        icon = Icons.Default.Output,
+                        label = "Max output",
+                        value = ContextWindowUtils.formatTokenCount(maxOutput)
+                    )
+                }
+
+                val capabilityText = (capabilityLabelsOverride.ifEmpty { effectiveModel.capabilities.map { it.label } }).sorted().joinToString(", ")
+                if (capabilityText.isNotBlank()) {
+                    SessionInfoRow(
+                        icon = Icons.Default.Extension,
+                        label = "Capabilities",
+                        value = capabilityText
+                    )
+                }
+
+                val priceText = buildList {
+                    (inputPriceOverride ?: effectiveModel.inputPricePerMillionTokens)?.let { add("in $$it/M") }
+                    (outputPriceOverride ?: effectiveModel.outputPricePerMillionTokens)?.let { add("out $$it/M") }
+                }.joinToString(" · ")
+                if (priceText.isNotBlank()) {
+                    SessionInfoRow(
+                        icon = Icons.Default.Paid,
+                        label = "Pricing",
+                        value = priceText
+                    )
+                }
+
+                SessionInfoRow(
+                    icon = Icons.Default.CloudSync,
+                    label = "Catalog source",
+                    value = sourceLabelOverride ?: effectiveModel.sourceLabel
                 )
 
                 SessionInfoRow(

@@ -3,6 +3,7 @@ package com.amaya.intelligence.data.repository
 import com.amaya.intelligence.data.remote.api.AgentConfig
 import com.amaya.intelligence.data.remote.api.AiProvider
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
+import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
 import com.amaya.intelligence.data.remote.api.AnthropicProvider
 import com.amaya.intelligence.data.remote.api.ChatMessage
 import com.amaya.intelligence.data.remote.api.ChatRequest
@@ -147,7 +148,10 @@ class SelfImprovementPipeline @Inject constructor(
         val agentConfig = settings.agentConfigs.find { it.id == settings.activeAgentId && it.enabled }
             ?: settings.agentConfigs.firstOrNull { it.enabled }
             ?: return null
-        val provider = when (runCatching { ProviderType.valueOf(agentConfig.providerType) }.getOrDefault(ProviderType.OPENAI)) {
+        val provider = when (
+            AmayaProviderRegistry.legacyProviderType(agentConfig.providerId).takeIf { agentConfig.providerId.isNotBlank() }
+                ?: runCatching { ProviderType.valueOf(agentConfig.providerType) }.getOrDefault(ProviderType.OPENAI)
+        ) {
             ProviderType.ANTHROPIC -> anthropicProvider
             ProviderType.OPENAI -> openAiProvider
             ProviderType.GEMINI -> geminiProvider
