@@ -52,11 +52,17 @@ private fun List<ModelCatalogEntry>.withCodexSubscriptionEntries(): List<ModelCa
             outputPricePerMillionTokens = null,
             metadata = entry.metadata + mapOf(
                 "providerName" to "OpenAI / ChatGPT / Codex",
-                "sourceProviderId" to entry.providerId
+                "sourceProviderId" to entry.providerId,
+                "codexCompatibility" to if (entry.modelId.isLikelyCodexSubscriptionModel()) "verified" else "may_require_access"
             )
         )
     }
     return (this + mirrored).distinctBy { it.providerId to it.modelId }
+}
+
+private fun String.isLikelyCodexSubscriptionModel(): Boolean {
+    val id = lowercase()
+    return id.contains("codex") || id.matches(Regex("gpt-5(\\.|-|$).*"))
 }
 
 private fun ModelCatalogEntry.toEntity(): ModelCatalogEntity = ModelCatalogEntity(

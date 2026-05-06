@@ -19,4 +19,10 @@ interface AgentProfileDao {
 
     @Query("DELETE FROM agent_profiles WHERE id = :id")
     suspend fun delete(id: String)
+
+    @Query("DELETE FROM agent_profiles WHERE legacy_agent_config_json != '{}' AND id NOT IN (:activeIds)")
+    suspend fun deleteMirroredProfilesNotIn(activeIds: List<String>)
+
+    @Query("DELETE FROM agent_profiles WHERE legacy_agent_config_json != '{}'")
+    suspend fun deleteAllMirroredProfiles()
 }

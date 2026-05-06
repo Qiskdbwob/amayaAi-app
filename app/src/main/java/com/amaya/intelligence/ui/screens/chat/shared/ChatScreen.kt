@@ -658,7 +658,6 @@ fun ChatScreen(
             activeModel = selectedModel,
             activeProviderId = activeProviderId.ifBlank { selectedModelItem?.providerId.orEmpty() },
             isRemote = isRemoteMode,
-            onRefresh = { viewModel.refreshModels() },
             onSelect = { item ->
                 doSetSelectedAgent(item.id)
                 showModelSelector = false

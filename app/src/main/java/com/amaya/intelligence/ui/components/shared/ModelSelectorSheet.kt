@@ -9,7 +9,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -36,7 +35,6 @@ fun ModelSelectorSheet(
     activeModel: String = "",
     activeProviderId: String = "",
     isRemote: Boolean = false,
-    onRefresh: (() -> Unit)? = null,
     onSelect: (AgentSelectorItem) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -64,8 +62,12 @@ fun ModelSelectorSheet(
         filteredItems.groupBy { it.providerName.ifBlank { if (it.isRemote) "Remote" else "Custom" } }
     }
 
+    fun closeSheet() {
+        scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() }
+    }
+
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { closeSheet() },
         sheetState = sheetState,
         properties = lockedModalBottomSheetProperties(),
         containerColor = MaterialTheme.colorScheme.surface,
@@ -165,7 +167,7 @@ fun ModelSelectorSheet(
                             .size(36.dp)
                             .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f).compositeOver(MaterialTheme.colorScheme.background))
-                            .clickable { scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() } },
+                            .clickable { closeSheet() },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(Icons.Default.Close, "Dismiss", modifier = Modifier.size(20.dp))

@@ -47,7 +47,9 @@ data class ChatRequest(
     val stream: Boolean = true,
     // FIX: Pass resolved agentId explicitly so providers look up the correct API key,
     // not settings.activeAgentId which may be stale when multiple agents exist.
-    val agentId: String = ""
+    val agentId: String = "",
+    /** Stable conversation/session id for providers that support prompt caching or session headers. */
+    val sessionId: String = ""
 )
 
 /**

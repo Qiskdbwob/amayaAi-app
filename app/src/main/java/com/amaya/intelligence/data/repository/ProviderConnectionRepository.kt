@@ -21,6 +21,19 @@ class ProviderConnectionRepository @Inject constructor(
     private val agentProfileDao: AgentProfileDao
 ) {
     suspend fun mirrorLegacyAgents(agents: List<AgentConfig>) {
+        val activeConnectionIds = agents.map { legacyConnectionId(it.id) }
+        val activeProfileIds = agents.map { it.id }
+        if (activeConnectionIds.isEmpty()) {
+            providerConnectionDao.deleteAllLegacyConnections()
+        } else {
+            providerConnectionDao.deleteLegacyConnectionsNotIn(activeConnectionIds)
+        }
+        if (activeProfileIds.isEmpty()) {
+            agentProfileDao.deleteAllMirroredProfiles()
+        } else {
+            agentProfileDao.deleteMirroredProfilesNotIn(activeProfileIds)
+        }
+
         agents.forEach { agent ->
             val connectionId = legacyConnectionId(agent.id)
             val provider = AmayaProviderRegistry.find(agent.providerId)

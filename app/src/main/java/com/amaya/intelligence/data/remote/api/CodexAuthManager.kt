@@ -17,6 +17,7 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URLDecoder
@@ -71,7 +72,9 @@ class CodexAuthManager @Inject constructor(
     private val _authState = MutableStateFlow<CodexAuthState>(CodexAuthState.Idle)
     val authState: StateFlow<CodexAuthState> = _authState.asStateFlow()
 
+    private val authScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var callbackServer: ServerSocket? = null
+    private var loginJob: Job? = null
     private var pollingJob: Job? = null
 
     // ── Local Server PKCE Flow ──────────────────────────────────────
@@ -79,7 +82,8 @@ class CodexAuthManager @Inject constructor(
     fun startLocalServerLogin(activityContext: Context) {
         _authState.value = CodexAuthState.Starting
 
-        CoroutineScope(Dispatchers.IO).launch {
+        loginJob?.cancel()
+        loginJob = authScope.launch {
             val verifier = generateCodeVerifier()
             val challenge = generateCodeChallenge(verifier)
             val state = generateSecureRandom(32)
@@ -160,6 +164,7 @@ class CodexAuthManager @Inject constructor(
                 exchangeCodeForToken(code, verifier, redirectUri)
 
             } catch (e: Exception) {
+                if (!isActive) return@launch
                 Log.e(TAG, "Local server error", e)
                 _authState.value = CodexAuthState.Error("Callback timeout or error: ${e.message}")
                 server.close()
@@ -173,7 +178,8 @@ class CodexAuthManager @Inject constructor(
     fun startDeviceCodeLogin() {
         _authState.value = CodexAuthState.Starting
 
-        pollingJob = CoroutineScope(Dispatchers.IO).launch {
+        pollingJob?.cancel()
+        pollingJob = authScope.launch {
             try {
                 // 1. Request device code
                 val formBody = FormBody.Builder()
@@ -366,6 +372,8 @@ class CodexAuthManager @Inject constructor(
     }
 
     fun cancel() {
+        loginJob?.cancel()
+        loginJob = null
         pollingJob?.cancel()
         pollingJob = null
         callbackServer?.close()
@@ -378,7 +386,7 @@ class CodexAuthManager @Inject constructor(
     private fun tryBindServer(): Pair<ServerSocket, Int>? {
         for (port in CALLBACK_PORTS) {
             try {
-                val server = ServerSocket(port)
+                val server = ServerSocket(port, 1, InetAddress.getByName("127.0.0.1"))
                 return server to port
             } catch (_: Exception) { /* port busy, try next */ }
         }

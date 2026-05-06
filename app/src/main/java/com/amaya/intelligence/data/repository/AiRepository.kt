@@ -215,7 +215,8 @@ class AiRepository @Inject constructor(
                 maxTokens    = agentConfig.maxTokens,
                 stream       = true,
                 // Pass resolved agentId so providers use the correct API key
-                agentId      = agentConfig.id
+                agentId      = agentConfig.id,
+                sessionId    = sessionId
             )
             
             var textBuffer = StringBuilder()

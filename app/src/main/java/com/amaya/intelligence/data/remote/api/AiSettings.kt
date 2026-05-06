@@ -92,8 +92,8 @@ class AiSettingsManager @Inject constructor(
             runCatching {
                 createEncryptedPrefsInternal()
             }.getOrElse { secondFailure ->
-                Log.w("AiSettingsManager", "Falling back to plain shared prefs after encrypted prefs failure", secondFailure)
-                context.getSharedPreferences(SECURE_PREFS_NAME, Context.MODE_PRIVATE)
+                Log.e("AiSettingsManager", "Secure credential storage unavailable after recovery attempt", secondFailure)
+                throw IllegalStateException("Secure credential storage is unavailable", secondFailure)
             }
         }
     }

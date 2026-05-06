@@ -19,4 +19,10 @@ interface ProviderConnectionDao {
 
     @Query("DELETE FROM provider_connections WHERE id = :id")
     suspend fun delete(id: String)
+
+    @Query("DELETE FROM provider_connections WHERE id LIKE 'legacy_agent_connection_%' AND id NOT IN (:activeIds)")
+    suspend fun deleteLegacyConnectionsNotIn(activeIds: List<String>)
+
+    @Query("DELETE FROM provider_connections WHERE id LIKE 'legacy_agent_connection_%'")
+    suspend fun deleteAllLegacyConnections()
 }

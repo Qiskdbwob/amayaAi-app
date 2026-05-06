@@ -85,10 +85,9 @@ class OpenAiProvider @Inject constructor(
                 close()
                 return@callbackFlow
             }
-            val promptCacheKey = "amaya-${agentId.ifBlank { request.model }}"
+            val promptCacheKey = request.sessionId.ifBlank { "amaya-${agentId.ifBlank { request.model }}" }
             val codexBody = buildCodexResponsesRequest(request, promptCacheKey).toString()
             val codexUrl = "https://chatgpt.com/backend-api/codex/responses"
-            android.util.Log.d("OpenAiProvider", "Codex request endpoint: $codexUrl")
             val codexCall = httpClient.newCall(
                 Request.Builder()
                     .url(codexUrl)
@@ -108,8 +107,8 @@ class OpenAiProvider @Inject constructor(
                     val response = codexCall.execute()
                     if (!response.isSuccessful) {
                         val body = response.body?.string()
-                        android.util.Log.e("OpenAiProvider", "Codex endpoint failed code=${response.code} url=$codexUrl body=$body")
-                        trySend(ChatResponse.Error("Codex API error ${response.code}: ${body ?: response.message}", retryable = response.code != 401))
+                        android.util.Log.e("OpenAiProvider", "Codex endpoint failed code=${response.code} url=$codexUrl")
+                        trySend(ChatResponse.Error(friendlyCodexError(response.code, body, request.model, response.message), retryable = response.code != 401))
                         close()
                         return@launch
                     }
@@ -345,7 +344,7 @@ class OpenAiProvider @Inject constructor(
                     }
                     
                     val responseBody = try { response?.body?.string() } catch (e: Exception) { null }
-                    android.util.Log.e("OpenAiProvider", "Request FAILED - code: ${response?.code}, t=${t?.message}, body=$responseBody")
+                    android.util.Log.e("OpenAiProvider", "Request FAILED - code: ${response?.code}, t=${t?.message}")
                     val message = responseBody ?: t?.message ?: response?.message ?: "Unknown error"
                     trySend(ChatResponse.Error(message, retryable = true))
                     close()
@@ -527,7 +526,7 @@ class OpenAiProvider @Inject constructor(
             "error", "response.failed" -> {
                 val error = json.optJSONObject("error") ?: json.optJSONObject("response")?.optJSONObject("error")
                 state.completed = true
-                onResponse(ChatResponse.Error(error?.optString("message") ?: json.toString(), retryable = true))
+                onResponse(ChatResponse.Error(friendlyCodexError(null, error?.toString() ?: json.toString(), null, error?.optString("message")), retryable = true))
                 onComplete()
             }
         }
@@ -566,101 +565,32 @@ class OpenAiProvider @Inject constructor(
         }
     }
 
-    private fun codexEventSourceListener(
-        onResponse: (ChatResponse) -> Unit,
-        onClose: () -> Unit,
-        onHttpFailure: (code: Int?, body: String?, url: String?) -> Boolean = { _, _, _ -> false }
-    ): EventSourceListener = object : EventSourceListener() {
-        private var emittedText = false
-        private val emittedToolCalls = mutableSetOf<String>()
-        private val argumentDeltas = mutableMapOf<String, StringBuilder>()
-
-        override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-            if (data == "[DONE]") {
-                onResponse(ChatResponse.Done())
-                onClose()
-                return
-            }
-            val json = runCatching { JSONObject(data) }.getOrNull() ?: return
-            when (json.optString("type", type.orEmpty())) {
-                "response.output_text.delta" -> {
-                    val delta = json.optString("delta", "")
-                    if (delta.isNotEmpty()) {
-                        emittedText = true
-                        onResponse(ChatResponse.TextDelta(delta))
-                    }
-                }
-                "response.function_call_arguments.delta" -> {
-                    val callId = json.optString("call_id", json.optString("item_id", ""))
-                    if (callId.isNotBlank()) argumentDeltas.getOrPut(callId) { StringBuilder() }.append(json.optString("delta", ""))
-                }
-                "response.output_item.done" -> json.optJSONObject("item")?.let { emitCodexOutputItem(it, onResponse) }
-                "response.completed", "response.done" -> {
-                    json.optJSONObject("response")?.let { response ->
-                        if (!emittedText) emitCodexResponseText(response, onResponse)
-                        emitCodexResponseToolCalls(response, onResponse)
-                        onResponse(ChatResponse.Done(usage = parseCodexUsage(response), finishReason = response.optString("status", "").ifBlank { null }))
-                    } ?: onResponse(ChatResponse.Done())
-                    onClose()
-                }
-                "error", "response.failed" -> {
-                    val error = json.optJSONObject("error")
-                    onResponse(ChatResponse.Error(error?.optString("message") ?: json.toString(), retryable = true))
-                    onClose()
-                }
-            }
-        }
-
-        private fun emitCodexOutputItem(item: JSONObject, onResponse: (ChatResponse) -> Unit) {
-            if (item.optString("type") != "function_call") return
-            val callId = item.optString("call_id", item.optString("id", ""))
-            if (callId.isBlank() || !emittedToolCalls.add(callId)) return
-            val args = item.optString("arguments", argumentDeltas[callId]?.toString().orEmpty())
-            onResponse(ChatResponse.ToolCall(
-                id = callId,
-                name = item.optString("name", ""),
-                arguments = parseJsonArgs(args)
-            ))
-        }
-
-        private fun emitCodexResponseText(response: JSONObject, onResponse: (ChatResponse) -> Unit) {
-            val output = response.optJSONArray("output") ?: return
-            for (i in 0 until output.length()) {
-                val item = output.optJSONObject(i) ?: continue
-                if (item.optString("type") != "message") continue
-                val content = item.optJSONArray("content") ?: continue
-                for (j in 0 until content.length()) {
-                    val part = content.optJSONObject(j) ?: continue
-                    val text = part.optString("text", "")
-                    if (text.isNotEmpty()) onResponse(ChatResponse.TextDelta(text))
-                }
-            }
-        }
-
-        private fun emitCodexResponseToolCalls(response: JSONObject, onResponse: (ChatResponse) -> Unit) {
-            val output = response.optJSONArray("output") ?: return
-            for (i in 0 until output.length()) {
-                output.optJSONObject(i)?.let { emitCodexOutputItem(it, onResponse) }
-            }
-        }
-
-        override fun onFailure(eventSource: EventSource, t: Throwable?, response: okhttp3.Response?) {
-            val responseBody = try { response?.body?.string() } catch (_: Exception) { null }
-            val url = response?.request?.url?.toString()
-            if (onHttpFailure(response?.code, responseBody, url)) return
-            val message = responseBody ?: t?.message ?: response?.message ?: "Unknown Codex error"
-            onResponse(ChatResponse.Error("Codex API error${response?.code?.let { " $it" }.orEmpty()}: $message", retryable = response?.code != 401))
-            onClose()
-        }
-
-        override fun onClosed(eventSource: EventSource) = onClose()
-    }
-
     private fun parseCodexUsage(response: JSONObject): TokenUsage? {
         val usage = response.optJSONObject("usage") ?: return null
         val inputTokens = usage.optInt("input_tokens", usage.optInt("prompt_tokens", 0))
         val outputTokens = usage.optInt("output_tokens", usage.optInt("completion_tokens", 0))
         return if (inputTokens > 0 || outputTokens > 0) TokenUsage(inputTokens, outputTokens) else null
+    }
+
+    private fun friendlyCodexError(code: Int?, body: String?, model: String?, fallback: String?): String {
+        val raw = body.orEmpty()
+        val parsedMessage = runCatching {
+            val obj = JSONObject(raw)
+            obj.optJSONObject("error")?.optString("message")
+                ?: obj.optJSONObject("response")?.optJSONObject("error")?.optString("message")
+        }.getOrNull()?.takeIf { it.isNotBlank() }
+        val message = parsedMessage ?: fallback ?: raw.ifBlank { "Unknown Codex error" }
+        val lower = message.lowercase()
+        val modelHint = model?.takeIf { it.isNotBlank() }?.let { " Selected model: $it." }.orEmpty()
+        val compatibilityHint = " Try a Codex subscription model such as gpt-5.5, gpt-5.4, gpt-5.3-codex, or gpt-5.1-codex-max."
+        val prefix = code?.let { "Codex API error $it: " } ?: "Codex API error: "
+        return when {
+            "model" in lower && ("not found" in lower || "unsupported" in lower || "does not exist" in lower || "invalid" in lower) ->
+                "$prefix$message$modelHint$compatibilityHint"
+            "usage_limit" in lower || "rate limit" in lower ->
+                "$prefix$message"
+            else -> "$prefix$message"
+        }
     }
 
     private fun buildOpenAiRequest(request: ChatRequest): OpenAiRequest {

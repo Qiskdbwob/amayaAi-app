@@ -12,6 +12,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -231,7 +233,8 @@ fun AgentEditSheet(
                         codexAuthenticated = codexAuthenticated,
                         codexEmail = codexEmail,
                         onCodexLoginClick = onCodexLoginClick,
-                        onCodexLogoutClick = onCodexLogoutClick
+                        onCodexLogoutClick = onCodexLogoutClick,
+                        onDelete = onDelete?.let { { showDeleteConfirm = true } }
                         )
                         else -> ApiProviderForm(
                         config = config,
@@ -343,8 +346,11 @@ private fun CategoryStep(onSelect: (AgentWizardCategory) -> Unit) {
 @Composable
 private fun ProviderStep(category: AgentWizardCategory, onSelect: (com.amaya.intelligence.data.remote.api.ProviderConfig) -> Unit) {
     val providers = AmayaProviderRegistry.providers.filter {
-        if (category == AgentWizardCategory.SUBSCRIPTION) it.category == ProviderCategory.SUBSCRIPTION_LOGIN
-        else it.category != ProviderCategory.SUBSCRIPTION_LOGIN
+        if (category == AgentWizardCategory.SUBSCRIPTION) {
+            it.category == ProviderCategory.SUBSCRIPTION_LOGIN && it.supportsLocalRuntime
+        } else {
+            it.category != ProviderCategory.SUBSCRIPTION_LOGIN
+        }
     }
     providers.forEach { provider ->
         PickerCard(
@@ -375,7 +381,8 @@ private fun SubscriptionStep(
     codexAuthenticated: Boolean,
     codexEmail: String?,
     onCodexLoginClick: (() -> Unit)?,
-    onCodexLogoutClick: (() -> Unit)?
+    onCodexLogoutClick: (() -> Unit)?,
+    onDelete: (() -> Unit)? = null
 ) {
     when (providerId) {
         "openai_codex_bridge" -> {
@@ -399,8 +406,19 @@ private fun SubscriptionStep(
                 Text("Codex models are not synced yet. Try opening this modal again after models.dev sync finishes.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        "github_copilot" -> Text("Sign in support is prepared for a future bridge.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        "google_subscription" -> Text("Sign in support is prepared.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        "github_copilot", "google_subscription" -> Text("This subscription provider is not available in this build.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    if (onDelete != null) {
+        OutlinedButton(
+            onClick = onDelete,
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+        ) {
+            Icon(Icons.Default.Delete, null)
+            Spacer(Modifier.width(8.dp))
+            Text("Delete subscription")
+        }
     }
 }
 
@@ -597,39 +615,47 @@ private fun ManageProviderModelsSection(
         TextButton(onClick = { onEnabledModelIds(if (showDefaultControls) setOf(defaultModelId).filter { it.isNotBlank() }.toSet() else emptySet()) }) { Text("Clear") }
     }
 
-    visibleModels.forEach { entry ->
-        val checked = (showDefaultControls && entry.modelId == defaultModelId) || entry.modelId in enabledModelIds
-        Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = if (checked) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f) else MaterialTheme.colorScheme.surfaceContainerHigh,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().clickable {
-                    val lockedDefault = showDefaultControls && entry.modelId == defaultModelId
-                    val next = if (checked && !lockedDefault) enabledModelIds - entry.modelId else enabledModelIds + entry.modelId
-                    onEnabledModelIds((if (showDefaultControls) next + defaultModelId else next).filter { it.isNotBlank() }.toSet())
-                }.padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 420.dp)
+            .ignoreNestedScrollForBottomSheet(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(visibleModels, key = { it.modelId }) { entry ->
+            val checked = (showDefaultControls && entry.modelId == defaultModelId) || entry.modelId in enabledModelIds
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = if (checked) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f) else MaterialTheme.colorScheme.surfaceContainerHigh,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Checkbox(
-                    checked = checked,
-                    onCheckedChange = { isChecked ->
-                        val next = if (isChecked) enabledModelIds + entry.modelId else enabledModelIds - entry.modelId
+                Row(
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        val lockedDefault = showDefaultControls && entry.modelId == defaultModelId
+                        val next = if (checked && !lockedDefault) enabledModelIds - entry.modelId else enabledModelIds + entry.modelId
                         onEnabledModelIds((if (showDefaultControls) next + defaultModelId else next).filter { it.isNotBlank() }.toSet())
-                    },
-                    enabled = !showDefaultControls || entry.modelId != defaultModelId
-                )
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(entry.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                    Text(entry.modelId, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                    entry.contextWindow?.let {
-                        Text("Context ${formatTokenCountLocal(it)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f))
+                    }.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Checkbox(
+                        checked = checked,
+                        onCheckedChange = { isChecked ->
+                            val next = if (isChecked) enabledModelIds + entry.modelId else enabledModelIds - entry.modelId
+                            onEnabledModelIds((if (showDefaultControls) next + defaultModelId else next).filter { it.isNotBlank() }.toSet())
+                        },
+                        enabled = !showDefaultControls || entry.modelId != defaultModelId
+                    )
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(entry.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                        Text(entry.modelId, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                        entry.contextWindow?.let {
+                            Text("Context ${formatTokenCountLocal(it)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f))
+                        }
                     }
-                }
-                if (showDefaultControls && entry.modelId == defaultModelId) {
-                    AssistChip(onClick = {}, label = { Text("Default") })
+                    if (showDefaultControls && entry.modelId == defaultModelId) {
+                        AssistChip(onClick = {}, label = { Text("Default") })
+                    }
                 }
             }
         }
