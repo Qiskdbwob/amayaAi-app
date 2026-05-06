@@ -323,9 +323,10 @@ class AiSettingsManager @Inject constructor(
 
 private fun AgentConfig.normalizeEnabledModelIds(): AgentConfig {
     val normalizedEnabled = enabledModelIds.filter { it.isNotBlank() }.distinct()
-    return when (providerId) {
-        "openai_codex_bridge" -> copy(modelId = "", enabledModelIds = normalizedEnabled)
-        else -> copy(enabledModelIds = normalizedEnabled)
+    return if (AmayaProviderRegistry.find(providerId)?.isSubscription == true) {
+        copy(modelId = "", enabledModelIds = normalizedEnabled)
+    } else {
+        copy(enabledModelIds = normalizedEnabled)
     }
 }
 

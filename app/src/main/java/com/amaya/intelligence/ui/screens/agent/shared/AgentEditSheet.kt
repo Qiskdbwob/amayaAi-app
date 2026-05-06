@@ -12,8 +12,6 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,7 +25,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -40,13 +37,17 @@ import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
 import com.amaya.intelligence.data.remote.api.KnownModelCatalog
 import com.amaya.intelligence.data.remote.api.ModelCatalogEntry
 import com.amaya.intelligence.data.remote.api.ProviderCategory
-import com.amaya.intelligence.ui.components.shared.ModelSelectionSheet
 import com.amaya.intelligence.ui.components.shared.ignoreNestedScrollForBottomSheet
 import com.amaya.intelligence.ui.components.shared.rememberLockedModalBottomSheetState
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import kotlinx.coroutines.launch
 
 private enum class AgentWizardCategory { SUBSCRIPTION, API_KEY }
+
+private const val MinAgentMaxTokens = 256
+private const val MaxAgentMaxTokens = 128_000
+private const val MinAgentIterations = 1
+private const val MaxAgentIterations = 50
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,10 +58,7 @@ fun AgentEditSheet(
     maxSheetHeight: Dp,
     modelCatalog: List<ModelCatalogEntry> = emptyList(),
     onDismiss: () -> Unit,
-    codexAuthenticated: Boolean = false,
-    codexEmail: String? = null,
-    onCodexLoginClick: (() -> Unit)? = null,
-    onCodexLogoutClick: (() -> Unit)? = null,
+    subscriptionAuth: AgentSubscriptionAuthUi? = null,
     onQuickSave: ((AgentConfig, String) -> Unit)? = null,
     onSave: (AgentConfig, String) -> Unit,
     onDelete: (() -> Unit)?,
@@ -73,10 +71,12 @@ fun AgentEditSheet(
 
     var wizardCategory by remember(config.id, isNew) { mutableStateOf<AgentWizardCategory?>(if (isNew) null else AgentWizardCategory.API_KEY) }
     var selectedProviderId by remember(config.id, isNew) { mutableStateOf(if (isNew) null else config.providerId.takeIf { it.isNotBlank() }) }
+    var showSubscriptionAuthFlow by remember(config.id, isNew) { mutableStateOf(false) }
     val selectedProvider = AmayaProviderRegistry.find(selectedProviderId)
     val stepKey = when {
         isNew && wizardCategory == null -> "category"
         isNew && selectedProvider == null -> "provider_${wizardCategory?.name.orEmpty()}"
+        showSubscriptionAuthFlow && selectedProvider?.id == subscriptionAuth?.providerId -> subscriptionAuthStepKey(subscriptionAuth)
         selectedProvider?.isSubscription == true -> "subscription_${selectedProvider.id}"
         else -> "api_${selectedProviderId ?: config.providerId}"
     }
@@ -115,6 +115,8 @@ fun AgentEditSheet(
 
     fun goBack() {
         when {
+            showSubscriptionAuthFlow && subscriptionAuth?.step !is SubscriptionAuthStep.Methods && subscriptionAuth?.step !is SubscriptionAuthStep.Error -> subscriptionAuth?.onCancel?.invoke()
+            showSubscriptionAuthFlow -> showSubscriptionAuthFlow = false
             selectedProvider != null && isNew -> selectedProviderId = null
             wizardCategory != null && isNew -> wizardCategory = null
         }
@@ -130,7 +132,7 @@ fun AgentEditSheet(
             providerType = AmayaProviderRegistry.legacyProviderType(provider.id).name,
             baseUrl = "",
             modelId = "",
-            enabled = provider.id != "openai_codex_bridge" || codexAuthenticated,
+            enabled = subscriptionAuth?.let { auth -> provider.id != auth.providerId || auth.authenticated } ?: true,
             toolCalling = provider.supportsTools,
             vision = provider.supportsVision,
             streaming = provider.supportsStreaming,
@@ -142,6 +144,10 @@ fun AgentEditSheet(
         val provider = selectedProvider ?: return
         if (!provider.isSubscription) return
         onQuickSave?.invoke(buildSubscriptionConfig(provider, models), "")
+    }
+
+    LaunchedEffect(subscriptionAuth?.authenticated) {
+        if (subscriptionAuth?.authenticated == true) showSubscriptionAuthFlow = false
     }
 
     LaunchedEffect(stepKey) {
@@ -220,21 +226,19 @@ fun AgentEditSheet(
                                             enabledModelIds = clean
                                             quickSaveSubscription(clean)
                                         },
-                                        codexAuthenticated = codexAuthenticated,
-                                        codexEmail = codexEmail,
-                                        onCodexLoginClick = onCodexLoginClick,
-                                        onCodexLogoutClick = onCodexLogoutClick,
+                                        authUi = subscriptionAuth?.takeIf { it.providerId == stepProvider.id }?.copy(
+                                            onBrowserSignIn = { showSubscriptionAuthFlow = true }
+                                        ),
                                         onDelete = onDelete?.let { { showDeleteConfirm = true } }
                                     )
                                 }
                             }
+                            activeStepKey.startsWith("auth_") -> SubscriptionAuthStepContent(subscriptionAuth)
                             else -> {
                                 val stepProviderId = activeStepKey.removePrefix("api_").ifBlank {
-                                    selectedProviderId ?: config.providerId.ifBlank { "openai" }
+                                    selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() }
                                 }
                                 ApiProviderForm(
-                                    config = config,
-                                    isNew = isNew,
                                     providerId = stepProviderId,
                                     name = name,
                                     onName = { name = it },
@@ -281,8 +285,8 @@ fun AgentEditSheet(
                                                     baseUrl = baseUrl.trim().ifBlank { provider?.defaultBaseUrl.orEmpty() },
                                                     modelId = modelId.trim(),
                                                     enabled = enabled,
-                                                    maxTokens = maxTokensStr.toIntOrNull()?.coerceIn(256, 128_000) ?: config.maxTokens,
-                                                    maxIterations = maxIterationsStr.toIntOrNull()?.coerceIn(1, 50) ?: config.maxIterations,
+                                                    maxTokens = maxTokensStr.toIntOrNull()?.coerceIn(MinAgentMaxTokens, MaxAgentMaxTokens) ?: config.maxTokens,
+                                                    maxIterations = maxIterationsStr.toIntOrNull()?.coerceIn(MinAgentIterations, MaxAgentIterations) ?: config.maxIterations,
                                                     toolCalling = toolCalling,
                                                     vision = vision,
                                                     reasoning = reasoning,
@@ -307,12 +311,13 @@ fun AgentEditSheet(
                 title = when {
                     isNew && wizardCategory == null -> "New Agent"
                     isNew && selectedProvider == null -> if (wizardCategory == AgentWizardCategory.SUBSCRIPTION) "Subscription Provider" else "API Provider"
+                    showSubscriptionAuthFlow -> subscriptionAuthTitle(subscriptionAuth)
                     selectedProvider?.isSubscription == true -> selectedProvider.displayName
                     isNew -> "Configure Agent"
                     else -> "Edit Agent"
                 },
                 gradient = gradients.modalTopScrim,
-                onBack = if (isNew && (wizardCategory != null || selectedProvider != null)) ::goBack else null,
+                onBack = if (showSubscriptionAuthFlow || (isNew && (wizardCategory != null || selectedProvider != null))) ::goBack else null,
                 onDismiss = { closeThen(onDismiss) },
                 modifier = Modifier.align(Alignment.TopCenter),
                 sheetState = sheetState
@@ -335,8 +340,8 @@ fun AgentEditSheet(
 
 @Composable
 private fun CategoryStep(onSelect: (AgentWizardCategory) -> Unit) {
-    PickerCard(Icons.Default.AccountCircle, "Subscription", "OpenAI, Google, or GitHub", onClick = { onSelect(AgentWizardCategory.SUBSCRIPTION) })
-    PickerCard(Icons.Default.Key, "API key", "OpenAI-compatible, Gemini, local, or custom", onClick = { onSelect(AgentWizardCategory.API_KEY) })
+    PickerCard(Icons.Default.AccountCircle, "Subscription", "Account-based model providers", onClick = { onSelect(AgentWizardCategory.SUBSCRIPTION) })
+    PickerCard(Icons.Default.Key, "API key", "Hosted, local, or custom providers", onClick = { onSelect(AgentWizardCategory.API_KEY) })
 }
 
 @Composable
@@ -358,243 +363,18 @@ private fun ProviderStep(category: AgentWizardCategory, onSelect: (com.amaya.int
     }
 }
 
-private fun providerSubtitle(provider: com.amaya.intelligence.data.remote.api.ProviderConfig): String = when (provider.id) {
-    "openai_codex_bridge" -> "OpenAI subscription models"
-    "google_subscription" -> "Google account"
-    "github_copilot" -> "GitHub Copilot account"
+private fun providerSubtitle(provider: com.amaya.intelligence.data.remote.api.ProviderConfig): String = when {
+    provider.category == ProviderCategory.SUBSCRIPTION_LOGIN -> "${provider.displayName} subscription"
     else -> provider.defaultBaseUrl ?: provider.apiFormat.name.lowercase().replace('_', ' ')
 }
 
-@Composable
-private fun SubscriptionStep(
-    providerId: String,
-    providerName: String,
-    modelCatalog: List<ModelCatalogEntry>,
-    enabledModelIds: Set<String>,
-    onEnabledModelIds: (Set<String>) -> Unit,
-    codexAuthenticated: Boolean,
-    codexEmail: String?,
-    onCodexLoginClick: (() -> Unit)?,
-    onCodexLogoutClick: (() -> Unit)?,
-    onDelete: (() -> Unit)? = null
-) {
-    val sortedModels = remember(modelCatalog) { modelCatalog.distinctBy { it.modelId }.sortedBy { it.displayName.lowercase() } }
-    val catalogModelIds = remember(sortedModels) { sortedModels.map { it.modelId }.toSet() }
-    val normalizedEnabledModelIds = remember(enabledModelIds, catalogModelIds) {
-        enabledModelIds.filter { it.isNotBlank() && it in catalogModelIds }.distinct().toSet()
-    }
-    val enabledCount = remember(normalizedEnabledModelIds) { normalizedEnabledModelIds.size }
-    var showModelSelectionSheet by remember(providerId) { mutableStateOf(false) }
-
-    when (providerId) {
-        "openai_codex_bridge" -> {
-            CodexSubscriptionConnectionCard(
-                authenticated = codexAuthenticated,
-                email = codexEmail,
-                onLoginClick = onCodexLoginClick,
-                onLogoutClick = onCodexLogoutClick
-            )
-            if (sortedModels.isNotEmpty()) {
-                Text(
-                    if (enabledCount > 0) "$enabledCount enabled" else "No models enabled",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                SubscriptionModelsSummaryCard(
-                    modelCatalog = sortedModels,
-                    enabledModelIds = normalizedEnabledModelIds,
-                    expanded = showModelSelectionSheet,
-                    onEditSelection = { showModelSelectionSheet = true }
-                )
-            } else {
-                Text(
-                    "OpenAI subscription models are not synced yet. Try opening this modal again after models.dev sync finishes.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            if (showModelSelectionSheet) {
-                ModelSelectionSheet(
-                    title = "Edit selection",
-                    subtitle = null,
-                    modelCatalog = sortedModels,
-                    selectedModelIds = normalizedEnabledModelIds,
-                    onSelectedModelIdsChange = { next ->
-                        val clean = next.filter { it.isNotBlank() && it in catalogModelIds }.toSet()
-                        onEnabledModelIds(clean)
-                    },
-                    onDismiss = { showModelSelectionSheet = false }
-                )
-            }
-        }
-        "github_copilot", "google_subscription" -> Text("This subscription provider is not available in this build.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-    if (onDelete != null) {
-        OutlinedButton(
-            onClick = onDelete,
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
-        ) {
-            Icon(Icons.Default.Delete, null)
-            Spacer(Modifier.width(8.dp))
-            Text("Delete subscription")
-        }
-    }
-}
-@Composable
-private fun SubscriptionModelsSummaryCard(
-    modelCatalog: List<ModelCatalogEntry>,
-    enabledModelIds: Set<String>,
-    expanded: Boolean,
-    onEditSelection: () -> Unit
-) {
-    val selectedModels = remember(modelCatalog, enabledModelIds) {
-        modelCatalog.filter { it.modelId in enabledModelIds }
-    }
-    val previewModels = selectedModels.take(3)
-    val moreCount = (selectedModels.size - previewModels.size).coerceAtLeast(0)
-
-    ElevatedCard(
-        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            if (selectedModels.isEmpty()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Box(
-                        modifier = Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Psychology, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-                    }
-                    Text("No models selected yet", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            } else {
-                previewModels.forEachIndexed { index, entry ->
-                    SubscriptionModelRow(entry = entry)
-                    if (index < previewModels.lastIndex) {
-                        HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-                    }
-                }
-                if (moreCount > 0) {
-                    HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("+", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        }
-                        Text("+$moreCount more models", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.weight(1f))
-                        Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-            TextButton(
-                onClick = onEditSelection,
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                shape = RoundedCornerShape(0.dp)
-            ) {
-                Text(if (expanded) "Hide selection" else "Edit selection")
-                Spacer(Modifier.width(8.dp))
-                Icon(
-                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.ChevronRight,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SubscriptionModelRow(entry: ModelCatalogEntry) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Box(
-            modifier = Modifier.size(36.dp).clip(CircleShape).background(Color(0xFF10A37F).copy(alpha = 0.16f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10A37F), modifier = Modifier.size(20.dp))
-        }
-        Text(entry.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.weight(1f))
-        entry.contextWindow?.let {
-            Text(formatTokenCountLocal(it), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable
-private fun CodexSubscriptionConnectionCard(
-    authenticated: Boolean,
-    email: String?,
-    onLoginClick: (() -> Unit)?,
-    onLogoutClick: (() -> Unit)?
-) {
-    ElevatedCard(
-        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(46.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(if (authenticated) Color(0xFF10A37F).copy(alpha = 0.16f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    if (authenticated) Icons.Default.CheckCircle else Icons.Default.Key,
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp),
-                    tint = if (authenticated) Color(0xFF10A37F) else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(if (authenticated) "Connected" else "Not connected", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
-                Text(
-                    if (authenticated) email ?: "Connected to OpenAI auth" else "Sign in once to enable OpenAI subscription models.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (authenticated) Color(0xFF10A37F) else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            if (authenticated) {
-                TextButton(onClick = { onLogoutClick?.invoke() }) { Text("Sign out") }
-            } else {
-                Button(
-                    onClick = { onLoginClick?.invoke() },
-                    enabled = onLoginClick != null,
-                    shape = RoundedCornerShape(12.dp)
-                ) { Text("Sign in") }
-            }
-        }
-    }
-}
+private fun defaultApiProviderId(): String = AmayaProviderRegistry.providers
+    .firstOrNull { it.category == ProviderCategory.API_KEY }
+    ?.id
+    ?: AgentConfig().providerId
 
 @Composable
 private fun ApiProviderForm(
-    config: AgentConfig,
-    isNew: Boolean,
     providerId: String,
     name: String,
     onName: (String) -> Unit,
@@ -651,8 +431,8 @@ private fun ApiProviderForm(
         onEnabledModelIds = onEnabledModelIds,
         onSetDefaultModel = onModelId
     )
-    Field(maxTokensStr, onMaxTokens, "Max Tokens", Icons.Default.Tune, placeholder = "8192")
-    Field(maxIterationsStr, onMaxIterations, "Max Iterations", Icons.Default.Repeat, placeholder = "10")
+    Field(maxTokensStr, onMaxTokens, "Max Tokens", Icons.Default.Tune, placeholder = AgentConfig().maxTokens.toString())
+    Field(maxIterationsStr, onMaxIterations, "Max Iterations", Icons.Default.Repeat, placeholder = AgentConfig().maxIterations.toString())
 
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
     Text("Capabilities override", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
@@ -677,127 +457,7 @@ private fun ApiProviderForm(
     }
 }
 
-@Composable
-private fun ManageProviderModelsSection(
-    providerName: String,
-    modelCatalog: List<ModelCatalogEntry>,
-    defaultModelId: String,
-    enabledModelIds: Set<String>,
-    onEnabledModelIds: (Set<String>) -> Unit,
-    onSetDefaultModel: (String) -> Unit,
-    showDefaultControls: Boolean = true
-) {
-    var query by remember { mutableStateOf("") }
-    val sortedModels = remember(modelCatalog) { modelCatalog.distinctBy { it.modelId }.sortedBy { it.displayName.lowercase() } }
-    val q = query.trim().lowercase()
-    val visibleModels = sortedModels
-        .filter { q.isBlank() || it.displayName.lowercase().contains(q) || it.modelId.lowercase().contains(q) }
-        .take(80)
 
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-    Text(
-        if (showDefaultControls) "Manage Models" else "Edit selection",
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.Bold
-    )
-    if (showDefaultControls) {
-        Text(
-            "Only checked $providerName models will appear in Select Agent. Your default model is always kept enabled.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    } else {
-        Text(
-            "Choose which $providerName models show up in the agent picker.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-    OutlinedTextField(
-        value = query,
-        onValueChange = { query = it },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-        shape = RoundedCornerShape(12.dp),
-        leadingIcon = { Icon(Icons.Default.Search, null, modifier = Modifier.size(18.dp)) },
-        trailingIcon = {
-            if (query.isNotBlank()) IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, null) }
-        },
-        label = { Text("Search provider models") }
-    )
-
-    if (sortedModels.isEmpty()) {
-        Text(
-            "No models.dev catalog found for this provider yet. Save a default model manually or refresh models from chat.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        return
-    }
-
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        if (showDefaultControls) {
-            TextButton(onClick = { onEnabledModelIds(setOf(defaultModelId).filter { it.isNotBlank() }.toSet()) }) { Text("Default only") }
-        }
-        TextButton(onClick = { onEnabledModelIds(sortedModels.map { it.modelId }.toSet()) }) { Text("Check all") }
-        TextButton(onClick = { onEnabledModelIds(if (showDefaultControls) setOf(defaultModelId).filter { it.isNotBlank() }.toSet() else emptySet()) }) { Text("Clear") }
-    }
-
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(max = 420.dp)
-            .ignoreNestedScrollForBottomSheet(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        items(visibleModels, key = { it.modelId }) { entry ->
-            val checked = (showDefaultControls && entry.modelId == defaultModelId) || entry.modelId in enabledModelIds
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = if (checked) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f) else MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().clickable {
-                        val lockedDefault = showDefaultControls && entry.modelId == defaultModelId
-                        val next = if (checked && !lockedDefault) enabledModelIds - entry.modelId else enabledModelIds + entry.modelId
-                        onEnabledModelIds((if (showDefaultControls) next + defaultModelId else next).filter { it.isNotBlank() }.toSet())
-                    }.padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Checkbox(
-                        checked = checked,
-                        onCheckedChange = { isChecked ->
-                            val next = if (isChecked) enabledModelIds + entry.modelId else enabledModelIds - entry.modelId
-                            onEnabledModelIds((if (showDefaultControls) next + defaultModelId else next).filter { it.isNotBlank() }.toSet())
-                        },
-                        enabled = !showDefaultControls || entry.modelId != defaultModelId
-                    )
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(entry.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                        Text(entry.modelId, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                        entry.contextWindow?.let {
-                            Text("Context ${formatTokenCountLocal(it)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f))
-                        }
-                    }
-                    if (showDefaultControls && entry.modelId == defaultModelId) {
-                        AssistChip(onClick = {}, label = { Text("Default") })
-                    }
-                }
-            }
-        }
-    }
-    if (visibleModels.size < sortedModels.size) {
-        Text("Showing ${visibleModels.size} of ${sortedModels.size}. Use search to narrow results.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-private fun formatTokenCountLocal(tokens: Int): String = when {
-    tokens >= 1_000_000 -> "${tokens / 1_000_000}M"
-    tokens >= 1_000 -> "${tokens / 1_000}K"
-    else -> tokens.toString()
-}
 
 @Composable
 private fun PickerCard(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
@@ -859,6 +519,10 @@ private fun CapabilitySwitch(title: String, subtitle: String, checked: Boolean, 
 private fun modalStepDepth(stepKey: String): Int = when {
     stepKey == "category" -> 0
     stepKey.startsWith("provider_") -> 1
+    stepKey.startsWith("subscription_") || stepKey.startsWith("api_") -> 2
+    stepKey == "auth_methods" -> 3
+    stepKey == "auth_wait" -> 4
+    stepKey == "auth_device" -> 5
     else -> 2
 }
 

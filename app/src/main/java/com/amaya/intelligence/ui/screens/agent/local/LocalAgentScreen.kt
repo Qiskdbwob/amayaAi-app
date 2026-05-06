@@ -19,7 +19,6 @@ import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.data.remote.api.CodexAuthManager
 import com.amaya.intelligence.data.remote.api.CodexAuthState
 import com.amaya.intelligence.data.repository.ModelCatalogRepository
-import com.amaya.intelligence.ui.components.shared.CodexAuthSheet
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.screens.agent.shared.AgentEditSheet
 import com.amaya.intelligence.ui.screens.agent.shared.AgentList
@@ -34,6 +33,7 @@ fun LocalAgentScreen(
     modelCatalogRepository: ModelCatalogRepository? = null
 ) {
     val scope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     val settings by aiSettingsManager.settingsFlow.collectAsState(
         initial = com.amaya.intelligence.data.remote.api.AiSettings()
@@ -43,10 +43,23 @@ fun LocalAgentScreen(
     val topPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 72.dp
 
     // Codex auth state
-    var showCodexAuthSheet by remember { mutableStateOf(false) }
     val codexState = codexAuthManager?.authState?.collectAsState()
     val codexAuthenticated = codexState?.value is CodexAuthState.Authenticated || codexAuthManager?.isAuthenticated() == true
     val codexEmail = (codexState?.value as? CodexAuthState.Authenticated)?.email ?: codexAuthManager?.getAccountEmail()
+    val subscriptionAuth = codexAuthManager?.let { manager ->
+        openAiSubscriptionAuthUi(
+            authState = codexState?.value,
+            authenticated = codexAuthenticated,
+            accountLabel = codexEmail,
+            onBrowserSignIn = { manager.startLocalServerLogin(context) },
+            onDeviceCodeSignIn = { manager.startDeviceCodeLogin() },
+            onCancel = { manager.cancel() },
+            onSignOut = {
+                manager.logout()
+                scope.launch { snackbarHostState.showSnackbar("OpenAI signed out") }
+            }
+        )
+    }
     val modelCatalog by (modelCatalogRepository?.observeCatalog()?.collectAsState(initial = emptyList())
         ?: remember { mutableStateOf(emptyList()) })
     LaunchedEffect(modelCatalogRepository) {
@@ -143,17 +156,7 @@ fun LocalAgentScreen(
             onDismiss = {
                 editingConfig = null
             },
-            codexAuthenticated = codexAuthenticated,
-            codexEmail = codexEmail,
-            onCodexLoginClick = if (codexAuthManager != null) {
-                { showCodexAuthSheet = true }
-            } else null,
-            onCodexLogoutClick = if (codexAuthManager != null) {
-                {
-                    codexAuthManager.logout()
-                    scope.launch { snackbarHostState.showSnackbar("OpenAI signed out") }
-                }
-            } else null,
+            subscriptionAuth = subscriptionAuth,
             onQuickSave = { updatedConfig, key ->
                 scope.launch { aiSettingsManager.saveAgentConfig(updatedConfig, key) }
             },
@@ -179,15 +182,4 @@ fun LocalAgentScreen(
         )
     }
 
-    // OpenAI Auth Sheet
-    if (showCodexAuthSheet && codexAuthManager != null) {
-        CodexAuthSheet(
-            codexAuthManager = codexAuthManager,
-            onDismiss = { showCodexAuthSheet = false },
-            onAuthenticated = {
-                showCodexAuthSheet = false
-                scope.launch { snackbarHostState.showSnackbar("OpenAI signed in ✓") }
-            }
-        )
-    }
 }
