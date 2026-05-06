@@ -185,6 +185,7 @@ object AmayaProviderRegistry {
     fun legacyProviderType(providerId: String): ProviderType = when (providerId) {
         "anthropic" -> ProviderType.ANTHROPIC
         "google_gemini_api" -> ProviderType.GEMINI
+        "custom_openai_compatible" -> ProviderType.CUSTOM_OPENAI_COMPATIBLE
         else -> ProviderType.OPENAI
     }
 }

@@ -34,7 +34,6 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.remote.api.AgentConfig
 import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
-import com.amaya.intelligence.data.remote.api.KnownModelCatalog
 import com.amaya.intelligence.data.remote.api.ModelCatalogEntry
 import com.amaya.intelligence.data.remote.api.ProviderCategory
 import com.amaya.intelligence.ui.components.shared.ignoreNestedScrollForBottomSheet
@@ -72,14 +71,20 @@ fun AgentEditSheet(
     var wizardCategory by remember(config.id, isNew) { mutableStateOf<AgentWizardCategory?>(if (isNew) null else AgentWizardCategory.API_KEY) }
     var selectedProviderId by remember(config.id, isNew) { mutableStateOf(if (isNew) null else config.providerId.takeIf { it.isNotBlank() }) }
     var showSubscriptionAuthFlow by remember(config.id, isNew) { mutableStateOf(false) }
+    var showAdvancedSettings by remember(config.id, isNew) { mutableStateOf(false) }
+    var showModelPicker by remember(config.id, isNew) { mutableStateOf(false) }
     val selectedProvider = AmayaProviderRegistry.find(selectedProviderId)
     val stepKey = when {
         isNew && wizardCategory == null -> "category"
         isNew && selectedProvider == null -> "provider_${wizardCategory?.name.orEmpty()}"
         showSubscriptionAuthFlow && selectedProvider?.id == subscriptionAuth?.providerId -> subscriptionAuthStepKey(subscriptionAuth)
+        selectedProvider?.isSubscription == true && showModelPicker -> "models_${selectedProvider.id}"
         selectedProvider?.isSubscription == true -> "subscription_${selectedProvider.id}"
+        showModelPicker -> "models_${selectedProviderId ?: config.providerId}"
+        showAdvancedSettings -> "advanced_${selectedProviderId ?: config.providerId}"
         else -> "api_${selectedProviderId ?: config.providerId}"
     }
+    val hasSaveFooter = stepKey.startsWith("api_") || stepKey.startsWith("advanced_") || stepKey.startsWith("subscription_") || stepKey.startsWith("models_")
 
     var name by remember(config.id) { mutableStateOf(config.name) }
     var baseUrl by remember(config.id) { mutableStateOf(config.baseUrl) }
@@ -117,6 +122,8 @@ fun AgentEditSheet(
         when {
             showSubscriptionAuthFlow && subscriptionAuth?.step !is SubscriptionAuthStep.Methods && subscriptionAuth?.step !is SubscriptionAuthStep.Error -> subscriptionAuth?.onCancel?.invoke()
             showSubscriptionAuthFlow -> showSubscriptionAuthFlow = false
+            showModelPicker -> showModelPicker = false
+            showAdvancedSettings -> showAdvancedSettings = false
             selectedProvider != null && isNew -> selectedProviderId = null
             wizardCategory != null && isNew -> wizardCategory = null
         }
@@ -144,6 +151,46 @@ fun AgentEditSheet(
         val provider = selectedProvider ?: return
         if (!provider.isSubscription) return
         onQuickSave?.invoke(buildSubscriptionConfig(provider, models), "")
+    }
+
+    fun apiProviderConfig(providerId: String): AgentConfig {
+        val provider = AmayaProviderRegistry.find(providerId)
+        return config.copy(
+            name = name.trim(),
+            providerType = AmayaProviderRegistry.legacyProviderType(providerId).name,
+            providerId = providerId,
+            baseUrl = baseUrl.trim().ifBlank { provider?.defaultBaseUrl.orEmpty() },
+            modelId = modelId.trim(),
+            enabled = enabled,
+            maxTokens = maxTokensStr.toIntOrNull()?.coerceIn(MinAgentMaxTokens, MaxAgentMaxTokens) ?: config.maxTokens,
+            maxIterations = maxIterationsStr.toIntOrNull()?.coerceIn(MinAgentIterations, MaxAgentIterations) ?: config.maxIterations,
+            toolCalling = toolCalling,
+            vision = vision,
+            reasoning = reasoning,
+            structuredOutput = structuredOutput,
+            embeddings = embeddings,
+            jsonMode = jsonMode,
+            streaming = streaming,
+            enabledModelIds = (enabledModelIds + modelId.trim()).filter { it.isNotBlank() }.distinct()
+        )
+    }
+
+    fun apiFormIsValid(providerId: String): Boolean {
+        val provider = AmayaProviderRegistry.find(providerId)
+        val requiresKey = provider?.requiredFields?.any { it.key == "apiKey" } == true && provider.category != ProviderCategory.LOCAL
+        val requiresBaseUrl = provider?.defaultBaseUrl == null || provider.category == ProviderCategory.LOCAL || provider.category == ProviderCategory.CUSTOM
+        return name.trim().isNotBlank() && modelId.trim().isNotBlank() && (!requiresKey || key.trim().isNotBlank()) && (!requiresBaseUrl || baseUrl.trim().isNotBlank())
+    }
+
+    fun saveApiProvider(providerId: String) {
+        closeThen { onSave(apiProviderConfig(providerId), key.trim()) }
+    }
+
+    fun saveSubscriptionProvider() {
+        val provider = selectedProvider ?: return
+        if (provider.isSubscription) {
+            closeThen { onSave(buildSubscriptionConfig(provider, enabledModelIds), "") }
+        }
     }
 
     LaunchedEffect(subscriptionAuth?.authenticated) {
@@ -174,7 +221,7 @@ fun AgentEditSheet(
                     .ignoreNestedScrollForBottomSheet()
                     .verticalScroll(scrollState)
                     .padding(horizontal = 24.dp)
-                    .padding(bottom = 40.dp),
+                    .padding(bottom = if (hasSaveFooter) 132.dp else 40.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Spacer(Modifier.height(96.dp))
@@ -206,9 +253,6 @@ fun AgentEditSheet(
                                     if (provider.isSubscription) {
                                         modelId = ""
                                         enabledModelIds = emptySet()
-                                    } else if (modelId.isBlank()) {
-                                        modelId = stableModelCatalog.firstOrNull { it.providerId == provider.id }?.modelId
-                                            ?: KnownModelCatalog.entries.firstOrNull { it.providerId == provider.id }?.modelId.orEmpty()
                                     }
                                 }
                             )
@@ -229,27 +273,37 @@ fun AgentEditSheet(
                                         authUi = subscriptionAuth?.takeIf { it.providerId == stepProvider.id }?.copy(
                                             onBrowserSignIn = { showSubscriptionAuthFlow = true }
                                         ),
-                                        onDelete = onDelete?.let { { showDeleteConfirm = true } }
+                                        onOpenModels = { showModelPicker = true }
                                     )
                                 }
                             }
-                            activeStepKey.startsWith("auth_") -> SubscriptionAuthStepContent(subscriptionAuth)
-                            else -> {
-                                val stepProviderId = activeStepKey.removePrefix("api_").ifBlank {
+                            activeStepKey.startsWith("models_") -> {
+                                val stepProviderId = activeStepKey.removePrefix("models_").ifBlank {
                                     selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() }
                                 }
-                                ApiProviderForm(
+                                val stepProvider = AmayaProviderRegistry.find(stepProviderId)
+                                val stepCatalog = stableModelCatalog.filter { it.providerId == stepProviderId }
+                                AgentModelsSection(
+                                    modelCatalog = stepCatalog,
+                                    modelId = modelId,
+                                    enabledModelIds = enabledModelIds,
+                                    onModelId = { modelId = it },
+                                    onEnabledModelIds = { next ->
+                                        enabledModelIds = next
+                                        if (stepProvider?.isSubscription == true) quickSaveSubscription(next)
+                                    },
+                                    useDefaultModel = stepProvider?.isSubscription != true
+                                )
+                            }
+                            activeStepKey.startsWith("auth_") -> SubscriptionAuthStepContent(subscriptionAuth)
+                            activeStepKey.startsWith("advanced_") -> {
+                                val stepProviderId = activeStepKey.removePrefix("advanced_").ifBlank {
+                                    selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() }
+                                }
+                                AgentAdvancedSettingsSection(
                                     providerId = stepProviderId,
-                                    name = name,
-                                    onName = { name = it },
-                                    key = key,
-                                    onKey = { key = it },
-                                    showKey = showKey,
-                                    onToggleShowKey = { showKey = !showKey },
                                     baseUrl = baseUrl,
                                     onBaseUrl = { baseUrl = it },
-                                    modelId = modelId,
-                                    onModelId = { modelId = it },
                                     maxTokensStr = maxTokensStr,
                                     onMaxTokens = { v -> if (v.all { it.isDigit() }) maxTokensStr = v },
                                     maxIterationsStr = maxIterationsStr,
@@ -269,37 +323,25 @@ fun AgentEditSheet(
                                     jsonMode = jsonMode,
                                     onJsonMode = { jsonMode = it },
                                     streaming = streaming,
-                                    onStreaming = { streaming = it },
-                                    modelCatalog = stableModelCatalog.filter { it.providerId == stepProviderId },
+                                    onStreaming = { streaming = it }
+                                )
+                            }
+                            else -> {
+                                val stepProviderId = activeStepKey.removePrefix("api_").ifBlank {
+                                    selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() }
+                                }
+                                ApiProviderForm(
+                                    providerId = stepProviderId,
+                                    name = name,
+                                    onName = { name = it },
+                                    key = key,
+                                    onKey = { key = it },
+                                    showKey = showKey,
+                                    onToggleShowKey = { showKey = !showKey },
+                                    modelId = modelId,
                                     enabledModelIds = enabledModelIds,
-                                    onEnabledModelIds = { enabledModelIds = it },
-                                    onDelete = onDelete?.let { { showDeleteConfirm = true } },
-                                    onSave = {
-                                        val provider = AmayaProviderRegistry.find(stepProviderId)
-                                        closeThen {
-                                            onSave(
-                                                config.copy(
-                                                    name = name.trim(),
-                                                    providerType = AmayaProviderRegistry.legacyProviderType(stepProviderId).name,
-                                                    providerId = stepProviderId,
-                                                    baseUrl = baseUrl.trim().ifBlank { provider?.defaultBaseUrl.orEmpty() },
-                                                    modelId = modelId.trim(),
-                                                    enabled = enabled,
-                                                    maxTokens = maxTokensStr.toIntOrNull()?.coerceIn(MinAgentMaxTokens, MaxAgentMaxTokens) ?: config.maxTokens,
-                                                    maxIterations = maxIterationsStr.toIntOrNull()?.coerceIn(MinAgentIterations, MaxAgentIterations) ?: config.maxIterations,
-                                                    toolCalling = toolCalling,
-                                                    vision = vision,
-                                                    reasoning = reasoning,
-                                                    structuredOutput = structuredOutput,
-                                                    embeddings = embeddings,
-                                                    jsonMode = jsonMode,
-                                                    streaming = streaming,
-                                                    enabledModelIds = (enabledModelIds + modelId.trim()).filter { it.isNotBlank() }.distinct()
-                                                ),
-                                                key.trim()
-                                            )
-                                        }
-                                    }
+                                    onOpenModels = { showModelPicker = true },
+                                    onAdvanced = { showAdvancedSettings = true }
                                 )
                             }
                         }
@@ -312,16 +354,52 @@ fun AgentEditSheet(
                     isNew && wizardCategory == null -> "New Agent"
                     isNew && selectedProvider == null -> if (wizardCategory == AgentWizardCategory.SUBSCRIPTION) "Subscription Provider" else "API Provider"
                     showSubscriptionAuthFlow -> subscriptionAuthTitle(subscriptionAuth)
+                    showModelPicker -> "Models"
+                    showAdvancedSettings -> "Advanced"
                     selectedProvider?.isSubscription == true -> selectedProvider.displayName
                     isNew -> "Configure Agent"
                     else -> "Edit Agent"
                 },
+                subtitle = when {
+                    showModelPicker || showAdvancedSettings -> selectedProvider?.displayName
+                    !showSubscriptionAuthFlow && selectedProvider?.isSubscription != true && selectedProvider != null -> selectedProvider.displayName
+                    else -> null
+                },
                 gradient = gradients.modalTopScrim,
-                onBack = if (showSubscriptionAuthFlow || (isNew && (wizardCategory != null || selectedProvider != null))) ::goBack else null,
+                onBack = if (showSubscriptionAuthFlow || showModelPicker || showAdvancedSettings || (isNew && (wizardCategory != null || selectedProvider != null))) ::goBack else null,
                 onDismiss = { closeThen(onDismiss) },
                 modifier = Modifier.align(Alignment.TopCenter),
                 sheetState = sheetState
             )
+
+            if (hasSaveFooter) {
+                val footerProviderId = when {
+                    stepKey.startsWith("api_") -> stepKey.removePrefix("api_").ifBlank { selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() } }
+                    stepKey.startsWith("advanced_") -> stepKey.removePrefix("advanced_").ifBlank { selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() } }
+                    stepKey.startsWith("models_") -> stepKey.removePrefix("models_").ifBlank { selectedProviderId ?: config.providerId.ifBlank { defaultApiProviderId() } }
+                    else -> selectedProvider?.id.orEmpty()
+                }
+                val isModelsStep = stepKey.startsWith("models_")
+                AgentSheetFooter(
+                    primaryLabel = when {
+                        isModelsStep -> "Done"
+                        selectedProvider?.isSubscription == true -> "Done"
+                        isNew -> "Save agent"
+                        else -> "Save changes"
+                    },
+                    primaryEnabled = isModelsStep || selectedProvider?.isSubscription == true || apiFormIsValid(footerProviderId),
+                    onPrimary = {
+                        when {
+                            isModelsStep -> showModelPicker = false
+                            selectedProvider?.isSubscription == true -> saveSubscriptionProvider()
+                            else -> saveApiProvider(footerProviderId)
+                        }
+                    },
+                    onDelete = onDelete?.takeIf { !isModelsStep && !isNew && selectedProvider?.isSubscription != true }?.let { { showDeleteConfirm = true } },
+                    gradient = gradients.bottomScrim,
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
         }
     }
 
@@ -382,10 +460,34 @@ private fun ApiProviderForm(
     onKey: (String) -> Unit,
     showKey: Boolean,
     onToggleShowKey: () -> Unit,
+    modelId: String,
+    enabledModelIds: Set<String>,
+    onOpenModels: () -> Unit,
+    onAdvanced: () -> Unit
+) {
+    val provider = AmayaProviderRegistry.find(providerId)
+    val apiKeyField = provider?.requiredFields.orEmpty().plus(provider?.optionalFields.orEmpty()).firstOrNull { it.key == "apiKey" }
+
+    Field(name, onName, "Name", Icons.AutoMirrored.Filled.Label)
+    if (apiKeyField != null && provider?.category != ProviderCategory.LOCAL) {
+        SecretField(key, onKey, showKey, onToggleShowKey, apiKeyField.label)
+    }
+    AgentModelsSummaryRow(
+        summary = modelsSummary(modelId, enabledModelIds),
+        onClick = onOpenModels
+    )
+    NavigationRow(
+        title = "Advanced",
+        subtitle = "Base URL, limits, features",
+        onClick = onAdvanced
+    )
+}
+
+@Composable
+private fun AgentAdvancedSettingsSection(
+    providerId: String,
     baseUrl: String,
     onBaseUrl: (String) -> Unit,
-    modelId: String,
-    onModelId: (String) -> Unit,
     maxTokensStr: String,
     onMaxTokens: (String) -> Unit,
     maxIterationsStr: String,
@@ -405,59 +507,79 @@ private fun ApiProviderForm(
     jsonMode: Boolean,
     onJsonMode: (Boolean) -> Unit,
     streaming: Boolean,
-    onStreaming: (Boolean) -> Unit,
-    modelCatalog: List<ModelCatalogEntry>,
-    enabledModelIds: Set<String>,
-    onEnabledModelIds: (Set<String>) -> Unit,
-    onDelete: (() -> Unit)?,
-    onSave: () -> Unit
+    onStreaming: (Boolean) -> Unit
 ) {
     val provider = AmayaProviderRegistry.find(providerId)
-    val requiresKey = provider?.requiredFields?.any { it.key == "apiKey" } == true && provider.category != ProviderCategory.LOCAL
-    val requiresBaseUrl = provider?.defaultBaseUrl == null || provider.category == ProviderCategory.LOCAL || provider.category == ProviderCategory.CUSTOM
-    val isValid = name.trim().isNotBlank() && modelId.trim().isNotBlank() && (!requiresKey || key.trim().isNotBlank()) && (!requiresBaseUrl || baseUrl.trim().isNotBlank())
-
-    Text(provider?.displayName ?: "Custom Provider", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-
-    Field(name, onName, "Agent Name", Icons.AutoMirrored.Filled.Label)
-    SecretField(key, onKey, showKey, onToggleShowKey, provider?.requiredFields?.firstOrNull { it.key == "apiKey" }?.label ?: "API Key")
     Field(baseUrl, onBaseUrl, "Base URL", Icons.Default.Link, placeholder = provider?.defaultBaseUrl ?: "https://example.com/v1")
-    Field(modelId, onModelId, "Default Model", Icons.Default.Psychology, placeholder = modelCatalog.firstOrNull()?.modelId ?: KnownModelCatalog.entries.firstOrNull { it.providerId == providerId }?.modelId ?: "model-id")
-    ManageProviderModelsSection(
-        providerName = provider?.displayName ?: "Provider",
-        modelCatalog = modelCatalog,
-        defaultModelId = modelId,
-        enabledModelIds = enabledModelIds,
-        onEnabledModelIds = onEnabledModelIds,
-        onSetDefaultModel = onModelId
-    )
     Field(maxTokensStr, onMaxTokens, "Max Tokens", Icons.Default.Tune, placeholder = AgentConfig().maxTokens.toString())
     Field(maxIterationsStr, onMaxIterations, "Max Iterations", Icons.Default.Repeat, placeholder = AgentConfig().maxIterations.toString())
 
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-    Text("Capabilities override", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-    CapabilitySwitch("Tool calling", "Send Amaya tools to this model", toolCalling, onToolCalling)
-    CapabilitySwitch("Vision", "Allow image-capable usage for this agent", vision, onVision)
-    CapabilitySwitch("Reasoning", "Model has reasoning/thinking capability", reasoning, onReasoning)
-    CapabilitySwitch("Structured output", "Prefer schema/structured output when supported", structuredOutput, onStructuredOutput)
-    CapabilitySwitch("Embeddings", "Provider/model can be used for embeddings", embeddings, onEmbeddings)
-    CapabilitySwitch("JSON mode", "Model supports JSON-style responses", jsonMode, onJsonMode)
-    CapabilitySwitch("Streaming", "Use streaming responses", streaming, onStreaming)
-    CapabilitySwitch("Enabled", "Agent available in chat selector", enabled, onEnabled)
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+    Text("Capabilities", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    CapabilitySwitch("Tool calling", toolCalling, onToolCalling)
+    CapabilitySwitch("Vision", vision, onVision)
+    CapabilitySwitch("Reasoning", reasoning, onReasoning)
+    CapabilitySwitch("Structured output", structuredOutput, onStructuredOutput)
+    CapabilitySwitch("Embeddings", embeddings, onEmbeddings)
+    CapabilitySwitch("JSON mode", jsonMode, onJsonMode)
+    CapabilitySwitch("Streaming", streaming, onStreaming)
+    CapabilitySwitch("Enabled", enabled, onEnabled)
+}
 
-    Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        if (onDelete != null) {
-            OutlinedButton(onClick = onDelete, modifier = Modifier.weight(1f).height(54.dp), shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
-                Icon(Icons.Default.Delete, null); Spacer(Modifier.width(8.dp)); Text("Delete")
+@Composable
+private fun NavigationRow(title: String, subtitle: String, onClick: () -> Unit) {
+    Surface(onClick = onClick, shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-        }
-        Button(onClick = onSave, enabled = isValid, modifier = Modifier.weight(1f).height(54.dp), shape = RoundedCornerShape(16.dp)) {
-            Icon(Icons.Default.Save, null); Spacer(Modifier.width(8.dp)); Text("Save")
+            Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
-
+@Composable
+private fun AgentSheetFooter(
+    primaryLabel: String,
+    primaryEnabled: Boolean,
+    onPrimary: () -> Unit,
+    onDelete: (() -> Unit)?,
+    gradient: androidx.compose.ui.graphics.Brush,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(gradient)
+            .ignoreNestedScrollForBottomSheet()
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(top = 34.dp, bottom = 18.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (onDelete != null) {
+                OutlinedButton(
+                    onClick = onDelete,
+                    modifier = Modifier.weight(1f).height(56.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                }
+            }
+            Button(
+                onClick = onPrimary,
+                enabled = primaryEnabled,
+                modifier = (if (onDelete != null) Modifier.weight(1f) else Modifier.fillMaxWidth()).height(56.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(primaryLabel, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
 
 @Composable
 private fun PickerCard(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
@@ -506,12 +628,9 @@ private fun SecretField(value: String, onValue: (String) -> Unit, show: Boolean,
 }
 
 @Composable
-private fun CapabilitySwitch(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
-            Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+private fun CapabilitySwitch(title: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
         Switch(checked = checked, onCheckedChange = onChecked)
     }
 }
@@ -520,6 +639,8 @@ private fun modalStepDepth(stepKey: String): Int = when {
     stepKey == "category" -> 0
     stepKey.startsWith("provider_") -> 1
     stepKey.startsWith("subscription_") || stepKey.startsWith("api_") -> 2
+    stepKey.startsWith("models_") -> 3
+    stepKey.startsWith("advanced_") -> 3
     stepKey == "auth_methods" -> 3
     stepKey == "auth_wait" -> 4
     stepKey == "auth_device" -> 5
@@ -542,6 +663,7 @@ private fun modalStepTransition(initialStepKey: String, targetStepKey: String): 
 @Composable
 private fun SheetHeader(
     title: String,
+    subtitle: String? = null,
     gradient: androidx.compose.ui.graphics.Brush,
     onBack: (() -> Unit)?,
     onDismiss: () -> Unit,
@@ -577,7 +699,12 @@ private fun SheetHeader(
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", modifier = Modifier.size(20.dp))
                 }
             }
-            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                subtitle?.takeIf { it.isNotBlank() }?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)

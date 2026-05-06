@@ -56,7 +56,13 @@ fun LocalAgentScreen(
             onCancel = { manager.cancel() },
             onSignOut = {
                 manager.logout()
-                scope.launch { snackbarHostState.showSnackbar("OpenAI signed out") }
+                editingConfig = null
+                scope.launch {
+                    settings.agentConfigs
+                        .filter { it.providerId == OpenAiSubscriptionProviderId }
+                        .forEach { aiSettingsManager.deleteAgentConfig(it.id) }
+                    snackbarHostState.showSnackbar("OpenAI signed out")
+                }
             }
         )
     }

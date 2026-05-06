@@ -12,47 +12,47 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.remote.api.ModelCatalogEntry
-import com.amaya.intelligence.ui.components.shared.ModelSelectionSheet
-import com.amaya.intelligence.ui.components.shared.ignoreNestedScrollForBottomSheet
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+
+private const val MinModelsLoadingMs = 280L
 
 @Composable
 internal fun SubscriptionStep(
@@ -62,291 +62,323 @@ internal fun SubscriptionStep(
     enabledModelIds: Set<String>,
     onEnabledModelIds: (Set<String>) -> Unit,
     authUi: AgentSubscriptionAuthUi?,
-    onDelete: (() -> Unit)? = null
+    onOpenModels: () -> Unit
 ) {
     val sortedModels = remember(modelCatalog) { modelCatalog.distinctBy { it.modelId }.sortedBy { it.displayName.lowercase() } }
     val catalogModelIds = remember(sortedModels) { sortedModels.map { it.modelId }.toSet() }
     val normalizedEnabledModelIds = remember(enabledModelIds, catalogModelIds) {
-        enabledModelIds.filter { it.isNotBlank() && it in catalogModelIds }.distinct().toSet()
-    }
-    val enabledCount = remember(normalizedEnabledModelIds) { normalizedEnabledModelIds.size }
-    var showModelSelectionSheet by remember(providerId) { mutableStateOf(false) }
-
-    if (authUi != null) {
-        SubscriptionConnectionCard(authUi = authUi)
+        enabledModelIds.filter { it.isNotBlank() && (catalogModelIds.isEmpty() || it in catalogModelIds) }.distinct().toSet()
     }
 
-    if (sortedModels.isNotEmpty()) {
-        Text(
-            if (enabledCount > 0) "$enabledCount enabled" else "No models enabled",
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        SubscriptionModelsSummaryCard(
-            modelCatalog = sortedModels,
-            enabledModelIds = normalizedEnabledModelIds,
-            expanded = showModelSelectionSheet,
-            onEditSelection = { showModelSelectionSheet = true }
-        )
-    } else {
-        Text(
-            "$providerName models are not synced yet. Try opening this modal again after sync finishes.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
+    SubscriptionConnectionCard(authUi = authUi)
+    AgentModelsSummaryRow(
+        title = "Models",
+        summary = if (authUi?.authenticated == false) "Sign in first" else modelsSummary(defaultModelId = "", enabledModelIds = normalizedEnabledModelIds),
+        onClick = onOpenModels,
+        enabled = authUi?.authenticated != false
+    )
+}
 
-    if (showModelSelectionSheet) {
-        ModelSelectionSheet(
-            title = "Edit selection",
-            subtitle = null,
-            modelCatalog = sortedModels,
-            selectedModelIds = normalizedEnabledModelIds,
-            onSelectedModelIdsChange = { next ->
-                val clean = next.filter { it.isNotBlank() && it in catalogModelIds }.toSet()
-                onEnabledModelIds(clean)
-            },
-            onDismiss = { showModelSelectionSheet = false }
-        )
-    }
-
-    if (onDelete != null) {
-        OutlinedButton(
-            onClick = onDelete,
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+@Composable
+internal fun AgentModelsSummaryRow(
+    title: String = "Models",
+    summary: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true
+) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Icon(Icons.Default.Delete, null)
-            Spacer(Modifier.width(8.dp))
-            Text("Delete subscription")
+            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            Icon(Icons.Default.ChevronRight, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
 @Composable
-private fun SubscriptionModelsSummaryCard(
+internal fun AgentModelsSection(
     modelCatalog: List<ModelCatalogEntry>,
+    modelId: String,
     enabledModelIds: Set<String>,
-    expanded: Boolean,
-    onEditSelection: () -> Unit
+    onModelId: (String) -> Unit,
+    onEnabledModelIds: (Set<String>) -> Unit,
+    useDefaultModel: Boolean
 ) {
-    val selectedModels = remember(modelCatalog, enabledModelIds) {
-        modelCatalog.filter { it.modelId in enabledModelIds }
-    }
-    val previewModels = selectedModels.take(3)
-    val moreCount = (selectedModels.size - previewModels.size).coerceAtLeast(0)
+    var query by remember { mutableStateOf("") }
+    var customModelId by remember { mutableStateOf("") }
+    var preparedCatalog by remember { mutableStateOf<List<AgentModelRowEntry>?>(null) }
 
-    ElevatedCard(
-        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+    LaunchedEffect(modelCatalog) {
+        preparedCatalog = null
+        val catalogSnapshot = modelCatalog.toList()
+        delay(MinModelsLoadingMs)
+        preparedCatalog = withContext(Dispatchers.Default) {
+            catalogSnapshot
+                .distinctBy { it.modelId }
+                .sortedBy { it.displayName.lowercase() }
+                .map { AgentModelRowEntry(it.modelId, it.displayName, custom = false) }
+        }
+    }
+
+    val readyCatalog = preparedCatalog
+    if (readyCatalog == null) {
+        AgentModelsLoadingSection()
+        return
+    }
+
+    val catalogIds = remember(readyCatalog) { readyCatalog.map { it.modelId }.toSet() }
+    val selectedIds = remember(modelId, enabledModelIds) { (enabledModelIds + modelId).filter { it.isNotBlank() }.toSet() }
+    val customIds = remember(selectedIds, catalogIds) {
+        selectedIds.filter { it !in catalogIds }.distinct().sorted()
+    }
+    val allEntries = remember(readyCatalog, customIds) {
+        readyCatalog + customIds.map { AgentModelRowEntry(it, it, custom = true) }
+    }
+    val visibleEntries = remember(allEntries, query) {
+        val q = query.trim().lowercase()
+        if (q.isBlank()) allEntries else allEntries.filter {
+            it.displayName.lowercase().contains(q) || it.modelId.lowercase().contains(q)
+        }
+    }
+
+    fun applySelection(nextSelected: Set<String>, preferredDefault: String? = null) {
+        val clean = nextSelected.filter { it.isNotBlank() }.toSet()
+        if (!useDefaultModel) {
+            onModelId("")
+            onEnabledModelIds(clean)
+            return
+        }
+        val nextDefault = when {
+            preferredDefault != null && preferredDefault in clean -> preferredDefault
+            modelId.isNotBlank() && modelId in clean -> modelId
+            else -> clean.firstOrNull().orEmpty()
+        }
+        onModelId(nextDefault)
+        onEnabledModelIds((clean - nextDefault).filter { it.isNotBlank() }.toSet())
+    }
+
+    fun addCustomModel() {
+        val clean = customModelId.trim()
+        if (clean.isBlank()) return
+        applySelection(selectedIds + clean, preferredDefault = if (modelId.isBlank()) clean else null)
+        customModelId = ""
+    }
+
+    OutlinedTextField(
+        value = query,
+        onValueChange = { query = it },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        shape = RoundedCornerShape(16.dp),
+        leadingIcon = { Icon(Icons.Default.Search, null, modifier = Modifier.size(18.dp)) },
+        trailingIcon = {
+            if (query.isNotBlank()) IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, null) }
+        },
+        placeholder = { Text("Search models") }
+    )
+
+    Surface(
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            if (selectedModels.isEmpty()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Box(
-                        modifier = Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Psychology, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-                    }
-                    Text("No models selected yet", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth().heightIn(max = 460.dp)
+        ) {
+            if (visibleEntries.isEmpty()) {
+                item(key = "empty") {
+                    Text(
+                        if (allEntries.isEmpty()) "Add a custom model ID" else "No models found",
+                        modifier = Modifier.padding(16.dp),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             } else {
-                previewModels.forEachIndexed { index, entry ->
-                    SubscriptionModelRow(entry = entry)
-                    if (index < previewModels.lastIndex) {
-                        HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-                    }
-                }
-                if (moreCount > 0) {
-                    HorizontalDivider(modifier = Modifier.padding(start = 68.dp, end = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier.size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("+", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                itemsIndexed(
+                    items = visibleEntries,
+                    key = { _, entry -> entry.modelId }
+                ) { index, entry ->
+                    if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                    AgentModelRow(
+                        entry = entry,
+                        checked = entry.modelId in selectedIds,
+                        isDefault = useDefaultModel && entry.modelId == modelId,
+                        showDefault = useDefaultModel,
+                        onToggle = {
+                            val checked = entry.modelId in selectedIds
+                            applySelection(if (checked) selectedIds - entry.modelId else selectedIds + entry.modelId)
+                        },
+                        onDefault = {
+                            if (entry.modelId == modelId) {
+                                onModelId("")
+                            } else {
+                                applySelection(selectedIds + entry.modelId, preferredDefault = entry.modelId)
+                            }
                         }
-                        Text("+$moreCount more models", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Spacer(Modifier.weight(1f))
-                        Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    )
                 }
             }
+        }
+    }
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-            TextButton(
-                onClick = onEditSelection,
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                shape = RoundedCornerShape(0.dp)
+    OutlinedTextField(
+        value = customModelId,
+        onValueChange = { customModelId = it },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        shape = RoundedCornerShape(16.dp),
+        leadingIcon = { Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp)) },
+        trailingIcon = {
+            if (customModelId.isNotBlank()) IconButton(onClick = ::addCustomModel) { Icon(Icons.Default.Check, null) }
+        },
+        placeholder = { Text("Custom model ID") }
+    )
+
+}
+
+@Composable
+private fun AgentModelsLoadingSection() {
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 44.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ) {
-                Text(if (expanded) "Hide selection" else "Edit selection")
-                Spacer(Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier.size(64.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    MorphingLoadingIndicator(
+                        modifier = Modifier.size(52.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+            Text(
+                "Loading models",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                "Preparing the provider catalog…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun MorphingLoadingIndicator(
+    modifier: Modifier = Modifier,
+    color: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.primary
+) {
+    val transition = rememberInfiniteTransition(label = "models_loading")
+    val progress by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1100, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "models_loading_progress"
+    )
+    val phases = listOf(0f, 0.28f, 0.56f)
+
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        phases.forEach { phase ->
+            val t = (progress + phase) % 1f
+            val pulse = 1f - kotlin.math.abs(t - 0.5f) * 2f
+            val width = 10.dp + (18.dp * pulse)
+            val height = 10.dp + (8.dp * pulse)
+            Box(
+                modifier = Modifier
+                    .size(width, height)
+                    .background(color.copy(alpha = 0.45f + (0.55f * pulse)), RoundedCornerShape(50))
+            )
+        }
+    }
+}
+
+@Composable
+private fun AgentModelRow(
+    entry: AgentModelRowEntry,
+    checked: Boolean,
+    isDefault: Boolean,
+    showDefault: Boolean,
+    onToggle: () -> Unit,
+    onDefault: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Checkbox(checked = checked, onCheckedChange = { onToggle() })
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(entry.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            Text(
+                if (entry.custom) "Custom model" else entry.modelId,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
+            )
+        }
+        if (showDefault) {
+            IconButton(onClick = onDefault) {
                 Icon(
-                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.ChevronRight,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
+                    if (isDefault) Icons.Default.Star else Icons.Default.StarBorder,
+                    contentDescription = if (isDefault) "Default model" else "Set default model",
+                    tint = if (isDefault) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
     }
 }
 
-@Composable
-private fun SubscriptionModelRow(entry: ModelCatalogEntry) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Box(
-            modifier = Modifier.size(36.dp).clip(CircleShape).background(Color(0xFF10A37F).copy(alpha = 0.16f)),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color(0xFF10A37F), modifier = Modifier.size(20.dp))
-        }
-        Text(entry.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.weight(1f))
-        entry.contextWindow?.let {
-            Text(formatTokenCountLocal(it), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+internal fun modelsSummary(defaultModelId: String, enabledModelIds: Set<String>): String {
+    val cleanEnabled = enabledModelIds.filter { it.isNotBlank() }.distinct()
+    val count = cleanEnabled.size + defaultModelId.takeIf { it.isNotBlank() && it !in cleanEnabled }?.let { 1 }.orZero()
+    return when {
+        defaultModelId.isNotBlank() && count > 1 -> "$defaultModelId · $count enabled"
+        defaultModelId.isNotBlank() -> defaultModelId
+        count > 0 -> "$count enabled"
+        else -> "Choose models"
     }
 }
 
-@Composable
-internal fun ManageProviderModelsSection(
-    providerName: String,
-    modelCatalog: List<ModelCatalogEntry>,
-    defaultModelId: String,
-    enabledModelIds: Set<String>,
-    onEnabledModelIds: (Set<String>) -> Unit,
-    onSetDefaultModel: (String) -> Unit,
-    showDefaultControls: Boolean = true
-) {
-    var query by remember { mutableStateOf("") }
-    val sortedModels = remember(modelCatalog) { modelCatalog.distinctBy { it.modelId }.sortedBy { it.displayName.lowercase() } }
-    val q = query.trim().lowercase()
-    val visibleModels = sortedModels
-        .filter { q.isBlank() || it.displayName.lowercase().contains(q) || it.modelId.lowercase().contains(q) }
-        .take(80)
+private data class AgentModelRowEntry(
+    val modelId: String,
+    val displayName: String,
+    val custom: Boolean
+)
 
-    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-    Text(
-        if (showDefaultControls) "Manage Models" else "Edit selection",
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.Bold
-    )
-    if (showDefaultControls) {
-        Text(
-            "Only checked $providerName models will appear in Select Agent. Your default model is always kept enabled.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    } else {
-        Text(
-            "Choose which $providerName models show up in the agent picker.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-    OutlinedTextField(
-        value = query,
-        onValueChange = { query = it },
-        modifier = Modifier.fillMaxWidth(),
-        singleLine = true,
-        shape = RoundedCornerShape(12.dp),
-        leadingIcon = { Icon(Icons.Default.Search, null, modifier = Modifier.size(18.dp)) },
-        trailingIcon = {
-            if (query.isNotBlank()) IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, null) }
-        },
-        label = { Text("Search provider models") }
-    )
-
-    if (sortedModels.isEmpty()) {
-        Text(
-            "No models.dev catalog found for this provider yet. Save a default model manually or refresh models from chat.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        return
-    }
-
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        if (showDefaultControls) {
-            TextButton(onClick = { onEnabledModelIds(setOf(defaultModelId).filter { it.isNotBlank() }.toSet()) }) { Text("Default only") }
-        }
-        TextButton(onClick = { onEnabledModelIds(sortedModels.map { it.modelId }.toSet()) }) { Text("Check all") }
-        TextButton(onClick = { onEnabledModelIds(if (showDefaultControls) setOf(defaultModelId).filter { it.isNotBlank() }.toSet() else emptySet()) }) { Text("Clear") }
-    }
-
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(max = 420.dp)
-            .ignoreNestedScrollForBottomSheet(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        items(visibleModels, key = { it.modelId }) { entry ->
-            val checked = (showDefaultControls && entry.modelId == defaultModelId) || entry.modelId in enabledModelIds
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = if (checked) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f) else MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().clickable {
-                        val lockedDefault = showDefaultControls && entry.modelId == defaultModelId
-                        val next = if (checked && !lockedDefault) enabledModelIds - entry.modelId else enabledModelIds + entry.modelId
-                        onEnabledModelIds((if (showDefaultControls) next + defaultModelId else next).filter { it.isNotBlank() }.toSet())
-                    }.padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Checkbox(
-                        checked = checked,
-                        onCheckedChange = { isChecked ->
-                            val next = if (isChecked) enabledModelIds + entry.modelId else enabledModelIds - entry.modelId
-                            onEnabledModelIds((if (showDefaultControls) next + defaultModelId else next).filter { it.isNotBlank() }.toSet())
-                        },
-                        enabled = !showDefaultControls || entry.modelId != defaultModelId
-                    )
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text(entry.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1)
-                        Text(entry.modelId, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                        entry.contextWindow?.let {
-                            Text("Context ${formatTokenCountLocal(it)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f))
-                        }
-                    }
-                    if (showDefaultControls) {
-                        if (entry.modelId == defaultModelId) {
-                            AssistChip(onClick = {}, label = { Text("Default") })
-                        } else {
-                            TextButton(onClick = {
-                                onSetDefaultModel(entry.modelId)
-                                onEnabledModelIds((enabledModelIds + entry.modelId).filter { it.isNotBlank() }.toSet())
-                            }) { Text("Set default") }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if (visibleModels.size < sortedModels.size) {
-        Text("Showing ${visibleModels.size} of ${sortedModels.size}. Use search to narrow results.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-private fun formatTokenCountLocal(tokens: Int): String = when {
-    tokens >= 1_000_000 -> "${tokens / 1_000_000}M"
-    tokens >= 1_000 -> "${tokens / 1_000}K"
-    else -> tokens.toString()
-}
+private fun Int?.orZero(): Int = this ?: 0

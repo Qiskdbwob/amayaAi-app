@@ -90,7 +90,8 @@ class AiRepository @Inject constructor(
                 .getOrElse { ProviderType.OPENAI }
         return when (type) {
             ProviderType.ANTHROPIC -> anthropicProvider
-            ProviderType.OPENAI    -> openAiProvider
+            ProviderType.OPENAI,
+            ProviderType.CUSTOM_OPENAI_COMPATIBLE -> openAiProvider
             ProviderType.GEMINI    -> geminiProvider
         }
     }

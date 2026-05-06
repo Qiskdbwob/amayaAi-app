@@ -40,7 +40,7 @@ class ProviderConnectionRepository @Inject constructor(
             providerConnectionDao.upsert(
                 ProviderConnectionEntity(
                     id = connectionId,
-                    providerId = agent.providerId.ifBlank { "openai" },
+                    providerId = agent.providerId,
                     displayName = agent.name.ifBlank { provider?.displayName ?: "Unnamed Agent" },
                     baseUrl = agent.baseUrl,
                     enabled = agent.enabled,

@@ -153,7 +153,8 @@ class SelfImprovementPipeline @Inject constructor(
                 ?: runCatching { ProviderType.valueOf(agentConfig.providerType) }.getOrDefault(ProviderType.OPENAI)
         ) {
             ProviderType.ANTHROPIC -> anthropicProvider
-            ProviderType.OPENAI -> openAiProvider
+            ProviderType.OPENAI,
+            ProviderType.CUSTOM_OPENAI_COMPATIBLE -> openAiProvider
             ProviderType.GEMINI -> geminiProvider
         }
         if (!provider.isConfigured()) return null

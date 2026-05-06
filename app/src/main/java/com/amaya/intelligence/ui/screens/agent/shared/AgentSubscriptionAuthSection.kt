@@ -19,9 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Key
@@ -32,6 +30,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -88,35 +87,19 @@ internal fun SubscriptionAuthStepContent(authUi: AgentSubscriptionAuthUi?) {
 @Composable
 internal fun SubscriptionConnectionCard(authUi: AgentSubscriptionAuthUi?) {
     val authenticated = authUi?.authenticated == true
-    ElevatedCard(
-        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
-        modifier = Modifier.fillMaxWidth()
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(46.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(if (authenticated) Color(0xFF10A37F).copy(alpha = 0.16f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    if (authenticated) Icons.Default.CheckCircle else Icons.Default.Key,
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp),
-                    tint = if (authenticated) Color(0xFF10A37F) else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(if (authenticated) "Connected" else "Not connected", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+                Text("Account", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
                 Text(
-                    if (authenticated) authUi?.accountLabel ?: "Subscription active" else "Sign in to enable subscription models.",
+                    if (authenticated) authUi?.accountLabel ?: "Connected" else "Not connected",
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (authenticated) Color(0xFF10A37F) else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (authenticated) Color(0xFF10A37F) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
                 )
             }
             if (authenticated) {
@@ -129,6 +112,7 @@ internal fun SubscriptionConnectionCard(authUi: AgentSubscriptionAuthUi?) {
                 ) { Text("Sign in") }
             }
         }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
     }
 }
 

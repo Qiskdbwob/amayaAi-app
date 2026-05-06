@@ -36,10 +36,10 @@ import javax.inject.Singleton
 data class AgentConfig(
     val id:           String  = java.util.UUID.randomUUID().toString(),
     val name:         String  = "",
-    /** Legacy runtime provider type used by the current chat adapters. */
-    val providerType: String  = "OPENAI",
-    /** New provider registry id, e.g. openai, openrouter, google_gemini_api, openai_codex_bridge. */
-    val providerId:   String  = "openai",
+    /** Legacy runtime provider type used by the current chat adapters. Filled when the user picks a provider. */
+    val providerType: String  = "",
+    /** New provider registry id. Filled when the user picks a provider. */
+    val providerId:   String  = "",
     val baseUrl:      String  = "",
     val modelId:      String  = "",
     val enabled:      Boolean = true,
@@ -256,8 +256,10 @@ class AiSettingsManager @Inject constructor(
                 AgentConfig(
                     id           = obj.optString("id", java.util.UUID.randomUUID().toString()),
                     name         = obj.optString("name", ""),
-                    providerType = obj.optString("providerType", "OPENAI"),
-                    providerId   = obj.optString("providerId", inferProviderId(obj.optString("providerType", "OPENAI"), obj.optString("baseUrl", ""), obj.optString("modelId", ""))),
+                    providerType = obj.optString("providerType", ""),
+                    providerId   = obj.optString("providerId", "").ifBlank {
+                        inferProviderId(obj.optString("providerType", ""), obj.optString("baseUrl", ""), obj.optString("modelId", ""))
+                    },
                     baseUrl      = obj.optString("baseUrl", ""),
                     modelId      = obj.optString("modelId", ""),
                     enabled      = obj.optBoolean("enabled", true),
@@ -316,7 +318,8 @@ class AiSettingsManager @Inject constructor(
             value.contains("vercel") -> "vercel_ai_gateway"
             value.contains("ollama") -> "ollama"
             value.contains("lmstudio") || value.contains("lm-studio") || value.contains("localhost:1234") -> "lm_studio"
-            else -> "openai"
+            baseUrl.isNotBlank() -> "custom_openai_compatible"
+            else -> ""
         }
     }
 }
@@ -342,4 +345,4 @@ data class AiSettings(
     val onboardingCompleted: Boolean          = false
 )
 
-enum class ProviderType { ANTHROPIC, OPENAI, GEMINI }
+enum class ProviderType { ANTHROPIC, OPENAI, GEMINI, CUSTOM_OPENAI_COMPATIBLE }

@@ -4,7 +4,7 @@ import com.amaya.intelligence.data.remote.api.CodexAuthState
 import com.amaya.intelligence.ui.screens.agent.shared.AgentSubscriptionAuthUi
 import com.amaya.intelligence.ui.screens.agent.shared.SubscriptionAuthStep
 
-private const val OpenAiSubscriptionProviderId = "openai_codex_bridge"
+internal const val OpenAiSubscriptionProviderId = "openai_codex_bridge"
 
 internal fun openAiSubscriptionAuthUi(
     authState: CodexAuthState?,

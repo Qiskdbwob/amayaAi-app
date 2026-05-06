@@ -227,7 +227,8 @@ class SubagentRunner @Inject constructor(
 
         val provider: AiProvider = when (providerType) {
             ProviderType.ANTHROPIC -> anthropicProvider
-            ProviderType.OPENAI    -> openAiProvider
+            ProviderType.OPENAI,
+            ProviderType.CUSTOM_OPENAI_COMPATIBLE -> openAiProvider
             ProviderType.GEMINI    -> geminiProvider
         }
         val model: String = activeAgent?.modelId?.ifBlank { null }
