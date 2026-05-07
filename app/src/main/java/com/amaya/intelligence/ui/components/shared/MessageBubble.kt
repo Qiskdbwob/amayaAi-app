@@ -94,13 +94,13 @@ fun MessageBubble(
             }
             
             Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
-                shape = RoundedCornerShape(20.dp, 20.dp, 4.dp, 20.dp),
+                color = Color(0xFF0A84FF),
+                shape = RoundedCornerShape(21.dp, 21.dp, 6.dp, 21.dp),
                 modifier = Modifier.widthIn(max = maxBubbleWidthDp)
             ) {
                 Text(
                     message.content,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    color = Color.White,
                     modifier = Modifier.padding(horizontal = hPad, vertical = vPad),
                     style = MaterialTheme.typography.bodyMedium.copy(fontSize = 16.sp, lineHeight = 24.sp)
                 )

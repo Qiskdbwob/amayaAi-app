@@ -1,5 +1,6 @@
 package com.amaya.intelligence.ui.components.shared
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -39,7 +40,9 @@ fun WelcomeScreen(
     val greeting = greetings[(now.dayOfYear + now.hour) % greetings.size]
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -56,9 +59,9 @@ fun WelcomeScreen(
             val folderName = currentWorkspace.substringAfterLast("/").substringAfterLast("\\")
             Surface(
                 onClick = onWorkspaceClick,
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.clickable { onWorkspaceClick() }
+                border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
@@ -81,9 +84,9 @@ fun WelcomeScreen(
         } else {
             Surface(
                 onClick = onNewProjectClick,
-                shape = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.primaryContainer,
-                modifier = Modifier.clickable { onNewProjectClick() }
+                border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),

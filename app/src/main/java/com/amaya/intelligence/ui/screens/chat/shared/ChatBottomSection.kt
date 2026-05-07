@@ -22,7 +22,6 @@ import com.amaya.intelligence.domain.ai.displayName
 import com.amaya.intelligence.domain.models.ChatUiState
 import com.amaya.intelligence.domain.models.ConnectionState
 import com.amaya.intelligence.ui.components.shared.ChatInput
-import com.amaya.intelligence.ui.components.shared.ScrollablePills
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -114,9 +113,6 @@ fun ChatBottomSection(
                     )
                 }
             }
-        }
-        if (uiState.messages.isEmpty() && !uiState.isLoading && !isRemoteMode) {
-            ScrollablePills(onPromptClick = onInputTextChange)
         }
         ChatInput(
             text = inputText,

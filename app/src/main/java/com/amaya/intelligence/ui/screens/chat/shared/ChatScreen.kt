@@ -6,14 +6,18 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -29,14 +33,19 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
@@ -48,10 +57,7 @@ import com.amaya.intelligence.ui.components.shared.LocalhostLinkBottomSheet
 import com.amaya.intelligence.ui.components.shared.LocalhostLinkInfo
 import com.amaya.intelligence.ui.components.shared.LocalhostLinkInfoParser
 import com.amaya.intelligence.ui.components.shared.ModelSelectorSheet
-import com.amaya.intelligence.ui.components.shared.ScrollablePills
-import com.amaya.intelligence.ui.components.local.SessionInfoButton
 import com.amaya.intelligence.ui.components.local.SessionInfoSheet
-import com.amaya.intelligence.ui.components.local.TodoPill
 import com.amaya.intelligence.ui.components.local.TodoSheet
 import com.amaya.intelligence.utils.NetworkUtils
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
@@ -60,6 +66,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+
+private const val CHAT_DRAWER_LOG_TAG = "ChatDrawerDebug"
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -362,41 +370,125 @@ fun ChatScreen(
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val conversations by conversationsFlow.collectAsState()
+    val selectedModelLabel = (selectedModelItem?.name ?: selectedModel).ifBlank { selectedAgentFallbackLabel }
+    val activeConversationTitle = remember(conversations, uiState.conversationId) {
+        conversations.firstOrNull { it.id.toString() == uiState.conversationId }?.title
+    }
+    val topBarTitle = if (!activeConversationTitle.isNullOrBlank() && uiState.messages.isNotEmpty()) {
+        activeConversationTitle
+    } else {
+        selectedModelLabel
+    }
+    val topBarSubtitle = if (!activeConversationTitle.isNullOrBlank() && uiState.messages.isNotEmpty()) {
+        selectedModelLabel
+    } else {
+        ""
+    }
 
     // WindowInsets
     val statusBarInsets = WindowInsets.statusBars.asPaddingValues()
     val statusBarHeight = statusBarInsets.calculateTopPadding()
     val navBarHeight = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    val headerDp = statusBarHeight + 64.dp
+    val headerDp = statusBarHeight + 84.dp
     val bottomDp = 80.dp + navBarHeight
     val bgColor = MaterialTheme.colorScheme.background
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        gesturesEnabled = drawerState.isOpen,
-        drawerContent = {
-            ChatDrawerContent(
-                drawerState = drawerState,
-                isRemoteMode = isRemoteMode,
-                sessionMode = uiState.sessionMode,
-                workspacePath = uiState.workspacePath,
-                isLoadingConversations = uiState.isLoadingConversations,
-                connectionState = connectionState,
-                conversations = conversations,
-                onLoadConversation = doLoadConversation,
-                onDeleteConversation = doDeleteConversation,
-                onClearConversation = doClearConversation,
-                onNavigateToSettings = onNavigateToSettings,
-                onNavigateToWorkspace = onNavigateToWorkspace,
-                onNavigateToRemoteSession = onNavigateToRemoteSession,
-                onExit = onExit,
-                hasMoreConversations = doHasMoreConversations,
-                loadMoreConversations = doLoadMoreConversations,
-                scope = scope
-            )
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val chatShift = configuration.screenWidthDp.dp * 0.18f
+    val drawerTargetOpen = drawerState.targetValue == DrawerValue.Open
+    val drawerProgress by animateFloatAsState(
+        targetValue = if (drawerTargetOpen) 1f else 0f,
+        animationSpec = tween(300, easing = FastOutSlowInEasing),
+        label = "chatDrawerProgress"
+    )
+    val drawerDragAnim = remember { Animatable(0f) }
+    var drawerDragPx by remember { mutableFloatStateOf(0f) }
+    var drawerDragging by remember { mutableStateOf(false) }
+    var drawerDragStartX by remember { mutableFloatStateOf(0f) }
+    var drawerDragStartY by remember { mutableFloatStateOf(0f) }
+    var drawerDragLastX by remember { mutableFloatStateOf(0f) }
+    var drawerDragLastY by remember { mutableFloatStateOf(0f) }
+    val displayedDrawerDragPx = if (drawerDragging) drawerDragPx else drawerDragAnim.value
+    var drawerWidthPx by remember { mutableFloatStateOf(with(density) { configuration.screenWidthDp.dp.toPx() }.coerceAtLeast(1f)) }
+    val effectiveDrawerProgress = (drawerProgress + (displayedDrawerDragPx / drawerWidthPx)).coerceIn(0f, 1f)
+    var lastLoggedEffectiveDrawerProgress by remember { mutableFloatStateOf(-1f) }
+
+    LaunchedEffect(Unit) {
+        snapshotFlow {
+            "current=${drawerState.currentValue}, target=${drawerState.targetValue}, " +
+                "running=${drawerState.isAnimationRunning}, isOpen=${drawerState.isOpen}"
+        }.collect { state ->
+            android.util.Log.d(CHAT_DRAWER_LOG_TAG, "state $state")
         }
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+    }
+
+    LaunchedEffect(effectiveDrawerProgress) {
+        val shouldLog = lastLoggedEffectiveDrawerProgress < 0f ||
+            kotlin.math.abs(effectiveDrawerProgress - lastLoggedEffectiveDrawerProgress) >= 0.05f ||
+            effectiveDrawerProgress <= 0.01f ||
+            effectiveDrawerProgress >= 0.99f
+        if (shouldLog) {
+            android.util.Log.d(
+                CHAT_DRAWER_LOG_TAG,
+                "progress effective=$effectiveDrawerProgress, drawerProgress=$drawerProgress, " +
+                    "dragPx=$displayedDrawerDragPx, dragging=$drawerDragging, width=$drawerWidthPx"
+            )
+            lastLoggedEffectiveDrawerProgress = effectiveDrawerProgress
+        }
+    }
+
+    suspend fun closeDrawerFromDragPosition(snapPx: Float) {
+        android.util.Log.d(
+            CHAT_DRAWER_LOG_TAG,
+            "closeFromDrag start snapPx=$snapPx, start=($drawerDragStartX,$drawerDragStartY), " +
+                "last=($drawerDragLastX,$drawerDragLastY), current=${drawerState.currentValue}, " +
+                "target=${drawerState.targetValue}, progress=$effectiveDrawerProgress"
+        )
+        // Keep rendering from the exact finger release coordinate, then move the same
+        // drag offset fully off-screen before asking DrawerState to close. Calling
+        // drawerState.close() first can retarget drawerProgress from 1f and create
+        // a one-frame bounce back to open.
+        drawerDragAnim.snapTo(snapPx)
+        drawerDragging = false
+        drawerDragAnim.animateTo(
+            targetValue = -drawerWidthPx,
+            animationSpec = tween(180, easing = FastOutSlowInEasing)
+        )
+        android.util.Log.d(
+            CHAT_DRAWER_LOG_TAG,
+            "closeFromDrag before drawerState.close animValue=${drawerDragAnim.value}, " +
+                "current=${drawerState.currentValue}, target=${drawerState.targetValue}, progress=$effectiveDrawerProgress"
+        )
+        drawerState.close()
+        android.util.Log.d(
+            CHAT_DRAWER_LOG_TAG,
+            "closeFromDrag after drawerState.close current=${drawerState.currentValue}, " +
+                "target=${drawerState.targetValue}, progress=$effectiveDrawerProgress"
+        )
+        // Do not reset the drag offset immediately. drawerProgress is still 1f for
+        // the next frame after DrawerState flips to Closed; resetting here is the
+        // bounce seen in the logs (effective progress jumps 0 -> 1 -> 0).
+        delay(350)
+        if (drawerState.currentValue == DrawerValue.Closed && drawerState.targetValue == DrawerValue.Closed) {
+            drawerDragAnim.snapTo(0f)
+            drawerDragPx = 0f
+            android.util.Log.d(CHAT_DRAWER_LOG_TAG, "closeFromDrag drag offset reset after close animation")
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(bgColor)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    translationX = with(density) { chatShift.toPx() } * effectiveDrawerProgress
+                    val scale = 1f - (0.035f * effectiveDrawerProgress)
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .clip(RoundedCornerShape((24f * effectiveDrawerProgress).dp))
+        ) {
             val drawerOpen = drawerState.isOpen
             var showSkeletonOverride by remember { mutableStateOf(false) }
 
@@ -482,121 +574,39 @@ fun ChatScreen(
                     .background(LocalAmayaGradients.current.topScrim)
             )
 
-            // TopAppBar
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopStart)
-            ) {
-                TopAppBar(
-                    title = {
-                        Box {
-                            Row(
-                                modifier = Modifier
-                                    .clickable { showModelSelector = true }
-                                    .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = (selectedModelItem?.name ?: selectedModel).ifBlank { selectedAgentFallbackLabel }
-                                        .let { if (it.length > 22) it.take(20) + "…" else it },
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1, overflow = TextOverflow.Ellipsis
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Icon(Icons.Default.KeyboardArrowDown, "Select Model",
-                                    modifier = Modifier.size(18.dp),
-                                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
-                            }
-                        }
-                    },
-                    navigationIcon = {
-                        Box(
-                            modifier = Modifier
-                                .padding(start = 8.dp)
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                                .clickable {
-                                    keyboardController?.hide()
-                                    scope.launch { drawerState.open() }
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Default.Menu,
-                                contentDescription = "Menu",
-                                tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    },
-                    actions = {
-                        if (todoItems.isNotEmpty()) {
-                            TodoPill(
-                                items = todoItems,
-                                onClick = { showTodoSheet = true }
-                            )
-                        }
-
-                        if (isRemoteMode) {
-                            val isStreaming = uiState.isStreaming
-                            Surface(
-                                shape = RoundedCornerShape(999.dp),
-                                color = if (isStreaming) {
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainerHigh
-                                }
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(6.dp)
-                                            .clip(androidx.compose.foundation.shape.CircleShape)
-                                            .background(
-                                                if (isStreaming) MaterialTheme.colorScheme.primary
-                                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                                            )
-                                    )
-                                    Spacer(Modifier.width(6.dp))
-                                    Text(
-                                        if (isStreaming) streamingLabel else idleLabel,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (isStreaming) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            IconButton(onClick = { viewModel.refreshState() }) {
-                                Icon(Icons.Default.Refresh, "Refresh")
-                            }
-                        }
-
-                        if (!isRemoteMode) {
-                            SessionInfoButton(
-                                totalTokens = uiState.totalInputTokens + uiState.totalOutputTokens,
-                                activeModel = selectedModel,
-                                activeReminderCount = effectiveReminderCount,
-                                onClick = { showSessionInfo = true }
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent,
-                        scrolledContainerColor = Color.Transparent,
-                        navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
-                        titleContentColor = MaterialTheme.colorScheme.onSurface,
-                        actionIconContentColor = MaterialTheme.colorScheme.onSurface
-                    )
-                )
-            }
+            ChatFloatingTopBar(
+                title = topBarTitle,
+                subtitle = topBarSubtitle,
+                isRemoteMode = isRemoteMode,
+                isStreaming = uiState.isStreaming,
+                streamingLabel = streamingLabel,
+                idleLabel = idleLabel,
+                onMenuClick = {
+                    keyboardController?.hide()
+                    scope.launch {
+                        android.util.Log.d(
+                            CHAT_DRAWER_LOG_TAG,
+                            "menuClick open requested current=${drawerState.currentValue}, target=${drawerState.targetValue}"
+                        )
+                        drawerDragAnim.snapTo(0f)
+                        drawerDragPx = 0f
+                        drawerState.open()
+                        android.util.Log.d(
+                            CHAT_DRAWER_LOG_TAG,
+                            "menuClick open finished current=${drawerState.currentValue}, target=${drawerState.targetValue}"
+                        )
+                    }
+                },
+                onTitleClick = { showModelSelector = true },
+                onMoreClick = {
+                    when {
+                        isRemoteMode -> viewModel.refreshState()
+                        todoItems.isNotEmpty() -> showTodoSheet = true
+                        else -> showSessionInfo = true
+                    }
+                },
+                modifier = Modifier.align(Alignment.TopStart)
+            )
 
             // Bottom section
             ChatBottomSection(
@@ -629,6 +639,122 @@ fun ChatScreen(
                 onShowConversationModeSheet = { showConversationModeSheet = true },
                 onInputBarHeightChange = { inputBarHeight = it }
             )
+        }
+
+        if (effectiveDrawerProgress > 0.01f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(1f)
+                    .graphicsLayer {
+                        translationX = with(density) { chatShift.toPx() } * effectiveDrawerProgress
+                        val scale = 1f - (0.035f * effectiveDrawerProgress)
+                        scaleX = scale
+                        scaleY = scale
+                    }
+                    .clip(RoundedCornerShape((24f * effectiveDrawerProgress).dp))
+                    .clickable {
+                        scope.launch {
+                            android.util.Log.d(
+                                CHAT_DRAWER_LOG_TAG,
+                                "scrimClick close requested current=${drawerState.currentValue}, target=${drawerState.targetValue}, " +
+                                    "progress=$effectiveDrawerProgress"
+                            )
+                            drawerState.close()
+                            android.util.Log.d(
+                                CHAT_DRAWER_LOG_TAG,
+                                "scrimClick close finished current=${drawerState.currentValue}, target=${drawerState.targetValue}, " +
+                                    "progress=$effectiveDrawerProgress"
+                            )
+                        }
+                    }
+            )
+        }
+
+        // Only render and intercept gestures when drawer is open or animating
+        val drawerInteractive = drawerState.isOpen || drawerState.isAnimationRunning || effectiveDrawerProgress > 0.01f
+        if (drawerInteractive) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        drawerWidthPx = size.width.coerceAtLeast(1f)
+                        translationX = (-size.width * (1f - effectiveDrawerProgress)) +
+                            (with(density) { (-28).dp.toPx() } * (1f - effectiveDrawerProgress))
+                    }
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures(
+                            onDragStart = { offset ->
+                                drawerDragging = true
+                                drawerDragPx = drawerDragAnim.value
+                                drawerDragStartX = offset.x
+                                drawerDragStartY = offset.y
+                                drawerDragLastX = offset.x
+                                drawerDragLastY = offset.y
+                                android.util.Log.d(
+                                    CHAT_DRAWER_LOG_TAG,
+                                    "dragStart pointer=(${offset.x},${offset.y}), dragPx=$drawerDragPx, " +
+                                        "current=${drawerState.currentValue}, target=${drawerState.targetValue}, " +
+                                        "progress=$effectiveDrawerProgress, width=$drawerWidthPx"
+                                )
+                                scope.launch { drawerDragAnim.stop() }
+                            },
+                            onDragEnd = {
+                                val snapPx = drawerDragPx
+                                android.util.Log.d(
+                                    CHAT_DRAWER_LOG_TAG,
+                                    "dragEnd snapPx=$snapPx, start=($drawerDragStartX,$drawerDragStartY), " +
+                                        "last=($drawerDragLastX,$drawerDragLastY), current=${drawerState.currentValue}, " +
+                                        "target=${drawerState.targetValue}, progress=$effectiveDrawerProgress"
+                                )
+                                scope.launch { closeDrawerFromDragPosition(snapPx) }
+                            },
+                            onDragCancel = {
+                                val snapPx = drawerDragPx
+                                android.util.Log.d(
+                                    CHAT_DRAWER_LOG_TAG,
+                                    "dragCancel snapPx=$snapPx, start=($drawerDragStartX,$drawerDragStartY), " +
+                                        "last=($drawerDragLastX,$drawerDragLastY), current=${drawerState.currentValue}, " +
+                                        "target=${drawerState.targetValue}, progress=$effectiveDrawerProgress"
+                                )
+                                scope.launch { closeDrawerFromDragPosition(snapPx) }
+                            },
+                            onHorizontalDrag = { change, dragAmount ->
+                                change.consume()
+                                drawerDragLastX = change.position.x
+                                drawerDragLastY = change.position.y
+                                drawerDragPx = (drawerDragPx + dragAmount).coerceIn(-drawerWidthPx, 0f)
+                                android.util.Log.d(
+                                    CHAT_DRAWER_LOG_TAG,
+                                    "dragMove pointer=(${change.position.x},${change.position.y}), " +
+                                        "dragAmount=$dragAmount, dragPx=$drawerDragPx, progress=$effectiveDrawerProgress"
+                                )
+                            }
+                        )
+                    }
+                    .zIndex(2f)
+            ) {
+            ChatDrawerContent(
+                drawerState = drawerState,
+                activeConversationId = uiState.conversationId,
+                isRemoteMode = isRemoteMode,
+                sessionMode = uiState.sessionMode,
+                workspacePath = uiState.workspacePath,
+                isLoadingConversations = uiState.isLoadingConversations,
+                connectionState = connectionState,
+                conversations = conversations,
+                onLoadConversation = doLoadConversation,
+                onDeleteConversation = doDeleteConversation,
+                onClearConversation = doClearConversation,
+                onNavigateToSettings = onNavigateToSettings,
+                onNavigateToWorkspace = onNavigateToWorkspace,
+                onNavigateToRemoteSession = onNavigateToRemoteSession,
+                onExit = onExit,
+                hasMoreConversations = doHasMoreConversations,
+                loadMoreConversations = doLoadMoreConversations,
+                scope = scope
+            )
+        }
         }
     }
 
@@ -684,5 +810,138 @@ fun ChatScreen(
             inputPriceOverride = selectedModelItem?.inputPricePerMillionTokens,
             outputPriceOverride = selectedModelItem?.outputPricePerMillionTokens
         )
+    }
+}
+
+@Composable
+private fun ChatFloatingTopBar(
+    title: String,
+    subtitle: String,
+    isRemoteMode: Boolean,
+    isStreaming: Boolean,
+    streamingLabel: String,
+    idleLabel: String,
+    onMenuClick: () -> Unit,
+    onTitleClick: () -> Unit,
+    onMoreClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val isDark = isSystemInDarkTheme()
+    val micaColor = if (isDark) Color(0xFF1D1F24).copy(alpha = 0.92f) else Color(0xFFF7F7FA).copy(alpha = 0.94f)
+    val orbColor = if (isDark) Color(0xFF202228).copy(alpha = 0.92f) else Color(0xFFFAFAFC).copy(alpha = 0.96f)
+    val borderColor = if (isDark) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.10f)
+    val effectiveSubtitle = subtitle
+    val secondaryText = MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.68f else 0.60f)
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .statusBarsPadding()
+            .padding(horizontal = 18.dp, vertical = 10.dp)
+    ) {
+        LiquidOrbButton(
+            icon = Icons.Default.Menu,
+            contentDescription = "Menu",
+            color = orbColor,
+            borderColor = borderColor,
+            onClick = onMenuClick,
+            modifier = Modifier.align(Alignment.CenterStart)
+        )
+
+        Surface(
+            onClick = onTitleClick,
+            shape = RoundedCornerShape(999.dp),
+            color = micaColor,
+            border = BorderStroke(0.7.dp, borderColor),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .width(224.dp)
+                .heightIn(min = 52.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = if (effectiveSubtitle.isBlank()) 14.dp else 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 16.sp,
+                            lineHeight = 20.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (effectiveSubtitle.isNotBlank()) {
+                        Spacer(Modifier.height(1.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            if (isRemoteMode) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(5.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isStreaming) MaterialTheme.colorScheme.primary else secondaryText.copy(alpha = 0.7f))
+                                )
+                                Spacer(Modifier.width(5.dp))
+                            }
+                            Text(
+                                text = effectiveSubtitle,
+                                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp, lineHeight = 14.sp),
+                                color = secondaryText,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        LiquidOrbButton(
+            icon = if (isRemoteMode) Icons.Default.Refresh else Icons.Default.MoreVert,
+            contentDescription = if (isRemoteMode) "Refresh" else "More",
+            color = orbColor,
+            borderColor = borderColor,
+            onClick = onMoreClick,
+            modifier = Modifier.align(Alignment.CenterEnd)
+        )
+    }
+}
+
+@Composable
+private fun LiquidOrbButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    color: Color,
+    borderColor: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = color,
+        border = BorderStroke(0.7.dp, borderColor),
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
+        modifier = modifier.size(44.dp)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                icon,
+                contentDescription = contentDescription,
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(20.dp)
+            )
+        }
     }
 }

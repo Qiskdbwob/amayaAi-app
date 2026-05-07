@@ -14,7 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -50,8 +50,8 @@ fun ChatInput(
     val hasWorkspace = remember(workspacePath) { !workspacePath.isNullOrBlank() }
 
     val pillColor = remember(isDark) {
-        if (isDark) android.graphics.Color.parseColor("#FF2C2C2E").let { androidx.compose.ui.graphics.Color(it) }
-        else androidx.compose.ui.graphics.Color(0xFFFFFFFF)
+        if (isDark) Color(0xFF1F2126).copy(alpha = 0.94f)
+        else Color(0xFFF8F8FA).copy(alpha = 0.96f)
     }
 
     Column(
@@ -164,128 +164,133 @@ fun ChatInput(
             }
         }
 
-        // Pill-shaped input row
-        Row(
+        // iOS-style single liquid composer capsule
+        Surface(
+            shape = RoundedCornerShape(999.dp),
+            color = pillColor,
+            border = BorderStroke(
+                0.7.dp,
+                MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.15f else 0.10f)
+            ),
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp
         ) {
-            // (+) attach button
-            Box {
-                Box(
-                    modifier = Modifier.size(40.dp).clip(CircleShape)
-                        .background(
-                            if (isStreaming) MaterialTheme.colorScheme.surfaceContainerHigh
-                            else MaterialTheme.colorScheme.secondaryContainer
-                        )
-                        .clickable(enabled = !isStreaming) { showAttachMenu = true },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "Attach",
-                        modifier = Modifier.size(22.dp),
-                        tint = if (isStreaming) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                        else MaterialTheme.colorScheme.onSecondaryContainer)
-                }
-                DropdownMenu(
-                    expanded = showAttachMenu,
-                    onDismissRequest = { showAttachMenu = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("Attach file") },
-                        onClick = {
-                            showAttachMenu = false
-                            onAttachFile()
-                        },
-                        leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Attach image") },
-                        onClick = {
-                            showAttachMenu = false
-                            onAttachImage()
-                        },
-                        leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) }
-                    )
-                }
-            }
-
-            // Glassmorphism pill input container
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                color = pillColor,
-                border = BorderStroke(
-                    0.5.dp,
-                    MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.12f else 0.08f)
-                ),
-                modifier = Modifier.weight(1f),
-                tonalElevation = 0.dp,
-                shadowElevation = 0.dp
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    val placeholderText = remember(hasWorkspace, wsName) {
-                        if (hasWorkspace) "Ask anything on $wsName" else "Message"
-                    }
-                    val placeholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-
-                    BasicTextField(
-                        value = text,
-                        onValueChange = onTextChange,
-                        modifier = Modifier.weight(1f),
-                        maxLines = 5,
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(
-                            color = MaterialTheme.colorScheme.onSurface
-                        ),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        decorationBox = { inner ->
-                            Box(modifier = Modifier.fillMaxWidth()) {
-                                if (text.isEmpty()) {
-                                    Text(text = placeholderText,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = placeholderColor,
-                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                }
-                                inner()
-                            }
-                        }
-                    )
-
-                    Spacer(Modifier.width(8.dp))
-
-                    // Send / Stop button
+                Box {
                     Box(
-                        modifier = Modifier.size(32.dp).clip(CircleShape)
-                            .background(
-                                if (isStreaming) MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
-                                else if (text.isNotBlank() || hasAttachment)
-                                    MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-                            )
-                            .clickable {
-                                if (isStreaming) {
-                                    onStopGeneration()
-                                } else if (text.isNotBlank() || hasAttachment) {
-                                    val msg = text.trim()
-                                    onTextChange("")
-                                    onSendMessage(msg)
-                                }
-                            },
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (isStreaming) 0.05f else 0.08f))
+                            .clickable(enabled = !isStreaming) { showAttachMenu = true },
                         contentAlignment = Alignment.Center
                     ) {
-                        if (isStreaming) {
-                            Icon(Icons.Default.Stop, contentDescription = "Stop",
-                                modifier = Modifier.size(15.dp),
-                                tint = MaterialTheme.colorScheme.error)
-                        } else {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send",
-                                modifier = Modifier.size(15.dp),
-                                tint = if (text.isNotBlank() || hasAttachment)
-                                    MaterialTheme.colorScheme.onPrimary
-                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = "Attach",
+                            modifier = Modifier.size(23.dp),
+                            tint = if (isStreaming) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showAttachMenu,
+                        onDismissRequest = { showAttachMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Attach file") },
+                            onClick = {
+                                showAttachMenu = false
+                                onAttachFile()
+                            },
+                            leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Attach image") },
+                            onClick = {
+                                showAttachMenu = false
+                                onAttachImage()
+                            },
+                            leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) }
+                        )
+                    }
+                }
+
+                Spacer(Modifier.width(12.dp))
+
+                val placeholderText = remember(hasWorkspace, wsName) {
+                    if (hasWorkspace) "Ask anything on $wsName" else "Message"
+                }
+                val placeholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.46f)
+
+                BasicTextField(
+                    value = text,
+                    onValueChange = onTextChange,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 5,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(
+                        color = MaterialTheme.colorScheme.onSurface
+                    ),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    decorationBox = { inner ->
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            if (text.isEmpty()) {
+                                Text(
+                                    text = placeholderText,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = placeholderColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            inner()
                         }
+                    }
+                )
+
+                Spacer(Modifier.width(12.dp))
+
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isStreaming) MaterialTheme.colorScheme.error.copy(alpha = 0.14f)
+                            else if (text.isNotBlank() || hasAttachment) Color(0xFF0A84FF)
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+                        )
+                        .clickable {
+                            if (isStreaming) {
+                                onStopGeneration()
+                            } else if (text.isNotBlank() || hasAttachment) {
+                                val msg = text.trim()
+                                onTextChange("")
+                                onSendMessage(msg)
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isStreaming) {
+                        Icon(
+                            Icons.Default.Stop,
+                            contentDescription = "Stop",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    } else {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            modifier = Modifier.size(16.dp),
+                            tint = if (text.isNotBlank() || hasAttachment) Color.White
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                        )
                     }
                 }
             }

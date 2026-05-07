@@ -64,6 +64,7 @@ private fun groupConversationsByWorkspace(conversations: List<ConversationEntity
 @Composable
 fun ChatDrawerContent(
     drawerState: DrawerState,
+    activeConversationId: String?,
     isRemoteMode: Boolean,
     sessionMode: IntelligenceSessionManager.SessionMode,
     workspacePath: String?,
@@ -119,13 +120,14 @@ fun ChatDrawerContent(
         else conversations.filter { it.title.contains(searchQuery, ignoreCase = true) }
     }
     val isDark = isSystemInDarkTheme()
-    val drawerBg = if (isDark) MaterialTheme.colorScheme.surfaceContainerLow
-    else MaterialTheme.colorScheme.surface
+    val drawerBg = if (isDark) Color(0xFF050505) else Color(0xFFF7F7F8)
 
-    ModalDrawerSheet(
-        modifier = Modifier.width(300.dp).fillMaxHeight(),
-        drawerContainerColor = drawerBg,
-        drawerShape = RectangleShape
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = drawerBg,
+        shape = RectangleShape,
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             // Expanded search mode
@@ -170,6 +172,7 @@ fun ChatDrawerContent(
                     workspacePath = workspacePath,
                     isLoadingConversations = isLoadingConversations,
                     conversations = filteredConversations,
+                    activeConversationId = activeConversationId,
                     conversationListState = conversationListState,
                     onClearConversation = {
                         onClearConversation()
@@ -181,6 +184,10 @@ fun ChatDrawerContent(
                     },
                     onNavigateToRemoteSession = {
                         onNavigateToRemoteSession()
+                        scope.launch { drawerState.close() }
+                    },
+                    onNavigateToSettings = {
+                        onNavigateToSettings()
                         scope.launch { drawerState.close() }
                     },
                     onExit = {
@@ -198,113 +205,38 @@ fun ChatDrawerContent(
                 )
             }
 
-            // Footer actions (fixed at bottom)
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth(),
-                color = drawerBg
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                        thickness = 1.dp
-                    )
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 12.dp)
-                            .navigationBarsPadding(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
+            if (!isSearchExpanded) {
                 Surface(
                     onClick = {
-                        onNavigateToSettings()
+                        onClearConversation()
                         scope.launch { drawerState.close() }
                     },
-                    shape = RoundedCornerShape(14.dp),
-                    color = Color.Transparent,
-                    modifier = Modifier.weight(1f)
+                    shape = RoundedCornerShape(999.dp),
+                    color = Color(0xFF0A84FF),
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .navigationBarsPadding()
+                        .padding(end = 20.dp, bottom = 24.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 13.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(Icons.Default.Settings, null, modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f))
-                        }
-                        Spacer(Modifier.width(14.dp))
+                        Icon(Icons.Default.Edit, null, modifier = Modifier.size(18.dp), tint = Color.White)
                         Text(
-                            "Settings",
+                            "Chat",
                             style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White
                         )
-                        Icon(Icons.Default.ChevronRight, null, modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f))
-                    }
-                }
-
-                if (isRemoteMode) {
-                    Surface(
-                        onClick = {
-                            scope.launch { drawerState.close() }
-                            onExit()
-                        },
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.error.copy(alpha = 0.08f),
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.08f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.ExitToApp,
-                                    null,
-                                    modifier = Modifier.size(18.dp),
-                                    tint = MaterialTheme.colorScheme.error
-                                )
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                "Exit",
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                            Icon(
-                                Icons.Default.ChevronRight,
-                                null,
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
-                            )
-                        }
                     }
                 }
             }
         }
     }
-}
-}
 
     // Delete confirmation dialog
     conversationToDelete?.let { conv ->
@@ -482,6 +414,35 @@ private fun DrawerSearchContent(
     }
 }
 
+@Composable
+private fun DrawerNavRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 0.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            modifier = Modifier.size(21.dp),
+            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f)
+        )
+        Spacer(Modifier.width(22.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DrawerNormalContent(
@@ -490,10 +451,12 @@ private fun DrawerNormalContent(
     workspacePath: String?,
     isLoadingConversations: Boolean,
     conversations: List<ConversationEntity>,
+    activeConversationId: String?,
     conversationListState: androidx.compose.foundation.lazy.LazyListState,
     onClearConversation: () -> Unit,
     onNavigateToWorkspace: () -> Unit,
     onNavigateToRemoteSession: () -> Unit,
+    onNavigateToSettings: () -> Unit,
     onExit: () -> Unit,
     onLoadConversation: (Long) -> Unit,
     onConversationLongClick: (ConversationEntity) -> Unit,
@@ -505,198 +468,100 @@ private fun DrawerNormalContent(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .padding(horizontal = 18.dp)
     ) {
         // Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 24.dp, end = 16.dp, top = 20.dp, bottom = 8.dp),
+                .padding(top = 16.dp, bottom = 18.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val headerTitle = sessionMode.displayName()
             Text(
-                text = headerTitle,
+                text = "Amaya",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f)
             )
-            Box(
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                    .clickable { onCloseDrawer() },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Default.Close,
-                    contentDescription = "Close",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        // Action buttons
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
             Surface(
-                onClick = onClearConversation,
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.onSurface,
-                tonalElevation = 0.dp
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 13.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Icon(Icons.Default.Edit, null, modifier = Modifier.size(15.dp),
-                        tint = MaterialTheme.colorScheme.surface)
-                    Spacer(Modifier.width(7.dp))
-                    Text("New chat", style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.surface)
-                }
-            }
-            Surface(
-                onClick = onNavigateToWorkspace,
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(999.dp),
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                tonalElevation = 0.dp
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 13.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(15.dp),
-                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f))
-                    Spacer(Modifier.width(7.dp))
-                    Text("Project", style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f))
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = "Search",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .size(21.dp)
+                            .clickable(onClick = onSearchClick)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                            .clickable(onClick = onNavigateToSettings),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            tint = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
                 }
             }
         }
 
-        Spacer(Modifier.height(10.dp))
+        DrawerNavRow(
+            icon = Icons.Default.FolderOpen,
+            label = "Projects",
+            onClick = onNavigateToWorkspace
+        )
+        Spacer(Modifier.height(2.dp))
 
         if (!isRemoteMode) {
-            // Remote Session button
-            Surface(
-                onClick = onNavigateToRemoteSession,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
-                tonalElevation = 0.dp
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(Icons.Default.Cast, null, modifier = Modifier.size(15.dp),
-                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f))
-                    Text("Remote Session", style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
-                        modifier = Modifier.weight(1f))
-                    Icon(Icons.Default.ChevronRight, null, modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-        }
-
-        // Search bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
-                .clickable { onSearchClick() }
-                .padding(horizontal = 14.dp, vertical = 11.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(Icons.Default.Search, null, modifier = Modifier.size(17.dp),
-                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f))
-            Spacer(Modifier.width(10.dp))
-            Text(
-                "Search conversations",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f),
-                modifier = Modifier.weight(1f)
+            DrawerNavRow(
+                icon = Icons.Default.Cast,
+                label = "Remote Session",
+                onClick = onNavigateToRemoteSession
             )
+            Spacer(Modifier.height(2.dp))
         }
 
-        Spacer(Modifier.height(20.dp))
+        DrawerNavRow(
+            icon = Icons.Default.MoreHoriz,
+            label = "More",
+            onClick = onSearchClick
+        )
 
-        val wsPath = remember(workspacePath) {
-            normalizeWorkspacePath(workspacePath)
-        }
-        val groupedConversations = remember(conversations) {
-            groupConversationsByWorkspace(conversations)
-        }
-        val currentWsConvs = groupedConversations[wsPath].orEmpty()
-        val noWsConvs = groupedConversations[UNCATEGORIZED_WORKSPACE_KEY].orEmpty()
-        val otherWsGroups = groupedConversations.filterKeys { key ->
-            key != wsPath && key != UNCATEGORIZED_WORKSPACE_KEY
-        }
+        Spacer(Modifier.height(22.dp))
 
-        // Section label and conversation list
         if (conversations.isNotEmpty()) {
-            var currentSectionLabel by remember { mutableStateOf<String?>(null) }
-            LaunchedEffect(conversationListState, wsPath, currentWsConvs.size, noWsConvs.size, otherWsGroups.size) {
-                snapshotFlow {
-                    val layoutInfo = conversationListState.layoutInfo
-                    val firstVisibleItem = layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: 0
-
-                    when {
-                        firstVisibleItem < currentWsConvs.size -> {
-                            val folder = wsPath?.substringAfterLast("/") ?: ""
-                            "${UiStrings.Session.RECENT_ON} $folder"
-                        }
-                        firstVisibleItem < currentWsConvs.size + noWsConvs.size -> UiStrings.Session.UNCATEGORIZED
-                        otherWsGroups.isNotEmpty() -> UiStrings.Session.OTHER_WORKSPACES
-                        else -> null
-                    }
-                }.collect { label ->
-                    currentSectionLabel = label
-                }
-            }
-
-            val label = currentSectionLabel ?: if (!wsPath.isNullOrBlank()) {
-                val folder = wsPath.substringAfterLast("/")
-                "${UiStrings.Session.RECENT_ON} $folder"
-            } else {
-                UiStrings.Session.RECENT
-            }
-
             Text(
-                label,
-                style = MaterialTheme.typography.labelMedium,
+                "Recents",
+                style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 2.dp)
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f),
+                modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp)
             )
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(8.dp))
         }
 
         LazyColumn(
             state = conversationListState,
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 0.dp),
             verticalArrangement = Arrangement.spacedBy(1.dp),
             contentPadding = PaddingValues(bottom = 80.dp)
         ) {
@@ -756,47 +621,14 @@ private fun DrawerNormalContent(
                     }
                 }
                 else -> {
-                    if (currentWsConvs.isNotEmpty()) {
-                        items(items = currentWsConvs, key = { it.id }) { conv ->
-                            ConversationDrawerItem(
-                                conv = conv,
-                                showWorkspaceBadge = false,
-                                onClick = { onLoadConversation(conv.id) },
-                                onLongClick = { onConversationLongClick(conv) }
-                            )
-                        }
-                    }
-
-                    if (noWsConvs.isNotEmpty()) {
-                        item(key = "header-none") {
-                            Text(UiStrings.Session.UNCATEGORIZED, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f), modifier = Modifier.padding(start = 14.dp, top = 12.dp, bottom = 4.dp))
-                        }
-                        items(items = noWsConvs, key = { it.id }) { conv ->
-                            ConversationDrawerItem(
-                                conv = conv,
-                                showWorkspaceBadge = false,
-                                onClick = { onLoadConversation(conv.id) },
-                                onLongClick = { onConversationLongClick(conv) }
-                            )
-                        }
-                    }
-
-                    if (otherWsGroups.isNotEmpty()) {
-                        item(key = "header-other") {
-                            Text("OTHER WORKSPACES", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f), modifier = Modifier.padding(start = 14.dp, top = 16.dp, bottom = 4.dp))
-                        }
-                        otherWsGroups.forEach { (wsPath, convs) ->
-                            items(items = convs, key = { it.id }) { conv ->
-                                ConversationDrawerItem(
-                                    conv = conv,
-                                    showWorkspaceBadge = true,
-                                    onClick = { onLoadConversation(conv.id) },
-                                    onLongClick = { onConversationLongClick(conv) }
-                                )
-                            }
-                        }
+                    items(items = conversations, key = { it.id }) { conv ->
+                        ConversationDrawerItem(
+                            conv = conv,
+                            active = conv.id.toString() == activeConversationId,
+                            showWorkspaceBadge = false,
+                            onClick = { onLoadConversation(conv.id) },
+                            onLongClick = { onConversationLongClick(conv) }
+                        )
                     }
                 }
             }
@@ -809,29 +641,41 @@ private fun DrawerNormalContent(
 @Composable
 private fun ConversationDrawerItem(
     conv: ConversationEntity,
+    active: Boolean,
     showWorkspaceBadge: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
+    val activeColor = if (active) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f) else Color.Transparent
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = Color.Transparent,
+        color = activeColor,
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp)
+                .padding(horizontal = 10.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 conv.title.ifEmpty { "New Chat" },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Normal),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (active) 1f else 0.92f),
+                modifier = Modifier.weight(1f)
             )
+            if (active) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF0A84FF))
+                )
+            }
         }
     }
 }
