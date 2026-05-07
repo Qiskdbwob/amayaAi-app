@@ -2,8 +2,10 @@ package com.amaya.intelligence.ui.screens.agent.shared
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -820,15 +822,12 @@ private fun modalStepDepth(stepKey: String): Int = when {
 }
 
 private fun modalStepTransition(initialStepKey: String, targetStepKey: String): ContentTransform {
-    val spec = spring<IntOffset>(
-        dampingRatio = Spring.DampingRatioNoBouncy,
-        stiffness = Spring.StiffnessMediumLow
-    )
+    val spec = tween<IntOffset>(durationMillis = 250, easing = FastOutSlowInEasing)
     val forward = modalStepDepth(targetStepKey) >= modalStepDepth(initialStepKey)
     val enterOffset: (Int) -> Int = if (forward) ({ it / 5 }) else ({ -it / 5 })
     val exitOffset: (Int) -> Int = if (forward) ({ -it / 8 }) else ({ it / 8 })
-    return (slideInHorizontally(spec, initialOffsetX = enterOffset) + fadeIn(animationSpec = spring(stiffness = Spring.StiffnessMediumLow))) togetherWith
-        (slideOutHorizontally(spec, targetOffsetX = exitOffset) + fadeOut(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)))
+    return (slideInHorizontally(spec, initialOffsetX = enterOffset) + fadeIn(animationSpec = tween(250))) togetherWith
+        (slideOutHorizontally(spec, targetOffsetX = exitOffset) + fadeOut(animationSpec = tween(250)))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

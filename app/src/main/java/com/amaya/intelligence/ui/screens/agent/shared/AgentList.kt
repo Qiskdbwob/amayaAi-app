@@ -66,7 +66,7 @@ fun AgentList(
     val colors = iosAgentListColors()
     val subscriptionProviders = remember { AmayaProviderRegistry.providers.filter { it.isSubscription } }
     val subscriptionProviderIds = remember(subscriptionProviders) { subscriptionProviders.map { it.id }.toSet() }
-    val subscriptionAgents = remember(agentConfigs, subscriptionProviders) {
+    val subscriptionAgents = remember(agentConfigs, subscriptionProviders, subscriptionProviderIds) {
         subscriptionProviders.mapNotNull { provider ->
             agentConfigs.filter { it.providerId == provider.id }
                 .maxByOrNull { subscriptionEnabledModelCount(it) }
@@ -75,8 +75,8 @@ fun AgentList(
     val regularAgents = remember(agentConfigs, subscriptionProviderIds) {
         agentConfigs.filter { it.providerId !in subscriptionProviderIds }
     }
-    val enabledAgents = remember(regularAgents) { regularAgents.filter { it.enabled } }
-    val disabledAgents = remember(regularAgents) { regularAgents.filter { !it.enabled } }
+    val enabledAgents = remember(regularAgents, subscriptionProviderIds) { regularAgents.filter { it.enabled } }
+    val disabledAgents = remember(regularAgents, subscriptionProviderIds) { regularAgents.filter { !it.enabled } }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -204,6 +204,7 @@ private fun SubscriptionConnectionCard(
     onClick: () -> Unit,
     colors: IosAgentListColors
 ) {
+    val modelCount = remember(config.enabledModelIds, config.providerId) { subscriptionEnabledModelCount(config) }
     Surface(
         onClick = onClick,
         color = Color.Transparent,
@@ -238,9 +239,8 @@ private fun SubscriptionConnectionCard(
                     ),
                     color = colors.primaryText
                 )
-                val count = subscriptionEnabledModelCount(config)
                 Text(
-                    if (count > 0) "$count models enabled" else "No models enabled",
+                    if (modelCount > 0) "$modelCount models enabled" else "No models enabled",
                     style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.5.sp, lineHeight = 16.sp),
                     color = colors.secondaryText
                 )

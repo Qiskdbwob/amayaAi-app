@@ -7,7 +7,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -28,6 +27,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.*
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
@@ -259,11 +260,13 @@ fun ChatScreen(
         { execution: ToolExecution -> viewModel.respondToToolInteraction(execution.toolCallId, false) }
     }
 
-    val displayMessages = remember(uiState.messages) {
-        uiState.messages.filter {
-            it.content.isNotBlank() ||
-            !it.thinking.isNullOrBlank() ||
-            it.steps.isNotEmpty()
+    val displayMessages by remember(uiState.messages) {
+        derivedStateOf {
+            uiState.messages.filter {
+                it.content.isNotBlank() ||
+                !it.thinking.isNullOrBlank() ||
+                it.steps.isNotEmpty()
+            }
         }
     }
 
@@ -396,11 +399,13 @@ fun ChatScreen(
     val configuration = LocalConfiguration.current
     val density = LocalDensity.current
     val chatShift = configuration.screenWidthDp.dp * 0.18f
+    val chatShiftPx = remember(density, chatShift) { with(density) { chatShift.toPx() } }
+    val drawer28dpPx = remember(density) { with(density) { (-28).dp.toPx() } }
     val drawerTargetOpen = drawerState.targetValue == DrawerValue.Open
     val drawerProgress by animateFloatAsState(
         targetValue = if (drawerTargetOpen) 1f else 0f,
-        animationSpec = tween(300, easing = FastOutSlowInEasing),
-        label = "chatDrawerProgress"
+        animationSpec = tween(durationMillis = 250),
+        label = "drawerProgress"
     )
     val drawerDragAnim = remember { Animatable(0f) }
     var drawerDragPx by remember { mutableFloatStateOf(0f) }
@@ -411,40 +416,12 @@ fun ChatScreen(
     var drawerDragLastY by remember { mutableFloatStateOf(0f) }
     val displayedDrawerDragPx = if (drawerDragging) drawerDragPx else drawerDragAnim.value
     var drawerWidthPx by remember { mutableFloatStateOf(with(density) { configuration.screenWidthDp.dp.toPx() }.coerceAtLeast(1f)) }
+    // Real-time calculation for smooth drag tracking - no caching
     val effectiveDrawerProgress = (drawerProgress + (displayedDrawerDragPx / drawerWidthPx)).coerceIn(0f, 1f)
-    var lastLoggedEffectiveDrawerProgress by remember { mutableFloatStateOf(-1f) }
 
-    LaunchedEffect(Unit) {
-        snapshotFlow {
-            "current=${drawerState.currentValue}, target=${drawerState.targetValue}, " +
-                "running=${drawerState.isAnimationRunning}, isOpen=${drawerState.isOpen}"
-        }.collect { state ->
-            android.util.Log.d(CHAT_DRAWER_LOG_TAG, "state $state")
-        }
-    }
-
-    LaunchedEffect(effectiveDrawerProgress) {
-        val shouldLog = lastLoggedEffectiveDrawerProgress < 0f ||
-            kotlin.math.abs(effectiveDrawerProgress - lastLoggedEffectiveDrawerProgress) >= 0.05f ||
-            effectiveDrawerProgress <= 0.01f ||
-            effectiveDrawerProgress >= 0.99f
-        if (shouldLog) {
-            android.util.Log.d(
-                CHAT_DRAWER_LOG_TAG,
-                "progress effective=$effectiveDrawerProgress, drawerProgress=$drawerProgress, " +
-                    "dragPx=$displayedDrawerDragPx, dragging=$drawerDragging, width=$drawerWidthPx"
-            )
-            lastLoggedEffectiveDrawerProgress = effectiveDrawerProgress
-        }
-    }
+    // Logging removed for performance - frame-by-frame snapshotFlow collection caused lag
 
     suspend fun closeDrawerFromDragPosition(snapPx: Float) {
-        android.util.Log.d(
-            CHAT_DRAWER_LOG_TAG,
-            "closeFromDrag start snapPx=$snapPx, start=($drawerDragStartX,$drawerDragStartY), " +
-                "last=($drawerDragLastX,$drawerDragLastY), current=${drawerState.currentValue}, " +
-                "target=${drawerState.targetValue}, progress=$effectiveDrawerProgress"
-        )
         // Keep rendering from the exact finger release coordinate, then move the same
         // drag offset fully off-screen before asking DrawerState to close. Calling
         // drawerState.close() first can retarget drawerProgress from 1f and create
@@ -453,19 +430,9 @@ fun ChatScreen(
         drawerDragging = false
         drawerDragAnim.animateTo(
             targetValue = -drawerWidthPx,
-            animationSpec = tween(180, easing = FastOutSlowInEasing)
-        )
-        android.util.Log.d(
-            CHAT_DRAWER_LOG_TAG,
-            "closeFromDrag before drawerState.close animValue=${drawerDragAnim.value}, " +
-                "current=${drawerState.currentValue}, target=${drawerState.targetValue}, progress=$effectiveDrawerProgress"
+            animationSpec = tween(durationMillis = 200)
         )
         drawerState.close()
-        android.util.Log.d(
-            CHAT_DRAWER_LOG_TAG,
-            "closeFromDrag after drawerState.close current=${drawerState.currentValue}, " +
-                "target=${drawerState.targetValue}, progress=$effectiveDrawerProgress"
-        )
         // Do not reset the drag offset immediately. drawerProgress is still 1f for
         // the next frame after DrawerState flips to Closed; resetting here is the
         // bounce seen in the logs (effective progress jumps 0 -> 1 -> 0).
@@ -473,7 +440,6 @@ fun ChatScreen(
         if (drawerState.currentValue == DrawerValue.Closed && drawerState.targetValue == DrawerValue.Closed) {
             drawerDragAnim.snapTo(0f)
             drawerDragPx = 0f
-            android.util.Log.d(CHAT_DRAWER_LOG_TAG, "closeFromDrag drag offset reset after close animation")
         }
     }
 
@@ -482,12 +448,11 @@ fun ChatScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    translationX = with(density) { chatShift.toPx() } * effectiveDrawerProgress
+                    translationX = chatShiftPx * effectiveDrawerProgress
                     val scale = 1f - (0.035f * effectiveDrawerProgress)
                     scaleX = scale
                     scaleY = scale
                 }
-                .clip(RoundedCornerShape((24f * effectiveDrawerProgress).dp))
         ) {
             val drawerOpen = drawerState.isOpen
             var showSkeletonOverride by remember { mutableStateOf(false) }
@@ -647,25 +612,14 @@ fun ChatScreen(
                     .fillMaxSize()
                     .zIndex(1f)
                     .graphicsLayer {
-                        translationX = with(density) { chatShift.toPx() } * effectiveDrawerProgress
+                        translationX = chatShiftPx * effectiveDrawerProgress
                         val scale = 1f - (0.035f * effectiveDrawerProgress)
                         scaleX = scale
                         scaleY = scale
                     }
-                    .clip(RoundedCornerShape((24f * effectiveDrawerProgress).dp))
                     .clickable {
                         scope.launch {
-                            android.util.Log.d(
-                                CHAT_DRAWER_LOG_TAG,
-                                "scrimClick close requested current=${drawerState.currentValue}, target=${drawerState.targetValue}, " +
-                                    "progress=$effectiveDrawerProgress"
-                            )
                             drawerState.close()
-                            android.util.Log.d(
-                                CHAT_DRAWER_LOG_TAG,
-                                "scrimClick close finished current=${drawerState.currentValue}, target=${drawerState.targetValue}, " +
-                                    "progress=$effectiveDrawerProgress"
-                            )
                         }
                     }
             )
@@ -680,7 +634,7 @@ fun ChatScreen(
                     .graphicsLayer {
                         drawerWidthPx = size.width.coerceAtLeast(1f)
                         translationX = (-size.width * (1f - effectiveDrawerProgress)) +
-                            (with(density) { (-28).dp.toPx() } * (1f - effectiveDrawerProgress))
+                            (drawer28dpPx * (1f - effectiveDrawerProgress))
                     }
                     .pointerInput(Unit) {
                         detectHorizontalDragGestures(
@@ -691,32 +645,14 @@ fun ChatScreen(
                                 drawerDragStartY = offset.y
                                 drawerDragLastX = offset.x
                                 drawerDragLastY = offset.y
-                                android.util.Log.d(
-                                    CHAT_DRAWER_LOG_TAG,
-                                    "dragStart pointer=(${offset.x},${offset.y}), dragPx=$drawerDragPx, " +
-                                        "current=${drawerState.currentValue}, target=${drawerState.targetValue}, " +
-                                        "progress=$effectiveDrawerProgress, width=$drawerWidthPx"
-                                )
                                 scope.launch { drawerDragAnim.stop() }
                             },
                             onDragEnd = {
                                 val snapPx = drawerDragPx
-                                android.util.Log.d(
-                                    CHAT_DRAWER_LOG_TAG,
-                                    "dragEnd snapPx=$snapPx, start=($drawerDragStartX,$drawerDragStartY), " +
-                                        "last=($drawerDragLastX,$drawerDragLastY), current=${drawerState.currentValue}, " +
-                                        "target=${drawerState.targetValue}, progress=$effectiveDrawerProgress"
-                                )
                                 scope.launch { closeDrawerFromDragPosition(snapPx) }
                             },
                             onDragCancel = {
                                 val snapPx = drawerDragPx
-                                android.util.Log.d(
-                                    CHAT_DRAWER_LOG_TAG,
-                                    "dragCancel snapPx=$snapPx, start=($drawerDragStartX,$drawerDragStartY), " +
-                                        "last=($drawerDragLastX,$drawerDragLastY), current=${drawerState.currentValue}, " +
-                                        "target=${drawerState.targetValue}, progress=$effectiveDrawerProgress"
-                                )
                                 scope.launch { closeDrawerFromDragPosition(snapPx) }
                             },
                             onHorizontalDrag = { change, dragAmount ->
@@ -724,11 +660,6 @@ fun ChatScreen(
                                 drawerDragLastX = change.position.x
                                 drawerDragLastY = change.position.y
                                 drawerDragPx = (drawerDragPx + dragAmount).coerceIn(-drawerWidthPx, 0f)
-                                android.util.Log.d(
-                                    CHAT_DRAWER_LOG_TAG,
-                                    "dragMove pointer=(${change.position.x},${change.position.y}), " +
-                                        "dragAmount=$dragAmount, dragPx=$drawerDragPx, progress=$effectiveDrawerProgress"
-                                )
                             }
                         )
                     }
