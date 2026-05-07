@@ -6,13 +6,19 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.animateScrollBy
@@ -763,12 +769,23 @@ private fun ChatFloatingTopBar(
     val borderColor = if (isDark) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.10f)
     val effectiveSubtitle = subtitle
     val secondaryText = MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.68f else 0.60f)
+    val isModelVisible = effectiveSubtitle.isNotBlank()
+    val modelAlpha by animateFloatAsState(
+        targetValue = if (isModelVisible) 1f else 0f,
+        animationSpec = tween(durationMillis = 280),
+        label = "modelAlpha"
+    )
+    val modelOffsetY by animateDpAsState(
+        targetValue = if (isModelVisible) 32.dp else 0.dp,
+        animationSpec = tween(durationMillis = 320),
+        label = "modelOffsetY"
+    )
 
     Box(
         modifier = modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .padding(horizontal = 18.dp, vertical = 10.dp)
+            .padding(horizontal = 18.dp, vertical = 2.dp)
     ) {
         LiquidOrbButton(
             icon = Icons.Default.Menu,
@@ -779,60 +796,95 @@ private fun ChatFloatingTopBar(
             modifier = Modifier.align(Alignment.CenterStart)
         )
 
-        Surface(
-            onClick = onTitleClick,
-            shape = RoundedCornerShape(999.dp),
-            color = micaColor,
-            border = BorderStroke(0.7.dp, borderColor),
-            shadowElevation = 0.dp,
-            tonalElevation = 0.dp,
+        // Centered main pill with animated model pill below it
+        Box(
             modifier = Modifier
-                .align(Alignment.Center)
-                .width(224.dp)
-                .heightIn(min = 52.dp)
+                .fillMaxWidth()
+                .height(70.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Box(
+            // Model pill - always rendered but animated in/out
+            Surface(
+                onClick = onTitleClick,
+                shape = RoundedCornerShape(
+                    topStart = 0.dp,
+                    topEnd = 0.dp,
+                    bottomStart = 999.dp,
+                    bottomEnd = 999.dp
+                ),
+                color = orbColor.copy(alpha = 0.90f),
+                border = BorderStroke(0.7.dp, borderColor),
+                shadowElevation = 0.dp,
+                tonalElevation = 0.dp,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = if (effectiveSubtitle.isBlank()) 14.dp else 8.dp),
-                contentAlignment = Alignment.Center
+                    .align(Alignment.Center)
+                    .offset(y = modelOffsetY)
+                    .width(116.dp)
+                    .height(22.dp)
+                    .graphicsLayer { alpha = modelAlpha }
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        if (isRemoteMode) {
+                            Box(
+                                modifier = Modifier
+                                    .size(5.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isStreaming) MaterialTheme.colorScheme.primary else secondaryText.copy(alpha = 0.7f))
+                            )
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        Text(
+                            text = effectiveSubtitle,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontSize = 11.sp,
+                                lineHeight = 14.sp
+                            ),
+                            color = secondaryText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            Surface(
+                onClick = onTitleClick,
+                shape = RoundedCornerShape(999.dp),
+                color = micaColor,
+                border = BorderStroke(0.7.dp, borderColor),
+                shadowElevation = 0.dp,
+                tonalElevation = 0.dp,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .width(176.dp)
+                    .height(44.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 14.dp),
+                    contentAlignment = Alignment.Center
+                ) {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleMedium.copy(
+                        style = MaterialTheme.typography.titleSmall.copy(
                             fontWeight = FontWeight.SemiBold,
-                            fontSize = 16.sp,
-                            lineHeight = 20.sp
+                            fontSize = 14.sp,
+                            lineHeight = 18.sp
                         ),
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (effectiveSubtitle.isNotBlank()) {
-                        Spacer(Modifier.height(1.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            if (isRemoteMode) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(5.dp)
-                                        .clip(CircleShape)
-                                        .background(if (isStreaming) MaterialTheme.colorScheme.primary else secondaryText.copy(alpha = 0.7f))
-                                )
-                                Spacer(Modifier.width(5.dp))
-                            }
-                            Text(
-                                text = effectiveSubtitle,
-                                style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp, lineHeight = 14.sp),
-                                color = secondaryText,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
                 }
             }
         }

@@ -8,7 +8,7 @@ fun RemotePersonaScreen(
     onNavigateBack: () -> Unit
 ) {
     ComingSoonScreen(
-        featureName = "Persona",
+        title = "Persona",
         onNavigateBack = onNavigateBack
     )
 }

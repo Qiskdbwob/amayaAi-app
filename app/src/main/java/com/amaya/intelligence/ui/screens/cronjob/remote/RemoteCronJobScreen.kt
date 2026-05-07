@@ -8,7 +8,7 @@ fun RemoteCronJobScreen(
     onNavigateBack: () -> Unit
 ) {
     ComingSoonScreen(
-        featureName = "Reminders",
+        title = "Reminders",
         onNavigateBack = onNavigateBack
     )
 }

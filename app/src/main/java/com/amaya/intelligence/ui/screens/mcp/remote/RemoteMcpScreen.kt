@@ -8,7 +8,7 @@ fun RemoteMcpScreen(
     onNavigateBack: () -> Unit
 ) {
     ComingSoonScreen(
-        featureName = "MCP Servers",
+        title = "MCP Servers",
         onNavigateBack = onNavigateBack
     )
 }

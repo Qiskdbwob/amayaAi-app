@@ -8,7 +8,7 @@ fun RemoteAgentScreen(
     onNavigateBack: () -> Unit
 ) {
     ComingSoonScreen(
-        featureName = "Agent Mode",
+        title = "Agent Mode",
         onNavigateBack = onNavigateBack
     )
 }

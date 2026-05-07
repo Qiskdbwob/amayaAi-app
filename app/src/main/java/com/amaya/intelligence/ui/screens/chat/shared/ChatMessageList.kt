@@ -1,5 +1,11 @@
 package com.amaya.intelligence.ui.screens.chat.shared
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -13,10 +19,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.domain.models.UiMessage
@@ -193,8 +195,8 @@ fun ChatMessageList(
             .fillMaxSize()
             .then(if (!drawerOpen) Modifier.imePadding() else Modifier),
         contentPadding = PaddingValues(
-            start = 16.dp,
-            end = 16.dp,
+            start = 18.dp,  // sejajar topbar kiri (☰)
+            end = 18.dp,    // sejajar topbar kanan (⋮)
             top = headerDp + 8.dp,
             bottom = with(density) { inputBarHeight.toDp() } + 16.dp
         ),
@@ -213,18 +215,42 @@ fun ChatMessageList(
                     hideThinking = true
                 }
             }
-            MessageBubble(
-                message = message,
-                hideThinkingHeader = hideThinking,
-                onToolAccept = onToolAccept,
-                onToolDecline = onToolDecline,
-                onLocalhostLinkClick = onLocalhostLinkClick,
-                onInteraction = onContentResized
-            )
+            var visible by remember(message.id) { mutableStateOf(false) }
+            LaunchedEffect(message.id) {
+                visible = true
+            }
+            AnimatedVisibility(
+                visible = visible,
+                enter = fadeIn(animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing)),
+                exit = fadeOut(animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing))
+            ) {
+                MessageBubble(
+                    message = message,
+                    hideThinkingHeader = hideThinking,
+                    onToolAccept = onToolAccept,
+                    onToolDecline = onToolDecline,
+                    onLocalhostLinkClick = onLocalhostLinkClick,
+                    onInteraction = onContentResized
+                )
+            }
         }
         if (isLoading) {
             item(key = "loading", contentType = "loading") {
-                LoadingIndicator()
+                var visible by remember { mutableStateOf(false) }
+                LaunchedEffect(isLoading) {
+                    visible = true
+                }
+                AnimatedVisibility(
+                    visible = visible,
+                    enter = fadeIn(animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing)),
+                    exit = fadeOut(animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing))
+                ) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(start = 4.dp)) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            LoadingIndicator()
+                        }
+                    }
+                }
             }
         }
     }

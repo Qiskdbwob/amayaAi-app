@@ -8,7 +8,7 @@ fun RemoteSettingsScreen(
     onNavigateBack: () -> Unit
 ) {
     ComingSoonScreen(
-        featureName = "Settings",
+        title = "Settings",
         onNavigateBack = onNavigateBack
     )
 }
