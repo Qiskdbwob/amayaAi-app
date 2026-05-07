@@ -2,7 +2,7 @@ package com.amaya.intelligence.ui.screens.project.local
 
 import android.os.Environment
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,14 +16,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.domain.models.ProjectFileEntry
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.screens.project.shared.BreadcrumbBar
 import com.amaya.intelligence.ui.screens.project.shared.FileListItem
-import com.amaya.intelligence.ui.theme.LocalAmayaGradients
-import com.amaya.intelligence.ui.theme.SectionShape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.file.Files
@@ -32,12 +30,52 @@ import kotlin.io.path.isDirectory
 import kotlin.io.path.isHidden
 import kotlin.io.path.name
 
+private data class IosProjectBrowserColors(
+    val groupedBackground: Color,
+    val groupSurface: Color,
+    val border: Color,
+    val iconBackground: Color,
+    val iconTint: Color,
+    val primaryText: Color,
+    val secondaryText: Color,
+    val headerText: Color
+)
+
+@Composable
+private fun iosProjectBrowserColors(): IosProjectBrowserColors {
+    val isDark = isSystemInDarkTheme()
+    return if (isDark) {
+        IosProjectBrowserColors(
+            groupedBackground = Color(0xFF0B0B0F),
+            groupSurface = Color(0xFF1C1C1E),
+            border = Color.White.copy(alpha = 0.10f),
+            iconBackground = Color(0xFF2C2C2E),
+            iconTint = Color(0xFFC7C7CC),
+            primaryText = Color(0xFFF2F2F7),
+            secondaryText = Color(0xFFEBEBF5).copy(alpha = 0.60f),
+            headerText = Color(0xFFEBEBF5).copy(alpha = 0.48f)
+        )
+    } else {
+        IosProjectBrowserColors(
+            groupedBackground = Color(0xFFF2F2F7),
+            groupSurface = Color.White,
+            border = Color.Black.copy(alpha = 0.08f),
+            iconBackground = Color(0xFFE9E9EE),
+            iconTint = Color(0xFF5F6368),
+            primaryText = Color(0xFF1C1C1E),
+            secondaryText = Color(0xFF3C3C43).copy(alpha = 0.62f),
+            headerText = Color(0xFF3C3C43).copy(alpha = 0.52f)
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LocalProjectBrowserScreen(
     onWorkspaceSelected: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val colors = iosProjectBrowserColors()
     var currentPath by remember { 
         mutableStateOf(Environment.getExternalStorageDirectory().absolutePath) 
     }
@@ -50,8 +88,6 @@ fun LocalProjectBrowserScreen(
         if (searchQuery.isBlank()) files
         else files.filter { it.name.contains(searchQuery, ignoreCase = true) }
     }
-    
-    val gradients = LocalAmayaGradients.current
     
     LaunchedEffect(currentPath, showHidden) {
         isLoading = true
@@ -73,7 +109,7 @@ fun LocalProjectBrowserScreen(
             )
         }
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Box(modifier = Modifier.fillMaxSize().background(colors.groupedBackground)) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -82,35 +118,43 @@ fun LocalProjectBrowserScreen(
                 Spacer(Modifier.statusBarsPadding().height(52.dp))
                 Spacer(Modifier.height(20.dp))
 
-
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 16.dp),
+                        .padding(bottom = 16.dp),
                     placeholder = { 
-                        Text("Search files...", style = MaterialTheme.typography.bodyLarge) 
+                        Text(
+                            "Search files...", 
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = colors.secondaryText
+                        ) 
                     },
                     leadingIcon = { 
-                        Icon(Icons.Default.Search, null, modifier = Modifier.size(20.dp)) 
+                        Icon(
+                            Icons.Default.Search, 
+                            null, 
+                            modifier = Modifier.size(20.dp),
+                            tint = colors.iconTint
+                        ) 
                     },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
                             IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Default.Close, null, modifier = Modifier.size(20.dp))
+                                Icon(Icons.Default.Close, null, modifier = Modifier.size(20.dp), tint = colors.iconTint)
                             }
                         }
                     },
-                    shape = SectionShape,
+                    shape = RoundedCornerShape(12.dp),
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         unfocusedBorderColor = Color.Transparent,
                         focusedBorderColor = Color.Transparent,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                        unfocusedContainerColor = colors.groupSurface,
+                        focusedContainerColor = colors.groupSurface
                     ),
-                    textStyle = MaterialTheme.typography.bodyLarge
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.primaryText)
                 )
                 
                 BreadcrumbBar(
@@ -130,25 +174,25 @@ fun LocalProjectBrowserScreen(
                             modifier = Modifier.align(Alignment.Center),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                modifier = Modifier.size(80.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(80.dp)
+                                    .clip(CircleShape)
+                                    .background(colors.iconBackground),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        Icons.Default.FolderOpen,
-                                        null,
-                                        modifier = Modifier.size(40.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                    )
-                                }
+                                Icon(
+                                    Icons.Default.FolderOpen,
+                                    null,
+                                    modifier = Modifier.size(40.dp),
+                                    tint = colors.iconTint.copy(alpha = 0.5f)
+                                )
                             }
                             Spacer(Modifier.height(24.dp))
                             Text(
                                 if (searchQuery.isNotEmpty()) "No files match your search" else "This folder is empty",
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = colors.secondaryText
                             )
                         }
                         else -> LazyColumn(
@@ -201,46 +245,32 @@ fun LocalProjectBrowserScreen(
                 }
             }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(170.dp)
-                    .align(Alignment.TopCenter)
-                    .background(gradients.topScrim)
-            )
-
             TopAppBar(
                 title = { 
                     Text(
                         "Workspace", 
                         style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.padding(start = 12.dp)
+                        modifier = Modifier.padding(start = 12.dp),
+                        fontWeight = FontWeight.SemiBold
                     )
                 },
                 navigationIcon = {
                     SettingsBackButton(onClick = onDismiss)
                 },
                 actions = {
-                    val baseColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                    val backgroundColor = MaterialTheme.colorScheme.background
-                    val solidColor = remember(baseColor, backgroundColor) {
-                        baseColor.compositeOver(backgroundColor)
-                    }
-
                     Box(
                         modifier = Modifier
                             .padding(end = 8.dp)
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(solidColor)
-                            .clickable { showHidden = !showHidden },
+                            .background(colors.iconBackground),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             if (showHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                             contentDescription = "Toggle hidden files",
                             modifier = Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.onSurface
+                            tint = colors.iconTint
                         )
                     }
                 },

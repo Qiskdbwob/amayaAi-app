@@ -1,6 +1,7 @@
 package com.amaya.intelligence.ui.screens.amaya
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,7 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
@@ -37,16 +38,48 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.screens.settings.shared.SettingsSectionCard
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
-import com.amaya.intelligence.ui.theme.SectionShape
+
+private data class IosAmayaColors(
+    val groupedBackground: Color,
+    val iconBackground: Color,
+    val iconTint: Color,
+    val primaryText: Color,
+    val secondaryText: Color,
+    val separator: Color
+)
+
+@Composable
+private fun iosAmayaColors(): IosAmayaColors {
+    val isDark = isSystemInDarkTheme()
+    return if (isDark) {
+        IosAmayaColors(
+            groupedBackground = Color(0xFF0B0B0F),
+            iconBackground = Color(0xFF2C2C2E),
+            iconTint = Color(0xFFC7C7CC),
+            primaryText = Color(0xFFF2F2F7),
+            secondaryText = Color(0xFFEBEBF5).copy(alpha = 0.60f),
+            separator = Color.White.copy(alpha = 0.10f)
+        )
+    } else {
+        IosAmayaColors(
+            groupedBackground = Color(0xFFF2F2F7),
+            iconBackground = Color(0xFFE9E9EE),
+            iconTint = Color(0xFF5F6368),
+            primaryText = Color(0xFF1C1C1E),
+            secondaryText = Color(0xFF3C3C43).copy(alpha = 0.62f),
+            separator = Color(0xFF3C3C43).copy(alpha = 0.13f)
+        )
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,23 +87,24 @@ fun AmayaScaffold(
     title: String,
     snackbarHostState: SnackbarHostState,
     onNavigateBack: () -> Unit,
-    content: @Composable ColumnScope.(BrushPalette) -> Unit
+    content: @Composable ColumnScope.() -> Unit
 ) {
+    val colors = iosAmayaColors()
     val gradients = LocalAmayaGradients.current
     Scaffold(
         containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { _ ->
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Box(Modifier.fillMaxSize().background(colors.groupedBackground)) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
+                verticalArrangement = Arrangement.spacedBy(22.dp)
             ) {
                 Spacer(Modifier.statusBarsPadding().height(52.dp))
-                content(BrushPalette(gradients.iconPalettes))
+                content()
                 Spacer(Modifier.height(100.dp))
             }
 
@@ -81,6 +115,7 @@ fun AmayaScaffold(
                     .align(Alignment.TopCenter)
                     .background(gradients.topScrim)
             )
+
             TopAppBar(
                 title = { Text(title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 12.dp)) },
                 navigationIcon = { SettingsBackButton(onClick = onNavigateBack) },
@@ -92,27 +127,53 @@ fun AmayaScaffold(
     }
 }
 
-data class BrushPalette(val iconPalettes: List<Brush>)
-
 @Composable
 fun AmayaNavigationRow(
     icon: ImageVector,
-    iconBrush: Brush,
     title: String,
     subtitle: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val colors = iosAmayaColors()
     Surface(onClick = onClick, color = Color.Transparent, modifier = modifier.fillMaxWidth()) {
-        Row(Modifier.padding(horizontal = 20.dp, vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-            GradientIcon(icon, iconBrush)
-            Spacer(Modifier.size(16.dp))
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AmayaGroupedIcon(icon = icon, colors = colors)
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold))
-                Spacer(Modifier.height(4.dp))
-                Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    title,
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 15.sp,
+                        lineHeight = 19.sp
+                    ),
+                    color = colors.primaryText,
+                    maxLines = 1
+                )
+                if (subtitle.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontSize = 12.5.sp,
+                            lineHeight = 16.sp
+                        ),
+                        color = colors.secondaryText,
+                        maxLines = 2
+                    )
+                }
             }
-            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f), modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(10.dp))
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = colors.secondaryText.copy(alpha = 0.55f),
+                modifier = Modifier.size(18.dp)
+            )
         }
     }
 }
@@ -125,41 +186,46 @@ fun AmayaSwitchRow(
     onCheckedChange: (Boolean) -> Unit,
     enabled: Boolean = true
 ) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+    val colors = iosAmayaColors()
+    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Column(Modifier.weight(1f)) {
             Text(
                 title,
-                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.62f)
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 15.sp,
+                    lineHeight = 19.sp
+                ),
+                color = if (enabled) colors.primaryText else colors.secondaryText.copy(alpha = 0.72f)
             )
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(2.dp))
             Text(
                 subtitle,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.62f)
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = 12.5.sp,
+                    lineHeight = 16.sp
+                ),
+                color = if (enabled) colors.secondaryText else colors.secondaryText.copy(alpha = 0.72f)
             )
         }
         Spacer(Modifier.width(16.dp))
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                if (checked) "On" else "Off",
-                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                color = if (checked && enabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.End
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = MaterialTheme.colorScheme.primary,
+                uncheckedThumbColor = if (isDark) Color(0xFF1C1C1E) else Color.White,
+                uncheckedTrackColor = if (isDark) Color(0xFF3C3C43).copy(alpha = 0.6f) else MaterialTheme.colorScheme.surfaceVariant
             )
-            Spacer(Modifier.height(6.dp))
-            Switch(
-                checked = checked,
-                onCheckedChange = onCheckedChange,
-                enabled = enabled,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.White,
-                    checkedTrackColor = MaterialTheme.colorScheme.primary,
-                    uncheckedThumbColor = Color.White,
-                    uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-            )
-        }
+        )
     }
 }
 
@@ -169,33 +235,68 @@ fun AmayaStatusRow(
     value: String,
     subtitle: String? = null
 ) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+    val colors = iosAmayaColors()
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold))
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 15.sp,
+                    lineHeight = 19.sp
+                ),
+                color = colors.primaryText
+            )
             subtitle?.takeIf { it.isNotBlank() }?.let {
-                Spacer(Modifier.height(4.dp))
-                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = 12.5.sp,
+                        lineHeight = 16.sp
+                    ),
+                    color = colors.secondaryText
+                )
             }
         }
-        Text(value, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold), color = MaterialTheme.colorScheme.primary)
+        Text(
+            value,
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.primary
+        )
     }
 }
 
 @Composable
 fun AmayaDivider() {
+    val colors = iosAmayaColors()
     HorizontalDivider(
-        modifier = Modifier.padding(start = 20.dp, end = 20.dp),
-        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+        modifier = Modifier.padding(start = 58.dp),
+        color = colors.separator,
+        thickness = 0.7.dp
     )
 }
 
 @Composable
-private fun GradientIcon(icon: ImageVector, brush: Brush) {
+private fun AmayaGroupedIcon(icon: ImageVector, colors: IosAmayaColors) {
     Box(
-        modifier = Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(brush),
+        modifier = Modifier
+            .size(32.dp)
+            .clip(CircleShape)
+            .background(colors.iconBackground),
         contentAlignment = Alignment.Center
     ) {
-        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = colors.iconTint,
+            modifier = Modifier.size(17.dp)
+        )
     }
 }
 

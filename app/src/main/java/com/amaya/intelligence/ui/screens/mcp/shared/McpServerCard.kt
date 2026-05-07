@@ -1,102 +1,154 @@
 package com.amaya.intelligence.ui.screens.mcp.shared
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Extension
-import androidx.compose.material3.*
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.amaya.intelligence.data.remote.api.McpServerConfig
-import com.amaya.intelligence.ui.theme.SectionShape
+
+private data class IosMcpCardColors(
+    val groupSurface: Color,
+    val border: Color,
+    val iconBackground: Color,
+    val iconTint: Color,
+    val primaryText: Color,
+    val secondaryText: Color,
+    val tagBackground: Color
+)
+
+@Composable
+private fun iosMcpCardColors(): IosMcpCardColors {
+    val isDark = isSystemInDarkTheme()
+    return if (isDark) {
+        IosMcpCardColors(
+            groupSurface = Color(0xFF1C1C1E),
+            border = Color.White.copy(alpha = 0.10f),
+            iconBackground = Color(0xFF2C2C2E),
+            iconTint = Color(0xFFC7C7CC),
+            primaryText = Color(0xFFF2F2F7),
+            secondaryText = Color(0xFFEBEBF5).copy(alpha = 0.60f),
+            tagBackground = Color(0xFF2C2C2E)
+        )
+    } else {
+        IosMcpCardColors(
+            groupSurface = Color.White,
+            border = Color.Black.copy(alpha = 0.08f),
+            iconBackground = Color(0xFFE9E9EE),
+            iconTint = Color(0xFF5F6368),
+            primaryText = Color(0xFF1C1C1E),
+            secondaryText = Color(0xFF3C3C43).copy(alpha = 0.62f),
+            tagBackground = Color(0xFFF2F2F7)
+        )
+    }
+}
 
 @Composable
 fun McpServerCard(
     server: McpServerConfig,
-    iconBrush: Brush,
     onToggle: (Boolean) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val isDark = isSystemInDarkTheme()
+    val colors = iosMcpCardColors()
     Surface(
-        shape = SectionShape,
-        color = if (isDark) MaterialTheme.colorScheme.surfaceContainerHigh else Color.White,
+        shape = RoundedCornerShape(16.dp),
+        color = colors.groupSurface,
+        border = BorderStroke(0.7.dp, colors.border),
         tonalElevation = 0.dp,
         modifier = modifier.fillMaxWidth()
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 20.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (server.enabled) iconBrush else SolidColor(MaterialTheme.colorScheme.surfaceContainerLow)),
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(colors.iconBackground),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     Icons.Default.Extension,
                     contentDescription = null,
-                    tint = if (server.enabled) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f),
-                    modifier = Modifier.size(24.dp)
+                    tint = colors.iconTint,
+                    modifier = Modifier.size(17.dp)
                 )
             }
-            Spacer(Modifier.width(16.dp))
+            Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    server.name,
-                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                    color = if (server.enabled)
-                        MaterialTheme.colorScheme.onSurface
-                    else
-                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    server.name.ifBlank { "MCP Server" },
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 15.sp,
+                        lineHeight = 19.sp
+                    ),
+                    color = colors.primaryText
                 )
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(2.dp))
                 Text(
                     server.serverUrl.ifBlank { "No URL" },
-                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.ExtraLight),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.5.sp, lineHeight = 16.sp),
+                    color = colors.secondaryText,
                     maxLines = 1
                 )
                 if (server.headers.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(6.dp))
                     Surface(
                         shape = RoundedCornerShape(50),
-                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f)
+                        color = colors.tagBackground
                     ) {
                         Text(
                             "${server.headers.size} header${if (server.headers.size > 1) "s" else ""}",
                             style = MaterialTheme.typography.labelSmall,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                            color = colors.secondaryText
                         )
                     }
                 }
             }
+            Spacer(Modifier.width(8.dp))
             Switch(
                 checked = server.enabled,
                 onCheckedChange = onToggle,
-                modifier = Modifier.padding(start = 8.dp)
+                modifier = Modifier.padding(start = 4.dp)
             )
             IconButton(onClick = onEdit, modifier = Modifier.size(36.dp)) {
                 Icon(
                     Icons.Default.EditNote,
                     contentDescription = "Edit",
-                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
+                    tint = colors.iconTint.copy(alpha = 0.75f)
                 )
             }
             IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {

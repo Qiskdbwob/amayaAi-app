@@ -1,7 +1,10 @@
 package com.amaya.intelligence.ui.screens.persona.shared
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Save
@@ -9,14 +12,38 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.repository.PersonaRepository
 import com.amaya.intelligence.data.repository.SimplePersona
 import com.amaya.intelligence.ui.res.UiStrings
-import com.amaya.intelligence.ui.theme.SectionShape
 import kotlinx.coroutines.launch
+
+private data class IosPersonaEditorColors(
+    val groupSurface: Color,
+    val border: Color,
+    val separator: Color
+)
+
+@Composable
+private fun iosPersonaEditorColors(): IosPersonaEditorColors {
+    val isDark = isSystemInDarkTheme()
+    return if (isDark) {
+        IosPersonaEditorColors(
+            groupSurface = Color(0xFF1C1C1E),
+            border = Color.White.copy(alpha = 0.10f),
+            separator = Color.White.copy(alpha = 0.10f)
+        )
+    } else {
+        IosPersonaEditorColors(
+            groupSurface = Color.White,
+            border = Color.Black.copy(alpha = 0.08f),
+            separator = Color(0xFF3C3C43).copy(alpha = 0.13f)
+        )
+    }
+}
 
 @Composable
 fun SimplePersonaEditor(
@@ -26,18 +53,19 @@ fun SimplePersonaEditor(
     onSaved: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val colors = iosPersonaEditorColors()
     val scope = rememberCoroutineScope()
-    val isDark = isSystemInDarkTheme()
 
     Surface(
-        shape = SectionShape,
-        color = if (isDark) MaterialTheme.colorScheme.surfaceContainerHigh else Color.White,
+        shape = RoundedCornerShape(16.dp),
+        color = colors.groupSurface,
+        border = BorderStroke(0.7.dp, colors.border),
         tonalElevation = 0.dp,
         modifier = modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             PersonaTextField(
                 label = UiStrings.Persona.STYLE_TONE,
@@ -47,7 +75,7 @@ fun SimplePersonaEditor(
                 pills = listOf("Friendly", "Concise", "Professional", "Academic", "Humorous")
             )
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            HorizontalDivider(color = colors.separator, thickness = 0.7.dp)
 
             PersonaTextField(
                 label = UiStrings.Persona.CHARACTERISTIC,
@@ -57,7 +85,7 @@ fun SimplePersonaEditor(
                 pills = listOf("Analytical", "Patient", "Creative", "Thorough", "Direct", "Helpful")
             )
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            HorizontalDivider(color = colors.separator, thickness = 0.7.dp)
 
             PersonaTextField(
                 label = UiStrings.Persona.CUSTOM_INSTRUCTION,
@@ -67,7 +95,7 @@ fun SimplePersonaEditor(
                 maxLines = 5
             )
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            HorizontalDivider(color = colors.separator, thickness = 0.7.dp)
 
             PersonaTextField(
                 label = UiStrings.Persona.YOUR_NICKNAME,
@@ -77,7 +105,7 @@ fun SimplePersonaEditor(
                 pills = listOf("Boss", "Friend", "User")
             )
 
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            HorizontalDivider(color = colors.separator, thickness = 0.7.dp)
 
             PersonaTextField(
                 label = UiStrings.Persona.MORE_ABOUT_YOU,
@@ -87,7 +115,7 @@ fun SimplePersonaEditor(
                 maxLines = 5
             )
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(4.dp))
 
             Button(
                 onClick = {

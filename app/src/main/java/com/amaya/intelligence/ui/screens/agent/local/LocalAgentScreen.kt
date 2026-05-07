@@ -2,6 +2,7 @@ package com.amaya.intelligence.ui.screens.agent.local
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -13,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.remote.api.AgentConfig
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
@@ -26,6 +28,30 @@ import com.amaya.intelligence.ui.screens.agent.shared.AgentEditSheet
 import com.amaya.intelligence.ui.screens.agent.shared.AgentList
 import kotlinx.coroutines.launch
 
+private data class IosAgentScreenColors(
+    val groupedBackground: Color,
+    val iconBackground: Color,
+    val iconTint: Color
+)
+
+@Composable
+private fun iosAgentScreenColors(): IosAgentScreenColors {
+    val isDark = isSystemInDarkTheme()
+    return if (isDark) {
+        IosAgentScreenColors(
+            groupedBackground = Color(0xFF0B0B0F),
+            iconBackground = Color(0xFF2C2C2E),
+            iconTint = Color(0xFFC7C7CC)
+        )
+    } else {
+        IosAgentScreenColors(
+            groupedBackground = Color(0xFFF2F2F7),
+            iconBackground = Color(0xFFE9E9EE),
+            iconTint = Color(0xFF5F6368)
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LocalAgentScreen(
@@ -35,6 +61,7 @@ fun LocalAgentScreen(
     githubCopilotAuthManager: GitHubCopilotAuthManager? = null,
     modelCatalogRepository: ModelCatalogRepository? = null
 ) {
+    val colors = iosAgentScreenColors()
     val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -104,7 +131,7 @@ fun LocalAgentScreen(
         containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Box(modifier = Modifier.fillMaxSize().background(colors.groupedBackground)) {
             AgentList(
                 agentConfigs = settings.agentConfigs,
                 onAgentClick = { config ->
@@ -122,22 +149,13 @@ fun LocalAgentScreen(
                 topPadding = topPadding
             )
 
-            // Scrims
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(170.dp)
-                    .align(Alignment.TopCenter)
-                    .background(com.amaya.intelligence.ui.theme.LocalAmayaGradients.current.topScrim)
-            )
-
-            // Header Overlay
             TopAppBar(
                 title = { 
                     Text(
                         "AI Agents", 
                         style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.padding(start = 12.dp)
+                        modifier = Modifier.padding(start = 12.dp),
+                        fontWeight = FontWeight.SemiBold
                     ) 
                 },
                 navigationIcon = {
@@ -149,7 +167,7 @@ fun LocalAgentScreen(
                             .padding(end = 8.dp)
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                            .background(colors.iconBackground)
                             .clickable {
                                 editingConfig = AgentConfig()
                                 editingIsNew = true
@@ -159,7 +177,8 @@ fun LocalAgentScreen(
                         Icon(
                             Icons.Default.Add, 
                             "Add Agent",
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(20.dp),
+                            tint = colors.iconTint
                         )
                     }
                 },

@@ -2,6 +2,7 @@ package com.amaya.intelligence.ui.screens.cronjob.local
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -12,14 +13,38 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.repository.CronJobRepository
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.screens.cronjob.shared.CronJobEditSheet
 import com.amaya.intelligence.ui.screens.cronjob.shared.CronJobList
-import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import kotlinx.coroutines.launch
 import androidx.compose.ui.platform.LocalContext
+
+private data class IosCronJobScreenColors(
+    val groupedBackground: Color,
+    val iconBackground: Color,
+    val iconTint: Color
+)
+
+@Composable
+private fun iosCronJobScreenColors(): IosCronJobScreenColors {
+    val isDark = isSystemInDarkTheme()
+    return if (isDark) {
+        IosCronJobScreenColors(
+            groupedBackground = Color(0xFF0B0B0F),
+            iconBackground = Color(0xFF2C2C2E),
+            iconTint = Color(0xFFC7C7CC)
+        )
+    } else {
+        IosCronJobScreenColors(
+            groupedBackground = Color(0xFFF2F2F7),
+            iconBackground = Color(0xFFE9E9EE),
+            iconTint = Color(0xFF5F6368)
+        )
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -27,11 +52,11 @@ fun LocalCronJobScreen(
     onNavigateBack: () -> Unit,
     cronJobRepository: CronJobRepository
 ) {
+    val colors = iosCronJobScreenColors()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val jobs by cronJobRepository.allJobs.collectAsState(initial = emptyList())
-    val gradients = LocalAmayaGradients.current
 
     var showAlarmPermissionDialog by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
@@ -47,10 +72,9 @@ fun LocalCronJobScreen(
         containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Box(modifier = Modifier.fillMaxSize().background(colors.groupedBackground)) {
             CronJobList(
                 jobs = jobs,
-                iconPalettes = gradients.iconPalettes,
                 onToggle = { job, active ->
                     scope.launch { cronJobRepository.setActive(job.id, active) }
                 },
@@ -63,20 +87,13 @@ fun LocalCronJobScreen(
                 topPadding = topPadding
             )
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(170.dp)
-                    .align(Alignment.TopCenter)
-                    .background(gradients.topScrim)
-            )
-
             TopAppBar(
                 title = { 
                     Text(
                         "Reminders", 
                         style = MaterialTheme.typography.titleLarge, 
-                        modifier = Modifier.padding(start = 12.dp)
+                        modifier = Modifier.padding(start = 12.dp),
+                        fontWeight = FontWeight.SemiBold
                     ) 
                 },
                 navigationIcon = {
@@ -88,7 +105,7 @@ fun LocalCronJobScreen(
                             .padding(end = 8.dp)
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                            .background(colors.iconBackground)
                             .clickable { showAddSheet = true },
                         contentAlignment = Alignment.Center
                     ) {
@@ -96,6 +113,7 @@ fun LocalCronJobScreen(
                             Icons.Default.AddAlarm, 
                             "Add Reminder",
                             modifier = Modifier.size(20.dp),
+                            tint = colors.iconTint
                         )
                     }
                 },

@@ -1,21 +1,42 @@
 package com.amaya.intelligence.ui.screens.persona.local
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.repository.PersonaRepository
 import com.amaya.intelligence.data.repository.SimplePersona
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.screens.persona.shared.SimplePersonaEditor
-import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import kotlinx.coroutines.launch
+
+private data class IosPersonaScreenColors(
+    val groupedBackground: Color,
+    val secondaryText: Color
+)
+
+@Composable
+private fun iosPersonaScreenColors(): IosPersonaScreenColors {
+    val isDark = isSystemInDarkTheme()
+    return if (isDark) {
+        IosPersonaScreenColors(
+            groupedBackground = Color(0xFF0B0B0F),
+            secondaryText = Color(0xFFEBEBF5).copy(alpha = 0.60f)
+        )
+    } else {
+        IosPersonaScreenColors(
+            groupedBackground = Color(0xFFF2F2F7),
+            secondaryText = Color(0xFF3C3C43).copy(alpha = 0.62f)
+        )
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -23,8 +44,8 @@ fun LocalPersonaScreen(
     onNavigateBack: () -> Unit,
     personaRepository: PersonaRepository
 ) {
+    val colors = iosPersonaScreenColors()
     val scope = rememberCoroutineScope()
-    val gradients = LocalAmayaGradients.current
     val snackbarHostState = remember { SnackbarHostState() }
 
     val personaState by produceState(initialValue = SimplePersona()) {
@@ -36,7 +57,7 @@ fun LocalPersonaScreen(
         containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Box(modifier = Modifier.fillMaxSize().background(colors.groupedBackground)) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -49,7 +70,7 @@ fun LocalPersonaScreen(
                 Text(
                     "Controls how Amaya speaks and behaves. Memory, skills, and context are managed separately.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = colors.secondaryText,
                     modifier = Modifier.padding(horizontal = 4.dp)
                 )
 
@@ -67,20 +88,13 @@ fun LocalPersonaScreen(
                 Spacer(modifier = Modifier.height(100.dp))
             }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(170.dp)
-                    .align(Alignment.TopCenter)
-                    .background(gradients.topScrim)
-            )
-
             TopAppBar(
                 title = { 
                     Text(
                         "Persona", 
                         style = MaterialTheme.typography.titleLarge, 
-                        modifier = Modifier.padding(start = 12.dp)
+                        modifier = Modifier.padding(start = 12.dp),
+                        fontWeight = FontWeight.SemiBold
                     ) 
                 },
                 navigationIcon = {

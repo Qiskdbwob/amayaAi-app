@@ -3,13 +3,13 @@ package com.amaya.intelligence.ui.screens.project.remote
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,7 +24,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
@@ -55,7 +54,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,10 +63,48 @@ import com.amaya.intelligence.domain.models.ProjectFileEntry
 import com.amaya.intelligence.domain.models.RemoteWorkspace
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.screens.project.shared.FileListItem
-import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import com.amaya.intelligence.ui.theme.SectionShape
 import com.amaya.intelligence.ui.viewmodels.ChatViewModel
 import java.nio.file.Path
+
+private data class IosProjectBrowserColors(
+    val groupedBackground: Color,
+    val groupSurface: Color,
+    val border: Color,
+    val iconBackground: Color,
+    val iconTint: Color,
+    val primaryText: Color,
+    val secondaryText: Color,
+    val headerText: Color
+)
+
+@Composable
+private fun iosProjectBrowserColors(): IosProjectBrowserColors {
+    val isDark = isSystemInDarkTheme()
+    return if (isDark) {
+        IosProjectBrowserColors(
+            groupedBackground = Color(0xFF0B0B0F),
+            groupSurface = Color(0xFF1C1C1E),
+            border = Color.White.copy(alpha = 0.10f),
+            iconBackground = Color(0xFF2C2C2E),
+            iconTint = Color(0xFFC7C7CC),
+            primaryText = Color(0xFFF2F2F7),
+            secondaryText = Color(0xFFEBEBF5).copy(alpha = 0.60f),
+            headerText = Color(0xFFEBEBF5).copy(alpha = 0.48f)
+        )
+    } else {
+        IosProjectBrowserColors(
+            groupedBackground = Color(0xFFF2F2F7),
+            groupSurface = Color.White,
+            border = Color.Black.copy(alpha = 0.08f),
+            iconBackground = Color(0xFFE9E9EE),
+            iconTint = Color(0xFF5F6368),
+            primaryText = Color(0xFF1C1C1E),
+            secondaryText = Color(0xFF3C3C43).copy(alpha = 0.62f),
+            headerText = Color(0xFF3C3C43).copy(alpha = 0.52f)
+        )
+    }
+}
 
 private fun normalizeRemotePath(path: String?): String? {
     return path
@@ -93,11 +129,11 @@ fun RemoteProjectBrowserScreen(
     viewModel: ChatViewModel = hiltViewModel(),
     onNavigateBack: () -> Unit
 ) {
+    val colors = iosProjectBrowserColors()
     val uiState by viewModel.uiState.collectAsState()
     val projectFiles by viewModel.projectFiles.collectAsState()
     val projectPath by viewModel.projectPath.collectAsState()
     val workspaces by viewModel.workspaces.collectAsState()
-    val gradients = LocalAmayaGradients.current
 
     var searchQuery by remember { mutableStateOf("") }
 
@@ -142,26 +178,19 @@ fun RemoteProjectBrowserScreen(
                     SettingsBackButton(onClick = onNavigateBack)
                 },
                 actions = {
-                    val baseColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                    val backgroundColor = MaterialTheme.colorScheme.background
-                    val solidColor = remember(baseColor, backgroundColor) {
-                        baseColor.compositeOver(backgroundColor)
-                    }
-
                     Box(
                         modifier = Modifier
                             .padding(end = 8.dp)
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(solidColor)
-                            .clickable { viewModel.resync() },
+                            .background(colors.iconBackground),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             Icons.Default.Refresh,
                             contentDescription = "Refresh",
                             modifier = Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.onSurface
+                            tint = colors.iconTint
                         )
                     }
                 },
@@ -175,7 +204,7 @@ fun RemoteProjectBrowserScreen(
             )
         }
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Box(modifier = Modifier.fillMaxSize().background(colors.groupedBackground)) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -191,27 +220,36 @@ fun RemoteProjectBrowserScreen(
                         .fillMaxWidth()
                         .padding(vertical = 16.dp),
                     placeholder = {
-                        Text("Search files...", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Search files...",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = colors.secondaryText
+                        )
                     },
                     leadingIcon = {
-                        Icon(Icons.Default.Folder, null, modifier = Modifier.size(20.dp))
+                        Icon(
+                            Icons.Default.Folder,
+                            null,
+                            modifier = Modifier.size(20.dp),
+                            tint = colors.iconTint
+                        )
                     },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
                             IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Default.Close, null, modifier = Modifier.size(20.dp))
+                                Icon(Icons.Default.Close, null, modifier = Modifier.size(20.dp), tint = colors.iconTint)
                             }
                         }
                     },
-                    shape = SectionShape,
+                    shape = RoundedCornerShape(12.dp),
                     singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(
                         unfocusedBorderColor = Color.Transparent,
                         focusedBorderColor = Color.Transparent,
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                        unfocusedContainerColor = colors.groupSurface,
+                        focusedContainerColor = colors.groupSurface
                     ),
-                    textStyle = MaterialTheme.typography.bodyLarge
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.primaryText)
                 )
 
                 RemoteBreadcrumbBar(
@@ -229,25 +267,25 @@ fun RemoteProjectBrowserScreen(
                                 modifier = Modifier.align(Alignment.Center),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
-                                    modifier = Modifier.size(80.dp)
+                                Box(
+                                    modifier = Modifier
+                                        .size(80.dp)
+                                        .clip(CircleShape)
+                                        .background(colors.iconBackground),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            Icons.Default.FolderOpen,
-                                            null,
-                                            modifier = Modifier.size(40.dp),
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                        )
-                                    }
+                                    Icon(
+                                        Icons.Default.FolderOpen,
+                                        null,
+                                        modifier = Modifier.size(40.dp),
+                                        tint = colors.iconTint.copy(alpha = 0.5f)
+                                    )
                                 }
                                 Spacer(Modifier.height(24.dp))
                                 Text(
                                     "Remote session not connected",
                                     style = MaterialTheme.typography.bodyLarge,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = colors.secondaryText
                                 )
                                 Spacer(Modifier.height(12.dp))
                                 OutlinedButton(onClick = { viewModel.resync() }) {
@@ -260,25 +298,25 @@ fun RemoteProjectBrowserScreen(
                             modifier = Modifier.align(Alignment.Center),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.surfaceVariant,
-                                modifier = Modifier.size(80.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(80.dp)
+                                    .clip(CircleShape)
+                                    .background(colors.iconBackground),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        Icons.Default.FolderOpen,
-                                        null,
-                                        modifier = Modifier.size(40.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                    )
-                                }
+                                Icon(
+                                    Icons.Default.FolderOpen,
+                                    null,
+                                    modifier = Modifier.size(40.dp),
+                                    tint = colors.iconTint.copy(alpha = 0.5f)
+                                )
                             }
                             Spacer(Modifier.height(24.dp))
                             Text(
                                 if (searchQuery.isNotEmpty()) "No files match your search" else "This workspace is empty",
                                 style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = colors.secondaryText
                             )
                             if (searchQuery.isEmpty()) {
                                 Spacer(Modifier.height(12.dp))
@@ -328,14 +366,6 @@ fun RemoteProjectBrowserScreen(
                     }
                 }
             }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(170.dp)
-                    .align(Alignment.TopCenter)
-                    .background(gradients.topScrim)
-            )
         }
     }
 }

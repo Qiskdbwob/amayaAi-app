@@ -5,6 +5,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -17,6 +18,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.data.remote.api.McpConfig
@@ -24,10 +26,33 @@ import com.amaya.intelligence.data.remote.api.McpServerConfig
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.screens.mcp.shared.McpEditSheet
 import com.amaya.intelligence.ui.screens.mcp.shared.McpServerList
-import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private data class IosMcpScreenColors(
+    val groupedBackground: Color,
+    val iconBackground: Color,
+    val iconTint: Color
+)
+
+@Composable
+private fun iosMcpScreenColors(): IosMcpScreenColors {
+    val isDark = isSystemInDarkTheme()
+    return if (isDark) {
+        IosMcpScreenColors(
+            groupedBackground = Color(0xFF0B0B0F),
+            iconBackground = Color(0xFF2C2C2E),
+            iconTint = Color(0xFFC7C7CC)
+        )
+    } else {
+        IosMcpScreenColors(
+            groupedBackground = Color(0xFFF2F2F7),
+            iconBackground = Color(0xFFE9E9EE),
+            iconTint = Color(0xFF5F6368)
+        )
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,6 +60,7 @@ fun LocalMcpScreen(
     onNavigateBack: () -> Unit,
     aiSettingsManager: AiSettingsManager
 ) {
+    val colors = iosMcpScreenColors()
     val scope = rememberCoroutineScope()
     val maxSheetHeight = (0.98f * LocalConfiguration.current.screenHeightDp).dp
     val context = LocalContext.current
@@ -42,7 +68,6 @@ fun LocalMcpScreen(
     val settings by aiSettingsManager.settingsFlow.collectAsState(
         initial = com.amaya.intelligence.data.remote.api.AiSettings()
     )
-    val gradients = LocalAmayaGradients.current
 
     val mcpConfig by remember(settings.mcpConfigJson) {
         derivedStateOf { McpConfig.fromJson(settings.mcpConfigJson) }
@@ -78,10 +103,9 @@ fun LocalMcpScreen(
         containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Box(modifier = Modifier.fillMaxSize().background(colors.groupedBackground)) {
             McpServerList(
                 servers = mcpConfig.servers,
-                iconPalettes = gradients.iconPalettes,
                 onServerClick = { openEditor() },
                 onToggleEnabled = { server, enabled ->
                     scope.launch {
@@ -101,20 +125,13 @@ fun LocalMcpScreen(
                 topPadding = topPadding
             )
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(170.dp)
-                    .align(Alignment.TopCenter)
-                    .background(gradients.topScrim)
-            )
-
             TopAppBar(
                 title = { 
                     Text(
                         "MCP Servers", 
                         style = MaterialTheme.typography.titleLarge,
-                        modifier = Modifier.padding(start = 12.dp)
+                        modifier = Modifier.padding(start = 12.dp),
+                        fontWeight = FontWeight.SemiBold
                     ) 
                 },
                 navigationIcon = {
@@ -126,14 +143,15 @@ fun LocalMcpScreen(
                             .padding(end = 8.dp)
                             .size(36.dp)
                             .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                            .background(colors.iconBackground)
                             .clickable { openEditor() },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             Icons.Default.Add, 
                             "Add Server",
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(20.dp),
+                            tint = colors.iconTint
                         )
                     }
                 },

@@ -22,7 +22,7 @@ fun MemoryScreen(
     onOpenArea: (MemoryArea) -> Unit
 ) {
     val memory = state.settings.memory
-    AmayaScaffold("Memory", snackbarHostState, onNavigateBack) { palette ->
+    AmayaScaffold("Memory", snackbarHostState, onNavigateBack) {
         AmayaSection("Memory") {
             AmayaSwitchRow("Use in chat", "Recall matching saved memory in future replies", memory.useSavedMemory, onToggleUseSavedMemory)
             AmayaDivider()
@@ -42,7 +42,6 @@ fun MemoryScreen(
             AmayaSection("Review") {
                 AmayaNavigationRow(
                     icon = Icons.Default.AutoAwesome,
-                    iconBrush = palette.iconPalettes[3],
                     title = "${state.memorySuggestions} memory suggestion${if (state.memorySuggestions == 1) "" else "s"}",
                     subtitle = "Save or dismiss suggested memories",
                     onClick = onReview
@@ -50,13 +49,13 @@ fun MemoryScreen(
             }
         }
         AmayaSection("Saved Areas") {
-            AmayaNavigationRow(Icons.Default.Person, palette.iconPalettes[2], "About You", "${state.userMemoryCount} item${if (state.userMemoryCount == 1) "" else "s"} · ${state.userMemoryPreview.oneLine()}", onClick = { onOpenArea(MemoryArea.USER) })
+            AmayaNavigationRow(Icons.Default.Person, "About You", "${state.userMemoryCount} item${if (state.userMemoryCount == 1) "" else "s"} · ${state.userMemoryPreview.oneLine()}", onClick = { onOpenArea(MemoryArea.USER) })
             AmayaDivider()
-            AmayaNavigationRow(Icons.Default.Star, palette.iconPalettes[3], "Important Memory", "${state.importantMemoryCount} item${if (state.importantMemoryCount == 1) "" else "s"} · ${state.importantMemoryPreview.oneLine()}", onClick = { onOpenArea(MemoryArea.IMPORTANT) })
+            AmayaNavigationRow(Icons.Default.Star, "Important Memory", "${state.importantMemoryCount} item${if (state.importantMemoryCount == 1) "" else "s"} · ${state.importantMemoryPreview.oneLine()}", onClick = { onOpenArea(MemoryArea.IMPORTANT) })
             AmayaDivider()
-            AmayaNavigationRow(Icons.Default.FolderSpecial, palette.iconPalettes[1], "Project Memory", "${state.projectMemoryCount} item${if (state.projectMemoryCount == 1) "" else "s"} · ${state.projectMemoryPreview.oneLine()}", onClick = { onOpenArea(MemoryArea.PROJECT) })
+            AmayaNavigationRow(Icons.Default.FolderSpecial, "Project Memory", "${state.projectMemoryCount} item${if (state.projectMemoryCount == 1) "" else "s"} · ${state.projectMemoryPreview.oneLine()}", onClick = { onOpenArea(MemoryArea.PROJECT) })
             AmayaDivider()
-            AmayaNavigationRow(Icons.Default.CalendarMonth, palette.iconPalettes[7], "Daily Notes", if (memory.dailyNotesEnabled) "${state.dailyMemoryRecords.size} item${if (state.dailyMemoryRecords.size == 1) "" else "s"} · ${state.dailyNotesPreview.oneLine()}" else "Off", onClick = { onOpenArea(MemoryArea.DAILY) })
+            AmayaNavigationRow(Icons.Default.CalendarMonth, "Daily Notes", if (memory.dailyNotesEnabled) "${state.dailyMemoryRecords.size} item${if (state.dailyMemoryRecords.size == 1) "" else "s"} · ${state.dailyNotesPreview.oneLine()}" else "Off", onClick = { onOpenArea(MemoryArea.DAILY) })
         }
     }
 }
