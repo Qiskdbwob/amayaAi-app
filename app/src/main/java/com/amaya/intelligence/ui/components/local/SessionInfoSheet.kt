@@ -136,15 +136,6 @@ fun SessionInfoSheet(
                     )
                 }
 
-                val capabilityText = (capabilityLabelsOverride.ifEmpty { effectiveModel.capabilities.map { it.label } }).sorted().joinToString(", ")
-                if (capabilityText.isNotBlank()) {
-                    SessionInfoRow(
-                        icon = Icons.Default.Extension,
-                        label = "Capabilities",
-                        value = capabilityText
-                    )
-                }
-
                 val priceText = buildList {
                     (inputPriceOverride ?: effectiveModel.inputPricePerMillionTokens)?.let { add("in $$it/M") }
                     (outputPriceOverride ?: effectiveModel.outputPricePerMillionTokens)?.let { add("out $$it/M") }
@@ -156,12 +147,6 @@ fun SessionInfoSheet(
                         value = priceText
                     )
                 }
-
-                SessionInfoRow(
-                    icon = Icons.Default.CloudSync,
-                    label = "Catalog source",
-                    value = sourceLabelOverride ?: effectiveModel.sourceLabel
-                )
 
                 SessionInfoRow(
                     icon = Icons.Default.Alarm,
