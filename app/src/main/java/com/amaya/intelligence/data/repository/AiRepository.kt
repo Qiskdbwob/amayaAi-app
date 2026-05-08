@@ -578,7 +578,7 @@ class AiRepository @Inject constructor(
     }
 
     /**
-     * Generate a short conversation title (3-7 words) from the user's first message.
+     * Generate a short conversation title (max 3 sentences) from the user's first message.
      * Uses the same AI provider/model as the active conversation.
      */
     suspend fun generateTitle(
@@ -593,38 +593,51 @@ class AiRepository @Inject constructor(
                 agentConfig.modelId.isNotBlank() -> agentConfig.modelId
                 else -> provider.supportedModels.firstOrNull() ?: return "New Chat"
             }
-            
+
             val request = ChatRequest(
                 model = model,
                 messages = listOf(
                     ChatMessage(
                         role = MessageRole.USER,
-                        content = """Generate a short, descriptive title (3-7 words max) for a conversation that starts with this message:
+                        content = """Summarize the user's main intent into a short, clear title.
+Max 3 sentences, ideally 3-7 words.
+Use the same language as the user.
+Reply with the title only — no quotes, no explanation, no markdown.
 
-"$userMessage"
-
-Respond with ONLY the title text, no quotes, no explanation."""
+User's first message:
+$userMessage"""
                     )
                 ),
-                systemPrompt = "You are a title generator. Create short, clear conversation titles.",
+                systemPrompt = "You are a session title generator. Produce concise, natural titles that capture the user's intent. Keep it short.",
                 tools = emptyList(),
                 maxTokens = 50,
                 stream = false,
                 agentId = agentConfig.id
             )
-            
+
             val result = StringBuilder()
             provider.chat(request).collect { response ->
                 if (response is ChatResponse.TextDelta) {
                     result.append(response.text)
                 }
             }
-            
-            result.toString().trim().take(60).ifBlank { "New Chat" }
+            sanitizeTitle(result.toString())
         } catch (e: Exception) {
             errorLog("AiRepository", "Failed to generate title", e)
             "New Chat"
         }
+    }
+
+    private fun sanitizeTitle(raw: String): String {
+        return raw
+            .lines()
+            .firstOrNull { it.isNotBlank() }
+            ?.replace(Regex("^[\\s\\*\\#\\`\\>\\-_]+"), "")
+            ?.replace(Regex("\\s+"), " ")
+            ?.trim()
+            ?.take(60)
+            ?.ifBlank { "New Chat" }
+            ?: "New Chat"
     }
 
 }

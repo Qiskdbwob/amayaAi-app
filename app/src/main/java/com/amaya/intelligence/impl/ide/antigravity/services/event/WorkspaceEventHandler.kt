@@ -22,6 +22,7 @@ class WorkspaceEventHandler(
 ) {
     private val conversationIdMap = ConcurrentHashMap<Long, String>()
     private var lastConversationsRefreshAt = 0L
+    private var _conversationsSnapshot = emptyList<ConversationEntity>()
     
     fun handleConversationsList(event: RemoteEvent.ConversationsList) {
         val entities = event.conversations.map { meta ->
@@ -36,6 +37,7 @@ class WorkspaceEventHandler(
                 workspacePath = meta.workspacePath
             )
         }
+        _conversationsSnapshot = entities
         onConversationsUpdate(entities)
     }
     
@@ -68,6 +70,12 @@ class WorkspaceEventHandler(
             "WorkspaceEventHandler",
             "TitleGenerated event: ${event.title.take(80)} for conversation=${event.conversationId}"
         )
+        val targetId = event.conversationId?.hashCode()?.toLong() ?: return
+        val patched = _conversationsSnapshot.map { entity ->
+            if (entity.id == targetId) entity.copy(title = event.title.take(60)) else entity
+        }
+        _conversationsSnapshot = patched
+        onConversationsUpdate(patched)
         refreshConversationsList("title_generated")
     }
     

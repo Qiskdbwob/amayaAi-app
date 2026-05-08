@@ -38,6 +38,9 @@ interface ConversationDao {
     @Update
     suspend fun update(conversation: ConversationEntity)
 
+    @Query("UPDATE conversations SET title = :title, updated_at = :updatedAt WHERE id = :id")
+    suspend fun updateTitle(id: Long, title: String, updatedAt: Long = System.currentTimeMillis())
+
     @Delete
     suspend fun deleteConversation(conversation: ConversationEntity)
 

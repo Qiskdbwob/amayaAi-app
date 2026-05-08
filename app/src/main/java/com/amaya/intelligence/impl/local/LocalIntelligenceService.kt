@@ -165,8 +165,14 @@ class LocalIntelligenceService @Inject constructor(
 
         chatJob = scope.launch {
             try {
-                // Persist before starting the model turn so session-memory uses the real conversation id.
+                // Kick off async title generation for new conversations — does not block streaming.
+                // Check BEFORE persist so currentConversationId is still null on the first message.
+                val isNewConversation = currentConversationId == null
                 val conversationIdForTurn = persistCurrentConversation()
+                if (isNewConversation) {
+                    launchTitleGeneration(content, conversationIdForTurn)
+                }
+                
                 val history = _uiState.value.messages.map { it.toChatMessage() }
                 
                 aiRepository.chat(
@@ -483,6 +489,8 @@ class LocalIntelligenceService @Inject constructor(
                 if (modelId.isBlank()) return@launch
                 val matchingAgent = settings.agentConfigs.firstOrNull { it.enabled && it.providerId == providerId }
                     ?: settings.agentConfigs.firstOrNull { it.providerId == providerId }
+                // Immediately update selectedModel in UI state so sendMessage/title-gen use the right model.
+                _uiState.update { it.copy(selectedModel = modelId) }
                 if (matchingAgent != null) {
                     val providerIsSubscription = AmayaProviderRegistry.find(providerId)?.isSubscription == true
                     if (providerIsSubscription && !matchingAgent.enabled) {
@@ -499,6 +507,7 @@ class LocalIntelligenceService @Inject constructor(
             }
             val agent = settings.agentConfigs.find { it.id == agentId }
             agent?.let {
+                _uiState.update { state -> state.copy(selectedModel = it.modelId) }
                 settingsManager.setActiveAgent(it.id, it.modelId)
             }
         }
@@ -641,6 +650,38 @@ class LocalIntelligenceService @Inject constructor(
 
     private fun saveCurrentConversation() {
         scope.launch { persistCurrentConversation() }
+    }
+
+    private fun launchTitleGeneration(userMessage: String, conversationId: Long?) {
+        if (conversationId == null) return
+        scope.launch {
+            try {
+                val settings = settingsManager.getSettings()
+                val agentId = _uiState.value.activeAgentId ?: settings.activeAgentId
+                val agentConfig = settings.agentConfigs.find { it.id == agentId && it.enabled }
+                    ?: settings.agentConfigs.firstOrNull { it.enabled }
+                    ?: return@launch
+                val selectedModel = _uiState.value.selectedModel.ifBlank { agentConfig.modelId }
+                // Reasoning models don't support non-streaming title generation — keep existing 5-word fallback.
+                if (agentConfig.reasoning || isReasoningModel(selectedModel)) return@launch
+                val title = aiRepository.generateTitle(
+                    userMessage = userMessage,
+                    agentConfig = agentConfig,
+                    selectedModel = _uiState.value.selectedModel
+                )
+                conversationDao.updateTitle(conversationId, title)
+            } catch (_: Exception) {
+                // Title generation failure is non-fatal — conversation persists without title update.
+            }
+        }
+    }
+
+    private fun isReasoningModel(modelId: String): Boolean {
+        val lower = modelId.lowercase()
+        return lower.contains("reason") || lower.contains("thinking") ||
+            lower.startsWith("o3") || lower.startsWith("o4") ||
+            lower.startsWith("o1") || lower.contains("-reasoner") ||
+            lower.contains("deepseek-r1")
     }
 
     private suspend fun persistCurrentConversation(): Long? = conversationSaveMutex.withLock {
