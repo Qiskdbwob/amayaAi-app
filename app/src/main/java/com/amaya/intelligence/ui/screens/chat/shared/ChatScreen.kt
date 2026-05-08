@@ -134,7 +134,7 @@ fun ChatScreen(
     var showLocalhostLinkSheet by remember { mutableStateOf(false) }
     var selectedLocalhostLink by remember { mutableStateOf<LocalhostLinkInfo?>(null) }
     var localIp by remember { mutableStateOf("127.0.0.1") }
-    
+
     // Get local IP address on launch as fallback
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -184,16 +184,16 @@ fun ChatScreen(
                         val contentResolver = context.contentResolver
                         val rawMimeType = contentResolver.getType(uri) ?: "image/*"
                         val fileName = uri.lastPathSegment?.substringAfterLast("/") ?: "image"
-                        
+
                         // Load and compress image to avoid API limits
                         val inputStream = contentResolver.openInputStream(uri)
                         if (inputStream == null) return@withContext null
-                        
+
                         val bitmap = android.graphics.BitmapFactory.decodeStream(inputStream)
                         inputStream.close()
-                        
+
                         if (bitmap == null) return@withContext null
-                        
+
                         // Scale down if too large (max 2048px on longest side)
                         val maxDim = 2048
                         val width = bitmap.width
@@ -206,7 +206,7 @@ fun ChatScreen(
                         } else {
                             bitmap
                         }
-                        
+
                         // Adaptive compression: compress until under 180KB base64 (safe for inline upload)
                         // This avoids artifact upload issues with large images
                         // Base64 is ~33% larger than binary, so target ~135KB binary
@@ -214,23 +214,23 @@ fun ChatScreen(
                         var quality = 85
                         var bytes: ByteArray
                         val outputStream = java.io.ByteArrayOutputStream()
-                        
+
                         do {
                             outputStream.reset()
                             scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, outputStream)
                             bytes = outputStream.toByteArray()
                             quality -= 10
                         } while (bytes.size > maxBinarySize && quality >= 30)
-                        
+
                         outputStream.close()
-                        
+
                         val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
                         android.util.Log.d("ChatScreen", "Image compressed: ${bytes.size} bytes -> ${base64.length} base64 chars, final quality=$quality")
-                        
+
                         // Recycle bitmaps to free memory
                         if (scaledBitmap !== bitmap) scaledBitmap.recycle()
                         bitmap.recycle()
-                        
+
                         // Always use JPEG since we compressed as JPEG
                         Triple(base64, "image/jpeg", fileName.removeSuffix(".png").removeSuffix(".webp") + ".jpg")
                     } catch (e: Exception) {
@@ -343,7 +343,7 @@ fun ChatScreen(
         if (!uiState.isStreaming || !shouldAutoScroll) return@LaunchedEffect
         while (true) {
             performScrollToBottom(false)
-            delay(120)
+            delay(16)
         }
     }
 
