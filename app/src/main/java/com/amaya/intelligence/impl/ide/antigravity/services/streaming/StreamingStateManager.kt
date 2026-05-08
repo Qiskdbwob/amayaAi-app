@@ -17,6 +17,7 @@ class StreamingStateManager {
     private var streamingMessageId: String? = null
     private var currentStreamPhase: StreamPhase = StreamPhase.NONE
     private var lastStreamingStepIndex: String? = null
+    private var lastStreamingActivityAt: Long = 0L
     
     val currentText: String get() = streamingText.toString()
     val currentThinking: String get() = streamingThinking.toString()
@@ -28,6 +29,17 @@ class StreamingStateManager {
             streamingText.clear()
         }
         currentStreamPhase = phase
+        if (phase != StreamPhase.NONE) markStreamingActivity()
+    }
+
+    fun markStreamingActivity() {
+        lastStreamingActivityAt = System.currentTimeMillis()
+    }
+
+    fun hasRecentStreamingActivity(graceMs: Long = TRANSIENT_IDLE_GRACE_MS): Boolean {
+        val last = lastStreamingActivityAt
+        if (last <= 0L) return false
+        return System.currentTimeMillis() - last <= graceMs
     }
     
     fun setStepIndex(index: String?) {
@@ -62,6 +74,7 @@ class StreamingStateManager {
         streamingMessageId = null
         currentStreamPhase = StreamPhase.NONE
         lastStreamingStepIndex = null
+        lastStreamingActivityAt = 0L
     }
     
     fun mergeStreamingSegment(incoming: String): String {
@@ -116,5 +129,6 @@ class StreamingStateManager {
     companion object {
         const val THINKING_TOOL_NAME = AntigravityProtocol.ToolMarkers.THINKING_TOOL_NAME
         const val THINKING_TOOL_META_KEY = AntigravityProtocol.ToolMarkers.THINKING_TOOL_META_KEY
+        const val TRANSIENT_IDLE_GRACE_MS = 60_000L
     }
 }

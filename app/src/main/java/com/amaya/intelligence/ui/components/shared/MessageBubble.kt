@@ -120,15 +120,15 @@ fun MessageBubble(
                             finalVisibleTextIndexForSummary(message)
                         }
                         if (finalTextIndex != null) {
-                            val previousSteps = message.steps.take(finalTextIndex)
+                            val summarySteps = summaryTimelineSteps(message, finalTextIndex)
                             val finalTextStep = message.steps[finalTextIndex] as MessageStep.Text
                             WorkSummaryCard(
                                 message = message,
-                                steps = previousSteps,
+                                steps = summarySteps,
                                 onInteraction = onInteraction
                             ) {
                                 StepTimeline(
-                                    steps = previousSteps,
+                                    steps = summarySteps,
                                     hideThinkingHeader = hideThinkingHeader,
                                     onToolAccept = onToolAccept,
                                     onToolDecline = onToolDecline,
@@ -136,7 +136,11 @@ fun MessageBubble(
                                     onInteraction = onInteraction
                                 )
                             }
-                            val finalText = finalTextStep.formattedContent ?: finalTextStep.content
+                            val finalText = if (message.metadata["source"].equals("remote", ignoreCase = true) && message.content.isNotBlank()) {
+                                message.formattedContent ?: message.content
+                            } else {
+                                finalTextStep.formattedContent ?: finalTextStep.content
+                            }
                             if (finalText.isNotBlank()) {
                                 key(finalTextStep.id) {
                                     AssistantTextWithThinking(
@@ -388,10 +392,32 @@ private fun finalVisibleTextIndexForSummary(message: UiMessage): Int? {
             }
         }
     }
-    val last = meaningful.lastOrNull() ?: return null
-    val lastStep = steps[last] as? MessageStep.Text ?: return null
-    if ((lastStep.formattedContent ?: lastStep.content).isBlank()) return null
-    return last.takeIf { meaningful.size > 1 }
+    if (meaningful.size <= 1) return null
+
+    val isRemote = message.metadata["source"].equals("remote", ignoreCase = true)
+    if (!isRemote) {
+        val last = meaningful.lastOrNull() ?: return null
+        val lastStep = steps[last] as? MessageStep.Text ?: return null
+        if ((lastStep.formattedContent ?: lastStep.content).isBlank()) return null
+        return last
+    }
+
+    return meaningful.asReversed().firstOrNull { index ->
+        val text = steps[index] as? MessageStep.Text ?: return@firstOrNull false
+        (text.formattedContent ?: text.content).isNotBlank()
+    }
+}
+
+private fun summaryTimelineSteps(message: UiMessage, finalTextIndex: Int): List<MessageStep> {
+    val isRemote = message.metadata["source"].equals("remote", ignoreCase = true)
+    if (!isRemote) return message.steps.take(finalTextIndex)
+
+    // Antigravity state snapshots often contain cumulative/duplicated text fragments.
+    // Keep the human-facing final text outside the work summary and show only the
+    // tool/thinking timeline inside the collapsible summary card.
+    return message.steps.filterIndexed { index, step ->
+        index != finalTextIndex && step is MessageStep.ToolCall && step.execution.name != "update_todo"
+    }
 }
 
 private fun browserToolRanges(steps: List<MessageStep>): List<IntRange> {

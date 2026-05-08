@@ -25,52 +25,39 @@ object AntigravityToolMapper {
     /**
      * Maps the raw tool name from Antigravity to a normalized name.
      */
-    fun mapToolName(rawName: String): String = when (rawName) {
-        // File operations
-        AntigravityProtocol.StepTypes.READ_FILE,
-        "view_file", "view_file_outline", "view_code_item"
-            -> "read_file"
+    fun mapToolName(rawName: String): String {
+        val normalized = rawName
+            .removePrefix("CORTEX_STEP_TYPE_")
+            .lowercase()
+        return when (normalized) {
+            // File operations
+            "read_file", "view_file", "view_file_outline", "view_code_item" -> "read_file"
+            "write_file", "write_to_file" -> "write_file"
+            "edit_file", "code_action", "replace_file_content", "multi_replace_file_content" -> "edit_file"
+            "delete_file" -> "delete_file"
 
-        AntigravityProtocol.StepTypes.WRITE_FILE,
-        "write_to_file"
-            -> "write_file"
+            // Shell / terminal
+            "run_command", "run_shell" -> "run_shell"
+            "command_status", "check_status_terminal" -> "check_status_terminal"
+            "send_command_input" -> "send_command_input"
+            "read_terminal" -> "read_terminal"
 
-        AntigravityProtocol.StepTypes.EDIT_FILE,
-        "replace_file_content", "multi_replace_file_content"
-            -> "edit_file"
+            // Search / find
+            "search", "find", "grep_search", "grep", "find_by_name", "find_files", "search_files" -> "find_files"
+            "list_directory", "list_dir", "list_files" -> "list_files"
 
-        // Shell / terminal
-        AntigravityProtocol.StepTypes.RUN_COMMAND,
-        "run_command"
-            -> "run_shell"
+            // Browser / web tools
+            "browser_subagent", "browser", "read_url_content", "search_web" -> "browser"
 
-        "command_status" -> "check_status_terminal"
-        "send_command_input" -> "send_command_input"
-        "read_terminal" -> "read_terminal"
+            // Task management
+            "task_boundary" -> "task_boundary"
+            "notify_user" -> "notify_user"
 
-        // Search / find
-        AntigravityProtocol.StepTypes.SEARCH,
-        "grep_search", "find_by_name"
-            -> "find_files"
+            // Image generation
+            "generate_image" -> "generate_image"
 
-        "list_dir" -> "list_files"
-
-        // Browser / web tools
-        "browser_subagent",
-        "read_url_content", "search_web"
-            -> "browser"
-
-        // Task management
-        "task_boundary" -> "task_boundary"
-        "notify_user"   -> "notify_user"
-
-        // Image generation
-        "generate_image" -> "generate_image"
-
-        // MCP tools
-        else -> {
-            if (rawName.startsWith("mcp_")) rawName
-            else rawName
+            // MCP tools
+            else -> if (rawName.startsWith("mcp_")) rawName else normalized.ifBlank { rawName }
         }
     }
 
@@ -108,8 +95,8 @@ object AntigravityToolMapper {
             }
             "check_status_terminal" -> {
                 mapped["commandId"] = firstNonNull(mapped, "commandId", "CommandId", "ProcessID", "processId", "PID")
-                mapped["waitSeconds"] = firstNonNull(mapped, "waitSeconds", "WaitDurationSeconds", "WaitTime") ?: "0"
-                mapped["maxChars"] = firstNonNull(mapped, "maxChars", "OutputCharacterCount", "MaxChars")
+                mapped["waitSeconds"] = firstNonNull(mapped, "waitSeconds", "WaitDurationSeconds", "waitDurationSeconds", "WaitTime", "waitTime") ?: "0"
+                mapped["maxChars"] = firstNonNull(mapped, "maxChars", "OutputCharacterCount", "outputCharacterCount", "MaxChars")
             }
             "send_command_input" -> {
                 mapped["command"] = "Input " + (mapped["Input"] ?: mapped["CommandId"] ?: "")
@@ -118,27 +105,27 @@ object AntigravityToolMapper {
                 mapped["command"] = "Read " + (mapped["ProcessID"] ?: "")
             }
             "read_file" -> {
-                mapped["path"] = firstNonNull(mapped, "path", "AbsolutePath", "absolutePath", "File", "file", "filePath")
+                mapped["path"] = firstNonNull(mapped, "path", "AbsolutePath", "absolutePath", "absolutePathUri", "File", "file", "filePath", "uri")
             }
             "write_file" -> {
-                mapped["path"] = firstNonNull(mapped, "path", "TargetFile", "targetFile", "filePath")
+                mapped["path"] = firstNonNull(mapped, "path", "TargetFile", "targetFile", "AbsolutePath", "absolutePath", "File", "file", "filePath", "uri")
                 mapped["targetContent"] = firstNonNull(mapped, "targetContent", "TargetContent")
                 mapped["replacementContent"] = firstNonNull(mapped, "replacementContent", "ReplacementContent", "CodeContent", "codeContent")
                 mapped["replacementChunks"] = firstNonNull(mapped, "replacementChunks", "ReplacementChunks")
             }
             "edit_file" -> {
-                mapped["path"] = firstNonNull(mapped, "path", "TargetFile", "targetFile", "filePath")
+                mapped["path"] = firstNonNull(mapped, "path", "TargetFile", "targetFile", "AbsolutePath", "absolutePath", "File", "file", "filePath", "uri")
                 mapped["targetContent"] = firstNonNull(mapped, "targetContent", "TargetContent")
                 mapped["replacementContent"] = firstNonNull(mapped, "replacementContent", "ReplacementContent", "CodeContent", "codeContent")
                 mapped["replacementChunks"] = firstNonNull(mapped, "replacementChunks", "ReplacementChunks")
             }
             "find_files" -> {
-                mapped["query"] = firstNonNull(mapped, "query", "Query", "content")
-                mapped["path"] = firstNonNull(mapped, "path", "SearchPath", "searchPath", "SearchDirectory", "searchDirectory")
+                mapped["query"] = firstNonNull(mapped, "query", "Query", "content", "Pattern", "pattern")
+                mapped["path"] = firstNonNull(mapped, "path", "SearchPath", "searchPath", "SearchDirectory", "searchDirectory", "DirectoryPath", "directoryPath")
                 mapped["pattern"] = mapped["Pattern"] ?: mapped["pattern"]
             }
             "list_files" -> {
-                mapped["path"] = firstNonNull(mapped, "path", "DirectoryPath", "directoryPath")
+                mapped["path"] = firstNonNull(mapped, "path", "DirectoryPath", "directoryPath", "directoryPathUri", "SearchDirectory", "searchDirectory")
             }
             "browser" -> {
                 mapped["task"] = mapped["Task"] ?: mapped["task"] ?: mapped["Url"] ?: mapped["url"] ?: mapped["query"] ?: mapped["task"]
@@ -181,7 +168,38 @@ object AntigravityToolMapper {
     fun getUiMetadata(toolName: String, args: Map<String, Any?>, metadata: Map<String, String>? = null): ToolUiMetadata {
         val normalizedName = mapToolName(toolName)
         val normalizedArgs = mapToolArgs(toolName, args)
-        return ToolUiMapper.getToolUiMetadata(normalizedName, normalizedArgs, metadata)
+        val ui = ToolUiMapper.getToolUiMetadata(normalizedName, normalizedArgs, metadata)
+        if (ui.label.isNotBlank()) return ui
+        return ui.copy(label = fallbackLabel(normalizedName, normalizedArgs))
+    }
+
+    private fun fallbackLabel(toolName: String, args: Map<String, Any?>): String {
+        fun value(vararg keys: String): String? = keys.firstNotNullOfOrNull { key ->
+            args[key]?.toString()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+        }
+        fun fileName(path: String?): String? = path
+            ?.replace('/', '\\')
+            ?.substringAfterLast('\\')
+            ?.takeIf { it.isNotBlank() }
+
+        return when (toolName) {
+            "read_file", "write_file", "edit_file", "delete_file" ->
+                fileName(value("path", "TargetFile", "targetFile", "AbsolutePath", "absolutePath", "File", "file", "filePath"))
+                    ?: toolName
+            "list_files" ->
+                fileName(value("path", "DirectoryPath", "directoryPath", "SearchDirectory", "searchDirectory"))
+                    ?: "Files"
+            "find_files" ->
+                value("query", "Query", "pattern", "Pattern", "content")?.take(56) ?: "Find files"
+            "run_shell" ->
+                value("command", "CommandLine", "commandLine", "submittedCommandLine", "proposedCommandLine", "cmd")?.take(88)
+                    ?: "Shell"
+            "browser" ->
+                value("task", "Task", "url", "Url", "query", "Query")?.take(56) ?: "Browser"
+            "task_boundary" ->
+                value("title", "TaskName", "taskName", "taskStatus", "TaskStatus")?.take(56) ?: "Task"
+            else -> toolName.split("_").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
+        }
     }
 
     /**

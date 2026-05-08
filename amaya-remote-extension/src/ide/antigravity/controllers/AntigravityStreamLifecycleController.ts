@@ -7,6 +7,8 @@ export class AntigravityStreamLifecycleController {
         anyStillProcessing: boolean;
         hasStartedTurn: boolean;
         hasCheckpointDone: boolean;
+        hasTerminalStepDone: boolean;
+        hasTerminalPlannerDone: boolean;
         checkpointUpdatedDuringStream: boolean;
         isClientCanceled: boolean;
     }): { shouldTerminate: boolean; forceGlobalDone: boolean } {
@@ -15,16 +17,16 @@ export class AntigravityStreamLifecycleController {
             anyStillProcessing,
             hasStartedTurn,
             hasCheckpointDone,
+            hasTerminalStepDone,
+            hasTerminalPlannerDone,
             checkpointUpdatedDuringStream,
             isClientCanceled,
         } = args;
 
         const forceGlobalDone = lastGlobalStatus === ANTIGRAVITY_STATUS_VALUES.done;
         const naturalDone = !anyStillProcessing && hasStartedTurn && (
-            lastGlobalStatus === ANTIGRAVITY_STATUS_VALUES.idle ||
-            hasCheckpointDone ||
-            checkpointUpdatedDuringStream ||
-            isClientCanceled
+            isClientCanceled ||
+            (lastGlobalStatus === ANTIGRAVITY_STATUS_VALUES.idle && (hasCheckpointDone || hasTerminalStepDone || hasTerminalPlannerDone))
         );
 
         return { shouldTerminate: forceGlobalDone || naturalDone, forceGlobalDone };

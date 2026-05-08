@@ -202,7 +202,7 @@ export class AntigravityStreamEventNormalizer {
                     if (!emittedToolResults.has(toolCallId)) {
                         emittedToolResults.add(toolCallId);
                         const result = AntigravityMappers.getToolResult(s);
-                        callbacks.onToolResult?.(toolName, result, s.metadata?.toolCall?.id || '', s.status === ANTIGRAVITY_STEP_STATUS_VALUES.failed);
+                        callbacks.onToolResult?.(toolName, result, toolCallId, s.status === ANTIGRAVITY_STEP_STATUS_VALUES.failed);
                         hasStartedTurn = true;
                     }
                 }

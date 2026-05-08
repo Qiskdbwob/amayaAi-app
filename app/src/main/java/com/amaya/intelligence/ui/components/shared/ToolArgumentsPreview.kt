@@ -102,7 +102,11 @@ fun ToolArgumentsPreview(
     fun DescriptionPayload(args: Map<String, Any?>, showIcon: Boolean = true) {
         val summary = args["summary"]?.toString()
             ?: (args["ArtifactMetadata"] as? Map<*, *>)?.get("Summary")?.toString()
+            ?: runCatching { (args["ArtifactMetadata"] as? JSONObject)?.optString("Summary") }.getOrNull()
             ?: args["Description"]?.toString()
+            ?: args["description"]?.toString()
+            ?: args["Instruction"]?.toString()
+            ?: args["instruction"]?.toString()
         
         if (!summary.isNullOrBlank() && !summary.contains("%SAME%", ignoreCase = true)) {
             Row(verticalAlignment = Alignment.Top, modifier = Modifier.padding(bottom = 6.dp)) {
@@ -122,6 +126,38 @@ fun ToolArgumentsPreview(
                     lineHeight = 16.sp
                 )
             }
+        }
+    }
+
+    fun argText(vararg keys: String): String? = keys.firstNotNullOfOrNull { key ->
+        args[key]?.toString()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) && !it.contains("%SAME%") }
+    }
+
+    @Composable
+    fun CompactArgRows(vararg pairs: Pair<String, String?>) {
+        pairs.forEach { (label, value) ->
+            value?.takeIf { it.isNotBlank() }?.let { MetaRow("$label: $it", Icons.AutoMirrored.Filled.Subject, metaColor) }
+        }
+    }
+
+    @Composable
+    fun CodePreviewBlock(label: String, text: String?, maxChars: Int = 900) {
+        val value = text?.takeIf { it.isNotBlank() } ?: return
+        Text(label, style = MaterialTheme.typography.labelSmall, color = metaColor)
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = codeBg,
+            border = BorderStroke(1.dp, blockBorderColor),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = value.trim().let { if (it.length > maxChars) it.take(maxChars).trimEnd() + "\n… truncated" else it },
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 10.sp,
+                color = codeColor,
+                modifier = Modifier.padding(10.dp)
+            )
         }
     }
 
@@ -187,11 +223,12 @@ fun ToolArgumentsPreview(
             }
 
             ToolCategory.SEARCH -> {
-                val path = args["path"]?.toString().orEmpty()
+                val path = argText("path", "SearchPath", "searchPath", "SearchDirectory", "searchDirectory", "DirectoryPath", "directoryPath").orEmpty()
+                val query = argText("query", "Query", "pattern", "Pattern", "content")
                 
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     DescriptionPayload(args)
-                    
+                    query?.let { MetaRow("Query: $it", Icons.Default.Search, metaColor) }
                     if (path.isNotBlank()) {
                         val icon = uiMetadata?.targetIcon?.let { mapToolIcon(it) } ?: Icons.Default.Search
                         PathRow(formatRelativePath(path), icon, metaColor)
@@ -200,11 +237,24 @@ fun ToolArgumentsPreview(
             }
 
             ToolCategory.FILE_IO -> {
-                val pathStr = args["path"]?.toString().orEmpty()
+                val pathStr = argText("path", "TargetFile", "targetFile", "AbsolutePath", "absolutePath", "File", "file", "filePath", "uri").orEmpty()
+                val startLine = argText("StartLine", "startLine")
+                val endLine = argText("EndLine", "endLine")
+                val lineLabel = when {
+                    !startLine.isNullOrBlank() && !endLine.isNullOrBlank() -> "$startLine-$endLine"
+                    !startLine.isNullOrBlank() -> startLine
+                    else -> null
+                }
 
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     DescriptionPayload(args)
-                    PathRow(formatRelativePath(pathStr), Icons.Default.Description, metaColor)
+                    if (pathStr.isNotBlank()) PathRow(formatRelativePath(pathStr), Icons.Default.Description, metaColor)
+                    CompactArgRows(
+                        "Lines" to lineLabel,
+                        "Complexity" to argText("complexity", "Complexity")
+                    )
+                    CodePreviewBlock("Target", argText("targetContent", "TargetContent"), maxChars = 500)
+                    CodePreviewBlock("Replacement", argText("replacementContent", "ReplacementContent", "CodeContent", "codeContent"), maxChars = 900)
                 }
             }
 
@@ -278,6 +328,10 @@ fun ToolArgumentsPreview(
             ToolCategory.WEB -> {
                 // Web: search_web, read_url_content, browser
                 DescriptionPayload(args)
+                CompactArgRows(
+                    "Task" to argText("task", "Task", "query", "Query"),
+                    "URL" to argText("url", "Url")
+                )
             }
 
             ToolCategory.UNKNOWN -> {

@@ -51,6 +51,10 @@ export class StreamOrchestrator {
             .map(([sessionId]) => sessionId);
     }
 
+    public getAttachedSessionIds(): string[] {
+        return Array.from(this.attachedStreamIds.values());
+    }
+
     public setStreamingState(sessionId: string, isLoading: boolean, isStreaming: boolean, emitStatusChange: boolean = false) {
         this.loadingMap.set(sessionId, isLoading);
         this.streamingMap.set(sessionId, isStreaming);
@@ -76,6 +80,22 @@ export class StreamOrchestrator {
 
     public setStreamToken(sessionId: string, token: number) {
         this.streamSessionToken.set(sessionId, token);
+    }
+
+    public beginStreamSession(sessionId: string): number {
+        const token = this.getNextStreamToken(sessionId);
+        this.attachedStreamIds.add(sessionId);
+        this.streamSessionToken.set(sessionId, token);
+        return token;
+    }
+
+    public endStreamSession(sessionId: string, token: number) {
+        if ((this.streamSessionToken.get(sessionId) || 0) !== token) return;
+        this.attachedStreamIds.delete(sessionId);
+    }
+
+    public isStreamTokenCurrent(sessionId: string, token: number): boolean {
+        return (this.streamSessionToken.get(sessionId) || 0) === token;
     }
 
     public createStreamCallbacks(sessionId: string, token: number) {
@@ -163,6 +183,14 @@ export class StreamOrchestrator {
             onStatusChange: (status: string) => {
                 if (!checkToken()) return;
                 const { isLoading, isStreaming } = this.deps.runStatusMapper.fromProviderStatus(status);
+                if (!isLoading && !isStreaming && this.attachedStreamIds.has(sessionId)) {
+                    // Antigravity can report IDLE between tool bursts while the same response
+                    // stream continues. Keep the session stream-active until onDone/onError
+                    // performs the terminal transition so reconnect/state_sync stays on the
+                    // current in-flight turn instead of falling back to older history.
+                    this.setStreamingState(sessionId, false, true);
+                    return;
+                }
                 this.setStreamingState(sessionId, isLoading, isStreaming, true);
             },
         };
@@ -175,25 +203,61 @@ export class StreamOrchestrator {
         this.attachedStreamIds.add(sessionId);
         const token = this.getNextStreamToken(sessionId);
         this.streamSessionToken.set(sessionId, token);
-        console.log(`[Amaya MessageHandler] Stream attach for ${sessionId}`);
-        this.setStreamingState(sessionId, true, false);
 
         (async () => {
-            this.setStreamingState(sessionId, false, false);
-            const initialMessages = this.deps.mapMessagesForUi(this.deps.api.getCurrentSessionMessages(sessionId) || []);
+            let initialSteps: any[] = [];
+            let ignoreBeforeIndex = 0;
+            let initialMessages: any[] = [];
+            let hasActiveStep = false;
+
+            try {
+                initialSteps = await Promise.race([
+                    this.deps.api.getSessionTrajectory(sessionId),
+                    new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 1500)),
+                ]);
+            } catch {
+                initialSteps = [];
+            }
+
+            if (Array.isArray(initialSteps) && initialSteps.length > 0) {
+                const firstActiveIndex = initialSteps.findIndex((step) => this.isActiveTrajectoryStep(step));
+                hasActiveStep = firstActiveIndex >= 0;
+                ignoreBeforeIndex = hasActiveStep ? firstActiveIndex : initialSteps.length;
+                initialMessages = this.deps.mapMessagesForUi(
+                    await this.deps.api.getSessionMessages(sessionId).catch(() => [])
+                );
+            } else {
+                const hotMessages = this.deps.api.getCurrentSessionMessages(sessionId) || [];
+                initialMessages = this.deps.mapMessagesForUi(hotMessages);
+                ignoreBeforeIndex = hotMessages.length;
+            }
+
+            const isStillAttached = () => this.attachedStreamIds.has(sessionId) && (this.streamSessionToken.get(sessionId) || 0) === token;
+            if (!isStillAttached()) return;
+
             const selectedModel = this.deps.state.models.find((m) => m.id === this.deps.state.selectedModelId);
+            const shouldShowStreaming = hasActiveStep;
+
+            if (!shouldShowStreaming) {
+                this.attachedStreamIds.delete(sessionId);
+                this.streamSessionToken.set(sessionId, token + 1);
+                return;
+            }
+
+            console.log(`[Amaya MessageHandler] Stream attach for ${sessionId}`);
+            this.setStreamingState(sessionId, true, true);
             this.deps.broadcastEvent('state_sync', {
                 messages: initialMessages,
-                isLoading: false,
-                isStreaming: false,
+                isLoading: true,
+                isStreaming: true,
                 currentModel: selectedModel?.label || '',
                 conversationId: sessionId,
             }, sessionId);
 
             try {
                 const callbacks = this.createStreamCallbacks(sessionId, token);
-                await this.deps.api.streamForResponse(sessionId, callbacks, 0, []);
-                if (this.attachedStreamIds.has(sessionId) && (this.streamSessionToken.get(sessionId) || 0) === token) {
+                await this.deps.api.streamForResponse(sessionId, callbacks, ignoreBeforeIndex, initialSteps);
+                if (isStillAttached()) {
                     this.setStreamingState(sessionId, false, false);
                     this.attachedStreamIds.delete(sessionId);
                 }
@@ -204,6 +268,11 @@ export class StreamOrchestrator {
                 this.deps.broadcastEvent('error', { message: error.message, conversationId: sessionId }, sessionId);
             }
         })();
+    }
+
+    private isActiveTrajectoryStep(step: any): boolean {
+        const status = String(step?.status || '').toUpperCase();
+        return status.includes('RUNNING') || status.includes('GENERATING') || status.includes('PENDING');
     }
 
     private safeParseJson(str: string): Record<string, any> {

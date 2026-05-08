@@ -133,17 +133,28 @@ export class MessageFlowController {
 
         this.deps.broadcastEvent('new_assistant_message', { conversationId: targetId }, targetId);
 
+        let streamToken: number | null = null;
         try {
             if (!this.deps.streamOrchestrator.isStreamAttached(targetId)) {
-                const token = this.deps.streamOrchestrator.getNextStreamToken(targetId);
-                this.deps.streamOrchestrator.setStreamToken(targetId, token);
-                const callbacks = this.deps.streamOrchestrator.createStreamCallbacks(targetId, token);
+                streamToken = this.deps.streamOrchestrator.beginStreamSession(targetId);
+                const callbacks = this.deps.streamOrchestrator.createStreamCallbacks(targetId, streamToken);
                 await this.deps.api.streamForResponse(targetId, callbacks, ignoreBeforeIndex, previousSteps);
             }
         } catch (error: any) {
-            console.error('[Amaya MessageHandler] Send stream error:', error.message);
+            const message = error?.message || String(error || 'Unknown stream error');
+            if (/aborted/i.test(message)) {
+                if (streamToken === null || this.deps.streamOrchestrator.isStreamTokenCurrent(targetId, streamToken)) {
+                    this.deps.streamOrchestrator.setStreamingState(targetId, false, false);
+                }
+                return;
+            }
+            console.error('[Amaya MessageHandler] Send stream error:', message);
             this.deps.streamOrchestrator.setStreamingState(targetId, false, false);
-            this.deps.broadcastEvent('error', { message: error.message, conversationId: targetId }, targetId);
+            this.deps.broadcastEvent('error', { message, conversationId: targetId }, targetId);
+        } finally {
+            if (streamToken !== null) {
+                this.deps.streamOrchestrator.endStreamSession(targetId, streamToken);
+            }
         }
     }
 

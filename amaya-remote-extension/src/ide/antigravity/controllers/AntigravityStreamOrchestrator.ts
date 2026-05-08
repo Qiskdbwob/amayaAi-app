@@ -161,6 +161,8 @@ export class AntigravityStreamOrchestrator {
                                 const {
                                     anyStillProcessing,
                                     hasCheckpointDone,
+                                    hasTerminalStepDone,
+                                    hasTerminalPlannerDone,
                                     lastPlannerStep,
                                 } = AntigravityStreamStateController.computeProgressState(localSteps, currentTurnIgnoreBeforeIndex);
 
@@ -178,6 +180,13 @@ export class AntigravityStreamOrchestrator {
                                     idleDoneTimer = setTimeout(() => {
                                         if (hasEmittedTermination || isOfficiallyTerminated || !streamStateManager.isStreaming(cascadeId)) return;
                                         if (lastGlobalStatus === ANTIGRAVITY_STATUS_VALUES.running) return;
+                                        const latestProgress = AntigravityStreamStateController.computeProgressState(localSteps, currentTurnIgnoreBeforeIndex);
+                                        if (latestProgress.anyStillProcessing) return;
+                                        const hasAssistantText = (currentFullText || '').trim().length > 0;
+                                        if (!hasAssistantText && !latestProgress.hasCheckpointDone) {
+                                            idleDoneTimer = null;
+                                            return;
+                                        }
                                         hasEmittedTermination = true;
                                         callbacks.onDone?.(currentFullText || currentThinking || '', 'IDLE_TIMER_FALLBACK');
                                         stopStreaming(cascadeId);
@@ -185,7 +194,7 @@ export class AntigravityStreamOrchestrator {
                                             ? (Math.max(...Array.from(localSteps.keys())) + 1)
                                             : currentTurnIgnoreBeforeIndex;
                                         resetTurnState(nextIgnoreBeforeIndex);
-                                    }, 1200);
+                                    }, 5000);
                                 }
 
                                 const isClientCanceled = lastPlannerStep?.plannerResponse?.stopReason === 'STOP_REASON_CLIENT_CANCELED';
@@ -194,6 +203,8 @@ export class AntigravityStreamOrchestrator {
                                     anyStillProcessing,
                                     hasStartedTurn,
                                     hasCheckpointDone,
+                                    hasTerminalStepDone,
+                                    hasTerminalPlannerDone,
                                     checkpointUpdatedDuringStream,
                                     isClientCanceled,
                                 });
@@ -211,8 +222,11 @@ export class AntigravityStreamOrchestrator {
                                         callbacks.onStateSync(syncMessages);
                                     }
                                     callbacks.onDone?.(currentFullText, stopReason);
+                                    stopStreaming(cascadeId);
                                     const nextIgnoreBeforeIndex = sortedIndices.length > 0 ? (sortedIndices[sortedIndices.length - 1] + 1) : currentTurnIgnoreBeforeIndex;
                                     resetTurnState(nextIgnoreBeforeIndex);
+                                    resolveIteration();
+                                    return;
                                 }
                             } catch (e: any) {
                                 console.error('[Antigravity Stream] Data processing error:', e.message);

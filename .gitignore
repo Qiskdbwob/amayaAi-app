@@ -195,3 +195,5 @@ credentials/
 amaya-remote-extension/amaya-remote-0.2.0.vsix
 amaya-remote-*.vsix
 *.vsix
+app/nul
+nul

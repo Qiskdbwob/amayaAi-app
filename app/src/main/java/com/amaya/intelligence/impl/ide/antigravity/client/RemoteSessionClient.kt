@@ -14,6 +14,7 @@ import org.json.JSONObject
 import java.net.URI
 import java.util.ArrayDeque
 import com.amaya.intelligence.domain.models.ConnectionState
+import com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog
 
 /**
  * WebSocket client that connects to Antigravity IDE extension server.
@@ -128,6 +129,7 @@ class RemoteSessionClient @Inject constructor(
             override fun onOpen(handshakedata: ServerHandshake?) {
                 if (this@RemoteSessionClient.wsClient != this) return
                 android.util.Log.i("RemoteSessionClient", "WebSocket onOpen: $ip:$port")
+                AntigravityRemoteDebugLog.connection("OPEN ip=$ip port=$port reconnect=$isReconnect lastSeq=$lastSeqId serverSession=${lastServerSessionId ?: "-"}")
                 
                 _connectionState.value = ConnectionState.CONNECTED
                 _serverInfo.value = "$ip:$port"
@@ -138,7 +140,11 @@ class RemoteSessionClient @Inject constructor(
                 reconnectDelay = INITIAL_RECONNECT_DELAY
                 
                 flushPendingCommands()
-                forceResync(resetSequence = true)
+                // Keep seq cursor across reconnects to the same extension server. If the
+                // extension restarted, the next inbound serverSessionId change resets it
+                // before dedupe, so we still recover cleanly without replaying old stream
+                // events from the same server session.
+                forceResync(resetSequence = false)
             }
 
             override fun onMessage(message: String?) {
@@ -152,6 +158,7 @@ class RemoteSessionClient @Inject constructor(
                     return
                 }
                 android.util.Log.w("RemoteSessionClient", "WebSocket onClose: code=$code, reason=$reason, remote=$remote, manual=$isManualDisconnect")
+                AntigravityRemoteDebugLog.connection("CLOSE code=$code reason=${reason ?: "-"} remote=$remote manual=$isManualDisconnect lastSeq=$lastSeqId")
 
                 _connectionState.value = ConnectionState.DISCONNECTED
                 runCatching { RemoteSessionForegroundService.stop(appContext) }
@@ -165,6 +172,7 @@ class RemoteSessionClient @Inject constructor(
             override fun onError(ex: Exception?) {
                 if (this@RemoteSessionClient.wsClient != this) return
                 android.util.Log.e("RemoteSessionClient", "WebSocket onError: ${ex?.message}")
+                AntigravityRemoteDebugLog.connection("ERROR ${ex?.message ?: "unknown"}")
                 _errorMessage.value = "Connection error: ${ex?.message ?: "unknown"}"
             }
         }
@@ -184,6 +192,14 @@ class RemoteSessionClient @Inject constructor(
             if (type != "text_delta" && type != "stream_progress" && type != "tool_activity") {
                 android.util.Log.v("RemoteSessionClient", "Received message: $type (seq=${json.optInt("seqId", -1)})")
             }
+            AntigravityRemoteDebugLog.rawInbound(
+                type = type,
+                seqId = json.optInt("seqId", -1),
+                conversationId = json.optJSONObject("data")?.optString("conversationId", "")?.takeIf { it.isNotBlank() }
+                    ?: json.optString("conversationId", "").takeIf { it.isNotBlank() },
+                serverSessionId = json.optNullableString("serverSessionId") ?: json.optNullableString("sessionId"),
+                payloadLength = message.length
+            )
 
             // Update session ID if present (check both serverSessionId and sessionId)
             val sid = json.optNullableString("serverSessionId") ?: json.optNullableString("sessionId")
@@ -206,6 +222,8 @@ class RemoteSessionClient @Inject constructor(
             if (seqId > lastSeqId) {
                 lastSeqId = seqId
                 persistSeqCursorIfNeeded(seqId, force = type == "stream_done" || type == "error")
+            } else if (seqId > 0) {
+                AntigravityRemoteDebugLog.connection("SEQ_NOT_ADVANCED type=$type seq=$seqId lastSeq=$lastSeqId")
             }
 
             // Handle Heartbeat
@@ -216,6 +234,7 @@ class RemoteSessionClient @Inject constructor(
 
             val event = parseEvent(json)
             if (event != null) {
+                AntigravityRemoteDebugLog.handlerNote("CLIENT_PARSED", AntigravityRemoteDebugLog.eventSummary(event))
                 updateForegroundStatus(event)
                 val cid = event.conversationId
                 if (cid != null) {
@@ -439,10 +458,30 @@ class RemoteSessionClient @Inject constructor(
         sendCommand("get_state")
     }
 
+    fun refreshAllState(conversationId: String? = null, workspacePath: String? = null) {
+        refreshState()
+        getModels()
+        getConversations()
+        getWorkspaces()
+        if (!conversationId.isNullOrBlank()) {
+            loadConversation(conversationId)
+        }
+        if (!workspacePath.isNullOrBlank()) {
+            getProjectFiles(workspacePath)
+        }
+    }
+
     fun forceResync(resetSequence: Boolean = true) {
         if (resetSequence) {
             lastSeqId = 0
             prefs?.edit()?.putInt(KEY_LAST_SEQ_ID, 0)?.apply()
+        } else if (lastSeqId > 0) {
+            sendRawMessage(
+                JSONObject().apply {
+                    put("action", "get_events_since")
+                    put("data", JSONObject().put("lastSeqId", lastSeqId))
+                }.toString()
+            )
         }
         sendCommand("get_state")
         getModels()
@@ -494,8 +533,10 @@ class RemoteSessionClient @Inject constructor(
 
     private fun sendRawMessage(payload: String, queueIfDisconnected: Boolean = true) {
         val client = wsClient
+        val action = extractAction(payload)
         if (client != null && client.isOpen) {
             try {
+                AntigravityRemoteDebugLog.rawOutbound(action ?: "raw", connected = true, queued = false, payloadLength = payload.length)
                 client.send(payload)
                 return
             } catch (_: Exception) {
@@ -503,6 +544,7 @@ class RemoteSessionClient @Inject constructor(
         }
 
         if (queueIfDisconnected) {
+            AntigravityRemoteDebugLog.rawOutbound(action ?: "raw", connected = false, queued = true, payloadLength = payload.length)
             enqueuePendingCommand(payload)
         }
     }
@@ -526,6 +568,7 @@ class RemoteSessionClient @Inject constructor(
             }
         }
         pendingCommands.addLast(payload)
+        AntigravityRemoteDebugLog.queue(action, pendingCommands.size)
     }
 
     private fun extractAction(payload: String): String? {
@@ -541,7 +584,8 @@ class RemoteSessionClient @Inject constructor(
             action == "get_models" ||
             action == "get_conversations" ||
             action == "get_workspaces" ||
-            action == "get_project_files"
+            action == "get_project_files" ||
+            action == "load_conversation"
     }
 
     private fun flushPendingCommands() {
@@ -629,6 +673,7 @@ class RemoteSessionClient @Inject constructor(
                 data ?: return null
                 RemoteEvent.ToolCallResult(
                     toolCallId = data.optString("toolCallId", ""),
+                    name = data.optNullableString("name"),
                     result = data.optString("result", ""),
                     isError = data.optBoolean("isError", false),
                     seqId = seqId,
@@ -1103,6 +1148,7 @@ sealed class RemoteEvent {
 
     data class ToolCallResult(
         val toolCallId: String,
+        val name: String? = null,
         val result: String,
         val isError: Boolean,
         override val seqId: Int = 0,

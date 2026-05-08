@@ -24,6 +24,7 @@ export function extractToolExecutionMetadata(step: TrajectoryStep, fallbackIndex
     };
     if (info.trajectoryId) metadata.trajectoryId = info.trajectoryId;
     if (info.cascadeId) metadata.cascadeId = info.cascadeId;
+    if (step.metadata?.createdAt) metadata.createdAt = String(step.metadata.createdAt);
 
     if (step.type === ANTIGRAVITY_STEP_TYPES.runCommand && step.runCommand) {
         metadata.isTerminal = 'true';
@@ -63,6 +64,20 @@ export function mergeMessageMetadata(target: Record<string, string> | undefined,
 
     if (info.trajectoryId) merged.trajectoryId = info.trajectoryId;
     if (info.cascadeId) merged.cascadeId = info.cascadeId;
+
+    const createdAt = step.metadata?.createdAt;
+    if (createdAt) {
+        const createdAtString = String(createdAt);
+        const existingFirst = merged.firstCreatedAt || merged.createdAt || '';
+        const existingLast = merged.lastCreatedAt || merged.createdAt || '';
+        if (!existingFirst || compareTimestampStrings(createdAtString, existingFirst) < 0) {
+            merged.firstCreatedAt = createdAtString;
+            if (!merged.createdAt) merged.createdAt = createdAtString;
+        }
+        if (!existingLast || compareTimestampStrings(createdAtString, existingLast) > 0) {
+            merged.lastCreatedAt = createdAtString;
+        }
+    }
 
     return merged;
 }
@@ -120,10 +135,13 @@ export function getToolResult(step: TrajectoryStep): string {
     const toolData = (step as any)[camelKey];
     if (!toolData) return 'Success';
 
-    if (type === ANTIGRAVITY_STEP_TYPES.runCommand) {
+    if (type === ANTIGRAVITY_STEP_TYPES.runCommand || type === 'CORTEX_STEP_TYPE_COMMAND_STATUS') {
         const candidate = (
             toolData.combinedOutput?.full ??
+            toolData.combined?.full ??
+            toolData.delta?.full ??
             toolData.rawDebugOutput ??
+            toolData.rawOutput ??
             toolData.output ??
             toolData.stdout ??
             toolData.stderr ??
@@ -148,7 +166,7 @@ export function getToolResult(step: TrajectoryStep): string {
     if (type === ANTIGRAVITY_STEP_TYPES.viewFile) return toolData.content || 'File read successfully';
     if (type === ANTIGRAVITY_STEP_TYPES.listDirectory) return toolData.output || 'Directory listed';
     if (type === ANTIGRAVITY_STEP_TYPES.grepSearch) return toolData.output || 'Search complete';
-    if (type === ANTIGRAVITY_STEP_TYPES.findByName) return toolData.output || 'Files found';
+    if (type === ANTIGRAVITY_STEP_TYPES.findByName || type === 'CORTEX_STEP_TYPE_FIND') return toolData.rawOutput || toolData.output || 'Files found';
     if (type === ANTIGRAVITY_STEP_TYPES.codeAction) return 'File updated';
     if (type === ANTIGRAVITY_STEP_TYPES.replaceFileContent) {
         const tc = toolData.TargetContent || '';
@@ -167,4 +185,11 @@ export function getToolResult(step: TrajectoryStep): string {
     if (type === ANTIGRAVITY_STEP_TYPES.notifyUser) return toolData.Message || 'User notified';
 
     return toolData.output || toolData.content || toolData.report || toolData.result || toolData.summary || 'Completed';
+}
+
+function compareTimestampStrings(a: string, b: string): number {
+    const aMs = Date.parse(a);
+    const bMs = Date.parse(b);
+    if (!Number.isNaN(aMs) && !Number.isNaN(bMs)) return aMs - bMs;
+    return a.localeCompare(b);
 }

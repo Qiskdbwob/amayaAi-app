@@ -52,7 +52,12 @@ export class MessageLifecycleController {
             if (now - this.lastAutoSyncAt < 10000) return;
             if (now - this.deps.getLastUserSendAt() < 3000) return;
 
-            let activeId = this.deps.api.getLastActiveSessionId() || this.deps.state.activeSessionId;
+            const streamingStateId = this.deps.streamOrchestrator.getStreamingSessionIds()[0];
+            const attachedId = this.deps.streamOrchestrator.getAttachedSessionIds()[0];
+            let activeId = streamingStateId
+                || attachedId
+                || this.deps.state.activeSessionId
+                || this.deps.api.getLastActiveSessionId();
             if (!activeId && now - this.lastMetadataCheckAt > 10000) {
                 this.lastMetadataCheckAt = now;
                 try {
@@ -66,6 +71,15 @@ export class MessageLifecycleController {
 
             if (!activeId) return;
             if (this.deps.streamOrchestrator.isStreamAttached(activeId)) return;
+
+            this.lastAutoSyncAt = now;
+            const hasActiveStep = await this.hasActiveTrajectoryStep(activeId);
+            if (!hasActiveStep) {
+                if (streamingStateId === activeId) {
+                    this.deps.streamOrchestrator.setStreamingState(activeId, false, false);
+                }
+                return;
+            }
 
             if (activeId === this.lastAutoAttachSessionId && now - this.lastAutoAttachAt < 15000) return;
             this.lastAutoAttachSessionId = activeId;
@@ -87,6 +101,22 @@ export class MessageLifecycleController {
         if (this.autoAttachInterval) {
             clearInterval(this.autoAttachInterval);
             this.autoAttachInterval = null;
+        }
+    }
+
+    private async hasActiveTrajectoryStep(sessionId: string): Promise<boolean> {
+        try {
+            const steps = await Promise.race([
+                this.deps.api.getSessionTrajectory(sessionId),
+                new Promise<any[]>((resolve) => setTimeout(() => resolve([]), 1500)),
+            ]);
+            if (!Array.isArray(steps)) return false;
+            return steps.some((step) => {
+                const status = String(step?.status || '').toUpperCase();
+                return status.includes('RUNNING') || status.includes('GENERATING') || status.includes('PENDING');
+            });
+        } catch {
+            return false;
         }
     }
 

@@ -26,6 +26,7 @@ object AntigravityMessageMapper {
 
         messages.forEachIndexed { index, msg ->
             val role = if (msg.role == "assistant") MessageRole.ASSISTANT else MessageRole.USER
+            val baseMetadata = msg.metadata + mapOf("source" to "remote")
             val mappedRemoteTools = msg.toolExecutions.map { it.toToolExecution() }.toMutableList()
             
             val hasThinkingField = !msg.thinking.isNullOrBlank()
@@ -79,14 +80,33 @@ object AntigravityMessageMapper {
                 msgSteps.add(MessageStep.Text(id = textId, content = msg.content))
             }
 
+            val finalizedMetadata = AntigravityTimelineMetadata.finalizedMetadata(
+                metadata = baseMetadata,
+                role = role,
+                isStreaming = isStreaming,
+                steps = msgSteps
+            )
+            val messageTimestamp = AntigravityTimelineMetadata.messageTimestamp(finalizedMetadata)
+
             if (currentUiMessage != null && currentUiMessage!!.role == role && role == MessageRole.ASSISTANT) {
-                // Group contiguous assistant chunks into one cohesive chat bubble
+                // Group contiguous assistant chunks into one cohesive chat bubble while preserving
+                // step ranges and timing metadata for the work-summary UI.
                 val combinedContent = if (currentUiMessage!!.content.isBlank()) msg.content else if (msg.content.isBlank()) currentUiMessage!!.content else "${currentUiMessage!!.content}\n\n${msg.content}"
+                val combinedSteps = currentUiMessage!!.steps + msgSteps
+                val mergedMetadata = AntigravityTimelineMetadata.finalizedMetadata(
+                    metadata = AntigravityTimelineMetadata.mergeMetadata(currentUiMessage!!.metadata, finalizedMetadata),
+                    role = role,
+                    isStreaming = isStreaming,
+                    steps = combinedSteps
+                )
                 currentUiMessage = currentUiMessage!!.copy(
                     content = combinedContent,
+                    intent = currentUiMessage!!.intent ?: msg.intent,
                     toolExecutions = currentUiMessage!!.toolExecutions + mappedRemoteTools,
-                    steps = currentUiMessage!!.steps + msgSteps,
-                    attachments = currentUiMessage!!.attachments + (msg.attachments ?: emptyList())
+                    steps = combinedSteps,
+                    metadata = mergedMetadata,
+                    timestamp = minOf(currentUiMessage!!.timestamp, messageTimestamp),
+                    attachments = currentUiMessage!!.attachments + msg.attachments
                 )
             } else {
                 if (currentUiMessage != null) {
@@ -99,7 +119,8 @@ object AntigravityMessageMapper {
                     thinking = null,
                     isThinking = false,
                     intent = msg.intent,
-                    metadata = msg.metadata + mapOf("source" to "remote"),
+                    metadata = finalizedMetadata,
+                    timestamp = messageTimestamp,
                     toolExecutions = mappedRemoteTools,
                     steps = msgSteps,
                     attachments = msg.attachments
@@ -133,6 +154,14 @@ object AntigravityMessageMapper {
 
 
     
+    fun preserveRemoteLifecycleMetadata(local: List<UiMessage>, incoming: List<UiMessage>): List<UiMessage> {
+        return AntigravityTimelineMetadata.preserveLifecycle(local, incoming)
+    }
+
+    fun mergeStreamingTurn(local: List<UiMessage>, incoming: List<UiMessage>): List<UiMessage> {
+        return AntigravityTimelineMetadata.mergeStreamingTurn(local, incoming)
+    }
+
     fun normalizeUserText(text: String): String {
         return text.replace(Regex("\\s+"), " ").trim()
     }

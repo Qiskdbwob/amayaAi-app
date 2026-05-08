@@ -43,6 +43,8 @@ export class AntigravityStreamStateController {
     public static computeProgressState(localSteps: Map<number, any>, minStepIndex: number): {
         anyStillProcessing: boolean;
         hasCheckpointDone: boolean;
+        hasTerminalStepDone: boolean;
+        hasTerminalPlannerDone: boolean;
         lastPlannerStep: any | undefined;
     } {
         const filtered = Array.from(localSteps.entries()).filter(([idx]) => idx >= minStepIndex);
@@ -56,11 +58,20 @@ export class AntigravityStreamStateController {
             s.type === ANTIGRAVITY_STEP_TYPES.checkpoint && s.status === ANTIGRAVITY_STEP_STATUS_VALUES.done
         );
 
+        const hasTerminalStepDone = filtered.some(([_, s]) =>
+            (s.type === ANTIGRAVITY_STEP_TYPES.notifyUser || s.type === ANTIGRAVITY_STEP_TYPES.checkpoint) &&
+            s.status === ANTIGRAVITY_STEP_STATUS_VALUES.done
+        );
+
         const lastPlannerStep = filtered
             .map(([_, s]) => s)
             .reverse()
             .find(s => s.type === ANTIGRAVITY_STEP_TYPES.plannerResponse);
 
-        return { anyStillProcessing, hasCheckpointDone, lastPlannerStep };
+        const hasTerminalPlannerDone = !!lastPlannerStep &&
+            lastPlannerStep.status === ANTIGRAVITY_STEP_STATUS_VALUES.done &&
+            lastPlannerStep.plannerResponse?.stopReason === 'STOP_REASON_STOP_PATTERN';
+
+        return { anyStillProcessing, hasCheckpointDone, hasTerminalStepDone, hasTerminalPlannerDone, lastPlannerStep };
     }
 }

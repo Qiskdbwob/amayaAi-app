@@ -50,17 +50,22 @@ class WorkspaceEventHandler(
     
     fun handleActiveConversation(event: RemoteEvent.ActiveConversation, currentConversationId: String?, stateManager: StreamingStateManager) {
         android.util.Log.i("WorkspaceEventHandler", "ActiveConversation event: ${event.conversationId} (current: $currentConversationId)")
+        com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerNote("ACTIVE_CONVERSATION", "event=${event.conversationId} current=${currentConversationId ?: "-"}")
         
         if (currentConversationId != event.conversationId) {
+            com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerNote("ACTIVE_CONVERSATION", "switch clear stateManager current=${currentConversationId ?: "-"} next=${event.conversationId}")
             stateManager.clearAll()
             onUiStateUpdate { state -> state.copy(
                 conversationId = event.conversationId,
                 isLoading = true,
-                isStreaming = false,
+                isStreaming = state.isStreaming,
                 error = null,
                 serverIp = event.serverIp ?: state.serverIp
             ) }
-            client.loadConversation(event.conversationId)
+            // Do not immediately echo load_conversation back to the extension here.
+            // active_conversation is commonly sent right before state_sync during
+            // reconnect/get_state. Sending a nested load can race and replace the
+            // in-flight streaming turn with an older trajectory snapshot.
             refreshConversationsList("active_conversation", force = true)
         }
     }
@@ -90,6 +95,7 @@ class WorkspaceEventHandler(
         if (!event.conversationId.isNullOrBlank()) {
             onUiStateUpdate { state -> state.copy(conversationId = event.conversationId) }
         }
+        com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerNote("NEW_CONVERSATION", "cid=${event.conversationId ?: "-"} clear messages")
         stateManager.clearAll()
         onUiStateUpdate { state -> state.copy(
             messages = emptyList(),

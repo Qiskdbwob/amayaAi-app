@@ -105,7 +105,27 @@ export class ConversationStateController {
         await this.handleGetModels(ws);
 
         let messages: any[] = [];
-        let activeId = this.deps.state.activeSessionId;
+        let activeId: string | null = null;
+
+        const streamingCandidates = this.deps.streamOrchestrator.getStreamingSessionIds();
+        if (streamingCandidates.length > 0) {
+            activeId = streamingCandidates[0];
+            this.deps.state.activeSessionId = activeId;
+            console.log(`[Amaya MessageHandler] Using streaming conversation as active: ${activeId}`);
+        }
+
+        if (!activeId) {
+            const attachedCandidates = this.deps.streamOrchestrator.getAttachedSessionIds();
+            if (attachedCandidates.length > 0) {
+                activeId = attachedCandidates[0];
+                this.deps.state.activeSessionId = activeId;
+                console.log(`[Amaya MessageHandler] Using attached stream conversation as active: ${activeId}`);
+            }
+        }
+
+        if (!activeId) {
+            activeId = this.deps.state.activeSessionId;
+        }
 
         if (!activeId) {
             const lastActive = this.deps.api.getLastActiveSessionId();
@@ -113,18 +133,6 @@ export class ConversationStateController {
                 activeId = lastActive;
                 this.deps.state.activeSessionId = lastActive;
                 console.log(`[Amaya MessageHandler] Restored active conversation from last active session: ${activeId}`);
-            }
-        }
-
-        if (!activeId) {
-            const streamingCandidates: string[] = [];
-            for (const id of this.deps.streamOrchestrator.getStreamingSessionIds()) {
-                streamingCandidates.push(id);
-            }
-            if (streamingCandidates.length > 0) {
-                activeId = streamingCandidates[0];
-                this.deps.state.activeSessionId = activeId;
-                console.log(`[Amaya MessageHandler] Using streaming conversation as active: ${activeId}`);
             }
         }
 

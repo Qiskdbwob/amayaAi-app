@@ -11,8 +11,10 @@ export function stepTypeToToolName(stepType: string): string {
         'list_dir': 'list_files',
         'code_action': 'write_file',
         'run_command': 'run_shell',
+        'command_status': 'check_status_terminal',
         'grep_search': 'find_files',
         'grep': 'find_files',
+        'find': 'find_files',
         'find_by_name': 'find_files',
         'search_files': 'find_files',
         'task_boundary': 'task_boundary',
@@ -80,9 +82,14 @@ export function remapToolArgs(name: string, args: Record<string, any>): Record<s
 
     if (normalizedName === 'run_shell') {
         remapped.command = takeValue('CommandLine', 'commandLine', 'submittedCommandLine', 'proposedCommandLine', 'cmd', 'command') || remapped.command;
+    } else if (normalizedName === 'check_status_terminal') {
+        remapped.commandId = takeValue('CommandId', 'commandId', 'ProcessID', 'processId', 'PID') || remapped.commandId;
+        remapped.waitSeconds = takeValue('WaitDurationSeconds', 'waitDurationSeconds', 'WaitTime', 'waitTime', 'waitSeconds') || remapped.waitSeconds || '0';
+        remapped.maxChars = takeValue('OutputCharacterCount', 'outputCharacterCount', 'MaxChars', 'maxChars') || remapped.maxChars;
     } else if (normalizedName === 'find_files') {
         remapped.pattern = takeValue('Pattern', 'pattern') || remapped.pattern;
         remapped.content = takeValue('Query', 'query', 'content') || remapped.content;
+        remapped.query = takeValue('Query', 'query', 'content', 'Pattern', 'pattern') || remapped.query;
     }
 
     remapped.details = args;
@@ -116,6 +123,7 @@ export function extractToolArgsFromStep(step: TrajectoryStep): Record<string, an
 
     if (step.type === ANTIGRAVITY_STEP_TYPES.viewFile && step.viewFile) {
         assignIfMissing('AbsolutePath', step.viewFile.absolutePath);
+        assignIfMissing('AbsolutePath', step.viewFile.absolutePathUri);
         assignIfMissing('AbsolutePath', step.viewFile.path);
         assignIfMissing('AbsolutePath', step.viewFile.filePath);
         assignIfMissing('AbsolutePath', step.viewFile.file);
@@ -136,11 +144,13 @@ export function extractToolArgsFromStep(step: TrajectoryStep): Record<string, an
 
     if (step.type === ANTIGRAVITY_STEP_TYPES.listDirectory && step.listDirectory) {
         assignIfMissing('DirectoryPath', step.listDirectory.directoryPath);
+        assignIfMissing('DirectoryPath', step.listDirectory.directoryPathUri);
         assignIfMissing('DirectoryPath', step.listDirectory.path);
     }
 
     if (step.type === ANTIGRAVITY_STEP_TYPES.grepSearch && step.grepSearch) {
         assignIfMissing('SearchPath', step.grepSearch.searchPath);
+        assignIfMissing('SearchPath', step.grepSearch.searchPathUri);
         assignIfMissing('Query', step.grepSearch.query);
     }
 
@@ -169,6 +179,7 @@ export function extractToolArgsFromStep(step: TrajectoryStep): Record<string, an
 
     if (toolName === 'read_file') {
         assignIfMissing('AbsolutePath', toolData.absolutePath);
+        assignIfMissing('AbsolutePath', toolData.absolutePathUri);
         assignIfMissing('AbsolutePath', toolData.path);
         assignIfMissing('AbsolutePath', toolData.filePath);
         assignIfMissing('AbsolutePath', toolData.file);
@@ -178,13 +189,19 @@ export function extractToolArgsFromStep(step: TrajectoryStep): Record<string, an
     if (toolName === 'write_file' || toolName === 'edit_file') {
         assignIfMissing('TargetFile', toolData.targetFile);
         assignIfMissing('TargetFile', toolData.absolutePath);
+        assignIfMissing('TargetFile', toolData.absolutePathUri);
         assignIfMissing('TargetFile', toolData.filePath);
         assignIfMissing('TargetFile', toolData.file);
         assignIfMissing('TargetFile', toolData.path);
+        assignIfMissing('Description', toolData.description);
+        assignIfMissing('TargetContent', toolData.targetContent);
+        assignIfMissing('ReplacementContent', toolData.replacementContent);
+        assignIfMissing('ReplacementChunks', toolData.replacementChunks);
     }
 
     if (toolName === 'list_files') {
         assignIfMissing('DirectoryPath', toolData.directoryPath);
+        assignIfMissing('DirectoryPath', toolData.directoryPathUri);
         assignIfMissing('DirectoryPath', toolData.searchDirectory);
         assignIfMissing('DirectoryPath', toolData.path);
     }
@@ -192,11 +209,22 @@ export function extractToolArgsFromStep(step: TrajectoryStep): Record<string, an
     if (toolName === 'find_files') {
         assignIfMissing('SearchDirectory', toolData.searchDirectory);
         assignIfMissing('SearchPath', toolData.searchPath);
+        assignIfMissing('SearchPath', toolData.searchPathUri);
         assignIfMissing('SearchPath', toolData.directoryPath);
+        assignIfMissing('SearchPath', toolData.directoryPathUri);
         assignIfMissing('SearchPath', toolData.path);
         assignIfMissing('Pattern', toolData.pattern);
         assignIfMissing('Query', toolData.query);
         assignIfMissing('Query', toolData.content);
+    }
+
+    if (toolName === 'check_status_terminal') {
+        assignIfMissing('CommandId', toolData.commandId);
+        assignIfMissing('CommandId', toolData.processId);
+        assignIfMissing('WaitDurationSeconds', toolData.waitDurationSeconds);
+        assignIfMissing('WaitDurationSeconds', toolData.waitTime);
+        assignIfMissing('OutputCharacterCount', toolData.outputCharacterCount);
+        assignIfMissing('status', toolData.status);
     }
 
     if (toolName === 'browser') {
@@ -228,6 +256,7 @@ export function isToolExecutionStep(stepType: string): boolean {
         ANTIGRAVITY_STEP_TYPES.knowledgeArtifacts,
         ANTIGRAVITY_STEP_TYPES.ephemeralMessage,
         ANTIGRAVITY_STEP_TYPES.checkpoint,
+        'CORTEX_STEP_TYPE_ERROR_MESSAGE',
     ];
     return !nonToolTypes.includes(stepType);
 }

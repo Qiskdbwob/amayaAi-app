@@ -78,7 +78,13 @@ private fun resolveToolCallHeaderText(
         return explicit ?: deriveThinkingTitle(execution.result) ?: "Thinking"
     }
 
-    if (!execution.isShellTool()) return uiMeta?.label ?: execution.name
+    if (!execution.isShellTool()) {
+        return uiMeta?.label?.takeIf { it.isNotBlank() }
+            ?: execution.arguments["path"]?.toString()?.substringAfterLast("/")?.substringAfterLast("\\")?.takeIf { it.isNotBlank() }
+            ?: execution.arguments["TargetFile"]?.toString()?.substringAfterLast("/")?.substringAfterLast("\\")?.takeIf { it.isNotBlank() }
+            ?: execution.arguments["command"]?.toString()?.takeIf { it.isNotBlank() }
+            ?: execution.name
+    }
 
     val command = execution.arguments["command"]?.toString()
         ?: execution.arguments["CommandLine"]?.toString()
@@ -90,7 +96,7 @@ private fun resolveToolCallHeaderText(
     return command
         ?.takeIf { it.isNotBlank() }
         ?.let { truncateTerminalHeaderCommand(it) }
-        ?: uiMeta?.label
+        ?: uiMeta?.label?.takeIf { it.isNotBlank() }
         ?: execution.name
 }
 
@@ -213,8 +219,13 @@ internal fun ToolCardContent(
     val isSubagent = execution.name == "invoke_subagents"
     val isWebSearch = execution.name == "web_search" || execution.name == "search_web" || execution.name == "websearch"
     val isMemoryManage = execution.name == "memory_manage"
-    val canExpand  = (execution.status == ToolStatus.SUCCESS || execution.status == ToolStatus.ERROR) &&
-        (execution.result != null || execution.children.isNotEmpty())
+    val canExpand = if (isThinkingCard) {
+        !execution.result.isNullOrBlank()
+    } else {
+        ((execution.status == ToolStatus.SUCCESS || execution.status == ToolStatus.ERROR) &&
+            (execution.result != null || execution.children.isNotEmpty() || execution.arguments.isNotEmpty())) ||
+            (execution.status == ToolStatus.RUNNING && execution.arguments.isNotEmpty())
+    }
     val showChildren = isSubagent && execution.children.isNotEmpty() &&
         (execution.status == ToolStatus.RUNNING || expanded)
 
@@ -281,7 +292,7 @@ internal fun ToolCardContent(
         (isWebSearch || !isGenericResult || hasInjectedPreview || isTerminal))
 
     val thinkingVisible = isThinkingCard && !execution.result.isNullOrBlank() && (execution.status == ToolStatus.RUNNING || expanded)
-    val hasResultDetails = expanded && !isSubagent && !isThinkingCard && execution.result != null
+    val hasResultDetails = expanded && !isSubagent && !isThinkingCard && (execution.result != null || execution.arguments.isNotEmpty())
     val hasSubagentResultDetails = expanded && isSubagent && execution.children.isEmpty() && execution.result != null
     val approvalSectionVisible = showApprovalActions && !approvalDismissed
     val headerText = resolveToolCallHeaderText(execution, uiMeta, showApprovalActions, approvalPending)

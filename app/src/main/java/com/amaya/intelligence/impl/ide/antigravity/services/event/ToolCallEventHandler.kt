@@ -15,11 +15,19 @@ class ToolCallEventHandler(
     private val onUiStateUpdate: ((ChatUiState) -> ChatUiState) -> Unit
 ) {
     fun handleToolCallStart(event: RemoteEvent.ToolCallStart, currentConversationId: String?): Boolean {
-        if (!isForActiveConversation(event.conversationId, currentConversationId)) return false
+        if (!isForActiveConversation(event.conversationId, currentConversationId)) {
+            com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerDrop("ToolStart", event.conversationId, currentConversationId)
+            return false
+        }
+        stateManager.setPhase(StreamingStateManager.StreamPhase.TOOL)
         
         val normalizedName = AntigravityToolMapper.mapToolName(event.name)
         val normalizedArgs = AntigravityToolMapper.mapToolArgs(event.name, event.arguments)
-        val uiMeta = AntigravityToolMapper.getUiMetadata(event.name, event.arguments)
+        val remoteMetadata = event.metadata + mapOf(
+            "source" to "remote",
+            "animateOnMount" to "true"
+        )
+        val uiMeta = AntigravityToolMapper.getUiMetadata(event.name, event.arguments, remoteMetadata)
         
         val status = when (event.status.uppercase()) {
             "PENDING", "WAITING", "STANDBY" -> ToolStatus.PENDING
@@ -34,21 +42,23 @@ class ToolCallEventHandler(
             name = normalizedName,
             arguments = normalizedArgs,
             status = status,
-            metadata = mapOf(
-                "source" to "remote",
-                "animateOnMount" to "true"
-            ),
+            metadata = remoteMetadata,
             uiMetadata = uiMeta
         )
         
         onUiStateUpdate { state ->
             val finalizedMsgs = finalizeRunningThinkingOnLastAssistant(state.messages)
             val updatedMsgs = updateToolInMessages(finalizedMsgs, event.toolCallId) { tool ->
+                val effectiveStatus = if ((tool.status == ToolStatus.SUCCESS || tool.status == ToolStatus.ERROR) && status == ToolStatus.RUNNING) {
+                    tool.status
+                } else {
+                    status
+                }
                 tool.copy(
                     name = normalizedName,
                     arguments = normalizedArgs,
-                    status = status,
-                    metadata = tool.metadata + ("source" to "remote"),
+                    status = effectiveStatus,
+                    metadata = tool.metadata + remoteMetadata,
                     uiMetadata = uiMeta
                 )
             } ?: run {
@@ -67,7 +77,11 @@ class ToolCallEventHandler(
     }
 
     fun handleToolActivity(event: RemoteEvent.ToolActivity, currentConversationId: String?): Boolean {
-        if (!isForActiveConversation(event.conversationId, currentConversationId)) return false
+        if (!isForActiveConversation(event.conversationId, currentConversationId)) {
+            com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerDrop("ToolActivity", event.conversationId, currentConversationId)
+            return false
+        }
+        stateManager.markStreamingActivity()
         if (!event.type.equals("terminal", ignoreCase = true)) return false
         val chunk = event.terminalData
         if (chunk.isBlank()) return true
@@ -80,13 +94,16 @@ class ToolCallEventHandler(
     }
     
     fun handleToolCallResult(event: RemoteEvent.ToolCallResult, currentConversationId: String?): Boolean {
-        if (!isForActiveConversation(event.conversationId, currentConversationId)) return false
+        if (!isForActiveConversation(event.conversationId, currentConversationId)) {
+            com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerDrop("ToolResult", event.conversationId, currentConversationId)
+            return false
+        }
+        stateManager.setPhase(StreamingStateManager.StreamPhase.TOOL)
         val extractedResult = AntigravityToolMapper.extractToolResult(event.result)
         
         onUiStateUpdate { state ->
-            val updatedMsgs = updateToolInMessages(state.messages, event.toolCallId) { tool ->
-                val isPlaceholder = extractedResult.trim().equals("done", ignoreCase = true) ||
-                    extractedResult.trim().equals("success", ignoreCase = true)
+            val transform: (ToolExecution) -> ToolExecution = { tool ->
+                val isPlaceholder = extractedResult.isGenericPlaceholderResult()
                 val hasStreamedOutput = !tool.result.isNullOrBlank()
 
                 tool.copy(
@@ -97,7 +114,13 @@ class ToolCallEventHandler(
                     },
                     status = if (event.isError) ToolStatus.ERROR else ToolStatus.SUCCESS
                 )
-            } ?: state.messages
+            }
+            val byId = updateToolInMessages(state.messages, event.toolCallId, transform)
+            val byName = if (byId == null) updateLatestCompatibleToolInMessages(state.messages, event.name, transform) else null
+            if (byId == null && byName == null) {
+                com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerNote("TOOL_RESULT_MISS", "id=${event.toolCallId} name=${event.name ?: "-"} messages=${state.messages.size}")
+            }
+            val updatedMsgs = byId ?: byName ?: state.messages
             state.copy(messages = updatedMsgs)
         }
         return true
@@ -179,24 +202,66 @@ class ToolCallEventHandler(
         toolCallId: String,
         update: (ToolExecution) -> ToolExecution
     ): List<UiMessage>? {
+        if (toolCallId.isBlank()) return null
         for (i in messages.indices.reversed()) {
             val msg = messages[i]
             val toolIdx = msg.toolExecutions.indexOfFirst { it.toolCallId == toolCallId }
             if (toolIdx != -1) {
-                val updatedTools = msg.toolExecutions.toMutableList()
-                val updatedTool = update(updatedTools[toolIdx])
-                updatedTools[toolIdx] = updatedTool
-                
-                val updatedSteps = msg.steps.map { step ->
-                    if (step is MessageStep.ToolCall && step.execution.toolCallId == toolCallId) {
-                        step.copy(execution = updatedTool)
-                    } else step
-                }
-                
-                return messages.toMutableList().apply { this[i] = msg.copy(toolExecutions = updatedTools, steps = updatedSteps) }
+                return updateToolAt(messages, i, toolIdx, update)
             }
         }
         return null
+    }
+
+    private fun updateLatestCompatibleToolInMessages(
+        messages: List<UiMessage>,
+        rawName: String?,
+        update: (ToolExecution) -> ToolExecution
+    ): List<UiMessage>? {
+        val normalizedName = rawName?.takeIf { it.isNotBlank() }?.let { AntigravityToolMapper.mapToolName(it) } ?: return null
+        for (i in messages.indices.reversed()) {
+            val msg = messages[i]
+            val toolIdx = msg.toolExecutions.indexOfLast { tool ->
+                tool.name.equals(normalizedName, ignoreCase = true) &&
+                    (tool.status == ToolStatus.RUNNING || tool.status == ToolStatus.PENDING)
+            }
+            if (toolIdx != -1) {
+                return updateToolAt(messages, i, toolIdx, update)
+            }
+        }
+        return null
+    }
+
+    private fun updateToolAt(
+        messages: List<UiMessage>,
+        messageIndex: Int,
+        toolIndex: Int,
+        update: (ToolExecution) -> ToolExecution
+    ): List<UiMessage> {
+        val msg = messages[messageIndex]
+        val updatedTools = msg.toolExecutions.toMutableList()
+        val oldTool = updatedTools[toolIndex]
+        val updatedTool = update(oldTool)
+        updatedTools[toolIndex] = updatedTool
+
+        val updatedSteps = msg.steps.map { step ->
+            if (step is MessageStep.ToolCall && step.execution.toolCallId == oldTool.toolCallId) {
+                step.copy(execution = updatedTool)
+            } else step
+        }
+
+        return messages.toMutableList().apply { this[messageIndex] = msg.copy(toolExecutions = updatedTools, steps = updatedSteps) }
+    }
+
+    private fun String.isGenericPlaceholderResult(): Boolean {
+        val normalized = trim().lowercase()
+        if (normalized.isBlank()) return true
+        return normalized == "done" ||
+            normalized == "success" ||
+            normalized == "completed" ||
+            normalized == "completed successfully" ||
+            normalized == "file updated" ||
+            normalized == "file written"
     }
 
     private fun appendTerminalChunkToLatestRunningShellTool(messages: List<UiMessage>, chunk: String): List<UiMessage> {

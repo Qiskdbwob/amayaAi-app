@@ -5,6 +5,7 @@ import com.amaya.intelligence.domain.models.*
 import com.amaya.intelligence.impl.ide.antigravity.AntigravityProtocol
 import com.amaya.intelligence.impl.ide.antigravity.client.*
 import com.amaya.intelligence.impl.ide.antigravity.services.mapper.AntigravityMessageMapper
+import com.amaya.intelligence.impl.ide.antigravity.services.mapper.AntigravityTimelineMetadata
 import com.amaya.intelligence.impl.ide.antigravity.services.streaming.StreamingStateManager
 
 /**
@@ -25,7 +26,10 @@ class StreamingEventHandler(
     private var pendingTextStepIndex: String? = null
 
     fun handleTextDelta(event: RemoteEvent.TextDelta, currentConversationId: String?): Boolean {
-        if (!isForActiveConversation(event.conversationId, currentConversationId)) return false
+        if (!isForActiveConversation(event.conversationId, currentConversationId)) {
+            com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerDrop("TextDelta", event.conversationId, currentConversationId)
+            return false
+        }
 
         stateManager.setPhase(StreamingStateManager.StreamPhase.TEXT)
         val textLength = if (event.stepIndex != null) {
@@ -40,14 +44,21 @@ class StreamingEventHandler(
         val now = System.currentTimeMillis()
         val shouldEmit = now - lastTextUiEmitAt >= TEXT_UI_EMIT_INTERVAL_MS ||
             kotlin.math.abs(textLength - lastTextUiEmitLength) >= TEXT_UI_EMIT_MIN_CHARS
-        if (!shouldEmit) return true
+        if (!shouldEmit) {
+            com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerNote("TEXT_DELTA_BUFFER", "len=$textLength step=${event.stepIndex ?: "-"} pendingEmit=false")
+            return true
+        }
 
+        com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerNote("TEXT_DELTA_EMIT", "len=$textLength step=${event.stepIndex ?: "-"}")
         emitPendingText(forceNewBubbleAfterThinking = true)
         return true
     }
     
     fun handleAiThinking(event: RemoteEvent.AiThinking, currentConversationId: String?): Boolean {
-        if (!isForActiveConversation(event.conversationId, currentConversationId)) return false
+        if (!isForActiveConversation(event.conversationId, currentConversationId)) {
+            com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerDrop("AiThinking", event.conversationId, currentConversationId)
+            return false
+        }
         
         stateManager.setPhase(StreamingStateManager.StreamPhase.THINKING)
         
@@ -73,10 +84,15 @@ class StreamingEventHandler(
     }
     
     fun handleStreamDone(event: RemoteEvent.StreamDone, currentConversationId: String?): Boolean {
-        if (!isForActiveConversation(event.conversationId, currentConversationId)) return false
+        if (!isForActiveConversation(event.conversationId, currentConversationId)) {
+            com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerDrop("StreamDone", event.conversationId, currentConversationId)
+            return false
+        }
+        com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerNote("STREAM_DONE", "beforePendingText=${pendingTextContent?.length ?: stateManager.currentText.length} step=${pendingTextStepIndex ?: "-"}")
         emitPendingText(forceNewBubbleAfterThinking = true)
         onUiStateUpdate { state ->
-            val finalizedMsgs = markLastAssistantCompleted(finalizeRunningThinkingOnLastAssistant(state.messages))
+            val mergedTurn = mergeTrailingAssistantTurn(state.messages)
+            val finalizedMsgs = markLastAssistantCompleted(finalizeRunningThinkingOnLastAssistant(mergedTurn))
             state.copy(isStreaming = false, isLoading = false, messages = finalizedMsgs)
         }
         pendingTextContent = null
@@ -118,6 +134,35 @@ class StreamingEventHandler(
         return messages.toMutableList().apply {
             this[idx] = msg.copy(metadata = msg.metadata + ("completedAt" to System.currentTimeMillis().toString()))
         }
+    }
+
+    private fun mergeTrailingAssistantTurn(messages: List<UiMessage>): List<UiMessage> {
+        val lastUserIndex = messages.indexOfLast { it.role == MessageRole.USER }
+        val tailStart = lastUserIndex + 1
+        if (tailStart < 0 || tailStart >= messages.size) return messages
+
+        val tail = messages.drop(tailStart)
+        if (tail.count { it.role == MessageRole.ASSISTANT } <= 1) return messages
+        if (tail.any { it.role != MessageRole.ASSISTANT }) return messages
+
+        val merged = tail.reduce { acc, msg ->
+            val combinedContent = when {
+                acc.content.isBlank() -> msg.content
+                msg.content.isBlank() -> acc.content
+                else -> "${acc.content}\n\n${msg.content}"
+            }
+            acc.copy(
+                content = combinedContent,
+                intent = acc.intent ?: msg.intent,
+                timestamp = minOf(acc.timestamp, msg.timestamp),
+                toolExecutions = acc.toolExecutions + msg.toolExecutions,
+                steps = acc.steps + msg.steps,
+                attachments = acc.attachments + msg.attachments,
+                metadata = AntigravityTimelineMetadata.mergeMetadata(acc.metadata, msg.metadata)
+            )
+        }
+
+        return messages.take(tailStart) + merged
     }
 
     private fun thinkingIsRunning(text: String, fallback: Boolean): Boolean {
@@ -214,8 +259,14 @@ class StreamingEventHandler(
             updatedSteps.add(newText)
         }
 
+        val mergedContent = if (stepIndex != null) {
+            mergeTextFragments((listOf(msg.content) + updatedSteps.filterIsInstance<MessageStep.Text>().map { it.content }))
+        } else {
+            content
+        }
+
         updated[idx] = msg.copy(
-            content = content,
+            content = mergedContent,
             thinking = thinking,
             isThinking = isThinking,
             thinkingStartedAt = thinkingStartedAt,
@@ -223,6 +274,24 @@ class StreamingEventHandler(
         )
         return updated
     }
+
+    private fun mergeTextFragments(fragments: List<String>): String {
+        val cleaned = fragments
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        if (cleaned.isEmpty()) return ""
+        val result = mutableListOf<String>()
+        cleaned.forEach { candidate ->
+            val candidateNorm = candidate.normalizedForMerge()
+            if (result.any { existing -> existing.normalizedForMerge().contains(candidateNorm) }) return@forEach
+            val removeContained = result.filter { existing -> candidateNorm.contains(existing.normalizedForMerge()) }
+            result.removeAll(removeContained.toSet())
+            result += candidate
+        }
+        return result.joinToString("\n\n")
+    }
+
+    private fun String.normalizedForMerge(): String = replace(Regex("\\s+"), " ").trim()
     
     private fun upsertThinkingToolOnLastAssistant(
         messages: List<UiMessage>,
