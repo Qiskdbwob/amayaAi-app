@@ -7,18 +7,28 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface ConversationDao {
     @Query("""
-        SELECT id, title, workspace_path, created_at, updated_at, '' AS messages_json
+        SELECT id, title, workspace_path, created_at, updated_at, '' AS messages_json, scope
         FROM conversations
+        WHERE scope = 'local'
         ORDER BY updated_at DESC
     """)
     fun getAllConversations(): Flow<List<ConversationEntity>>
 
     @Query("""
-        SELECT id, title, workspace_path, created_at, updated_at, '' AS messages_json
+        SELECT id, title, workspace_path, created_at, updated_at, '' AS messages_json, scope
         FROM conversations
+        WHERE scope = 'local'
         ORDER BY updated_at DESC
     """)
     fun observeAllConversations(): Flow<List<ConversationEntity>>
+
+    @Query("""
+        SELECT id, title, workspace_path, created_at, updated_at, '' AS messages_json, scope
+        FROM conversations
+        WHERE scope = :scope
+        ORDER BY updated_at DESC
+    """)
+    fun observeConversationsByScope(scope: String): Flow<List<ConversationEntity>>
 
     @Query("SELECT * FROM conversations WHERE id = :id")
     suspend fun getConversationById(id: Long): ConversationEntity?

@@ -8,6 +8,7 @@ import com.amaya.intelligence.domain.models.ProjectFileEntry
 import com.amaya.intelligence.domain.models.RemoteWorkspace
 import com.amaya.intelligence.di.ApplicationScope
 import com.amaya.intelligence.impl.local.LocalIntelligenceService
+import com.amaya.intelligence.impl.bridge.windows.services.WindowsBridgeIntelligenceService
 import com.amaya.intelligence.impl.ide.antigravity.services.AntigravityIntelligenceService
 import dagger.Module
 import dagger.Provides
@@ -32,6 +33,11 @@ object IntelligenceModule {
     fun provideLocalService(service: LocalIntelligenceService): IntelligenceService = service
 
     @Provides
+    @Named("windows_bridge")
+    @Singleton
+    fun provideWindowsBridgeService(service: WindowsBridgeIntelligenceService): IntelligenceService = service
+
+    @Provides
     @Named("antigravity")
     @Singleton
     fun provideAntigravityService(service: AntigravityIntelligenceService): IntelligenceService = service
@@ -46,14 +52,15 @@ object IntelligenceModule {
         sessionManager: IntelligenceSessionManager,
         @ApplicationScope appScope: CoroutineScope,
         @Named("local") localService: IntelligenceService,
+        @Named("windows_bridge") windowsBridgeService: IntelligenceService,
         @Named("antigravity") antigravityService: IntelligenceService
     ): IntelligenceService {
         return object : IntelligenceService {
             private val active: IntelligenceService
-                get() = if (sessionManager.currentMode.value == IntelligenceSessionManager.SessionMode.LOCAL) {
-                    localService
-                } else {
-                    antigravityService
+                get() = when (sessionManager.currentMode.value) {
+                    IntelligenceSessionManager.SessionMode.LOCAL -> localService
+                    IntelligenceSessionManager.SessionMode.WINDOWS_BRIDGE -> windowsBridgeService
+                    else -> antigravityService
                 }
 
             @OptIn(ExperimentalCoroutinesApi::class)
@@ -63,10 +70,10 @@ object IntelligenceModule {
             ): StateFlow<T> {
                 return sessionManager.currentMode
                     .flatMapLatest { mode ->
-                        val service = if (mode == IntelligenceSessionManager.SessionMode.LOCAL) {
-                            localService
-                        } else {
-                            antigravityService
+                        val service = when (mode) {
+                            IntelligenceSessionManager.SessionMode.LOCAL -> localService
+                            IntelligenceSessionManager.SessionMode.WINDOWS_BRIDGE -> windowsBridgeService
+                            else -> antigravityService
                         }
                         selector(service)
                     }

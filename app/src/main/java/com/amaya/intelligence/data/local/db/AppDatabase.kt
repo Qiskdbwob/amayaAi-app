@@ -11,6 +11,7 @@ import com.amaya.intelligence.data.local.dao.*
 import com.amaya.intelligence.data.local.entity.*
 import com.amaya.intelligence.data.local.db.migrations.MIGRATION_5_6
 import com.amaya.intelligence.data.local.db.migrations.MIGRATION_6_7
+import com.amaya.intelligence.data.local.db.migrations.MIGRATION_7_8
 
 @TypeConverters(CronJobTypeConverters::class)
 @Database(
@@ -44,7 +45,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun agentProfileDao(): AgentProfileDao
 
     companion object {
-        const val DATABASE_VERSION = 7
+        const val DATABASE_VERSION = 8
         private const val DATABASE_NAME = "Amaya_db"
         private const val TAG = "AppDatabase"
 
@@ -75,7 +76,7 @@ abstract class AppDatabase : RoomDatabase() {
                         Log.d(TAG, "Database opened: version ${db.version}")
                     }
                 })
-                .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                 .build()
         }
     }

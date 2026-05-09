@@ -20,6 +20,16 @@ proguard/
 *.log
 
 # ==============================================
+# Kotlin/Java Compiler
+# ==============================================
+*.class
+*.jar
+*.war
+*.ear
+kotlin-build/
+javac/
+
+# ==============================================
 # JavaScript / TypeScript / Node
 # ==============================================
 node_modules/
@@ -55,6 +65,19 @@ coverage/
 tmp/
 temp/
 *.tgz
+
+# ==============================================
+# Electron / NW.js
+# ==============================================
+electron-builder-out/
+*.blockmap
+*.exe
+*.msi
+*.dmg
+*.zip
+*.pkg
+*.deb
+*.rpm
 
 # ==============================================
 # IDE / Editor
@@ -114,6 +137,21 @@ $RECYCLE.BIN/
 .directory
 .Trash-*
 .nfs*
+
+# ==============================================
+# Windows Bridge Build Artifacts
+# ==============================================
+windows-bridge/dist/
+windows-bridge/release/
+windows-bridge/electron-builder-out/
+windows-bridge/*.exe
+windows-bridge/*.msi
+windows-bridge/*.zip
+windows-bridge/*.dmg
+windows-bridge/*.blockmap
+windows-bridge/*.log
+windows-bridge/logs/
+windows-bridge/native-helper/*.json
 
 # ==============================================
 # Local / Scratch Workspace Files
@@ -197,3 +235,4 @@ amaya-remote-*.vsix
 *.vsix
 app/nul
 nul
+windows-bridge/config/trusted-devices.json

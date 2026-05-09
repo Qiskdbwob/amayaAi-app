@@ -14,6 +14,7 @@ class IntelligenceSessionManager @Inject constructor() {
     
     enum class SessionMode(val ideId: String) {
         LOCAL("local"),
+        WINDOWS_BRIDGE("windows_bridge"),
         ANTIGRAVITY("antigravity"),
         CURSOR("cursor"),       // Future
         WINDSURF("windsurf");   // Future
@@ -37,5 +38,6 @@ class IntelligenceSessionManager @Inject constructor() {
  */
 fun IntelligenceSessionManager.SessionMode.displayName(): String = when (this) {
     IntelligenceSessionManager.SessionMode.LOCAL -> "Amaya"
+    IntelligenceSessionManager.SessionMode.WINDOWS_BRIDGE -> "Windows Bridge"
     else -> com.amaya.intelligence.impl.ide.IdeProviderFactory.getIdeInfo(ideId)?.displayName ?: name
 }

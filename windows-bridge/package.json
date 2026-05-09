@@ -1,0 +1,34 @@
+{
+  "name": "amaya-windows-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows Bridge MVP — remote tool executor for the Amaya Android AI agent.",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "clean": "rimraf dist release",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "build:helper": "dotnet publish native-helper/AmayaBridgeHelper.csproj -c Release -r win-x64 --self-contained false",
+    "build:helper:self-contained": "dotnet publish native-helper/AmayaBridgeHelper.csproj -c Release -r win-x64 --self-contained true",
+    "copy:helper": "node scripts/copy-helper.mjs",
+    "verify": "npm run typecheck && npm run build:helper && npm run copy:helper && npm run build",
+    "package": "npm run verify && electron-builder",
+    "package:dir": "npm run verify && electron-builder --dir",
+    "start": "electron dist/main/main.js",
+    "dev": "tsc -w -p tsconfig.json"
+  },
+  "dependencies": {
+    "ws": "8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.12.7",
+    "@types/ws": "8.5.10",
+    "electron": "30.0.9",
+    "electron-builder": "24.13.3",
+    "rimraf": "5.0.5",
+    "typescript": "5.4.5"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}

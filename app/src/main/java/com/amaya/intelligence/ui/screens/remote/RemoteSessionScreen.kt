@@ -204,6 +204,26 @@ fun RemoteSessionScreen(
                         )
                     }
 
+                    // ── Windows Bridge entry ─────────────────────────────────
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "WINDOWS BRIDGE",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = sectionTitleColor,
+                        modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
+                    )
+                    val context = androidx.compose.ui.platform.LocalContext.current
+                    IdeCard(
+                        name = "Windows Bridge",
+                        description = "Remote tool executor — control your Windows PC",
+                        iconSpec = RemoteIdeIcon.Spec(imageVector = Icons.Default.DesktopWindows, tintable = true),
+                        isSelected = false,
+                        enabled = true,
+                        onClick = {
+                            com.amaya.intelligence.ui.activities.bridge.WindowsBridgeActivity.start(context)
+                        }
+                    )
+
                     Spacer(Modifier.height(100.dp))
                 }
             }

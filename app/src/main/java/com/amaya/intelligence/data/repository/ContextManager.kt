@@ -144,6 +144,20 @@ class ContextManager @Inject constructor(
         )
     }
 
+    fun buildWindowsBridgeContext(request: ContextBuildRequest): ContextBuildResult {
+        val compression = conversationCompressor.compress(request.conversationHistory, request.maxOutputTokens)
+        val clock = currentClockText()
+        val systemPrompt = windowsBridgeSystemPrompt(clock)
+        val estimated = promptBudgetManager.estimateTokens(systemPrompt) +
+            compression.messages.sumOf { promptBudgetManager.estimateTokens(it.content.orEmpty()) }
+        return ContextBuildResult(
+            systemPrompt = systemPrompt,
+            messages = compression.messages + ChatMessage(role = MessageRole.USER, content = request.userMessage),
+            estimatedPromptTokens = estimated,
+            droppedItems = emptyList()
+        )
+    }
+
     private fun inferIntent(message: String): ContextIntent {
         val lower = message.lowercase()
         val needsSession = listOf("sebelumnya", "kemarin", "tadi", "waktu itu", "pernah", "chat lama", "obrolan lama", "percakapan", "last time", "previous", "earlier", "remember when")
@@ -269,6 +283,24 @@ class ContextManager @Inject constructor(
         If a native tool call fails, try a safe alternative. Ask for clarification rather than guessing sensitive facts.
     """.trimIndent()
 
+    private fun windowsBridgeSystemPrompt(clock: String): String = """
+        Amaya is a versatile AI assistant running on Android and controlling a paired Windows computer through Windows Bridge.
+
+        You are operating in WINDOWS BRIDGE mode.
+        - Android is the planner, chat UI, approval UI, and safety controller.
+        - The paired Windows computer is only a remote execution target.
+        - Use only the Windows Bridge tools provided in the tool schema for this request.
+        - Do not claim access to Android local files, Android shell, Android browser tools, MCP servers, saved memory tools, reusable skill tools, reminders, or local workspace tools unless those tools are explicitly present in the tool schema.
+        - Do not ask for or store secrets, passwords, tokens, cookies, OTPs, or payment data.
+        - Start in view-only mode unless Agent Control is enabled by the user. In view-only mode, observe with screen/window tools and ask before actions that need control.
+        - For mouse, keyboard, window focus, clipboard, file, shell, browser, or destructive actions, respect the risk/approval flow. If a required tool is unavailable, explain what is missing instead of inventing local alternatives.
+        - Prefer safe observation first: capture the screen or list windows before taking action.
+        - Be concise, practical, and transparent about what you can and cannot do.
+        - Ask for clarification when the next Windows action is ambiguous or risky.
+
+        $clock
+    """.trimIndent()
+
     private fun baseOperatingRules(): String = """
         - Be helpful, honest, and clear.
         - Ask for clarification when needed.
@@ -276,6 +308,7 @@ class ContextManager @Inject constructor(
         - Keep responses concise by default, but include enough detail to solve the task.
         - Follow the user's communication style.
         - Respect privacy and local data boundaries.
+        - Windows access is available only through Windows Bridge after the user pairs/connects a Windows computer. In local chat, do not claim or use Windows control unless Windows Bridge tools are explicitly available; tell the user to pair/connect Windows Bridge first.
     """.trimIndent()
 
     private fun currentClockText(): String {

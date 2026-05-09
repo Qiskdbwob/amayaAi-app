@@ -174,6 +174,26 @@ val MIGRATION_6_7 = object : Migration(6, 7) {
     }
 }
 
+/**
+ * Migration for Version 7 to 8.
+ * Adds a conversation scope so Local chat and Windows Bridge chat can share the
+ * same table/sidebar UI without mixing histories.
+ */
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        LogMigration.d("Starting migration 7 -> 8: Adding conversation scope")
+        db.beginTransaction()
+        try {
+            db.execSQL("ALTER TABLE conversations ADD COLUMN scope TEXT NOT NULL DEFAULT 'local'")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_conversations_scope_updated_at` ON `conversations` (`scope`, `updated_at`)")
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        LogMigration.d("Migration 7 -> 8 completed successfully")
+    }
+}
+
 object LogMigration {
     fun d(message: String) {
         android.util.Log.d("RoomMigration", message)

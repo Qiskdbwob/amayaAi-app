@@ -251,6 +251,110 @@ object ToolUiMapper {
                 isHidden = true
             )
 
+            // -- Windows Bridge Tools ------------------------------------------
+            "screen.capture" -> ToolUiMetadata(
+                category = ToolCategory.SYSTEM,
+                label = "Windows Screen Capture",
+                actionIcon = ToolInfoIcon.IMAGE,
+                targetIcon = ToolInfoIcon.MOUSE,
+                badges = listOf("WINDOWS")
+            )
+            "window.list" -> ToolUiMetadata(
+                category = ToolCategory.SYSTEM,
+                label = "Windows Window List",
+                actionIcon = ToolInfoIcon.LIST,
+                targetIcon = ToolInfoIcon.MOUSE,
+                badges = listOf("WINDOWS")
+            )
+            "window.focus" -> ToolUiMetadata(
+                category = ToolCategory.SYSTEM,
+                label = "Focus Windows Window",
+                actionIcon = ToolInfoIcon.MOUSE,
+                targetIcon = ToolInfoIcon.MOUSE,
+                badges = listOf("WINDOWS")
+            )
+            "mouse.click" -> ToolUiMetadata(
+                category = ToolCategory.SYSTEM,
+                label = "Windows Mouse Click",
+                actionIcon = ToolInfoIcon.MOUSE,
+                targetIcon = ToolInfoIcon.MOUSE,
+                badges = listOf("WINDOWS")
+            )
+            "keyboard.type" -> ToolUiMetadata(
+                category = ToolCategory.SYSTEM,
+                label = "Windows Keyboard Type",
+                actionIcon = ToolInfoIcon.COMMAND,
+                targetIcon = ToolInfoIcon.MOUSE,
+                badges = listOf("WINDOWS")
+            )
+            "keyboard.hotkey" -> ToolUiMetadata(
+                category = ToolCategory.SYSTEM,
+                label = "Windows Hotkey",
+                actionIcon = ToolInfoIcon.COMMAND,
+                targetIcon = ToolInfoIcon.MOUSE,
+                badges = listOf("WINDOWS")
+            )
+            "clipboard.write" -> ToolUiMetadata(
+                category = ToolCategory.SYSTEM,
+                label = "Windows Clipboard Write",
+                actionIcon = ToolInfoIcon.WRITE,
+                targetIcon = ToolInfoIcon.MOUSE,
+                badges = listOf("WINDOWS")
+            )
+            "file.list" -> ToolUiMetadata(
+                category = ToolCategory.FILE_IO,
+                label = safeArgs["path"]?.toString()?.substringAfterLast("\\")?.substringAfterLast("/") ?: "Windows Files",
+                actionIcon = ToolInfoIcon.LIST,
+                targetIcon = ToolInfoIcon.FOLDER,
+                badges = listOf("WINDOWS", "LIST")
+            )
+            "file.read" -> ToolUiMetadata(
+                category = ToolCategory.FILE_IO,
+                label = safeArgs["path"]?.toString()?.substringAfterLast("\\")?.substringAfterLast("/") ?: "Windows File",
+                actionIcon = ToolInfoIcon.READ,
+                targetIcon = ToolInfoIcon.FILE,
+                badges = listOf("WINDOWS", "READ")
+            )
+            "file.write" -> ToolUiMetadata(
+                category = ToolCategory.FILE_IO,
+                label = safeArgs["path"]?.toString()?.substringAfterLast("\\")?.substringAfterLast("/") ?: "Windows File",
+                actionIcon = ToolInfoIcon.WRITE,
+                targetIcon = ToolInfoIcon.FILE,
+                badges = listOf("WINDOWS", "WRITE")
+            )
+            "file.edit" -> ToolUiMetadata(
+                category = ToolCategory.FILE_IO,
+                label = safeArgs["path"]?.toString()?.substringAfterLast("\\")?.substringAfterLast("/") ?: "Windows File",
+                actionIcon = ToolInfoIcon.EDIT,
+                targetIcon = ToolInfoIcon.FILE,
+                badges = listOf("WINDOWS", "EDIT")
+            )
+            "file.delete" -> ToolUiMetadata(
+                category = ToolCategory.FILE_IO,
+                label = safeArgs["path"]?.toString()?.substringAfterLast("\\")?.substringAfterLast("/") ?: "Windows File",
+                actionIcon = ToolInfoIcon.DELETE,
+                targetIcon = ToolInfoIcon.FILE,
+                badges = listOf("WINDOWS", "DELETE")
+            )
+            "shell.run" -> {
+                val cmd = (safeArgs["command"] ?: "").toString()
+                val firstToken = cmd.trim().split(" ").firstOrNull()?.substringAfterLast("\\") ?: "Shell"
+                ToolUiMetadata(
+                    category = ToolCategory.SHELL,
+                    label = firstToken,
+                    actionIcon = ToolInfoIcon.RUN,
+                    targetIcon = ToolInfoIcon.COMMAND,
+                    badges = listOf("WINDOWS", "RUN")
+                )
+            }
+            "shell.cancel" -> ToolUiMetadata(
+                category = ToolCategory.SHELL,
+                label = "Cancel Windows Command",
+                actionIcon = ToolInfoIcon.CHECK,
+                targetIcon = ToolInfoIcon.COMMAND,
+                badges = listOf("WINDOWS", "CANCEL")
+            )
+
             else -> {
                 val displayName = name.split("_").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
                 ToolUiMetadata(

@@ -22,6 +22,11 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+enum class AgentRuntimeTarget {
+    LOCAL,
+    WINDOWS_BRIDGE
+}
+
 /**
  * Repository for AI interactions.
  * 
@@ -44,6 +49,7 @@ class AiRepository @Inject constructor(
     private val settingsManager: AiSettingsManager,
     private val toolExecutor: ToolExecutor,
     private val mcpToolExecutor: com.amaya.intelligence.data.remote.mcp.McpToolExecutor,
+    private val windowsBridgeToolProvider: com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeToolProvider,
     private val fileIndexRepository: FileIndexRepository,
     private val personaRepository: PersonaRepository,
     private val memoryRepository: MemoryRepository,
@@ -124,6 +130,7 @@ class AiRepository @Inject constructor(
         conversationId: Long? = null,
         activeAgentId: String? = null,
         selectedModel: String? = null,
+        runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL,
         onConfirmation: suspend (ConfirmationRequest) -> Boolean = { false }
     ): Flow<AgentEvent> = channelFlow {
         
@@ -166,28 +173,38 @@ class AiRepository @Inject constructor(
         val completedAssistantMessages = mutableListOf<String>()
         val completedToolCalls = mutableListOf<String>()
         val completedToolResults = mutableListOf<String>()
-        runCatching {
-            sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "user", content = message))
-        }.onFailure { errorLog("AiRepository", "Failed to save user session message", it) }
+        if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
+            runCatching {
+                sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "user", content = message))
+            }.onFailure { errorLog("AiRepository", "Failed to save user session message", it) }
+        }
 
-        // Build final prompt with Phase 5 context management:
-        // retrieve relevant context, keep skill/session sources as indexes when possible,
-        // and compress long conversation history before provider submission.
-        migrateLegacyPersonaFactsIfNeeded()
-        val managedContext = contextManager.buildContext(
-            ContextBuildRequest(
-                userMessage = message,
-                conversationHistory = conversationHistory,
-                workspacePath = workspacePath,
-                conversationId = conversationId,
-                maxOutputTokens = agentConfig.maxTokens
-            )
+        // Build final prompt with runtime-specific context policy.
+        // Windows Bridge deliberately excludes persona, memory, skills, local tool rules,
+        // workspace hints, browser rules, and self-improvement instructions from the
+        // system instruction. The model receives only the bridge-safe operating prompt
+        // plus recent conversation history and bridge tool schemas.
+        if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
+            migrateLegacyPersonaFactsIfNeeded()
+        }
+        val contextRequest = ContextBuildRequest(
+            userMessage = message,
+            conversationHistory = conversationHistory,
+            workspacePath = workspacePath,
+            conversationId = conversationId,
+            maxOutputTokens = agentConfig.maxTokens
         )
+        val managedContext = if (runtimeTarget == AgentRuntimeTarget.WINDOWS_BRIDGE) {
+            contextManager.buildWindowsBridgeContext(contextRequest)
+        } else {
+            contextManager.buildContext(contextRequest)
+        }
         val systemPrompt = managedContext.systemPrompt
         
         // Build tool definitions. New provider capability override: when tool calling is
         // disabled for the selected agent, keep the model loop text-only.
-        val tools = if (agentConfig.toolCalling) buildToolDefinitions() else emptyList()
+        val tools = if (agentConfig.toolCalling) buildToolDefinitions(runtimeTarget) else emptyList()
+        val allowedToolNames = tools.map { it.name }.toSet()
         
         // Start conversation loop
         var messages = managedContext.messages
@@ -260,7 +277,7 @@ class AiRepository @Inject constructor(
             // This handles models that don't support native function calling (e.g. StepFun)
             // and instead emit <tool_call> XML or JSON blocks in their text output.
             if (agentConfig.toolCalling && !hasToolCalls && textBuffer.isNotEmpty()) {
-                val parsed = parseToolCallsFromText(textBuffer.toString())
+                val parsed = parseToolCallsFromText(textBuffer.toString(), allowedToolNames)
                 if (parsed.isNotEmpty()) {
                     hasToolCalls = true
                     // Remove tool call markup from displayed text
@@ -277,9 +294,11 @@ class AiRepository @Inject constructor(
             if (textBuffer.isNotBlank()) {
                 val assistantText = textBuffer.toString()
                 completedAssistantMessages.add(assistantText)
-                runCatching {
-                    sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "assistant", content = assistantText))
-                }.onFailure { errorLog("AiRepository", "Failed to save assistant session message", it) }
+                if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
+                    runCatching {
+                        sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "assistant", content = assistantText))
+                    }.onFailure { errorLog("AiRepository", "Failed to save assistant session message", it) }
+                }
             }
 
             if (!hasToolCalls) {
@@ -311,19 +330,27 @@ class AiRepository @Inject constructor(
                     }
 
                     completedToolCalls.add("${toolCall.name}: ${toolCall.arguments}")
-                    val result = mcpToolExecutor.execute(
-                        toolName = toolCall.name,
-                        arguments = executionArguments,
-                        workspacePath = workspacePath,
-                        toolCallId = toolCall.id,
-                        // FIX: Use channel.send() — channelFlow's ProducerScope is thread-safe,
-                        // unlike flow{}'s emit() which panics on concurrent coroutine access.
-                        onEvent = { event -> if (event is AgentEvent) channel.send(event) },
-                        onConfirmationRequired = onConfirmation,
-                        // Pass resolved agentConfig so SubagentRunner uses the SAME provider/model
-                        // as the main chat loop — not a stale DataStore snapshot.
-                        agentConfig = agentConfig
-                    )
+                    val result = if (runtimeTarget == AgentRuntimeTarget.WINDOWS_BRIDGE && toolCall.name !in allowedToolNames) {
+                        ToolResult.Error(
+                            message = "Tool '${toolCall.name}' is not available in Windows Bridge chat.",
+                            errorType = com.amaya.intelligence.tools.ErrorType.PERMISSION_ERROR,
+                            recoverable = false
+                        )
+                    } else {
+                        mcpToolExecutor.execute(
+                            toolName = toolCall.name,
+                            arguments = executionArguments,
+                            workspacePath = workspacePath,
+                            toolCallId = toolCall.id,
+                            // FIX: Use channel.send() — channelFlow's ProducerScope is thread-safe,
+                            // unlike flow{}'s emit() which panics on concurrent coroutine access.
+                            onEvent = { event -> if (event is AgentEvent) channel.send(event) },
+                            onConfirmationRequired = onConfirmation,
+                            // Pass resolved agentConfig so SubagentRunner uses the SAME provider/model
+                            // as the main chat loop — not a stale DataStore snapshot.
+                            agentConfig = agentConfig
+                        )
+                    }
                     
                     val resultContent = when (result) {
                         is ToolResult.Success -> result.output
@@ -332,17 +359,19 @@ class AiRepository @Inject constructor(
                     }
                     
                     completedToolResults.add("${toolCall.name}: $resultContent")
-                    runCatching {
-                        sessionMemoryRepository.saveToolCall(
-                            SessionToolCall(
-                                sessionId = sessionId,
-                                toolCallId = toolCall.id,
-                                toolName = toolCall.name,
-                                argumentsJson = JSONObject(toolCall.arguments).toString(),
-                                resultJson = resultContent
+                    if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
+                        runCatching {
+                            sessionMemoryRepository.saveToolCall(
+                                SessionToolCall(
+                                    sessionId = sessionId,
+                                    toolCallId = toolCall.id,
+                                    toolName = toolCall.name,
+                                    argumentsJson = JSONObject(toolCall.arguments).toString(),
+                                    resultJson = resultContent
+                                )
                             )
-                        )
-                    }.onFailure { errorLog("AiRepository", "Failed to save session tool call", it) }
+                        }.onFailure { errorLog("AiRepository", "Failed to save session tool call", it) }
+                    }
 
                     send(AgentEvent.ToolCallResult(
                         toolCallId = toolCall.id,
@@ -400,10 +429,12 @@ class AiRepository @Inject constructor(
 
         send(AgentEvent.Done)
 
-        repoScope.launch {
-            runCatching {
-                selfImprovementPipeline.analyzeAndImprove(reflectionContext)
-            }.onFailure { errorLog("AiRepository", "Post-chat reflection failed", it) }
+        if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
+            repoScope.launch {
+                runCatching {
+                    selfImprovementPipeline.analyzeAndImprove(reflectionContext)
+                }.onFailure { errorLog("AiRepository", "Post-chat reflection failed", it) }
+            }
         }
     }
     
@@ -447,9 +478,8 @@ class AiRepository @Inject constructor(
      * Only parses if the tool name exists in the known tool registry.
      * This prevents false positives from AI examples or explanations.
      */
-    private fun parseToolCallsFromText(text: String): List<ToolCallMessage> {
+    private fun parseToolCallsFromText(text: String, knownTools: Set<String>): List<ToolCallMessage> {
         val results = mutableListOf<ToolCallMessage>()
-        val knownTools = toolExecutor.getToolDefinitions().map { it.name }.toSet()
         var callIndex = 0
         
         // Format 1: <tool_call name="tool_name">JSON</tool_call>
@@ -558,7 +588,16 @@ class AiRepository @Inject constructor(
      * Build tool definitions for AI.
      * Uses cached MCP tools — refresh happens automatically via settingsFlow watcher in init.
      */
-    private fun buildToolDefinitions(): List<AiToolDefinition> {
+    private fun buildToolDefinitions(runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL): List<AiToolDefinition> {
+        val bridgeTools = windowsBridgeToolProvider.getAvailableBridgeTools()
+            .map { it.toAiToolDefinition(truncateDesc = true) }
+        if (runtimeTarget == AgentRuntimeTarget.WINDOWS_BRIDGE) {
+            if (bridgeTools.isNotEmpty()) {
+                debugLog("AiRepository") { "Building Windows Bridge tool defs: bridge=${bridgeTools.size}" }
+            }
+            return bridgeTools
+        }
+
         // FIX 4.3: Use shared toAiToolDefinition() extension (ToolExecutor.kt) — removes duplicate mapping
         val localTools = toolExecutor.getToolDefinitions()
             .map { it.toAiToolDefinition(truncateDesc = true) }
@@ -574,6 +613,9 @@ class AiRepository @Inject constructor(
             )
         }
         debugLog("AiRepository") { "Building tool defs: local=${localTools.size}, mcp=${mcpTools.size}" }
+        // Keep LOCAL chat tool schema strictly local/MCP. Windows Bridge tools are
+        // advertised only in WINDOWS_BRIDGE mode so the local system prompt never
+        // carries a Windows tool-call catalog.
         return localTools + mcpTools
     }
 

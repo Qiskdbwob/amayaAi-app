@@ -1,0 +1,64 @@
+{
+  "appPolicy": {
+    "appAllowlistEnabled": false,
+    "allowedProcessNames": ["notepad", "Code", "chrome", "msedge"],
+    "allowedWindowTitlePatterns": [],
+    "blockedProcessNames": [],
+    "blockedWindowTitlePatterns": ["password", "credential", "bank", "wallet"]
+  },
+  "folderPolicy": {
+    "fileToolsEnabled": true,
+    "allowedFolders": [
+      "%USERPROFILE%\\Documents",
+      "%USERPROFILE%\\Desktop",
+      "%USERPROFILE%\\Downloads",
+      "%USERPROFILE%\\Projects"
+    ],
+    "blockedFolders": [
+      "%USERPROFILE%\\.ssh",
+      "%USERPROFILE%\\AppData",
+      "%USERPROFILE%\\Contacts",
+      "%USERPROFILE%\\Documents\\Passwords"
+    ],
+    "sensitivePathPatterns": [".env", "id_rsa", "credentials", "token", "password", "secret", "private_key", ".pem", ".pfx"],
+    "maxReadBytes": 262144,
+    "maxWriteBytes": 262144,
+    "allowDelete": false,
+    "deleteUsesTrash": true,
+    "requireApprovalForWrite": true,
+    "requireApprovalForDelete": true,
+    "requireApprovalForSensitiveRead": true
+  },
+  "commandPolicy": {
+    "shellEnabled": true,
+    "allowedCommands": ["dir", "ls", "git status", "git diff", "npm test", "npm run build", "gradlew.bat", "dotnet build"],
+    "blockedCommands": [
+      "format", "shutdown", "restart-computer", "stop-computer",
+      "reg add", "reg delete", "net user", "net localgroup",
+      "takeown", "icacls", "bcdedit", "diskpart",
+      "powershell -enc", "powershell -encodedcommand",
+      "curl ", "wget ", "Invoke-WebRequest", "Invoke-Expression",
+      "iwr ", "irm ", "Remove-Item -Recurse", "del /s", "rmdir /s"
+    ],
+    "allowedWorkingDirectories": [
+      "%USERPROFILE%\\Projects",
+      "%USERPROFILE%\\Documents\\my app"
+    ],
+    "requireApprovalForAll": true,
+    "maxRuntimeMs": 120000,
+    "maxOutputBytes": 65536
+  },
+  "auth": {
+    "requireToken": false,
+    "allowQueryTokenFallback": true
+  },
+  "screenCapture": {
+    "defaultFormat": "png",
+    "defaultQuality": 85,
+    "defaultMaxWidth": null
+  },
+  "approval": {
+    "enabled": true,
+    "timeoutMs": 30000
+  }
+}

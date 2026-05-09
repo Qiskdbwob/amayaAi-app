@@ -4,6 +4,16 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
+enum class ConversationScope(val wireName: String) {
+    LOCAL("local"),
+    WINDOWS_BRIDGE("windows_bridge");
+
+    companion object {
+        fun fromWireName(value: String?): ConversationScope =
+            entries.firstOrNull { it.wireName == value } ?: LOCAL
+    }
+}
+
 @Entity(tableName = "conversations")
 data class ConversationEntity(
     @PrimaryKey(autoGenerate = true)
@@ -23,5 +33,8 @@ data class ConversationEntity(
     val updatedAt: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "messages_json")
-    val messagesJson: String
+    val messagesJson: String,
+
+    @ColumnInfo(name = "scope")
+    val scope: String = ConversationScope.LOCAL.wireName
 )

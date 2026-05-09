@@ -1,0 +1,25 @@
+appId: com.amaya.windowsbridge
+productName: Amaya Windows Bridge
+copyright: Copyright © 2026 Amaya
+
+directories:
+  output: release
+
+files:
+  - dist/**/*
+  - package.json
+
+extraResources:
+  - from: dist/native
+    to: native
+
+win:
+  target:
+    - nsis
+  artifactName: AmayaWindowsBridge-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true

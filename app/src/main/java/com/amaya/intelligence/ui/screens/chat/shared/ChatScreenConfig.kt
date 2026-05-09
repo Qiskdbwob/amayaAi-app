@@ -159,6 +159,29 @@ fun remoteChatScreenConfig(
     }
 )
 
+fun windowsBridgeChatScreenConfig(
+    onExit: () -> Unit,
+    onNavigateToSettings: () -> Unit,
+    onToolAccept: (com.amaya.intelligence.domain.models.ToolExecution) -> Unit,
+    onToolDecline: (com.amaya.intelligence.domain.models.ToolExecution) -> Unit
+): ChatScreenConfig = remoteChatScreenConfig(
+    onExit = onExit,
+    onNavigateToSettings = onNavigateToSettings,
+    onToolAccept = onToolAccept,
+    onToolDecline = onToolDecline
+).copy(
+    selectedAgentFallbackLabel = "Select Agent",
+    streamingLabel = "Windows Bridge streaming",
+    idleLabel = "Windows Bridge ready",
+    welcomeContent = { onPromptClick, _, _, _, _ ->
+        com.amaya.intelligence.ui.components.remote.RemoteWelcomeScreen(
+            onPromptClick = onPromptClick,
+            serverName = "Windows Bridge",
+            onConnectClick = {}
+        )
+    }
+)
+
 /**
  * Drawer footer for Local mode - shows Remote Connection button.
  */
