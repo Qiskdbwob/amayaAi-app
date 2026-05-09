@@ -17,6 +17,7 @@ internal sealed class WindowInfo
     [JsonPropertyName("processId")] public int ProcessId { get; init; }
     [JsonPropertyName("processName")] public string ProcessName { get; init; } = string.Empty;
     [JsonPropertyName("bounds")] public WindowBounds Bounds { get; init; } = new();
+    [JsonPropertyName("state")] public string State { get; init; } = "unknown";
     [JsonPropertyName("visible")] public bool Visible { get; init; }
     [JsonPropertyName("focused")] public bool Focused { get; init; }
 }

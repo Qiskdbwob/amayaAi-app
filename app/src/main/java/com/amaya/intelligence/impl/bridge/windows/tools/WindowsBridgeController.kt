@@ -193,7 +193,8 @@ class WindowsBridgeController @Inject constructor(
      *  - Empty when the bridge is not connected.
      *  - Always includes LOW-risk enabled tools (screen capture, window list).
      *  - Includes MEDIUM-risk input tools only when Agent Control is enabled.
-     *  - Excludes HIGH/BLOCKED tools until an explicit approval-first path is wired.
+     *  - Includes HIGH-risk tools only when they are enabled by default, require approval,
+     *    and Agent Control is enabled (Windows side still asks for approval before running).
      *  - Never includes tools whose `enabledByDefault` is false.
      */
     fun visibleToolNames(connected: Boolean = isActive()): Set<String> {
@@ -204,7 +205,7 @@ class WindowsBridgeController @Inject constructor(
                 when (spec.risk) {
                     BridgeRiskLevel.LOW -> true
                     BridgeRiskLevel.MEDIUM -> agentControl
-                    BridgeRiskLevel.HIGH,
+                    BridgeRiskLevel.HIGH -> agentControl && spec.requiresApproval
                     BridgeRiskLevel.BLOCKED -> false
                 }
             }

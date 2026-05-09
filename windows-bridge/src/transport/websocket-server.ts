@@ -11,7 +11,7 @@ import { riskFromWire } from '../protocol/bridge-risk';
 import { BridgePermissionDecision } from '../protocol/bridge-risk';
 import type { BridgeToolCall } from '../protocol/bridge-tool';
 import { decide } from '../permissions/risk-engine';
-import { findTool } from '../tools/tool-registry';
+import { findTool, enabledTools } from '../tools/tool-registry';
 import { ToolInvocationError } from '../tools/tool-result';
 import type { SecurityPolicy } from '../permissions/security-policy';
 import { evaluateAppPolicy } from '../permissions/app-allowlist';
@@ -28,11 +28,21 @@ import type { PairingTokenStore } from '../permissions/pairing-token-store';
 
 const SCOPE = 'ws';
 const BRIDGE_DEVICE_ID = 'windows_bridge';
+
+// Tools that require an active foreground window check via the app allowlist.
+// Any tool that physically moves the cursor or sends input to the OS must be
+// listed here so the policy guard runs before execution.
 const INPUT_TOOLS = new Set<string>([
   'mouse.click',
+  'mouse.move',
+  'mouse.scroll',
+  'mouse.drag',
   'keyboard.type',
   'keyboard.hotkey',
-  'window.focus'
+  'window.focus',
+  'window.close',
+  'app.open',
+  'ui.click_element'
 ]);
 
 export interface ServerOptions {
@@ -240,7 +250,13 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
       deviceId,
       {
         sessionId,
-        capabilities: ['screenCapture', 'windowControl', 'mouseControl', 'keyboardControl']
+        capabilities: ['screenCapture', 'windowControl', 'mouseControl', 'keyboardControl'],
+        tools: enabledTools().map((spec) => ({
+          name: spec.name,
+          description: spec.description,
+          risk: spec.risk,
+          requiresApproval: spec.requiresApproval
+        }))
       }
     );
   }

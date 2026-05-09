@@ -29,9 +29,7 @@ fun ChatEmptyContent(
     onNavigateToWorkspace: () -> Unit,
     workspaces: List<RemoteWorkspace>
 ) {
-    val isRemoteInitialMount = isRemoteMode && uiState.conversationId == null
-    
-    if ((isRemoteMode && connectionState != ConnectionState.CONNECTED && uiState.messages.isEmpty()) || isRemoteInitialMount) {
+    if (isRemoteMode && connectionState != ConnectionState.CONNECTED && uiState.messages.isEmpty()) {
         Box(
             modifier = Modifier.fillMaxSize()
                 .padding(top = headerDp, bottom = bottomDp)
@@ -41,7 +39,7 @@ fun ChatEmptyContent(
             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                 Text(
-                    text = if (connectionState == ConnectionState.CONNECTING || isRemoteInitialMount) "Connecting to Remote Session..." else "Disconnected. Trying to reconnect...",
+                    text = if (connectionState == ConnectionState.CONNECTING) "Connecting to Remote Session..." else "Disconnected. Trying to reconnect...",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

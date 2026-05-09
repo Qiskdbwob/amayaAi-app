@@ -72,8 +72,16 @@ internal static class Program
                 "health.ping" => JsonRpcResponse.Success(request.Id, HealthService.Ping()),
                 "window.list" => HandleWindowList(request),
                 "window.focus" => HandleWindowFocus(request),
+                "window.close" => HandleWindowClose(request),
                 "window.active" => HandleWindowActive(request),
+                "app.open" => HandleAppOpen(request),
+                "ui.tree" => HandleUiTree(request),
+                "ui.find_text" => HandleUiFindText(request),
+                "ui.click_element" => HandleUiClickElement(request),
                 "mouse.click" => HandleMouseClick(request),
+                "mouse.move" => HandleMouseMove(request),
+                "mouse.scroll" => HandleMouseScroll(request),
+                "mouse.drag" => HandleMouseDrag(request),
                 "keyboard.type" => HandleKeyboardType(request),
                 "keyboard.hotkey" => HandleKeyboardHotkey(request),
                 _ => JsonRpcResponse.Failure(request.Id, new HelperError
@@ -120,6 +128,96 @@ internal static class Program
         return JsonRpcResponse.Success(request.Id!, new { focused = true, windowId });
     }
 
+    private static JsonRpcResponse HandleWindowClose(JsonRpcRequest request)
+    {
+        var windowId = TryGetString(request.Params, "windowId");
+        var (closed, reason) = WindowService.Close(windowId);
+        if (!closed)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = reason == "window not found" ? HelperErrorCode.NotFound : HelperErrorCode.ExecutionFailed,
+                Message = reason ?? "close failed",
+                Recoverable = reason != "window not found"
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, new { closed = true, windowId });
+    }
+
+    private static JsonRpcResponse HandleAppOpen(JsonRpcRequest request)
+    {
+        var p = request.Params;
+        var app = TryGetString(p, "app") ?? TryGetString(p, "name") ?? TryGetString(p, "target");
+        var args = TryGetString(p, "args");
+        var (ok, reason, target, processId) = AppLaunchService.Open(app, args);
+        if (!ok)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = reason == "app name is not allowed" || reason == "app is required"
+                    ? HelperErrorCode.InvalidArgs
+                    : HelperErrorCode.ExecutionFailed,
+                Message = reason ?? "app.open failed",
+                Recoverable = true
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, new { launched = true, target, processId });
+    }
+
+    private static JsonRpcResponse HandleUiTree(JsonRpcRequest request)
+    {
+        var p = request.Params;
+        var windowId = TryGetString(p, "windowId");
+        var limit = TryGetInt(p, "limit") ?? 250;
+        var (ok, reason, snapshot) = UiAutomationService.Tree(windowId, limit);
+        if (!ok)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = reason == "window not found" ? HelperErrorCode.NotFound : HelperErrorCode.ExecutionFailed,
+                Message = reason ?? "ui.tree failed",
+                Recoverable = true
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, snapshot!);
+    }
+
+    private static JsonRpcResponse HandleUiFindText(JsonRpcRequest request)
+    {
+        var p = request.Params;
+        var text = TryGetString(p, "text");
+        var windowId = TryGetString(p, "windowId");
+        var limit = TryGetInt(p, "limit") ?? 50;
+        var (ok, reason, matches) = UiAutomationService.FindText(text, windowId, limit);
+        if (!ok)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = reason == "text is required" ? HelperErrorCode.InvalidArgs : HelperErrorCode.ExecutionFailed,
+                Message = reason ?? "ui.find_text failed",
+                Recoverable = true
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, new { matches, count = matches.Count });
+    }
+
+    private static JsonRpcResponse HandleUiClickElement(JsonRpcRequest request)
+    {
+        var p = request.Params;
+        var elementId = TryGetString(p, "elementId") ?? TryGetString(p, "id") ?? TryGetString(p, "handle");
+        var (ok, reason, element) = UiAutomationService.ClickElement(elementId);
+        if (!ok)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = reason == "element not found" ? HelperErrorCode.NotFound : HelperErrorCode.ExecutionFailed,
+                Message = reason ?? "ui.click_element failed",
+                Recoverable = true
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, new { clicked = true, element });
+    }
+
     private static JsonRpcResponse HandleMouseClick(JsonRpcRequest request)
     {
         var p = request.Params;
@@ -151,6 +249,109 @@ internal static class Program
             y = y.Value,
             button = button.ToString().ToLowerInvariant(),
             clicks
+        });
+    }
+
+    private static JsonRpcResponse HandleMouseMove(JsonRpcRequest request)
+    {
+        var p = request.Params;
+        int? x = TryGetInt(p, "x");
+        int? y = TryGetInt(p, "y");
+        if (x is null || y is null)
+            return ArgsError(request.Id!, "x and y are required integers");
+
+        int durationMs = TryGetInt(p, "durationMs") ?? 0;
+        durationMs = Math.Clamp(durationMs, 0, 2000);
+
+        var (ok, reason) = InputService.Move(x.Value, y.Value, durationMs);
+        if (!ok)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = reason == "coordinate outside virtual screen bounds"
+                    ? HelperErrorCode.InvalidArgs
+                    : HelperErrorCode.ExecutionFailed,
+                Message = reason ?? "mouse.move failed",
+                Recoverable = true
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, new { moved = true, x = x.Value, y = y.Value, durationMs });
+    }
+
+    private static JsonRpcResponse HandleMouseScroll(JsonRpcRequest request)
+    {
+        var p = request.Params;
+        int? x = TryGetInt(p, "x");
+        int? y = TryGetInt(p, "y");
+        if (x is null || y is null)
+            return ArgsError(request.Id!, "x and y are required integers");
+
+        var direction = (TryGetString(p, "direction") ?? "down").ToLowerInvariant();
+        if (direction is not ("up" or "down" or "left" or "right"))
+            return ArgsError(request.Id!, "direction must be up, down, left, or right");
+
+        int amount = Math.Clamp(TryGetInt(p, "amount") ?? 3, 1, 50);
+
+        var (ok, reason) = InputService.Scroll(x.Value, y.Value, direction, amount);
+        if (!ok)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = reason?.Contains("outside") == true
+                    ? HelperErrorCode.InvalidArgs
+                    : HelperErrorCode.ExecutionFailed,
+                Message = reason ?? "mouse.scroll failed",
+                Recoverable = true
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, new { scrolled = true, x = x.Value, y = y.Value, direction, amount });
+    }
+
+    private static JsonRpcResponse HandleMouseDrag(JsonRpcRequest request)
+    {
+        var p = request.Params;
+        int? startX = TryGetInt(p, "startX");
+        int? startY = TryGetInt(p, "startY");
+        int? endX = TryGetInt(p, "endX");
+        int? endY = TryGetInt(p, "endY");
+
+        if (startX is null || startY is null)
+            return ArgsError(request.Id!, "startX and startY are required integers");
+        if (endX is null || endY is null)
+            return ArgsError(request.Id!, "endX and endY are required integers");
+
+        MouseButtonParser.TryParse(TryGetString(p, "button"), out var button);
+        int durationMs = Math.Clamp(TryGetInt(p, "durationMs") ?? 400, 50, 5000);
+
+        // Parse optional waypoints: [{x, y}, ...]
+        var waypoints = TryGetWaypoints(p, "waypoints");
+
+        var (ok, reason) = InputService.Drag(
+            startX.Value, startY.Value,
+            endX.Value, endY.Value,
+            button, durationMs, waypoints);
+
+        if (!ok)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = reason?.Contains("outside") == true
+                    ? HelperErrorCode.InvalidArgs
+                    : HelperErrorCode.ExecutionFailed,
+                Message = reason ?? "mouse.drag failed",
+                Recoverable = true
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, new
+        {
+            dragged = true,
+            startX = startX.Value,
+            startY = startY.Value,
+            endX = endX.Value,
+            endY = endY.Value,
+            button = button.ToString().ToLowerInvariant(),
+            durationMs,
+            waypointCount = waypoints?.Count ?? 0
         });
     }
 
@@ -233,6 +434,29 @@ internal static class Program
             list.Add(s);
         }
         return list;
+    }
+
+    /// <summary>
+    /// Parse an optional waypoints array: [{x: int, y: int}, ...].
+    /// Invalid or missing entries are silently skipped.
+    /// </summary>
+    private static IReadOnlyList<(int X, int Y)>? TryGetWaypoints(JsonElement? element, string name)
+    {
+        if (element is null) return null;
+        var e = element.Value;
+        if (e.ValueKind != JsonValueKind.Object) return null;
+        if (!e.TryGetProperty(name, out var arr)) return null;
+        if (arr.ValueKind != JsonValueKind.Array) return null;
+
+        var list = new List<(int X, int Y)>();
+        foreach (var item in arr.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object) continue;
+            if (!item.TryGetProperty("x", out var xEl) || !item.TryGetProperty("y", out var yEl)) continue;
+            if (!xEl.TryGetInt32(out int wx) || !yEl.TryGetInt32(out int wy)) continue;
+            list.Add((wx, wy));
+        }
+        return list.Count > 0 ? list : null;
     }
 
     private static void LogStderr(string line)

@@ -156,7 +156,7 @@ class OpenAiProvider @Inject constructor(
         
         // Build request body
         val openaiRequest = buildOpenAiRequest(request)
-        val jsonBody = moshi.adapter(OpenAiRequest::class.java).toJson(openaiRequest)
+        val jsonBody = buildOpenAiJsonBody(openaiRequest)
         
         val httpRequestBuilder = Request.Builder()
             .url("$baseUrl/chat/completions")
@@ -417,7 +417,17 @@ class OpenAiProvider @Inject constructor(
             .put("parallel_tool_calls", true)
 
         val input = body.getJSONArray("input")
-        request.messages.forEach { msg ->
+        val pendingBridgeImages = mutableListOf<ToolResultMessage>()
+        fun flushBridgeImages() {
+            pendingBridgeImages.forEach { result ->
+                result.bridgeImageAttachment()?.let { attachment ->
+                    input.put(codexImageMessage(result.bridgeVisionPrompt(), attachment))
+                }
+            }
+            pendingBridgeImages.clear()
+        }
+        request.messages.forEachIndexed { index, msg ->
+            if (msg.role != MessageRole.TOOL) flushBridgeImages()
             when (msg.role) {
                 MessageRole.USER -> input.put(codexMessage("user", msg.content.orEmpty(), "input_text"))
                 MessageRole.ASSISTANT -> {
@@ -437,10 +447,13 @@ class OpenAiProvider @Inject constructor(
                         .put("call_id", result.toolCallId)
                         .put("output", result.content)
                     )
+                    if (result.bridgeImageAttachment() != null) pendingBridgeImages.add(result)
+                    if (request.messages.getOrNull(index + 1)?.role != MessageRole.TOOL) flushBridgeImages()
                 }
                 MessageRole.SYSTEM -> msg.content?.takeIf { it.isNotBlank() }?.let { input.put(codexMessage("developer", it, "input_text")) }
             }
         }
+        flushBridgeImages()
 
         if (request.tools.isNotEmpty()) {
             val tools = JSONArray()
@@ -479,6 +492,17 @@ class OpenAiProvider @Inject constructor(
         .put("type", "message")
         .put("role", role)
         .put("content", JSONArray().put(JSONObject().put("type", contentType).put("text", text)))
+
+    private fun codexImageMessage(text: String, attachment: BridgeImageAttachment): JSONObject = JSONObject()
+        .put("type", "message")
+        .put("role", "user")
+        .put("content", JSONArray()
+            .put(JSONObject().put("type", "input_text").put("text", text))
+            .put(JSONObject()
+                .put("type", "input_image")
+                .put("image_url", "data:${attachment.mediaType};base64,${attachment.base64}")
+            )
+        )
 
     private class CodexStreamState {
         var emittedText: Boolean = false
@@ -614,8 +638,22 @@ class OpenAiProvider @Inject constructor(
             ))
         }
         
+        val pendingBridgeImages = mutableListOf<ToolResultMessage>()
+        fun flushBridgeImages() {
+            pendingBridgeImages.forEach { result ->
+                result.bridgeImageAttachment()?.let { attachment ->
+                    messages.add(OpenAiMessage(
+                        role = "user",
+                        content = openAiVisionContent(result.bridgeVisionPrompt(), attachment)
+                    ))
+                }
+            }
+            pendingBridgeImages.clear()
+        }
+
         // Add conversation messages
-        request.messages.forEach { msg ->
+        request.messages.forEachIndexed { index, msg ->
+            if (msg.role != MessageRole.TOOL) flushBridgeImages()
             when (msg.role) {
                 MessageRole.USER -> {
                     messages.add(OpenAiMessage(
@@ -672,6 +710,8 @@ class OpenAiProvider @Inject constructor(
                                 content = result.content,
                                 toolCallId = result.toolCallId
                             ))
+                            if (result.bridgeImageAttachment() != null) pendingBridgeImages.add(result)
+                            if (request.messages.getOrNull(index + 1)?.role != MessageRole.TOOL) flushBridgeImages()
                         } else {
                             // Fallback for providers that don't support role="tool"
                             // Wrap as assistant+user pair to maintain context
@@ -679,6 +719,8 @@ class OpenAiProvider @Inject constructor(
                                 role = "user",
                                 content = "<tool_result tool=\"${result.toolCallId}\">\n${result.content}\n</tool_result>"
                             ))
+                            if (result.bridgeImageAttachment() != null) pendingBridgeImages.add(result)
+                            if (request.messages.getOrNull(index + 1)?.role != MessageRole.TOOL) flushBridgeImages()
                         }
                     }
                 }
@@ -686,6 +728,8 @@ class OpenAiProvider @Inject constructor(
             }
         }
         
+        flushBridgeImages()
+
         val tools = request.tools.map { tool ->
             OpenAiToolDef(
                 type = "function",
@@ -721,6 +765,101 @@ class OpenAiProvider @Inject constructor(
     
     // FIX 4.1: Replaced with shared extension moshi.parseJsonArgs() from AiProvider.kt
     private fun parseJsonArgs(json: String): Map<String, Any?> = moshi.parseJsonArgs(json)
+
+    private fun openAiVisionContent(text: String, attachment: BridgeImageAttachment): String = JSONArray()
+        .put(JSONObject().put("type", "text").put("text", text))
+        .put(JSONObject()
+            .put("type", "image_url")
+            .put("image_url", JSONObject()
+                .put("url", "data:${attachment.mediaType};base64,${attachment.base64}")
+                .put("detail", "high")
+            )
+        )
+        .toString()
+
+    /**
+     * Serialize an [OpenAiRequest] to a JSON string.
+     *
+     * Moshi cannot serialize a message `content` field as a JSON *array* (needed for
+     * multipart vision messages) because the data class declares it as `String?`.
+     * We therefore build the messages array manually with [JSONArray]/[JSONObject] so
+     * that any message whose content starts with `[` is emitted as a raw JSON array
+     * rather than an escaped string.  All other fields are still serialized by Moshi.
+     */
+    private fun buildOpenAiJsonBody(req: OpenAiRequest): String {
+        val root = JSONObject()
+        root.put("model", req.model)
+        root.put("max_tokens", req.maxTokens)
+        root.put("temperature", req.temperature.toDouble())
+        root.put("stream", req.stream)
+        if (req.streamOptions != null) {
+            root.put("stream_options", JSONObject().put("include_usage", req.streamOptions.includeUsage))
+        }
+
+        // Messages — handle multipart content (vision image blocks) correctly
+        val messagesArr = JSONArray()
+        for (msg in req.messages) {
+            val msgObj = JSONObject()
+            msgObj.put("role", msg.role)
+            if (msg.toolCallId != null) msgObj.put("tool_call_id", msg.toolCallId)
+            when {
+                msg.content != null && msg.content.trimStart().startsWith("[") -> {
+                    // Raw JSON array — emit as-is so OpenAI receives a content-parts array
+                    msgObj.put("content", org.json.JSONArray(msg.content))
+                }
+                msg.content != null -> msgObj.put("content", msg.content)
+                else -> msgObj.put("content", JSONObject.NULL)
+            }
+            if (msg.toolCalls != null) {
+                val tcArr = JSONArray()
+                for (tc in msg.toolCalls) {
+                    tcArr.put(JSONObject()
+                        .put("id", tc.id)
+                        .put("type", tc.type)
+                        .put("function", JSONObject()
+                            .put("name", tc.function.name)
+                            .put("arguments", tc.function.arguments)
+                        )
+                        .apply { if (tc.index != null) put("index", tc.index) }
+                    )
+                }
+                msgObj.put("tool_calls", tcArr)
+            }
+            messagesArr.put(msgObj)
+        }
+        root.put("messages", messagesArr)
+
+        // Tools
+        if (req.tools != null) {
+            val toolsArr = JSONArray()
+            for (tool in req.tools) {
+                val propsObj = JSONObject()
+                for ((k, prop) in tool.function.parameters.properties) {
+                    val propObj = JSONObject()
+                        .put("type", prop.type)
+                        .put("description", prop.description)
+                    if (prop.enum != null) propObj.put("enum", JSONArray(prop.enum))
+                    if (prop.items != null) propObj.put("items", JSONObject().put("type", prop.items.type))
+                    propsObj.put(k, propObj)
+                }
+                toolsArr.put(JSONObject()
+                    .put("type", tool.type)
+                    .put("function", JSONObject()
+                        .put("name", tool.function.name)
+                        .put("description", tool.function.description)
+                        .put("parameters", JSONObject()
+                            .put("type", tool.function.parameters.type)
+                            .put("properties", propsObj)
+                            .put("required", JSONArray(tool.function.parameters.required))
+                        )
+                    )
+                )
+            }
+            root.put("tools", toolsArr)
+        }
+
+        return root.toString()
+    }
     
     private class OpenAiToolCallBuilder(
         var id: String = "",

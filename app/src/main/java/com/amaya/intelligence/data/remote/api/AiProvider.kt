@@ -90,6 +90,30 @@ data class ToolResultMessage(
     val metadata: Map<String, String> = emptyMap() // For provider-specific data
 )
 
+/** Image payload carried out-of-band from bridge tool JSON. */
+internal data class BridgeImageAttachment(
+    val base64: String,
+    val format: String
+) {
+    val mediaType: String
+        get() = "image/$format"
+}
+
+internal fun ToolResultMessage.bridgeImageAttachment(): BridgeImageAttachment? {
+    val base64 = metadata["bridge_image_base64"]?.takeIf { it.isNotBlank() } ?: return null
+    val rawFormat = metadata["bridge_image_format"]?.lowercase()?.trim().orEmpty()
+    val format = when (rawFormat) {
+        "png" -> "png"
+        "jpg", "jpeg", "" -> "jpeg"
+        "webp" -> "webp"
+        else -> "jpeg"
+    }
+    return BridgeImageAttachment(base64 = base64, format = format)
+}
+
+internal fun ToolResultMessage.bridgeVisionPrompt(): String =
+    "Actual visual screenshot returned by screen.capture. Inspect the image pixels directly for visible UI, text, icons, and layout. Also use the tool-result JSON accessibility block (coordinateGuide, windows/visualLabels, activeWindow, bounds, screenshotBounds, zIndex, state, cursorPosition) to map what you see to exact Windows mouse coordinates and windowId actions. Do not rely only on width/height metadata."
+
 /**
  * Streaming response from an AI provider.
  */

@@ -21,8 +21,6 @@ internal static class InputService
             return (false, "coordinate outside virtual screen bounds");
         }
 
-        if (!SetCursorPos(x, y)) return (false, "SetCursorPos failed");
-
         uint down, up;
         switch (button)
         {
@@ -34,15 +32,204 @@ internal static class InputService
                 down = MOUSEEVENTF_LEFTDOWN; up = MOUSEEVENTF_LEFTUP; break;
         }
 
-        var inputs = new INPUT[clicks * 2];
+        // Send the absolute move and click in one SendInput batch. This avoids
+        // relying on SetCursorPos, which can fail on some Windows desktops even
+        // though injected mouse input is still accepted.
+        var inputs = new INPUT[1 + clicks * 2];
+        inputs[0] = AbsoluteMoveInput(x, y);
         for (int i = 0; i < clicks; i++)
         {
-            inputs[i * 2] = new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = down } } };
-            inputs[i * 2 + 1] = new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = up } } };
+            int offset = 1 + i * 2;
+            inputs[offset] = new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = down } } };
+            inputs[offset + 1] = new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = up } } };
         }
         uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        if (sent != inputs.Length) return (false, "SendInput sent fewer mouse events than requested");
+        return (true, null);
+    }
+
+    /// <summary>
+    /// Move the cursor to (x, y) without clicking.
+    /// durationMs=0 means instant; otherwise the cursor is interpolated over
+    /// the given duration using ~60 Hz steps.
+    /// </summary>
+    public static (bool Ok, string? Reason) Move(int x, int y, int durationMs)
+    {
+        var (sx, sy, sw, sh) = ScreenInfoService.VirtualScreenBounds();
+        if (x < sx || y < sy || x >= sx + sw || y >= sy + sh)
+            return (false, "coordinate outside virtual screen bounds");
+
+        if (durationMs <= 0)
+        {
+            if (!TryMoveCursor(x, y)) return (false, "cursor move failed");
+            return (true, null);
+        }
+
+        // Smooth move: interpolate from current position over durationMs.
+        GetCursorPos(out var origin);
+        int steps = Math.Max(1, durationMs / 16); // ~60 fps
+        int sleepMs = Math.Max(1, durationMs / steps);
+        for (int i = 1; i <= steps; i++)
+        {
+            double t = (double)i / steps;
+            int cx = origin.X + (int)Math.Round((x - origin.X) * t);
+            int cy = origin.Y + (int)Math.Round((y - origin.Y) * t);
+            _ = TryMoveCursor(cx, cy);
+            if (i < steps) Thread.Sleep(sleepMs);
+        }
+        if (!TryMoveCursor(x, y)) return (false, "cursor move failed"); // ensure exact final position
+        return (true, null);
+    }
+
+    /// <summary>
+    /// Scroll at coordinate (x, y).
+    /// direction: "up" | "down" | "left" | "right"
+    /// amount: number of wheel ticks (WHEEL_DELTA = 120 per tick).
+    /// </summary>
+    public static (bool Ok, string? Reason) Scroll(int x, int y, string direction, int amount)
+    {
+        if (amount < 1 || amount > 50) return (false, "amount must be between 1 and 50");
+
+        var (sx, sy, sw, sh) = ScreenInfoService.VirtualScreenBounds();
+        if (x < sx || y < sy || x >= sx + sw || y >= sy + sh)
+            return (false, "coordinate outside virtual screen bounds");
+
+        // Move cursor to scroll target first so the OS delivers the event to
+        // the correct window (Windows routes WM_MOUSEWHEEL to the window under
+        // the cursor, not the focused window).
+        if (!TryMoveCursor(x, y)) return (false, "cursor move failed");
+
+        bool horizontal = direction is "left" or "right";
+        bool negative = direction is "up" or "left";
+
+        // WHEEL_DELTA = 120 per notch; negative = scroll up / left.
+        int delta = (negative ? -120 : 120) * amount;
+
+        var input = new INPUT
+        {
+            type = INPUT_MOUSE,
+            U = new InputUnion
+            {
+                mi = new MOUSEINPUT
+                {
+                    dwFlags = horizontal ? MOUSEEVENTF_HWHEEL : MOUSEEVENTF_WHEEL,
+                    mouseData = (uint)delta
+                }
+            }
+        };
+        uint sent = SendInput(1, [input], Marshal.SizeOf<INPUT>());
         if (sent == 0) return (false, "SendInput returned 0");
         return (true, null);
+    }
+
+    /// <summary>
+    /// Press-hold at (startX, startY), optionally move through waypoints,
+    /// then release at (endX, endY). durationMs controls total movement time.
+    /// </summary>
+    public static (bool Ok, string? Reason) Drag(
+        int startX, int startY,
+        int endX, int endY,
+        MouseButton button,
+        int durationMs,
+        IReadOnlyList<(int X, int Y)>? waypoints)
+    {
+        var (sx, sy, sw, sh) = ScreenInfoService.VirtualScreenBounds();
+        bool InBounds(int px, int py) =>
+            px >= sx && py >= sy && px < sx + sw && py < sy + sh;
+
+        if (!InBounds(startX, startY)) return (false, "start coordinate outside virtual screen bounds");
+        if (!InBounds(endX, endY)) return (false, "end coordinate outside virtual screen bounds");
+
+        uint downFlag, upFlag;
+        switch (button)
+        {
+            case MouseButton.Right:
+                downFlag = MOUSEEVENTF_RIGHTDOWN; upFlag = MOUSEEVENTF_RIGHTUP; break;
+            case MouseButton.Middle:
+                downFlag = MOUSEEVENTF_MIDDLEDOWN; upFlag = MOUSEEVENTF_MIDDLEUP; break;
+            default:
+                downFlag = MOUSEEVENTF_LEFTDOWN; upFlag = MOUSEEVENTF_LEFTUP; break;
+        }
+
+        // 1. Move to start and press.
+        if (!TryMoveCursor(startX, startY)) return (false, "cursor move failed");
+        Thread.Sleep(30); // brief settle before press
+        SendInput(1, [new INPUT
+        {
+            type = INPUT_MOUSE,
+            U = new InputUnion { mi = new MOUSEINPUT { dwFlags = downFlag } }
+        }], Marshal.SizeOf<INPUT>());
+
+        // 2. Build the full path: start → waypoints → end.
+        var path = new List<(int X, int Y)> { (startX, startY) };
+        if (waypoints is not null)
+            foreach (var wp in waypoints)
+                if (InBounds(wp.X, wp.Y)) path.Add(wp);
+        path.Add((endX, endY));
+
+        // 3. Interpolate movement across all segments.
+        int totalSegments = path.Count - 1;
+        int msPerSegment = totalSegments > 0 ? Math.Max(50, durationMs / totalSegments) : durationMs;
+
+        for (int seg = 0; seg < totalSegments; seg++)
+        {
+            var (ax, ay) = path[seg];
+            var (bx, by) = path[seg + 1];
+            int steps = Math.Max(1, msPerSegment / 16);
+            int sleepMs = Math.Max(1, msPerSegment / steps);
+            for (int i = 1; i <= steps; i++)
+            {
+                double t = (double)i / steps;
+                int cx = ax + (int)Math.Round((bx - ax) * t);
+                int cy = ay + (int)Math.Round((by - ay) * t);
+                _ = TryMoveCursor(cx, cy);
+                if (i < steps) Thread.Sleep(sleepMs);
+            }
+        }
+        if (!TryMoveCursor(endX, endY)) return (false, "cursor move failed"); // ensure exact final position
+        Thread.Sleep(30); // brief settle before release
+
+        // 4. Release.
+        SendInput(1, [new INPUT
+        {
+            type = INPUT_MOUSE,
+            U = new InputUnion { mi = new MOUSEINPUT { dwFlags = upFlag } }
+        }], Marshal.SizeOf<INPUT>());
+
+        return (true, null);
+    }
+
+    private static bool TryMoveCursor(int x, int y)
+    {
+        if (SetCursorPos(x, y)) return true;
+
+        var input = AbsoluteMoveInput(x, y);
+        return SendInput(1, [input], Marshal.SizeOf<INPUT>()) == 1;
+    }
+
+    private static INPUT AbsoluteMoveInput(int x, int y)
+    {
+        var (sx, sy, sw, sh) = ScreenInfoService.VirtualScreenBounds();
+        int width = Math.Max(1, sw - 1);
+        int height = Math.Max(1, sh - 1);
+        int dx = (int)Math.Round((x - sx) * 65535.0 / width);
+        int dy = (int)Math.Round((y - sy) * 65535.0 / height);
+        dx = Math.Clamp(dx, 0, 65535);
+        dy = Math.Clamp(dy, 0, 65535);
+
+        return new INPUT
+        {
+            type = INPUT_MOUSE,
+            U = new InputUnion
+            {
+                mi = new MOUSEINPUT
+                {
+                    dx = dx,
+                    dy = dy,
+                    dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+                }
+            }
+        };
     }
 
     // ── keyboard.type ────────────────────────────────────────────────────────
@@ -102,32 +289,49 @@ internal static class InputService
             codes.Add(vk);
         }
 
-        // Press in order, release in reverse order.
+        // Press in order, release in reverse order. Use scan codes rather than
+        // virtual-key-only events; this is more reliable for system chords such
+        // as Alt+F4 after a foreground-window switch.
         var down = new INPUT[codes.Count];
         var up = new INPUT[codes.Count];
         for (int i = 0; i < codes.Count; i++)
         {
-            down[i] = new INPUT
-            {
-                type = INPUT_KEYBOARD,
-                U = new InputUnion { ki = new KEYBDINPUT { wVk = codes[i], dwFlags = 0 } }
-            };
+            down[i] = KeyInput(codes[i], keyUp: false);
         }
         for (int i = 0; i < codes.Count; i++)
         {
             int src = codes.Count - 1 - i;
-            up[i] = new INPUT
-            {
-                type = INPUT_KEYBOARD,
-                U = new InputUnion { ki = new KEYBDINPUT { wVk = codes[src], dwFlags = KEYEVENTF_KEYUP } }
-            };
+            up[i] = KeyInput(codes[src], keyUp: true);
         }
 
         uint sentDown = SendInput((uint)down.Length, down, Marshal.SizeOf<INPUT>());
+        Thread.Sleep(80);
         uint sentUp = SendInput((uint)up.Length, up, Marshal.SizeOf<INPUT>());
-        if (sentDown == 0 || sentUp == 0) return (false, "SendInput returned 0", keys);
+        if (sentDown != down.Length || sentUp != up.Length) return (false, "SendInput sent fewer key events than requested", keys);
         return (true, null, keys);
     }
+
+    private static INPUT KeyInput(ushort vk, bool keyUp)
+    {
+        ushort scan = (ushort)MapVirtualKeyW(vk, MAPVK_VK_TO_VSC);
+        if (scan == 0) scan = vk;
+        uint flags = KEYEVENTF_SCANCODE;
+        if (keyUp) flags |= KEYEVENTF_KEYUP;
+        if (IsExtendedKey(vk)) flags |= KEYEVENTF_EXTENDEDKEY;
+
+        return new INPUT
+        {
+            type = INPUT_KEYBOARD,
+            U = new InputUnion
+            {
+                ki = new KEYBDINPUT { wVk = 0, wScan = scan, dwFlags = flags }
+            }
+        };
+    }
+
+    private static bool IsExtendedKey(ushort vk) => vk is
+        0x21 or 0x22 or 0x23 or 0x24 or 0x25 or 0x26 or 0x27 or 0x28 or
+        0x2D or 0x2E or 0x5B or 0x5C or 0x5D or 0x6F or 0xA3 or 0xA5;
 }
 
 internal static class HotkeyMap

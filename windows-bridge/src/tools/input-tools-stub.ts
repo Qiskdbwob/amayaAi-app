@@ -13,6 +13,27 @@ export async function mouseClickStub(): Promise<LocalToolResult> {
   );
 }
 
+export async function mouseMoveStub(): Promise<LocalToolResult> {
+  throw new ToolInvocationError(
+    'EXECUTION_FAILED',
+    'Native input helper is not implemented yet (mouse.move).'
+  );
+}
+
+export async function mouseScrollStub(): Promise<LocalToolResult> {
+  throw new ToolInvocationError(
+    'EXECUTION_FAILED',
+    'Native input helper is not implemented yet (mouse.scroll).'
+  );
+}
+
+export async function mouseDragStub(): Promise<LocalToolResult> {
+  throw new ToolInvocationError(
+    'EXECUTION_FAILED',
+    'Native input helper is not implemented yet (mouse.drag).'
+  );
+}
+
 export async function keyboardTypeStub(): Promise<LocalToolResult> {
   throw new ToolInvocationError(
     'EXECUTION_FAILED',

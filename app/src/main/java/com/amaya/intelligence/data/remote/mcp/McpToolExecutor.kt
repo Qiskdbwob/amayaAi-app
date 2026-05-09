@@ -4,6 +4,7 @@ import com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeToolProvide
 import com.amaya.intelligence.tools.ConfirmationRequest
 import com.amaya.intelligence.tools.ToolExecutor
 import com.amaya.intelligence.tools.ToolResult
+import com.amaya.intelligence.tools.resolveBridgeToolWireName
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,14 +23,20 @@ class McpToolExecutor @Inject constructor(
         onConfirmationRequired: suspend (ConfirmationRequest) -> Boolean,
         agentConfig: com.amaya.intelligence.data.remote.api.AgentConfig? = null
     ): ToolResult {
+        // Reverse-map sanitized bridge tool names (e.g. "screen_capture" → "screen.capture").
+        // The model receives sanitized names (dots replaced with underscores) because OpenAI
+        // rejects names that don't match ^[a-zA-Z0-9_-]+$. We restore the wire name here
+        // before routing so the bridge registry lookup always uses the canonical dot form.
+        val wireName = resolveBridgeToolWireName(toolName)
+
         // FIX 9: Use McpClientManager.TOOL_PREFIX constant — no hardcoded "mcp__" string here
         return when {
-            toolName.startsWith(McpClientManager.TOOL_PREFIX) ->
-                mcpClientManager.callTool(toolName, arguments)
-            windowsBridgeToolProvider.isBridgeTool(toolName) ->
-                windowsBridgeToolProvider.executeBridgeTool(toolName, arguments)
+            wireName.startsWith(McpClientManager.TOOL_PREFIX) ->
+                mcpClientManager.callTool(wireName, arguments)
+            windowsBridgeToolProvider.isBridgeTool(wireName) ->
+                windowsBridgeToolProvider.executeBridgeTool(wireName, arguments)
             else ->
-                toolExecutor.execute(toolName, arguments, workspacePath, toolCallId, onEvent, onConfirmationRequired, agentConfig)
+                toolExecutor.execute(wireName, arguments, workspacePath, toolCallId, onEvent, onConfirmationRequired, agentConfig)
         }
     }
 }

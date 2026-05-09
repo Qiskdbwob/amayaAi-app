@@ -50,6 +50,7 @@ fun ChatBottomSection(
     onClearImageAttachment: () -> Unit = {},
     onStopGeneration: () -> Unit,
     onNavigateToWorkspace: () -> Unit,
+    showConversationModeSelector: Boolean,
     onShowConversationModeSheet: () -> Unit,
     onInputBarHeightChange: (Int) -> Unit
 ) {
@@ -132,7 +133,7 @@ fun ChatBottomSection(
                 onClearImageAttachment()
             },
             conversationMode = uiState.conversationMode,
-            showConversationModeSelector = isRemoteMode,
+            showConversationModeSelector = showConversationModeSelector,
             onShowConversationModeSelector = onShowConversationModeSheet,
             workspacePath = uiState.workspacePath,
             onWorkspaceClick = onNavigateToWorkspace,

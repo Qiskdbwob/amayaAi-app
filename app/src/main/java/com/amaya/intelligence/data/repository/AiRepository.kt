@@ -384,6 +384,13 @@ class AiRepository @Inject constructor(
                     // Store both ID (for OpenAI) and name (for Gemini) in metadata
                     val resultMetadata = toolCall.metadata.toMutableMap()
                     resultMetadata["toolName"] = toolCall.name  // Gemini needs the function name
+                    // Propagate image metadata from ToolResult.Success so providers can
+                    // attach the screenshot as a vision content block instead of embedding
+                    // the raw base64 string inside the tool-result text.
+                    if (result is ToolResult.Success) {
+                        (result.metadata["bridge_image_base64"] as? String)?.let { resultMetadata["bridge_image_base64"] = it }
+                        (result.metadata["bridge_image_format"] as? String)?.let { resultMetadata["bridge_image_format"] = it }
+                    }
                     
                     messages = messages + ChatMessage(
                         role = MessageRole.TOOL,

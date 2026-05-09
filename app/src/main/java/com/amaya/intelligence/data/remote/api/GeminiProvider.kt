@@ -26,7 +26,7 @@ import javax.inject.Singleton
  * KEY FEATURES:
  * - Function calling via functionDeclarations
  * - Streaming via streamGenerateContent endpoint
- * - Multimodal support (though we only use text here)
+ * - Multimodal support for bridge screenshots via inlineData
  */
 @Singleton
 class GeminiProvider @Inject constructor(
@@ -277,6 +277,15 @@ class GeminiProvider @Inject constructor(
                                 response = mapOf("result" to result.content)
                             )
                         ))
+                        result.bridgeImageAttachment()?.let { attachment ->
+                            responseParts.add(GeminiPart(text = result.bridgeVisionPrompt()))
+                            responseParts.add(GeminiPart(
+                                inlineData = GeminiInlineData(
+                                    mimeType = attachment.mediaType,
+                                    data = attachment.base64
+                                )
+                            ))
+                        }
                         // Add thoughtSignature as a separate part if present
                         if (thoughtSig != null) {
                             responseParts.add(GeminiPart(
@@ -353,7 +362,14 @@ data class GeminiPart(
     val text: String? = null,
     val functionCall: GeminiFunctionCall? = null,
     val functionResponse: GeminiFunctionResponse? = null,
-    val thoughtSignature: String? = null
+    val thoughtSignature: String? = null,
+    val inlineData: GeminiInlineData? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class GeminiInlineData(
+    val mimeType: String,
+    val data: String
 )
 
 @JsonClass(generateAdapter = true)

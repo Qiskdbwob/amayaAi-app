@@ -273,6 +273,20 @@ object ToolUiMapper {
                 targetIcon = ToolInfoIcon.MOUSE,
                 badges = listOf("WINDOWS")
             )
+            "window.close" -> ToolUiMetadata(
+                category = ToolCategory.SYSTEM,
+                label = "Close Windows Window",
+                actionIcon = ToolInfoIcon.COMMAND,
+                targetIcon = ToolInfoIcon.MOUSE,
+                badges = listOf("WINDOWS")
+            )
+            "app.open" -> ToolUiMetadata(
+                category = ToolCategory.SYSTEM,
+                label = "Open Windows App",
+                actionIcon = ToolInfoIcon.COMMAND,
+                targetIcon = ToolInfoIcon.MOUSE,
+                badges = listOf("WINDOWS")
+            )
             "mouse.click" -> ToolUiMetadata(
                 category = ToolCategory.SYSTEM,
                 label = "Windows Mouse Click",
@@ -335,6 +349,27 @@ object ToolUiMapper {
                 actionIcon = ToolInfoIcon.DELETE,
                 targetIcon = ToolInfoIcon.FILE,
                 badges = listOf("WINDOWS", "DELETE")
+            )
+            "ui.tree" -> ToolUiMetadata(
+                category = ToolCategory.SYSTEM,
+                label = "Windows UI Tree",
+                actionIcon = ToolInfoIcon.LIST,
+                targetIcon = ToolInfoIcon.MOUSE,
+                badges = listOf("WINDOWS", "UI")
+            )
+            "ui.find_text" -> ToolUiMetadata(
+                category = ToolCategory.SYSTEM,
+                label = "Find Windows UI Text",
+                actionIcon = ToolInfoIcon.SEARCH,
+                targetIcon = ToolInfoIcon.MOUSE,
+                badges = listOf("WINDOWS", "UI")
+            )
+            "ui.click_element" -> ToolUiMetadata(
+                category = ToolCategory.SYSTEM,
+                label = "Click Windows UI Element",
+                actionIcon = ToolInfoIcon.MOUSE,
+                targetIcon = ToolInfoIcon.MOUSE,
+                badges = listOf("WINDOWS", "UI")
             )
             "shell.run" -> {
                 val cmd = (safeArgs["command"] ?: "").toString()

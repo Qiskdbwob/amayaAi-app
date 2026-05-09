@@ -170,6 +170,7 @@ fun windowsBridgeChatScreenConfig(
     onToolAccept = onToolAccept,
     onToolDecline = onToolDecline
 ).copy(
+    showConversationModeSelector = false,
     selectedAgentFallbackLabel = "Select Agent",
     streamingLabel = "Windows Bridge streaming",
     idleLabel = "Windows Bridge ready",

@@ -8,16 +8,28 @@ import { captureScreenFactory } from './screen-tools';
 import { listWindows as listWindowsStub } from './window-tools';
 import {
   mouseClickStub,
+  mouseMoveStub,
+  mouseScrollStub,
+  mouseDragStub,
   keyboardTypeStub,
   keyboardHotkeyStub
 } from './input-tools-stub';
 import { clipboardWrite } from './clipboard-tools';
 import {
   focusWindow,
+  closeWindow,
+  openApp,
+  uiTree,
+  uiFindText,
+  uiClickElement,
   keyboardHotkey,
   keyboardType,
   listWindowsReal,
-  mouseClick
+  mouseClick,
+  mouseMove,
+  mouseScroll,
+  mouseDrag,
+  inputWait
 } from './native-tools';
 import { fileList, fileRead, fileWrite, fileEdit, fileDelete } from './file-tools';
 import { shellRun, shellCancel } from './shell-tools';
@@ -56,7 +68,7 @@ export function buildRegistry(options: BuildRegistryOptions = {}): Record<string
     defaultQuality: 85,
     defaultMaxWidth: null
   };
-  const capture = captureScreenFactory(screenPolicy);
+  const capture = captureScreenFactory(screenPolicy, helper);
 
   // File/shell policy
   const rawFolder = (options.policy?.folderPolicy ?? {}) as Record<string, unknown>;
@@ -70,7 +82,7 @@ export function buildRegistry(options: BuildRegistryOptions = {}): Record<string
     'screen.capture': {
       name: 'screen.capture',
       description:
-        'Capture a screenshot. Supports format (png|jpeg), quality (1-100), maxWidth, displayIndex.',
+        'Capture a screenshot with coordinate/window accessibility metadata. Supports format (png|jpeg), quality (1-100), maxWidth, displayIndex, includeWindows.',
       risk: BridgeRiskLevel.LOW,
       requiresApproval: false,
       enabled: true,
@@ -94,6 +106,46 @@ export function buildRegistry(options: BuildRegistryOptions = {}): Record<string
       enabled: hasHelper,
       execute: hasHelper ? focusWindow(helper!) : disabled
     },
+    'window.close': {
+      name: 'window.close',
+      description: 'Request that a top-level window closes by handle id from window.list.',
+      risk: BridgeRiskLevel.MEDIUM,
+      requiresApproval: false,
+      enabled: hasHelper,
+      execute: hasHelper ? closeWindow(helper!) : disabled
+    },
+    'app.open': {
+      name: 'app.open',
+      description: 'Open a Windows application by app name or safe executable alias, then verify with window.list/screen.capture.',
+      risk: BridgeRiskLevel.MEDIUM,
+      requiresApproval: false,
+      enabled: hasHelper,
+      execute: hasHelper ? openApp(helper!) : disabled
+    },
+    'ui.tree': {
+      name: 'ui.tree',
+      description: 'Snapshot a lightweight Windows UI element tree for the active or specified window. Returns elementId, role, name, className, bounds, center, enabled/visible.',
+      risk: BridgeRiskLevel.MEDIUM,
+      requiresApproval: false,
+      enabled: hasHelper,
+      execute: hasHelper ? uiTree(helper!) : disabled
+    },
+    'ui.find_text': {
+      name: 'ui.find_text',
+      description: 'Find UI elements by visible text/class in the active or specified window. Returns elementIds and bounds for deterministic clicking.',
+      risk: BridgeRiskLevel.MEDIUM,
+      requiresApproval: false,
+      enabled: hasHelper,
+      execute: hasHelper ? uiFindText(helper!) : disabled
+    },
+    'ui.click_element': {
+      name: 'ui.click_element',
+      description: 'Click a UI element by elementId returned from ui.tree or ui.find_text.',
+      risk: BridgeRiskLevel.MEDIUM,
+      requiresApproval: false,
+      enabled: hasHelper,
+      execute: hasHelper ? uiClickElement(helper!) : disabled
+    },
     'mouse.click': {
       name: 'mouse.click',
       description: hasHelper
@@ -104,10 +156,48 @@ export function buildRegistry(options: BuildRegistryOptions = {}): Record<string
       enabled: true,
       execute: hasHelper ? mouseClick(helper!) : mouseClickStub
     },
+    'mouse.move': {
+      name: 'mouse.move',
+      description: hasHelper
+        ? 'Move the cursor to (x, y) without clicking. Supports optional durationMs for smooth movement. Use to reveal hover menus or tooltips.'
+        : 'Mouse move (stub — native helper not available).',
+      risk: BridgeRiskLevel.LOW,
+      requiresApproval: false,
+      enabled: true,
+      execute: hasHelper ? mouseMove(helper!) : mouseMoveStub
+    },
+    'mouse.scroll': {
+      name: 'mouse.scroll',
+      description: hasHelper
+        ? 'Scroll at coordinate (x, y). direction: up|down|left|right. amount: scroll ticks 1–50 (default 3).'
+        : 'Mouse scroll (stub — native helper not available).',
+      risk: BridgeRiskLevel.LOW,
+      requiresApproval: false,
+      enabled: true,
+      execute: hasHelper ? mouseScroll(helper!) : mouseScrollStub
+    },
+    'mouse.drag': {
+      name: 'mouse.drag',
+      description: hasHelper
+        ? 'Press-hold at (startX, startY), move to (endX, endY), then release. Supports optional waypoints array and durationMs.'
+        : 'Mouse drag (stub — native helper not available).',
+      risk: BridgeRiskLevel.MEDIUM,
+      requiresApproval: false,
+      enabled: true,
+      execute: hasHelper ? mouseDrag(helper!) : mouseDragStub
+    },
+    'input.wait': {
+      name: 'input.wait',
+      description: 'Pause execution for durationMs milliseconds (100–10000, default 1000). Use to wait for animations, loading spinners, or rate-limited UIs.',
+      risk: BridgeRiskLevel.LOW,
+      requiresApproval: false,
+      enabled: true,
+      execute: inputWait()
+    },
     'keyboard.type': {
       name: 'keyboard.type',
       description: hasHelper
-        ? 'Type text via the native helper.'
+        ? 'Type text reliably. Long/multiline text is pasted via clipboard internally; short text can use key events. Supports mode auto|paste|keys.'
         : 'Keyboard type (stub — native helper not available).',
       risk: BridgeRiskLevel.MEDIUM,
       requiresApproval: false,

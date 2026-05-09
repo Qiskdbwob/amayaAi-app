@@ -607,6 +607,7 @@ fun ChatScreen(
                 },
                 onStopGeneration = doStopGeneration,
                 onNavigateToWorkspace = onNavigateToWorkspace,
+                showConversationModeSelector = config?.showConversationModeSelector ?: isRemoteMode,
                 onShowConversationModeSheet = { showConversationModeSheet = true },
                 onInputBarHeightChange = { inputBarHeight = it }
             )
@@ -703,7 +704,7 @@ fun ChatScreen(
         )
     }
 
-    if (showConversationModeSheet && isRemoteMode) {
+    if (showConversationModeSheet && isRemoteMode && config?.showConversationModeSelector != false) {
         ConversationModeSheet(
             currentMode = uiState.conversationMode,
             onSelect = { mode ->

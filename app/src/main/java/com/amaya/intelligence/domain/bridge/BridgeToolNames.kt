@@ -17,6 +17,7 @@ object BridgeToolNames {
     const val WINDOW_LIST = "window.list"
     const val WINDOW_FOCUS = "window.focus"
     const val WINDOW_CLOSE = "window.close"
+    const val APP_OPEN = "app.open"
 
     // Mouse
     const val MOUSE_MOVE = "mouse.move"
@@ -62,7 +63,7 @@ object BridgeToolNames {
     /** All declared tool names, useful for validation / routing tables. */
     val all: Set<String> = setOf(
         SCREEN_CAPTURE, SCREEN_STREAM_START, SCREEN_STREAM_STOP,
-        WINDOW_LIST, WINDOW_FOCUS, WINDOW_CLOSE,
+        WINDOW_LIST, WINDOW_FOCUS, WINDOW_CLOSE, APP_OPEN,
         MOUSE_MOVE, MOUSE_CLICK, MOUSE_DOUBLE_CLICK, MOUSE_DRAG, MOUSE_SCROLL,
         KEYBOARD_TYPE, KEYBOARD_PRESS, KEYBOARD_HOTKEY,
         CLIPBOARD_READ, CLIPBOARD_WRITE,

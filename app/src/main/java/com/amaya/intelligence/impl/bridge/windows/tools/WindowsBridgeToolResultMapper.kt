@@ -20,11 +20,20 @@ import org.json.JSONObject
 internal object WindowsBridgeToolResultMapper {
 
     fun toSuccess(result: BridgeToolResult): ToolResult.Success {
+        // Extract image data from result before serialising to JSON so that the
+        // base64 payload never lands in the conversation-history string.  Providers
+        // that support vision (OpenAI, Anthropic) will attach it as a proper image
+        // content block; others will receive a lightweight placeholder instead.
+        val resultMap = result.result.toMutableMap()
+        val imageBase64 = resultMap.remove("imageBase64") as? String
+        val imageFormat = resultMap.remove("format") as? String ?: "jpeg"
+
+        // Build a compact JSON body without the raw base64 blob.
         val body = JSONObject().apply {
             put("ok", true)
             put("tool", result.tool)
             put("status", result.status.wireName)
-            put("result", mapToJson(result.result))
+            put("result", mapToJson(resultMap))
             put("startedAt", result.startedAt)
             put("finishedAt", result.finishedAt)
             put("durationMs", result.durationMs)
@@ -35,6 +44,10 @@ internal object WindowsBridgeToolResultMapper {
             put("bridge_status", result.status.wireName)
             put("bridge_duration_ms", result.durationMs)
             put("executionTarget", "WINDOWS_BRIDGE")
+            if (imageBase64 != null) {
+                put("bridge_image_base64", imageBase64)
+                put("bridge_image_format", imageFormat)
+            }
         }
         return ToolResult.Success(output = body.toString(), metadata = metadata)
     }

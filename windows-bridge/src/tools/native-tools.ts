@@ -1,3 +1,4 @@
+import { clipboard } from 'electron';
 import type { NativeHelperClient } from '../native/native-helper-client';
 import { mapToBridgeErrorCode, NativeHelperError } from '../native/native-helper-errors';
 import { ToolInvocationError, type LocalToolResult } from './tool-result';
@@ -10,6 +11,11 @@ import { ToolInvocationError, type LocalToolResult } from './tool-result';
  * Validation is done up-front so we never spam the helper with obviously bad
  * payloads.
  */
+
+// ── Scroll directions accepted by mouse.scroll ───────────────────────────────
+const SCROLL_DIRECTIONS = ['up', 'down', 'left', 'right'] as const;
+type ScrollDirection = (typeof SCROLL_DIRECTIONS)[number];
+
 export function listWindowsReal(helper: NativeHelperClient) {
   return async (): Promise<LocalToolResult> => {
     const result = await invoke(helper, 'window.list', {});
@@ -22,6 +28,62 @@ export function focusWindow(helper: NativeHelperClient) {
     const windowId = asString(args['windowId']);
     if (!windowId) throw invalid('windowId is required');
     const result = await invoke(helper, 'window.focus', { windowId });
+    return { status: 'success', result };
+  };
+}
+
+export function closeWindow(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const windowId = asString(args['windowId']);
+    if (!windowId) throw invalid('windowId is required');
+    const result = await invoke(helper, 'window.close', { windowId });
+    return { status: 'success', result };
+  };
+}
+
+export function openApp(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const app = asString(args['app']) ?? asString(args['name']) ?? asString(args['target']);
+    if (!app) throw invalid('app is required');
+    const params: Record<string, unknown> = { app };
+    const launchArgs = asString(args['args']);
+    if (launchArgs !== undefined) params['args'] = launchArgs;
+    const result = await invoke(helper, 'app.open', params);
+    return { status: 'success', result };
+  };
+}
+
+export function uiTree(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const params: Record<string, unknown> = {};
+    const windowId = asString(args['windowId']);
+    if (windowId !== undefined) params['windowId'] = windowId;
+    const limit = asInteger(args['limit']);
+    if (limit !== undefined) params['limit'] = clampInt(limit, 1, 1000);
+    const result = await invoke(helper, 'ui.tree', params);
+    return { status: 'success', result };
+  };
+}
+
+export function uiFindText(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const text = asString(args['text']);
+    if (!text) throw invalid('text is required');
+    const params: Record<string, unknown> = { text };
+    const windowId = asString(args['windowId']);
+    if (windowId !== undefined) params['windowId'] = windowId;
+    const limit = asInteger(args['limit']);
+    if (limit !== undefined) params['limit'] = clampInt(limit, 1, 1000);
+    const result = await invoke(helper, 'ui.find_text', params);
+    return { status: 'success', result };
+  };
+}
+
+export function uiClickElement(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const elementId = asString(args['elementId']) ?? asString(args['id']) ?? asString(args['handle']);
+    if (!elementId) throw invalid('elementId is required');
+    const result = await invoke(helper, 'ui.click_element', { elementId });
     return { status: 'success', result };
   };
 }
@@ -42,15 +104,144 @@ export function mouseClick(helper: NativeHelperClient) {
   };
 }
 
+/**
+ * mouse.move — move the cursor to (x, y) without clicking.
+ * Useful for revealing hover menus, tooltips, and positioning before drag.
+ * duration controls how long the movement takes (0 = instant, max 2000 ms).
+ */
+export function mouseMove(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const x = asInteger(args['x']);
+    const y = asInteger(args['y']);
+    if (x === undefined || y === undefined) {
+      throw invalid('x and y are required integers');
+    }
+    const durationMs = clampInt(asInteger(args['durationMs']) ?? 0, 0, 2000);
+
+    const result = await invoke(helper, 'mouse.move', { x, y, durationMs });
+    return { status: 'success', result };
+  };
+}
+
+/**
+ * mouse.scroll — scroll at the given coordinate.
+ * direction: 'up' | 'down' | 'left' | 'right'
+ * amount: number of scroll ticks (1–50, default 3).
+ * Mirrors the Claude computer_use scroll action and OpenAI scroll_y/scroll_x.
+ */
+export function mouseScroll(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const x = asInteger(args['x']);
+    const y = asInteger(args['y']);
+    if (x === undefined || y === undefined) {
+      throw invalid('x and y are required integers');
+    }
+    const direction = asEnum(args['direction'], SCROLL_DIRECTIONS) ?? 'down';
+    const amount = clampInt(asInteger(args['amount']) ?? 3, 1, 50);
+
+    const result = await invoke(helper, 'mouse.scroll', { x, y, direction, amount });
+    return { status: 'success', result };
+  };
+}
+
+/**
+ * mouse.drag — press-and-hold at (startX, startY), move to (endX, endY),
+ * then release. Supports optional intermediate waypoints via `path`.
+ * durationMs controls total movement time (default 400 ms).
+ * Mirrors Claude left_click_drag and OpenAI drag (path array).
+ */
+export function mouseDrag(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const startX = asInteger(args['startX']);
+    const startY = asInteger(args['startY']);
+    const endX = asInteger(args['endX']);
+    const endY = asInteger(args['endY']);
+    if (startX === undefined || startY === undefined) {
+      throw invalid('startX and startY are required integers');
+    }
+    if (endX === undefined || endY === undefined) {
+      throw invalid('endX and endY are required integers');
+    }
+    const button = asEnum(args['button'], ['left', 'right', 'middle']) ?? 'left';
+    const durationMs = clampInt(asInteger(args['durationMs']) ?? 400, 50, 5000);
+
+    // Optional intermediate waypoints: [{x, y}, ...]
+    const rawPath = args['path'];
+    const waypoints: Array<{ x: number; y: number }> = [];
+    if (Array.isArray(rawPath)) {
+      for (const pt of rawPath) {
+        if (pt && typeof pt === 'object') {
+          const px = asInteger((pt as Record<string, unknown>)['x']);
+          const py = asInteger((pt as Record<string, unknown>)['y']);
+          if (px !== undefined && py !== undefined) {
+            waypoints.push({ x: px, y: py });
+          }
+        }
+      }
+    }
+
+    const result = await invoke(helper, 'mouse.drag', {
+      startX, startY, endX, endY, button, durationMs, waypoints
+    });
+    return { status: 'success', result };
+  };
+}
+
+/**
+ * input.wait — pause execution for a fixed duration.
+ * Useful for waiting for animations, loading spinners, or rate-limited UIs.
+ * durationMs: 100–10000 ms (default 1000 ms).
+ * This is a pure bridge-side sleep — no native helper call needed.
+ */
+export function inputWait() {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const durationMs = clampInt(asInteger(args['durationMs']) ?? 1000, 100, 10000);
+    await new Promise<void>((resolve) => setTimeout(resolve, durationMs));
+    return {
+      status: 'success',
+      result: { waited: true, durationMs }
+    };
+  };
+}
+
 export function keyboardType(helper: NativeHelperClient) {
   return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
     const text = asString(args['text']);
     if (text === undefined) throw invalid('text is required');
     if (text.length > 5000) throw invalid('text exceeds 5000 chars');
-    const intervalMs = clampInt(asInteger(args['intervalMs']) ?? 5, 0, 100);
+
+    const mode = asEnum(args['mode'], ['auto', 'keys', 'paste']) ?? 'auto';
+    const shouldPaste =
+      mode === 'paste' ||
+      (mode === 'auto' && (text.length > 80 || /\r|\n|\t/.test(text)));
+
+    if (shouldPaste) {
+      try {
+        clipboard.writeText(text);
+      } catch (err) {
+        throw new ToolInvocationError(
+          'EXECUTION_FAILED',
+          (err as Error).message || 'Clipboard write failed before paste.',
+          {},
+          true
+        );
+      }
+      const result = await invoke(helper, 'keyboard.hotkey', { keys: ['ctrl', 'v'] });
+      return {
+        status: 'success',
+        result: {
+          typed: true,
+          length: text.length,
+          mode: 'paste',
+          pasteHotkey: result['keys'] ?? ['ctrl', 'v']
+        }
+      };
+    }
+
+    const intervalMs = clampInt(asInteger(args['intervalMs']) ?? 10, 0, 100);
     const result = await invoke(helper, 'keyboard.type', { text, intervalMs });
     // Do NOT echo text back. Helper already returns length only.
-    return { status: 'success', result };
+    return { status: 'success', result: { ...result, mode: 'keys' } };
   };
 }
 

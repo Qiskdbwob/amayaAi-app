@@ -462,10 +462,32 @@ data class ToolParameter(
 // FIX 4.3: Shared extension to convert ToolDefinition → AiToolDefinition.
 // Eliminates identical mapping code duplicated in AiRepository.buildToolDefinitions()
 // and SubagentRunner.runInternal(). Single source of truth for this conversion.
+//
+// FIX: OpenAI rejects tool names that don't match ^[a-zA-Z0-9_-]+$.
+// Bridge tool names use dots (e.g. "screen.capture", "mouse.click") which are invalid.
+// sanitizeBridgeToolName() replaces '.' with '__' before sending to the API.
+// desanitizeBridgeToolName() reverses this when routing the model's response back.
+fun sanitizeBridgeToolName(name: String): String = name.replace('.', '_').replace('-', '_')
+fun desanitizeBridgeToolName(name: String): String = name // wire name is already the canonical form
+
+// Build a reverse lookup: sanitized → original wire name.
+// Used by McpToolExecutor to map the model's response back to the bridge wire name.
+private val bridgeToolSanitizedToWire: Map<String, String> by lazy {
+    com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeToolDefinitions.all
+        .associate { sanitizeBridgeToolName(it.name) to it.name }
+}
+
+/** Reverse a sanitized bridge tool name back to its wire name, or return [sanitized] unchanged. */
+fun resolveBridgeToolWireName(sanitized: String): String =
+    bridgeToolSanitizedToWire[sanitized] ?: sanitized
+
 fun ToolDefinition.toAiToolDefinition(truncateDesc: Boolean = false): com.amaya.intelligence.data.remote.api.AiToolDefinition {
     fun String.maybeTruncate() = if (truncateDesc && length > 1023) take(1023) + "…" else this
+    // Sanitize the name: OpenAI only accepts ^[a-zA-Z0-9_-]+$ — dots are not allowed.
+    // Bridge tool names (e.g. "screen.capture") are sanitized here and reversed in McpToolExecutor.
+    val safeName = sanitizeBridgeToolName(name)
     return com.amaya.intelligence.data.remote.api.AiToolDefinition(
-        name = name,
+        name = safeName,
         description = description.maybeTruncate(),
         parameters = com.amaya.intelligence.data.remote.api.AiToolParameters(
             type = "object",

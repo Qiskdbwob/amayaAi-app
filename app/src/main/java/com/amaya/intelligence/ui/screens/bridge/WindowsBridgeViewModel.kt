@@ -102,10 +102,16 @@ class WindowsBridgeViewModel @Inject constructor(
                     val output = try {
                         org.json.JSONObject(result.output)
                     } catch (_: Exception) { null }
-                    val img = output?.optJSONObject("result")?.optString("imageBase64")
-                    val w = output?.optJSONObject("result")?.optInt("width", 0) ?: 0
-                    val h = output?.optJSONObject("result")?.optInt("height", 0) ?: 0
-                    val fmt = output?.optJSONObject("result")?.optString("format", "jpeg") ?: "jpeg"
+                    val resultJson = output?.optJSONObject("result")
+                    val img = (result.metadata["bridge_image_base64"] as? String)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: resultJson?.optString("imageBase64")?.takeIf { it.isNotBlank() }
+                    val w = resultJson?.optInt("width", 0) ?: 0
+                    val h = resultJson?.optInt("height", 0) ?: 0
+                    val fmt = (result.metadata["bridge_image_format"] as? String)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: resultJson?.optString("format", "jpeg")
+                        ?: "jpeg"
                     _state.update {
                         it.copy(
                             screenCapture = ScreenCaptureState(
@@ -113,7 +119,8 @@ class WindowsBridgeViewModel @Inject constructor(
                                 width = w,
                                 height = h,
                                 format = fmt,
-                                isLoading = false
+                                isLoading = false,
+                                error = if (img == null) "Screen capture did not include image data." else null
                             )
                         )
                     }

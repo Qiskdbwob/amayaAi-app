@@ -37,6 +37,7 @@ internal static class WindowService
                     ProcessId = (int)pid,
                     ProcessName = SafeProcessName((int)pid),
                     Bounds = bounds,
+                    State = WindowState(hWnd),
                     Visible = true,
                     Focused = hWnd == foreground
                 });
@@ -55,6 +56,12 @@ internal static class WindowService
     {
         var hWnd = NativeMethods.GetForegroundWindow();
         if (hWnd == IntPtr.Zero) return null;
+        return Info(hWnd, focused: true);
+    }
+
+    public static WindowInfo? Info(IntPtr hWnd, bool focused)
+    {
+        if (hWnd == IntPtr.Zero || !NativeMethods.IsWindow(hWnd)) return null;
         try
         {
             var titleLen = NativeMethods.GetWindowTextLengthW(hWnd);
@@ -71,8 +78,9 @@ internal static class WindowService
                 ProcessId = (int)pid,
                 ProcessName = SafeProcessName((int)pid),
                 Bounds = bounds,
+                State = WindowState(hWnd),
                 Visible = NativeMethods.IsWindowVisible(hWnd),
-                Focused = true
+                Focused = focused
             };
         }
         catch
@@ -92,24 +100,116 @@ internal static class WindowService
             return (false, "windowId must be a numeric handle");
         }
 
-        IntPtr hWnd = new IntPtr(handleValue);
-        if (!NativeMethods.IsWindowVisible(hWnd) && !NativeMethods.IsIconic(hWnd))
+        IntPtr hWnd = NormalizeWindowHandle(new IntPtr(handleValue));
+        if (hWnd == IntPtr.Zero)
         {
-            // Not visible and not minimized — treat as missing.
             return (false, "window not found");
         }
 
+        if (IsForegroundRoot(hWnd)) return (true, null);
+
+        // Be conservative for normal/windowed apps: do not call SW_SHOWNORMAL and
+        // do not attach input queues. Some apps react badly to aggressive focus
+        // manipulation. Only restore minimized windows, then request foreground.
         if (NativeMethods.IsIconic(hWnd))
         {
             NativeMethods.ShowWindow(hWnd, NativeMethods.SW_RESTORE);
+            Thread.Sleep(120);
         }
 
-        bool ok = NativeMethods.SetForegroundWindow(hWnd);
-        if (!ok)
+        NativeMethods.BringWindowToTop(hWnd);
+        _ = NativeMethods.SetForegroundWindow(hWnd);
+        Thread.Sleep(80);
+
+        return IsForegroundRoot(hWnd)
+            ? (true, null)
+            : (false, "Windows blocked foreground activation (recoverable)");
+    }
+
+    public static (bool Closed, string? Reason) Close(string? windowId)
+    {
+        if (string.IsNullOrWhiteSpace(windowId))
         {
-            return (false, "Windows blocked foreground activation (recoverable)");
+            return (false, "windowId is required");
         }
-        return (true, null);
+        if (!long.TryParse(windowId, out var handleValue))
+        {
+            return (false, "windowId must be a numeric handle");
+        }
+
+        IntPtr hWnd = NormalizeWindowHandle(new IntPtr(handleValue));
+        if (hWnd == IntPtr.Zero)
+        {
+            return (false, "window not found");
+        }
+
+        // Preferred path: ask the target window to close. Never report success
+        // only because the message was accepted; verify that the HWND disappears.
+        if (NativeMethods.PostMessageW(hWnd, NativeMethods.WM_CLOSE, IntPtr.Zero, IntPtr.Zero) &&
+            WaitUntilClosed(hWnd, 900))
+        {
+            return (true, null);
+        }
+
+        _ = NativeMethods.SendMessageTimeoutW(
+            hWnd,
+            NativeMethods.WM_CLOSE,
+            IntPtr.Zero,
+            IntPtr.Zero,
+            NativeMethods.SMTO_ABORTIFHUNG,
+            500,
+            out _);
+        if (WaitUntilClosed(hWnd, 900))
+        {
+            return (true, null);
+        }
+
+        // Fallback for windows that reject cross-thread WM_CLOSE (for example
+        // integrity-level/UIPI cases): focus the target and send Alt+F4.
+        var (focused, _) = Focus(windowId);
+        if (focused)
+        {
+            var (ok, reason, _) = InputService.Hotkey(["alt", "f4"]);
+            if (!ok) return (false, reason ?? "Alt+F4 close fallback failed");
+            if (WaitUntilClosed(hWnd, 1200)) return (true, null);
+            return (false, "close command was sent but the window is still open");
+        }
+
+        return (false, "window close request was blocked");
+    }
+
+    private static bool WaitUntilClosed(IntPtr hWnd, int timeoutMs)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+        while (Environment.TickCount64 < deadline)
+        {
+            if (!NativeMethods.IsWindow(hWnd)) return true;
+            Thread.Sleep(50);
+        }
+        return !NativeMethods.IsWindow(hWnd);
+    }
+
+    private static bool IsForegroundRoot(IntPtr hWnd)
+    {
+        var foreground = NativeMethods.GetForegroundWindow();
+        if (foreground == IntPtr.Zero) return false;
+        return NormalizeWindowHandle(foreground) == NormalizeWindowHandle(hWnd);
+    }
+
+    private static IntPtr NormalizeWindowHandle(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero || !NativeMethods.IsWindow(hWnd)) return IntPtr.Zero;
+        var root = NativeMethods.GetAncestor(hWnd, NativeMethods.GA_ROOT);
+        if (root != IntPtr.Zero && NativeMethods.IsWindow(root)) hWnd = root;
+        if (!NativeMethods.IsWindowVisible(hWnd) && !NativeMethods.IsIconic(hWnd)) return IntPtr.Zero;
+        return hWnd;
+    }
+
+    private static string WindowState(IntPtr hWnd)
+    {
+        if (NativeMethods.IsIconic(hWnd)) return "minimized";
+        if (NativeMethods.IsZoomed(hWnd)) return "maximized";
+        return "normal";
     }
 
     private static WindowBounds? ReadBounds(IntPtr hWnd)

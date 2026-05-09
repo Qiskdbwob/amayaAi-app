@@ -256,14 +256,28 @@ class AnthropicProvider @Inject constructor(
                 }
                 MessageRole.TOOL -> {
                     msg.toolResult?.let { result ->
+                        val content = mutableListOf(AnthropicContentBlock(
+                            type = "tool_result",
+                            toolUseId = result.toolCallId,
+                            content = result.content,
+                            isError = result.isError
+                        ))
+                        result.bridgeImageAttachment()?.let { attachment ->
+                            content.add(AnthropicContentBlock(
+                                type = "text",
+                                text = result.bridgeVisionPrompt()
+                            ))
+                            content.add(AnthropicContentBlock(
+                                type = "image",
+                                source = AnthropicImageSource(
+                                    mediaType = attachment.mediaType,
+                                    data = attachment.base64
+                                )
+                            ))
+                        }
                         AnthropicMessage(
                             role = "user",
-                            content = listOf(AnthropicContentBlock(
-                                type = "tool_result",
-                                toolUseId = result.toolCallId,
-                                content = result.content,
-                                isError = result.isError
-                            ))
+                            content = content
                         )
                     }
                 }
@@ -337,7 +351,15 @@ data class AnthropicContentBlock(
     val input: Map<String, Any?>? = null,
     @Json(name = "tool_use_id") val toolUseId: String? = null,
     val content: String? = null,
-    @Json(name = "is_error") val isError: Boolean? = null
+    @Json(name = "is_error") val isError: Boolean? = null,
+    val source: AnthropicImageSource? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class AnthropicImageSource(
+    val type: String = "base64",
+    @Json(name = "media_type") val mediaType: String,
+    val data: String
 )
 
 @JsonClass(generateAdapter = true)

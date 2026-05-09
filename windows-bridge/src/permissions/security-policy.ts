@@ -86,9 +86,9 @@ const DEFAULTS: SecurityPolicy = {
     allowQueryTokenFallback: true
   },
   screenCapture: {
-    defaultFormat: 'png',
-    defaultQuality: 85,
-    defaultMaxWidth: null
+    defaultFormat: 'jpeg',
+    defaultQuality: 72,
+    defaultMaxWidth: 1280
   },
   approval: {
     enabled: true,
