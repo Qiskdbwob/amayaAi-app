@@ -43,7 +43,9 @@ internal static class WindowService
                     Focused = hWnd == foreground,
                     Focusable = IsFocusable(hWnd),
                     ScaleFactor = DpiService.GetScaleFactorForWindow(hWnd),
-                    DpiAwareness = DpiService.GetAwarenessContext(hWnd)
+                    DpiAwareness = DpiService.GetAwarenessContext(hWnd),
+                    Integrity = IntegrityService.LabelForProcess((int)pid),
+                    InputBlocked = IntegrityService.WouldBeBlockedByUipi(hWnd)
                 });
             }
             catch
@@ -72,6 +74,8 @@ internal static class WindowService
                 Focusable = windows[i].Focusable,
                 ScaleFactor = windows[i].ScaleFactor,
                 DpiAwareness = windows[i].DpiAwareness,
+                Integrity = windows[i].Integrity,
+                InputBlocked = windows[i].InputBlocked,
                 ZIndex = i
             };
         }
@@ -97,6 +101,8 @@ internal static class WindowService
 
             NativeMethods.GetWindowThreadProcessId(hWnd, out uint pid);
             var bounds = ReadBounds(hWnd) ?? new WindowBounds();
+            var integrityLabel = IntegrityService.LabelForProcess((int)pid);
+            bool inputBlocked = IntegrityService.WouldBeBlockedByUipi(hWnd);
             return new WindowInfo
             {
                 Id = hWnd.ToInt64().ToString(),
@@ -110,7 +116,9 @@ internal static class WindowService
                 Focused = focused,
                 Focusable = IsFocusable(hWnd),
                 ScaleFactor = DpiService.GetScaleFactorForWindow(hWnd),
-                DpiAwareness = DpiService.GetAwarenessContext(hWnd)
+                DpiAwareness = DpiService.GetAwarenessContext(hWnd),
+                Integrity = integrityLabel,
+                InputBlocked = inputBlocked
             };
         }
         catch

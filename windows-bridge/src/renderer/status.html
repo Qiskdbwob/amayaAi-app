@@ -60,6 +60,13 @@
 </head>
 <body>
   <h1>Amaya Windows Bridge</h1>
+  <div id="uipi-warn" style="display:none; margin:0 0 10px; padding:10px 12px; border-radius:6px; background:#3d2a12; color:#ffd699; border:1px solid #7a5a20; font-size:12px; line-height:1.4;">
+    <strong>Bridge is not running as Administrator.</strong>
+    Mouse click, keyboard typing, and hotkeys into elevated windows (Task Manager, Registry Editor,
+    Windows Security, UAC prompts, anything launched with "Run as administrator") will be silently
+    dropped by Windows UIPI. Most desktop apps still work. To control elevated apps, close the tray
+    and relaunch "Amaya Windows Bridge.exe" via right-click → Run as administrator.
+  </div>
   <div class="row"><div class="label">Listening</div><div class="value" id="listen">—</div></div>
   <div class="row"><div class="label">LAN Address</div><div class="value" id="lan">—</div></div>
   <div class="row"><div class="label">Token</div><div class="value" id="token">—</div></div>
@@ -139,6 +146,13 @@
         ? 'stopped — ' + helper.lastError
         : 'stopped';
     document.getElementById('helper').textContent = helperLabel;
+    // Show UIPI warning when helper is running but not elevated.
+    const warn = document.getElementById('uipi-warn');
+    if (helper.running && helper.elevated === false) {
+      warn.style.display = 'block';
+    } else {
+      warn.style.display = 'none';
+    }
     const dot = document.getElementById('dot');
     dot.classList.remove('connected', 'agent', 'paused');
     if (s.emergencyStopped) dot.classList.add('paused');

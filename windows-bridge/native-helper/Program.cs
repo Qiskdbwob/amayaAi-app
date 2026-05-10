@@ -267,11 +267,14 @@ internal static class Program
             x.Value, y.Value, button, clicks, focusWindowId, modifiers);
         if (!ok)
         {
+            var code = reason?.StartsWith(InputService.UipiBlockedReason) == true
+                ? HelperErrorCode.PermissionDenied
+                : reason == "coordinate outside virtual screen bounds"
+                    ? HelperErrorCode.InvalidArgs
+                    : HelperErrorCode.ExecutionFailed;
             return JsonRpcResponse.Failure(request.Id!, new HelperError
             {
-                Code = reason == "coordinate outside virtual screen bounds"
-                    ? HelperErrorCode.InvalidArgs
-                    : HelperErrorCode.ExecutionFailed,
+                Code = code,
                 Message = reason ?? "click failed",
                 Recoverable = true
             });
@@ -352,11 +355,14 @@ internal static class Program
         var (ok, reason) = InputService.Scroll(x.Value, y.Value, direction, amount, focusWindowId);
         if (!ok)
         {
+            var code = reason?.StartsWith(InputService.UipiBlockedReason) == true
+                ? HelperErrorCode.PermissionDenied
+                : reason?.Contains("outside") == true
+                    ? HelperErrorCode.InvalidArgs
+                    : HelperErrorCode.ExecutionFailed;
             return JsonRpcResponse.Failure(request.Id!, new HelperError
             {
-                Code = reason?.Contains("outside") == true
-                    ? HelperErrorCode.InvalidArgs
-                    : HelperErrorCode.ExecutionFailed,
+                Code = code,
                 Message = reason ?? "mouse.scroll failed",
                 Recoverable = true
             });
@@ -391,11 +397,14 @@ internal static class Program
 
         if (!ok)
         {
+            var code = reason?.StartsWith(InputService.UipiBlockedReason) == true
+                ? HelperErrorCode.PermissionDenied
+                : reason?.Contains("outside") == true
+                    ? HelperErrorCode.InvalidArgs
+                    : HelperErrorCode.ExecutionFailed;
             return JsonRpcResponse.Failure(request.Id!, new HelperError
             {
-                Code = reason?.Contains("outside") == true
-                    ? HelperErrorCode.InvalidArgs
-                    : HelperErrorCode.ExecutionFailed,
+                Code = code,
                 Message = reason ?? "mouse.drag failed",
                 Recoverable = true
             });
@@ -422,9 +431,12 @@ internal static class Program
         var (ok, reason, length) = InputService.Type(text, interval);
         if (!ok)
         {
+            var code = reason?.StartsWith(InputService.UipiBlockedReason) == true
+                ? HelperErrorCode.PermissionDenied
+                : HelperErrorCode.InvalidArgs;
             return JsonRpcResponse.Failure(request.Id!, new HelperError
             {
-                Code = HelperErrorCode.InvalidArgs,
+                Code = code,
                 Message = reason ?? "keyboard.type failed"
             });
         }
@@ -438,9 +450,12 @@ internal static class Program
         var (ok, reason, normalized) = InputService.Hotkey(keys);
         if (!ok)
         {
+            var code = reason?.StartsWith(InputService.UipiBlockedReason) == true
+                ? HelperErrorCode.PermissionDenied
+                : HelperErrorCode.InvalidArgs;
             return JsonRpcResponse.Failure(request.Id!, new HelperError
             {
-                Code = HelperErrorCode.InvalidArgs,
+                Code = code,
                 Message = reason ?? "hotkey failed"
             });
         }
@@ -455,9 +470,12 @@ internal static class Program
         var (ok, reason) = InputService.HoldKey(key, durationMs);
         if (!ok)
         {
+            var code = reason?.StartsWith(InputService.UipiBlockedReason) == true
+                ? HelperErrorCode.PermissionDenied
+                : HelperErrorCode.InvalidArgs;
             return JsonRpcResponse.Failure(request.Id!, new HelperError
             {
-                Code = HelperErrorCode.InvalidArgs,
+                Code = code,
                 Message = reason ?? "keyboard.hold failed"
             });
         }
@@ -475,9 +493,12 @@ internal static class Program
         var (ok, reason) = InputService.Press(x.Value, y.Value, button, focusWindowId);
         if (!ok)
         {
+            var code = reason?.StartsWith(InputService.UipiBlockedReason) == true
+                ? HelperErrorCode.PermissionDenied
+                : HelperErrorCode.ExecutionFailed;
             return JsonRpcResponse.Failure(request.Id!, new HelperError
             {
-                Code = HelperErrorCode.ExecutionFailed,
+                Code = code,
                 Message = reason ?? "mouse.press failed",
                 Recoverable = true
             });

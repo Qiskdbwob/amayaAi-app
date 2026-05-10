@@ -9,6 +9,49 @@ internal static class InputService
     private const int MaxTypeLength = 5000;
     private const int MaxHotkeyKeys = 4;
 
+    /// <summary>
+    /// Returned when the helper refuses to send input because the target window is at
+    /// a higher integrity level than the helper process (UIPI would silently drop it).
+    /// The caller should map this to <c>HelperErrorCode.PermissionDenied</c>.
+    /// </summary>
+    public const string UipiBlockedReason = "uipi_blocked";
+
+    /// <summary>
+    /// Decide whether a planned input op targets a higher-integrity window.
+    /// Priority:
+    ///   1. If caller passed focusWindowId, check that window.
+    ///   2. Else check the window currently at (x, y).
+    ///   3. Else check the foreground window.
+    /// Returns null when nothing to block; otherwise a human-readable reason.
+    /// </summary>
+    private static string? CheckUipi(string? focusWindowId, int? x, int? y)
+    {
+        IntPtr target = IntPtr.Zero;
+        if (!string.IsNullOrWhiteSpace(focusWindowId) && long.TryParse(focusWindowId, out var handleValue))
+        {
+            target = new IntPtr(handleValue);
+        }
+        else if (x is not null && y is not null)
+        {
+            target = NativeMethods.WindowFromPoint(new NativeMethods.POINT { X = x.Value, Y = y.Value });
+            if (target != IntPtr.Zero)
+            {
+                var root = NativeMethods.GetAncestor(target, NativeMethods.GA_ROOT);
+                if (root != IntPtr.Zero) target = root;
+            }
+        }
+        else
+        {
+            target = NativeMethods.GetForegroundWindow();
+        }
+        if (target == IntPtr.Zero) return null;
+        if (!IntegrityService.WouldBeBlockedByUipi(target)) return null;
+        var label = IntegrityService.LabelForWindow(target);
+        return UipiBlockedReason + ": target window runs at " + label +
+            " integrity but the helper is " + IntegrityService.SelfIntegrity +
+            ". Injected input is silently dropped by Windows UIPI. Relaunch Amaya Windows Bridge as Administrator to control this app.";
+    }
+
     // ── mouse ────────────────────────────────────────────────────────────────
 
     public static (bool Ok, string? Reason) Click(
@@ -23,6 +66,9 @@ internal static class InputService
         {
             return (false, "coordinate outside virtual screen bounds");
         }
+
+        var uipi = CheckUipi(focusWindowId, x, y);
+        if (uipi is not null) return (false, uipi);
 
         if (!string.IsNullOrWhiteSpace(focusWindowId))
         {
@@ -105,6 +151,9 @@ internal static class InputService
         if (x < sx || y < sy || x >= sx + sw || y >= sy + sh)
             return (false, "coordinate outside virtual screen bounds");
 
+        // Movement without a click is allowed into higher-integrity windows
+        // (SetCursorPos works across integrity) so no UIPI check here.
+
         if (!string.IsNullOrWhiteSpace(focusWindowId))
         {
             _ = WindowService.Focus(focusWindowId);
@@ -142,6 +191,9 @@ internal static class InputService
         var (sx, sy, sw, sh) = ScreenInfoService.VirtualScreenBounds();
         if (x < sx || y < sy || x >= sx + sw || y >= sy + sh)
             return (false, "coordinate outside virtual screen bounds");
+
+        var uipi = CheckUipi(focusWindowId, x, y);
+        if (uipi is not null) return (false, uipi);
 
         if (!string.IsNullOrWhiteSpace(focusWindowId))
         {
@@ -207,6 +259,9 @@ internal static class InputService
         var (sx, sy, sw, sh) = ScreenInfoService.VirtualScreenBounds();
         if (x < sx || y < sy || x >= sx + sw || y >= sy + sh)
             return (false, "coordinate outside virtual screen bounds");
+
+        var uipi = CheckUipi(focusWindowId, x, y);
+        if (uipi is not null) return (false, uipi);
 
         if (!string.IsNullOrWhiteSpace(focusWindowId))
         {
@@ -287,6 +342,9 @@ internal static class InputService
         if (!InBounds(startX, startY)) return (false, "start coordinate outside virtual screen bounds");
         if (!InBounds(endX, endY)) return (false, "end coordinate outside virtual screen bounds");
 
+        var uipi = CheckUipi(focusWindowId, startX, startY);
+        if (uipi is not null) return (false, uipi);
+
         if (!string.IsNullOrWhiteSpace(focusWindowId))
         {
             _ = WindowService.Focus(focusWindowId);
@@ -362,6 +420,9 @@ internal static class InputService
         if (string.IsNullOrWhiteSpace(key)) return (false, "key is required");
         if (!HotkeyMap.TryResolve(key, out var vk)) return (false, $"unknown key: {key}");
         durationMs = Math.Clamp(durationMs, 10, 10_000);
+
+        var uipi = CheckUipi(null, null, null);
+        if (uipi is not null) return (false, uipi);
 
         var down = KeyInput(vk, keyUp: false);
         uint sent = SendInput(1, [down], Marshal.SizeOf<INPUT>());
@@ -449,6 +510,9 @@ internal static class InputService
         if (intervalMs < 0 || intervalMs > 100)
             return (false, "intervalMs must be between 0 and 100", 0);
 
+        var uipi = CheckUipi(null, null, null);
+        if (uipi is not null) return (false, uipi, 0);
+
         foreach (var ch in text)
         {
             SendUnicodeChar(ch);
@@ -485,6 +549,9 @@ internal static class InputService
     {
         if (keys is null || keys.Count == 0) return (false, "keys is required", Array.Empty<string>());
         if (keys.Count > MaxHotkeyKeys) return (false, $"keys exceeds {MaxHotkeyKeys}", keys);
+
+        var uipi = CheckUipi(null, null, null);
+        if (uipi is not null) return (false, uipi, keys);
 
         var codes = new List<ushort>(keys.Count);
         foreach (var raw in keys)

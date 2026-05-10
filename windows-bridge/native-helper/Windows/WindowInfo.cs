@@ -33,4 +33,12 @@ internal sealed class WindowInfo
     [JsonPropertyName("scaleFactor")] public double ScaleFactor { get; init; } = 1.0;
     /// <summary>DPI awareness reported by the window. One of PerMonitorV2/PerMonitor/System/Unaware/unknown.</summary>
     [JsonPropertyName("dpiAwareness")] public string DpiAwareness { get; init; } = "unknown";
+    /// <summary>
+    /// Process integrity level (untrusted/low/medium/high/system/unknown). Windows at "high" or "system"
+    /// reject injected input from a "medium" integrity helper (UIPI). Agent must check this before
+    /// attempting mouse/keyboard input and refuse gracefully when the bridge is not elevated.
+    /// </summary>
+    [JsonPropertyName("integrity")] public string Integrity { get; init; } = "unknown";
+    /// <summary>True when input injection into this window is blocked by UIPI at the current helper privilege level.</summary>
+    [JsonPropertyName("inputBlocked")] public bool InputBlocked { get; init; }
 }

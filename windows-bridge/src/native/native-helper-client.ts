@@ -17,6 +17,10 @@ const RESTART_BACKOFF_MS = 1_500;
 export interface HelperStatus {
   running: boolean;
   pid: number | null;
+  /** true when the helper process has Administrator rights (High/System integrity). */
+  elevated: boolean | null;
+  /** Mandatory integrity label of the helper process. */
+  integrity: 'unknown' | 'untrusted' | 'low' | 'medium' | 'high' | 'system';
   lastError: string | null;
   startedAt: number | null;
 }
@@ -36,6 +40,8 @@ export class NativeHelperClient extends EventEmitter {
   private status: HelperStatus = {
     running: false,
     pid: null,
+    elevated: null,
+    integrity: 'unknown',
     lastError: null,
     startedAt: null
   };
@@ -73,10 +79,28 @@ export class NativeHelperClient extends EventEmitter {
     this.status = {
       running: true,
       pid: child.pid ?? null,
+      elevated: null,
+      integrity: 'unknown',
       lastError: null,
       startedAt: Date.now()
     };
     this.emit('status', this.snapshot);
+
+    // Kick off a diagnostics probe so the status window can show whether the
+    // helper is elevated. A small delay lets the child attach its stdout first.
+    setTimeout(() => {
+      this.invoke('diagnostics', {}, 3_000)
+        .then((result) => {
+          const elevated = result['elevated'] === true;
+          const integrity =
+            (result['selfIntegrity'] as HelperStatus['integrity']) ?? 'unknown';
+          this.status = { ...this.status, elevated, integrity };
+          this.emit('status', this.snapshot);
+        })
+        .catch(() => {
+          // Older helper builds or temporary failures: leave elevated=null.
+        });
+    }, 500);
 
     child.stdout.setEncoding('utf-8');
     child.stdout.on('data', (chunk: string) => this.onStdout(chunk));
@@ -237,6 +261,8 @@ export class NativeHelperClient extends EventEmitter {
       ...this.status,
       running: false,
       pid: null,
+      elevated: null,
+      integrity: 'unknown',
       lastError: reason
     };
     this.emit('status', this.snapshot);

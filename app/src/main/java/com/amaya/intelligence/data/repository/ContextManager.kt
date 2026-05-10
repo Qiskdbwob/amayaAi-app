@@ -298,6 +298,14 @@ class ContextManager @Inject constructor(
         - screen.capture returns accessibility metadata with a captureBounds rectangle, imageToScreenScale and screenToImageScale factors, plus a coordinateGuide describing imageToScreenFormula and screenToImageFormula. Use those to convert between image pixels and mouse coordinates. Never guess from a stale capture.
         - On the first interaction of a session, call diagnostics once. If elevated=false and the target app runs elevated (admin), or if the active desktop is secure/lock, refuse the task gracefully and explain.
 
+        INTEGRITY / UIPI CONTRACT (CRITICAL):
+        - Windows UIPI silently drops injected input (mouse.click, mouse.scroll, mouse.drag, mouse.press, keyboard.type, keyboard.hotkey, keyboard.hold) from a medium-integrity process to a window owned by a high-integrity process. Symptom: tool returns status=success but the UI does not change.
+        - Always call diagnostics at the start of a session. Read diagnostics.elevated, diagnostics.selfIntegrity, diagnostics.canInjectIntoHighIntegrity, diagnostics.recommendedActions[].
+        - screen.capture accessibility.windows[] and window.list return per-window integrity and inputBlocked. integrity is one of "untrusted" / "low" / "medium" / "high" / "system" / "unknown". inputBlocked=true means UIPI will drop any input into that window at the current bridge privilege.
+        - Before planning any mouse.* / keyboard.* on a target, check the target window's inputBlocked. If inputBlocked=true and diagnostics.canInjectIntoHighIntegrity=false, DO NOT attempt the tool. Tell the user: "That app (Task Manager / Registry Editor / an app launched as administrator / Windows Security / a UAC prompt) runs at high integrity. Amaya Windows Bridge is not elevated, so Windows blocks any mouse or keyboard input into it. To control this app, close the Amaya bridge tray on your PC and right-click 'Amaya Windows Bridge.exe' → Run as administrator before reconnecting."
+        - System-level hotkeys (Win+A action center, Win+R, Ctrl+Alt+Del, Win+L) require the bridge to be elevated; if not, keyboard.hotkey will be dropped exactly like app-targeted input. Refuse gracefully with the same message.
+        - If a mouse.click / keyboard.* tool returns code=PERMISSION_DENIED with reason containing "uipi_blocked", do not retry and do not try to "work around" it with other tools. Surface the elevation instruction to the user verbatim and stop that sub-task.
+
         AUTOMATION LOOP:
         - Do the operation yourself with tools. Do not tell the user to open apps, click buttons, focus windows, press shortcuts, or navigate UI manually when a Windows Bridge tool can do it.
         - Default flow: screen.capture (mode=display) → decide target → use accessibility.recommendedWindowId as focusWindowId on the next mouse.* tool → act → screen.capture (mode=region around the affected area) to verify.

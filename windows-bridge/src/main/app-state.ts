@@ -20,6 +20,8 @@ export interface ServerInfo {
 const HELPER_BLANK: HelperStatus = {
   running: false,
   pid: null,
+  elevated: null,
+  integrity: 'unknown',
   lastError: null,
   startedAt: null
 };
