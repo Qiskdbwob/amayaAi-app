@@ -149,6 +149,7 @@ fun AgentEditSheet(
             baseUrl = "",
             modelId = "",
             enabled = selectedSubscriptionAuth?.let { auth -> provider.id != auth.providerId || auth.authenticated } ?: true,
+            maxIterations = maxIterationsStr.toIntOrNull()?.coerceIn(MinAgentIterations, MaxAgentIterations) ?: config.maxIterations,
             toolCalling = provider.supportsTools,
             vision = provider.supportsVision,
             streaming = provider.supportsStreaming,
@@ -515,7 +516,10 @@ private fun AgentStepContent(
                         authUi = selectedSubscriptionAuth?.takeIf { it.providerId == stepProvider.id }?.copy(
                             onBrowserSignIn = { onOpenSubscriptionAuth() }
                         ),
-                        onOpenModels = { onOpenModels() }
+                        onOpenModels = { onOpenModels() },
+                        maxIterationsStr = maxIterationsStr,
+                        onMaxIterationsChange = onMaxIterationsChange,
+                        maxIterationsPlaceholder = AgentConfig().maxIterations.toString()
                     )
                 }
             }

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
@@ -62,7 +63,10 @@ internal fun SubscriptionStep(
     enabledModelIds: Set<String>,
     onEnabledModelIds: (Set<String>) -> Unit,
     authUi: AgentSubscriptionAuthUi?,
-    onOpenModels: () -> Unit
+    onOpenModels: () -> Unit,
+    maxIterationsStr: String,
+    onMaxIterationsChange: (String) -> Unit,
+    maxIterationsPlaceholder: String
 ) {
     val sortedModels = remember(modelCatalog) { modelCatalog.distinctBy { it.modelId }.sortedBy { it.displayName.lowercase() } }
     val catalogModelIds = remember(sortedModels) { sortedModels.map { it.modelId }.toSet() }
@@ -76,6 +80,16 @@ internal fun SubscriptionStep(
         summary = if (authUi?.authenticated == false) "Sign in first" else modelsSummary(defaultModelId = "", enabledModelIds = normalizedEnabledModelIds),
         onClick = onOpenModels,
         enabled = authUi?.authenticated != false
+    )
+    OutlinedTextField(
+        value = maxIterationsStr,
+        onValueChange = { v -> if (v.all { it.isDigit() }) onMaxIterationsChange(v) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        shape = RoundedCornerShape(12.dp),
+        label = { Text("Max Iterations") },
+        placeholder = { Text(maxIterationsPlaceholder) },
+        leadingIcon = { Icon(Icons.Default.Repeat, null, modifier = Modifier.size(18.dp)) }
     )
 }
 
