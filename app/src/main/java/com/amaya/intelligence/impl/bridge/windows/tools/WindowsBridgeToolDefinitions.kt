@@ -43,10 +43,33 @@ object WindowsBridgeToolDefinitions {
 
     private val screenCapture = BridgeToolSpec(
         name = BridgeToolNames.SCREEN_CAPTURE,
-        description = "Capture a single screenshot of the paired Windows computer via " +
-            "the Windows Bridge. Returns image data plus accessibility metadata: coordinate guide, " +
-            "display bounds, cursor position, active window, and labeled windows with windowId, state, zIndex, bounds, screenshotBounds, and safe points.",
+        description = "Capture the paired Windows computer screen in PHYSICAL pixels. " +
+            "mode=display (default) captures a monitor; mode=window captures a specific windowId " +
+            "even when it is partially covered by other windows; mode=region crops a rectangle " +
+            "(use to verify an action locally). Output includes accessibility metadata: " +
+            "displayBounds, virtualBounds, workArea, dpi, imageToScreenScale, screenToImageScale, " +
+            "cursor {x,y,imageX,imageY,onCaptured}, windows[] (windowId, title, processName, " +
+            "state, focused, focusable, zIndex, bounds, clientBounds, imageBounds, overlapRatio, " +
+            "overlappedBy, center, titleBarPoint, closeButtonPoint), activeWindow, " +
+            "recommendedWindowId (pass to focusWindowId on mouse.* tools), coordinateGuide " +
+            "with imageToScreenFormula / screenToImageFormula, and hints{focus,verify,coordinates}.",
         parameters = listOf(
+            ToolParameter(
+                "mode", "string",
+                "Capture mode: 'display' (default), 'window', or 'region'.",
+                required = false,
+                enum = listOf("display", "window", "region")
+            ),
+            ToolParameter(
+                "windowId", "string",
+                "Required when mode=window. Window handle id returned by window.list / screen.capture accessibility.windows[].",
+                required = false
+            ),
+            ToolParameter(
+                "region", "object",
+                "Required when mode=region. {x,y,width,height} in physical pixels on the virtual screen.",
+                required = false
+            ),
             ToolParameter(
                 "format", "string",
                 "Image format: 'png' (default) or 'jpeg'.",
@@ -54,8 +77,13 @@ object WindowsBridgeToolDefinitions {
                 enum = listOf("png", "jpeg")
             ),
             ToolParameter(
+                "quality", "integer",
+                "JPEG quality (1-100). Ignored for PNG.",
+                required = false
+            ),
+            ToolParameter(
                 "displayIndex", "integer",
-                "Zero-based display index when multiple monitors are present.",
+                "Zero-based display index when mode=display and multiple monitors are present.",
                 required = false
             ),
             ToolParameter(
@@ -66,6 +94,11 @@ object WindowsBridgeToolDefinitions {
             ToolParameter(
                 "includeWindows", "boolean",
                 "Include labeled window metadata in the capture result. Default true.",
+                required = false
+            ),
+            ToolParameter(
+                "includeCursor", "boolean",
+                "Include cursor position metadata. Default true.",
                 required = false
             )
         ),
@@ -148,11 +181,15 @@ object WindowsBridgeToolDefinitions {
 
     private val mouseClick = BridgeToolSpec(
         name = BridgeToolNames.MOUSE_CLICK,
-        description = "Send a mouse click at the given screen coordinates on the paired " +
-            "Windows computer. Requires an active Agent Control session.",
+        description = "Click at screen coordinates (x, y) in physical pixels on the paired " +
+            "Windows computer. Supports modifiers (e.g. 'ctrl+shift'), focusWindowId to force " +
+            "the target window foreground first, and relativeToWindowId + clientX + clientY for " +
+            "window-relative clicks that survive window moves between capture and click. " +
+            "Returns cursor, foregroundWindow, and hitWindow for post-action verification. " +
+            "Requires an active Agent Control session.",
         parameters = listOf(
-            ToolParameter("x", "integer", "X coordinate in pixels.", required = true),
-            ToolParameter("y", "integer", "Y coordinate in pixels.", required = true),
+            ToolParameter("x", "integer", "Screen X in physical pixels. Omit when using relativeToWindowId + clientX.", required = false),
+            ToolParameter("y", "integer", "Screen Y in physical pixels. Omit when using relativeToWindowId + clientY.", required = false),
             ToolParameter(
                 "button", "string",
                 "Mouse button: 'left' (default), 'right', or 'middle'.",
@@ -161,11 +198,95 @@ object WindowsBridgeToolDefinitions {
             ),
             ToolParameter(
                 "clicks", "integer",
-                "Number of clicks: 1 (default) or 2 for double-click.",
+                "Number of clicks: 1 (default), 2 for double, 3 for triple (selects paragraph).",
+                required = false
+            ),
+            ToolParameter(
+                "modifiers", "string",
+                "Modifier keys held during the click, e.g. 'ctrl+shift', 'alt', 'ctrl'. Comma or + separated.",
+                required = false
+            ),
+            ToolParameter(
+                "focusWindowId", "string",
+                "If provided, the helper activates this window to foreground before sending the click. Pass accessibility.recommendedWindowId from the latest screen.capture.",
+                required = false
+            ),
+            ToolParameter(
+                "relativeToWindowId", "string",
+                "If provided with clientX + clientY, the helper converts client-area coordinates to screen coordinates via ClientToScreen. Use this when the target window may be moved between screen.capture and mouse.click.",
+                required = false
+            ),
+            ToolParameter("clientX", "integer", "Client-relative X in physical pixels (pair with relativeToWindowId + clientY).", required = false),
+            ToolParameter("clientY", "integer", "Client-relative Y in physical pixels (pair with relativeToWindowId + clientX).", required = false)
+        ),
+        risk = BridgeRiskLevel.MEDIUM,
+        requiresApproval = false,
+        category = Category.INPUT,
+        enabledByDefault = true
+    )
+
+    private val mousePress = BridgeToolSpec(
+        name = BridgeToolNames.MOUSE_PRESS,
+        description = "Press a mouse button at (x, y) without releasing. Pair with mouse.release " +
+            "for spreadsheet-style drag select, tight modifier-locked drags, or games that need a held button.",
+        parameters = listOf(
+            ToolParameter("x", "integer", "Screen X in physical pixels.", required = true),
+            ToolParameter("y", "integer", "Screen Y in physical pixels.", required = true),
+            ToolParameter(
+                "button", "string",
+                "Mouse button: 'left' (default), 'right', or 'middle'.",
+                required = false,
+                enum = listOf("left", "right", "middle")
+            ),
+            ToolParameter(
+                "focusWindowId", "string",
+                "Force this window to foreground before pressing.",
                 required = false
             )
         ),
         risk = BridgeRiskLevel.MEDIUM,
+        requiresApproval = false,
+        category = Category.INPUT,
+        enabledByDefault = true
+    )
+
+    private val mouseRelease = BridgeToolSpec(
+        name = BridgeToolNames.MOUSE_RELEASE,
+        description = "Release the mouse button previously pressed via mouse.press. Always pair " +
+            "press/release to avoid leaving the host in a pressed-button state.",
+        parameters = listOf(
+            ToolParameter(
+                "button", "string",
+                "Which button to release: 'left' (default), 'right', or 'middle'. Must match the button passed to mouse.press.",
+                required = false,
+                enum = listOf("left", "right", "middle")
+            )
+        ),
+        risk = BridgeRiskLevel.MEDIUM,
+        requiresApproval = false,
+        category = Category.INPUT,
+        enabledByDefault = true
+    )
+
+    private val mouseHover = BridgeToolSpec(
+        name = BridgeToolNames.MOUSE_HOVER,
+        description = "Move the cursor to (x, y) and hold it there for holdMs so tooltips and " +
+            "hover menus become visible before the next action. No click.",
+        parameters = listOf(
+            ToolParameter("x", "integer", "Screen X in physical pixels.", required = true),
+            ToolParameter("y", "integer", "Screen Y in physical pixels.", required = true),
+            ToolParameter(
+                "holdMs", "integer",
+                "Hover duration in ms (0-5000, default 400).",
+                required = false
+            ),
+            ToolParameter(
+                "focusWindowId", "string",
+                "Force this window to foreground before hovering.",
+                required = false
+            )
+        ),
+        risk = BridgeRiskLevel.LOW,
         requiresApproval = false,
         category = Category.INPUT,
         enabledByDefault = true
@@ -176,11 +297,16 @@ object WindowsBridgeToolDefinitions {
         description = "Move the cursor to (x, y) on the paired Windows computer without " +
             "clicking. Use to reveal hover menus or tooltips. Requires Agent Control.",
         parameters = listOf(
-            ToolParameter("x", "integer", "X coordinate in pixels.", required = true),
-            ToolParameter("y", "integer", "Y coordinate in pixels.", required = true),
+            ToolParameter("x", "integer", "X coordinate in physical pixels.", required = true),
+            ToolParameter("y", "integer", "Y coordinate in physical pixels.", required = true),
             ToolParameter(
                 "durationMs", "integer",
                 "Movement duration in ms (0 = instant, max 2000). Default 0.",
+                required = false
+            ),
+            ToolParameter(
+                "focusWindowId", "string",
+                "Optional: force this window to foreground before the move.",
                 required = false
             )
         ),
@@ -192,11 +318,12 @@ object WindowsBridgeToolDefinitions {
 
     private val mouseScroll = BridgeToolSpec(
         name = BridgeToolNames.MOUSE_SCROLL,
-        description = "Scroll at coordinate (x, y) on the paired Windows computer. " +
-            "Requires Agent Control.",
+        description = "Scroll at coordinate (x, y) on the paired Windows computer. Uses " +
+            "SendInput plus a PostMessage(WM_MOUSEWHEEL) fallback so DirectManipulation / " +
+            "WebView2 surfaces also receive the event. Requires Agent Control.",
         parameters = listOf(
-            ToolParameter("x", "integer", "X coordinate to scroll at.", required = true),
-            ToolParameter("y", "integer", "Y coordinate to scroll at.", required = true),
+            ToolParameter("x", "integer", "X coordinate to scroll at (physical pixels).", required = true),
+            ToolParameter("y", "integer", "Y coordinate to scroll at (physical pixels).", required = true),
             ToolParameter(
                 "direction", "string",
                 "Scroll direction: 'up', 'down' (default), 'left', or 'right'.",
@@ -205,7 +332,12 @@ object WindowsBridgeToolDefinitions {
             ),
             ToolParameter(
                 "amount", "integer",
-                "Number of scroll ticks (1–50, default 3).",
+                "Number of scroll ticks (1-50, default 3).",
+                required = false
+            ),
+            ToolParameter(
+                "focusWindowId", "string",
+                "Optional: force this window to foreground before scrolling. Strongly recommended for Chromium / Electron.",
                 required = false
             )
         ),
@@ -221,10 +353,10 @@ object WindowsBridgeToolDefinitions {
             "on the paired Windows computer. Supports optional waypoints for curved paths. " +
             "Requires Agent Control.",
         parameters = listOf(
-            ToolParameter("startX", "integer", "Start X coordinate.", required = true),
-            ToolParameter("startY", "integer", "Start Y coordinate.", required = true),
-            ToolParameter("endX", "integer", "End X coordinate.", required = true),
-            ToolParameter("endY", "integer", "End Y coordinate.", required = true),
+            ToolParameter("startX", "integer", "Start X coordinate (physical pixels).", required = true),
+            ToolParameter("startY", "integer", "Start Y coordinate (physical pixels).", required = true),
+            ToolParameter("endX", "integer", "End X coordinate (physical pixels).", required = true),
+            ToolParameter("endY", "integer", "End Y coordinate (physical pixels).", required = true),
             ToolParameter(
                 "button", "string",
                 "Mouse button: 'left' (default), 'right', or 'middle'.",
@@ -233,7 +365,7 @@ object WindowsBridgeToolDefinitions {
             ),
             ToolParameter(
                 "durationMs", "integer",
-                "Total drag duration in ms (50–5000, default 400).",
+                "Total drag duration in ms (50-5000, default 400).",
                 required = false
             ),
             ToolParameter(
@@ -241,6 +373,11 @@ object WindowsBridgeToolDefinitions {
                 "Optional intermediate waypoints as [{x, y}] objects for curved drag paths.",
                 required = false,
                 items = "object"
+            ),
+            ToolParameter(
+                "focusWindowId", "string",
+                "Optional: force this window to foreground before dragging.",
+                required = false
             )
         ),
         risk = BridgeRiskLevel.MEDIUM,
@@ -298,6 +435,58 @@ object WindowsBridgeToolDefinitions {
         risk = BridgeRiskLevel.MEDIUM,
         requiresApproval = false,
         category = Category.INPUT,
+        enabledByDefault = true
+    )
+
+    private val keyboardHold = BridgeToolSpec(
+        name = BridgeToolNames.KEYBOARD_HOLD,
+        description = "Press a single key down, wait durationMs, then release. Equivalent to " +
+            "Claude computer_use hold_key. Useful for games and selection-with-modifier.",
+        parameters = listOf(
+            ToolParameter(
+                "key", "string",
+                "Key name (e.g. 'shift', 'a', 'f5', 'pagedown', 'arrow_left').",
+                required = true
+            ),
+            ToolParameter(
+                "durationMs", "integer",
+                "Hold duration in ms (10-10000, default 200).",
+                required = false
+            )
+        ),
+        risk = BridgeRiskLevel.MEDIUM,
+        requiresApproval = false,
+        category = Category.INPUT,
+        enabledByDefault = true
+    )
+
+    private val diagnostics = BridgeToolSpec(
+        name = BridgeToolNames.DIAGNOSTICS,
+        description = "One-shot snapshot of helper capabilities: DPI context, system DPI, " +
+            "elevation status, OS version, virtual screen bounds, and Windows.Graphics.Capture / " +
+            "PrintWindow availability. Call once per session so the agent can refuse tasks that " +
+            "require elevation or a secure desktop.",
+        parameters = emptyList(),
+        risk = BridgeRiskLevel.LOW,
+        requiresApproval = false,
+        category = Category.SCREEN,
+        enabledByDefault = true
+    )
+
+    private val uiHitTest = BridgeToolSpec(
+        name = BridgeToolNames.UI_HIT_TEST,
+        description = "Return the top-level window at a screen coordinate (physical pixels). " +
+            "Use after computing a click target from screen.capture to verify the right window " +
+            "is under (x, y) before committing a click. Also returns clientX/clientY inside the " +
+            "top-level window, which you can feed back into mouse.click as relativeToWindowId + " +
+            "clientX + clientY for robust click that survives window moves.",
+        parameters = listOf(
+            ToolParameter("x", "integer", "Screen X in physical pixels.", required = true),
+            ToolParameter("y", "integer", "Screen Y in physical pixels.", required = true)
+        ),
+        risk = BridgeRiskLevel.LOW,
+        requiresApproval = false,
+        category = Category.UI_AUTOMATION,
         enabledByDefault = true
     )
 
@@ -492,7 +681,11 @@ object WindowsBridgeToolDefinitions {
 
     private val uiTree = BridgeToolSpec(
         name = BridgeToolNames.UI_TREE,
-        description = "Snapshot a lightweight Windows UI element tree for the active or specified window. Returns elementId, role, name, className, bounds, center, enabled/visible. Use this before coordinate clicking when semantic elements are available.",
+        description = "LEGACY: Dump the child HWND tree of a Win32 window. Works reliably only " +
+            "for classic Win32 apps (Notepad, File Explorer, installers, some WinForms/WPF). " +
+            "Modern apps (Chromium, Electron, UWP, WinUI, DirectX) expose almost nothing here — " +
+            "prefer screen.capture + mouse.click + ui.hit_test instead. Disabled by default; the " +
+            "Windows Bridge only surfaces this tool when features.legacyUiToolsEnabled is true.",
         parameters = listOf(
             ToolParameter("windowId", "string", "Optional windowId from screen.capture/window.list. Defaults to active window.", required = false),
             ToolParameter("limit", "integer", "Maximum elements to return (default 250, max 1000).", required = false)
@@ -500,12 +693,14 @@ object WindowsBridgeToolDefinitions {
         risk = BridgeRiskLevel.MEDIUM,
         requiresApproval = false,
         category = Category.UI_AUTOMATION,
-        enabledByDefault = true
+        enabledByDefault = false
     )
 
     private val uiFindText = BridgeToolSpec(
         name = BridgeToolNames.UI_FIND_TEXT,
-        description = "Find UI elements by visible text or class name on the paired Windows computer. Returns elementIds and bounds for deterministic clicking.",
+        description = "LEGACY: Find child HWNDs whose title/class contains the query. Same " +
+            "Win32-only caveats as ui.tree. Prefer screen.capture + visual matching + mouse.click. " +
+            "Disabled by default.",
         parameters = listOf(
             ToolParameter("text", "string", "Text or class fragment to search for.", required = true),
             ToolParameter("windowId", "string", "Optional windowId from screen.capture/window.list. Defaults to active window.", required = false),
@@ -514,31 +709,35 @@ object WindowsBridgeToolDefinitions {
         risk = BridgeRiskLevel.MEDIUM,
         requiresApproval = false,
         category = Category.UI_AUTOMATION,
-        enabledByDefault = true
+        enabledByDefault = false
     )
 
     private val uiClickElement = BridgeToolSpec(
         name = BridgeToolNames.UI_CLICK_ELEMENT,
-        description = "Click a UI element by elementId returned from ui.tree or ui.find_text. Prefer this over raw mouse.click when an elementId is known.",
+        description = "LEGACY: Click a UI element by elementId returned from ui.tree or " +
+            "ui.find_text. Disabled by default.",
         parameters = listOf(
             ToolParameter("elementId", "string", "Element/window handle id returned by ui.tree or ui.find_text.", required = true)
         ),
         risk = BridgeRiskLevel.MEDIUM,
         requiresApproval = false,
         category = Category.UI_AUTOMATION,
-        enabledByDefault = true
+        enabledByDefault = false
     )
 
     /** All specs declared so far, regardless of `enabledByDefault`. */
     val all: List<BridgeToolSpec> = listOf(
         screenCapture, windowList, windowFocus, windowClose, appOpen,
-        mouseClick, mouseMove, mouseScroll, mouseDrag, inputWait,
-        keyboardType, keyboardHotkey, clipboardWrite,
-        clipboardRead,
+        mouseClick, mouseMove, mouseScroll, mouseDrag,
+        mousePress, mouseRelease, mouseHover,
+        inputWait,
+        keyboardType, keyboardHotkey, keyboardHold,
+        clipboardWrite, clipboardRead,
         fileList, fileRead, fileWrite, fileEdit, fileDelete,
         shellRun, shellCancel,
         browserOpen, browserGoto, browserDom, browserClick, browserType,
         browserScreenshot,
+        uiHitTest, diagnostics,
         uiTree, uiFindText, uiClickElement
     )
 }
