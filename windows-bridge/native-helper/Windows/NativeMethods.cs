@@ -107,6 +107,69 @@ internal static class NativeMethods
     [DllImport("user32.dll")]
     public static extern uint MapVirtualKeyW(uint uCode, uint uMapType);
 
+    // ── DPI awareness (Win10 1607+ / PerMonitorV2 Win10 1703+) ──────────────
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetProcessDpiAwarenessContext(IntPtr dpiContext);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetWindowDpiAwarenessContext(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForSystem();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool AreDpiAwarenessContextsEqual(IntPtr a, IntPtr b);
+
+    // ── Client coordinates, z-order, hit-testing ─────────────────────────────
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetClientRect(IntPtr hWnd, out Rect lpRect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr WindowFromPoint(POINT pt);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr ChildWindowFromPointEx(IntPtr hWndParent, POINT pt, uint uFlags);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+
+    // ── Process token helpers (for elevation detection) ──────────────────────
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetTokenInformation(
+        IntPtr TokenHandle,
+        int TokenInformationClass,
+        IntPtr TokenInformation,
+        uint TokenInformationLength,
+        out uint ReturnLength);
+
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetCurrentProcess();
+
     // ── Kernel32 ─────────────────────────────────────────────────────────────
 
     [DllImport("kernel32.dll")]

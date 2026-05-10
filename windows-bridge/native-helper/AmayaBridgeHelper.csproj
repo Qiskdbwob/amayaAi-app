@@ -12,6 +12,13 @@
     <UseWPF>false</UseWPF>
     <InvariantGlobalization>true</InvariantGlobalization>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!--
+      Embed the DPI-awareness manifest so the helper process is PerMonitorV2
+      before any win32 API is called. This is the foundation that keeps
+      SendInput/GetCursorPos/GetWindowRect in physical pixels on scaled
+      monitors.
+    -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
   <!--

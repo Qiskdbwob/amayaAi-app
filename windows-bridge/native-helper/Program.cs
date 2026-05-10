@@ -14,6 +14,13 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        // Ensure the helper process is PerMonitorV2 before any win32 API is
+        // touched. The app.manifest already does this for normal launches; the
+        // defensive runtime call catches edge cases (for example hosted mode
+        // where the manifest is ignored) so every coordinate we read or inject
+        // is guaranteed to be in physical pixels.
+        DpiService.EnsurePerMonitorV2();
+
         // Force UTF-8 on stdin/stdout so Unicode text round-trips cleanly.
         Console.InputEncoding = new System.Text.UTF8Encoding(false);
         Console.OutputEncoding = new System.Text.UTF8Encoding(false);
@@ -26,7 +33,7 @@ internal static class Program
         };
         using var reader = new StreamReader(Console.OpenStandardInput(), new System.Text.UTF8Encoding(false));
 
-        LogStderr($"AmayaBridgeHelper online pid={Environment.ProcessId}");
+        LogStderr($"AmayaBridgeHelper online pid={Environment.ProcessId} dpi={DpiService.ActiveContext}@{DpiService.SystemDpi}");
 
         string? line;
         while ((line = await reader.ReadLineAsync()) is not null)

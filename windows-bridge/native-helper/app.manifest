@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!--
+    DPI awareness for AmayaBridgeHelper.
+
+    PerMonitorV2 is required so every coordinate API (GetWindowRect, GetCursorPos,
+    GetSystemMetrics(SM_CXVIRTUALSCREEN), SendInput, MonitorFromPoint) reports
+    values in physical pixels on mixed-DPI setups. Without this, on a 150% scaled
+    monitor Windows silently virtualizes coordinates and injected input lands in
+    the wrong place.
+
+    PerMonitor is listed as a fallback for Windows 10 versions before 1703, and
+    System as a last resort for anything older. .NET 10 targets Win10+ so the
+    fallbacks should never be hit in practice, but listing them is harmless.
+  -->
+  <assemblyIdentity type="win32" name="AmayaBridgeHelper" version="1.0.0.0"/>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">True/PM</dpiAware>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+</assembly>
