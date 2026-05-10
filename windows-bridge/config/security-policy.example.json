@@ -60,5 +60,8 @@
   "approval": {
     "enabled": true,
     "timeoutMs": 30000
+  },
+  "features": {
+    "legacyUiToolsEnabled": false
   }
 }

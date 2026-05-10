@@ -250,7 +250,19 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
       deviceId,
       {
         sessionId,
-        capabilities: ['screenCapture', 'windowControl', 'mouseControl', 'keyboardControl'],
+        capabilities: [
+          'screenCapture',
+          'windowCapture',
+          'windowControl',
+          'mouseControl',
+          'mouseHover',
+          'mousePressRelease',
+          'keyboardControl',
+          'keyboardHold',
+          'uiHitTest',
+          'clipboardWrite',
+          'diagnostics'
+        ],
         tools: enabledTools().map((spec) => ({
           name: spec.name,
           description: spec.description,

@@ -90,16 +90,33 @@ export function uiClickElement(helper: NativeHelperClient) {
 
 export function mouseClick(helper: NativeHelperClient) {
   return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
-    const x = asInteger(args['x']);
-    const y = asInteger(args['y']);
-    if (x === undefined || y === undefined) {
-      throw invalid('x and y are required integers');
+    const relativeToWindowId = asString(args['relativeToWindowId']);
+    const clientX = asInteger(args['clientX']);
+    const clientY = asInteger(args['clientY']);
+    let x = asInteger(args['x']);
+    let y = asInteger(args['y']);
+
+    if (relativeToWindowId && clientX !== undefined && clientY !== undefined) {
+      // helper resolves ClientToScreen; nothing to do here beyond forwarding.
+    } else if (x === undefined || y === undefined) {
+      throw invalid('x and y are required (or relativeToWindowId + clientX + clientY)');
     }
     const button = asEnum(args['button'], ['left', 'right', 'middle']) ?? 'left';
     const clicks = asInteger(args['clicks']) ?? 1;
-    if (clicks < 1 || clicks > 2) throw invalid('clicks must be 1 or 2');
+    if (clicks < 1 || clicks > 3) throw invalid('clicks must be 1, 2, or 3');
+    const focusWindowId = asString(args['focusWindowId']);
+    const modifiers = asString(args['modifiers']);
 
-    const result = await invoke(helper, 'mouse.click', { x, y, button, clicks });
+    const params: Record<string, unknown> = { button, clicks };
+    if (x !== undefined) params['x'] = x;
+    if (y !== undefined) params['y'] = y;
+    if (relativeToWindowId) params['relativeToWindowId'] = relativeToWindowId;
+    if (clientX !== undefined) params['clientX'] = clientX;
+    if (clientY !== undefined) params['clientY'] = clientY;
+    if (focusWindowId) params['focusWindowId'] = focusWindowId;
+    if (modifiers) params['modifiers'] = modifiers;
+
+    const result = await invoke(helper, 'mouse.click', params);
     return { status: 'success', result };
   };
 }
@@ -117,8 +134,11 @@ export function mouseMove(helper: NativeHelperClient) {
       throw invalid('x and y are required integers');
     }
     const durationMs = clampInt(asInteger(args['durationMs']) ?? 0, 0, 2000);
+    const focusWindowId = asString(args['focusWindowId']);
+    const params: Record<string, unknown> = { x, y, durationMs };
+    if (focusWindowId) params['focusWindowId'] = focusWindowId;
 
-    const result = await invoke(helper, 'mouse.move', { x, y, durationMs });
+    const result = await invoke(helper, 'mouse.move', params);
     return { status: 'success', result };
   };
 }
@@ -138,8 +158,11 @@ export function mouseScroll(helper: NativeHelperClient) {
     }
     const direction = asEnum(args['direction'], SCROLL_DIRECTIONS) ?? 'down';
     const amount = clampInt(asInteger(args['amount']) ?? 3, 1, 50);
+    const focusWindowId = asString(args['focusWindowId']);
+    const params: Record<string, unknown> = { x, y, direction, amount };
+    if (focusWindowId) params['focusWindowId'] = focusWindowId;
 
-    const result = await invoke(helper, 'mouse.scroll', { x, y, direction, amount });
+    const result = await invoke(helper, 'mouse.scroll', params);
     return { status: 'success', result };
   };
 }
@@ -181,8 +204,97 @@ export function mouseDrag(helper: NativeHelperClient) {
     }
 
     const result = await invoke(helper, 'mouse.drag', {
-      startX, startY, endX, endY, button, durationMs, waypoints
+      startX, startY, endX, endY, button, durationMs, waypoints,
+      ...(asString(args['focusWindowId']) ? { focusWindowId: asString(args['focusWindowId']) } : {})
     });
+    return { status: 'success', result };
+  };
+}
+
+/**
+ * mouse.press — press a button at (x, y) without releasing. Pair with mouse.release
+ * for spreadsheet-style selection and tight drag control.
+ */
+export function mousePress(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const x = asInteger(args['x']);
+    const y = asInteger(args['y']);
+    if (x === undefined || y === undefined) throw invalid('x and y are required integers');
+    const button = asEnum(args['button'], ['left', 'right', 'middle']) ?? 'left';
+    const focusWindowId = asString(args['focusWindowId']);
+    const params: Record<string, unknown> = { x, y, button };
+    if (focusWindowId) params['focusWindowId'] = focusWindowId;
+    const result = await invoke(helper, 'mouse.press', params);
+    return { status: 'success', result };
+  };
+}
+
+/**
+ * mouse.release — release a mouse button previously pressed via mouse.press.
+ */
+export function mouseRelease(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const button = asEnum(args['button'], ['left', 'right', 'middle']) ?? 'left';
+    const result = await invoke(helper, 'mouse.release', { button });
+    return { status: 'success', result };
+  };
+}
+
+/**
+ * mouse.hover — move the cursor to (x, y) and hold there for holdMs so
+ * tooltips and hover menus become visible before the next action.
+ */
+export function mouseHover(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const x = asInteger(args['x']);
+    const y = asInteger(args['y']);
+    if (x === undefined || y === undefined) throw invalid('x and y are required integers');
+    const holdMs = clampInt(asInteger(args['holdMs']) ?? 400, 0, 5000);
+    const focusWindowId = asString(args['focusWindowId']);
+    const params: Record<string, unknown> = { x, y, holdMs };
+    if (focusWindowId) params['focusWindowId'] = focusWindowId;
+    const result = await invoke(helper, 'mouse.hover', params);
+    return { status: 'success', result };
+  };
+}
+
+/**
+ * ui.hit_test — which top-level window is at (x, y)? Used to verify a visual
+ * click target before spending an actual click, and as a recovery signal after
+ * a click lands in the wrong window.
+ */
+export function uiHitTest(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const x = asInteger(args['x']);
+    const y = asInteger(args['y']);
+    if (x === undefined || y === undefined) throw invalid('x and y are required integers');
+    const result = await invoke(helper, 'ui.hit_test', { x, y });
+    return { status: 'success', result };
+  };
+}
+
+/**
+ * keyboard.hold — press a single key down, wait durationMs, release. Mirrors
+ * Claude computer_use hold_key.
+ */
+export function keyboardHold(helper: NativeHelperClient) {
+  return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const key = asString(args['key']);
+    if (!key) throw invalid('key is required');
+    const durationMs = clampInt(asInteger(args['durationMs']) ?? 200, 10, 10_000);
+    const result = await invoke(helper, 'keyboard.hold', { key, durationMs });
+    return { status: 'success', result };
+  };
+}
+
+/**
+ * diagnostics — report DPI, elevation, Windows build, screen bounds, and
+ * supported capture paths. Agents call this once per session so they can
+ * refuse tasks that need elevation or a secure desktop.
+ */
+export function diagnostics(helper: NativeHelperClient) {
+  return async (): Promise<LocalToolResult> => {
+    const result = await invoke(helper, 'diagnostics', {});
     return { status: 'success', result };
   };
 }

@@ -61,6 +61,174 @@ export function captureScreenFactory(
   helper: NativeHelperClient | null = null
 ) {
   return async (args: Record<string, unknown>): Promise<LocalToolResult> => {
+    const mode = parseMode(args['mode']);
+    if (mode === 'window') {
+      return captureWindowMode(args, helper);
+    }
+    if (mode === 'region') {
+      return captureRegionMode(args, defaults, helper);
+    }
+    return captureDisplayMode(args, defaults, helper);
+  };
+}
+
+function parseMode(value: unknown): 'display' | 'window' | 'region' {
+  if (value === 'window' || value === 'region' || value === 'display') return value;
+  return 'display';
+}
+
+async function captureWindowMode(
+  args: Record<string, unknown>,
+  helper: NativeHelperClient | null
+): Promise<LocalToolResult> {
+  if (!helper) {
+    throw new ToolInvocationError(
+      'EXECUTION_FAILED',
+      'window capture requires the native helper.'
+    );
+  }
+  const windowId = typeof args['windowId'] === 'string' ? (args['windowId'] as string) : undefined;
+  if (!windowId) {
+    throw new ToolInvocationError('INVALID_ARGS', 'mode=window requires windowId.');
+  }
+  const result = await helper.invoke('window.capture', { windowId }, 5_000);
+  const rawBounds = result['bounds'] as Record<string, unknown> | undefined;
+  const bounds = parseBounds(rawBounds) ?? { x: 0, y: 0, width: 0, height: 0 };
+  const imageBase64 = typeof result['imageBase64'] === 'string' ? (result['imageBase64'] as string) : '';
+  const partial = result['partial'] === true;
+  return {
+    status: 'success',
+    result: {
+      imageBase64,
+      format: 'png',
+      captureMode: 'window',
+      windowId,
+      width: bounds.width,
+      height: bounds.height,
+      accessibility: {
+        unit: 'physical_px',
+        captureId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        capturedAt: Date.now(),
+        captureBounds: bounds,
+        imageToScreenScale: { x: 1, y: 1 },
+        screenToImageScale: { x: 1, y: 1 },
+        coordinateGuide: {
+          unit: 'physical_px',
+          origin: 'top-left of the captured window in Windows virtual-screen physical pixels',
+          mouseToolsUse: 'physical pixels in Windows virtual-screen coordinates',
+          imageToScreenFormula:
+            'screenX = captureBounds.x + imageX; screenY = captureBounds.y + imageY',
+          screenToImageFormula:
+            'imageX = screenX - captureBounds.x; imageY = screenY - captureBounds.y',
+          verifyAfterAction: true
+        },
+        limits: {
+          partial,
+          reason: partial
+            ? 'PrintWindow fell back to non-RENDERFULLCONTENT path; image may be outdated or black for DirectX/Chromium windows'
+            : null
+        },
+        hints: {
+          focus:
+            'Pass this windowId as focusWindowId on mouse.* tools to force foreground before input.'
+        }
+      }
+    }
+  };
+}
+
+async function captureRegionMode(
+  args: Record<string, unknown>,
+  defaults: ScreenCapturePolicyConfig,
+  helper: NativeHelperClient | null
+): Promise<LocalToolResult> {
+  const region = parseBounds(args['region']);
+  if (!region || region.width <= 0 || region.height <= 0) {
+    throw new ToolInvocationError('INVALID_ARGS', 'mode=region requires a valid region {x,y,width,height}.');
+  }
+  // Grab a display capture that covers the region, then crop to region bounds
+  // in image space. We pick the display whose bounds contain the region center.
+  const displays = screen.getAllDisplays();
+  const centerX = region.x + region.width / 2;
+  const centerY = region.y + region.height / 2;
+  const host =
+    displays.find((d) => {
+      const scale = d.scaleFactor || 1;
+      const physical = scaleBoundsToPhysical(toBounds(d.bounds), scale);
+      return pointInBounds(centerX, centerY, physical);
+    }) ?? displays[0];
+  if (!host) {
+    throw new ToolInvocationError('EXECUTION_FAILED', 'No display contains the requested region.');
+  }
+  const hostIndex = displays.indexOf(host);
+  const displayCapture = await captureDisplayMode(
+    { ...args, mode: 'display', displayIndex: hostIndex, maxWidth: null, includeWindows: false, includeCursor: false },
+    defaults,
+    helper
+  );
+  const payload = displayCapture.result as Record<string, any>;
+  const fullBase64 = payload['imageBase64'] as string;
+  const accessibility = payload['accessibility'] as Record<string, any>;
+  const displayBounds = accessibility['displayBounds'] as Bounds;
+  const scale = accessibility['screenToImageScale'] as { x: number; y: number };
+  const cropped = intersectBounds(region, displayBounds);
+  if (!cropped) {
+    throw new ToolInvocationError('INVALID_ARGS', 'region does not intersect any display.');
+  }
+  const cropRect = {
+    x: Math.max(0, Math.round((cropped.x - displayBounds.x) * scale.x)),
+    y: Math.max(0, Math.round((cropped.y - displayBounds.y) * scale.y)),
+    width: Math.max(1, Math.round(cropped.width * scale.x)),
+    height: Math.max(1, Math.round(cropped.height * scale.y))
+  };
+  const source = nativeImage.createFromBuffer(Buffer.from(fullBase64, 'base64'));
+  const croppedImg = source.crop(cropRect);
+  const format = parseFormat(args['format'], defaults.defaultFormat);
+  const quality = parseQuality(args['quality'], defaults.defaultQuality);
+  const buffer = format === 'jpeg' ? croppedImg.toJPEG(clampQuality(quality)) : croppedImg.toPNG();
+  const size = croppedImg.getSize();
+  return {
+    status: 'success',
+    result: {
+      imageBase64: buffer.toString('base64'),
+      format,
+      captureMode: 'region',
+      width: size.width,
+      height: size.height,
+      accessibility: {
+        unit: 'physical_px',
+        captureId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        capturedAt: Date.now(),
+        captureBounds: cropped,
+        imageToScreenScale: {
+          x: cropped.width / size.width,
+          y: cropped.height / size.height
+        },
+        screenToImageScale: {
+          x: size.width / cropped.width,
+          y: size.height / cropped.height
+        },
+        coordinateGuide: {
+          unit: 'physical_px',
+          origin: 'top-left of the region in Windows virtual-screen physical pixels',
+          mouseToolsUse: 'physical pixels in Windows virtual-screen coordinates',
+          imageToScreenFormula:
+            'screenX = captureBounds.x + imageX * imageToScreenScale.x; screenY = captureBounds.y + imageY * imageToScreenScale.y',
+          screenToImageFormula:
+            'imageX = (screenX - captureBounds.x) * screenToImageScale.x; imageY = (screenY - captureBounds.y) * screenToImageScale.y',
+          verifyAfterAction: true
+        },
+        limits: { partial: false, reason: null }
+      }
+    }
+  };
+}
+
+async function captureDisplayMode(
+  args: Record<string, unknown>,
+  defaults: ScreenCapturePolicyConfig,
+  helper: NativeHelperClient | null
+): Promise<LocalToolResult> {
     const format = parseFormat(args['format'], defaults.defaultFormat);
     const quality = parseQuality(args['quality'], defaults.defaultQuality);
     const maxWidth = parseMaxWidth(args['maxWidth'], defaults.defaultMaxWidth);
@@ -264,7 +432,6 @@ export function captureScreenFactory(
         }
       }
     };
-  };
 }
 
 function pickRecommendedWindow(

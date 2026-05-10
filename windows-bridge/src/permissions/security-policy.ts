@@ -39,6 +39,17 @@ export interface ApprovalPolicyConfig {
   timeoutMs: number;
 }
 
+export interface FeatureFlagsConfig {
+  /**
+   * When true, register the legacy ui.tree / ui.find_text / ui.click_element
+   * tools. They work only for classic Win32 apps (Notepad, File Explorer,
+   * installers) because the current implementation enumerates HWND children.
+   * Modern apps (Chromium/Electron/UWP/WinUI/DirectX) expose nothing useful
+   * through them — prefer screen.capture + mouse.click + ui.hit_test instead.
+   */
+  legacyUiToolsEnabled: boolean;
+}
+
 export interface SecurityPolicy {
   appPolicy: AppAllowlistConfig;
   folderPolicy: FolderPolicyConfig;
@@ -46,6 +57,7 @@ export interface SecurityPolicy {
   auth: AuthPolicyConfig;
   screenCapture: ScreenCapturePolicyConfig;
   approval: ApprovalPolicyConfig;
+  features: FeatureFlagsConfig;
 }
 
 const DEFAULTS: SecurityPolicy = {
@@ -93,6 +105,9 @@ const DEFAULTS: SecurityPolicy = {
   approval: {
     enabled: true,
     timeoutMs: 30_000
+  },
+  features: {
+    legacyUiToolsEnabled: false
   }
 };
 
@@ -106,7 +121,8 @@ function mergePolicy(partial: unknown): SecurityPolicy {
     commandPolicy: { ...DEFAULTS.commandPolicy },
     auth: { ...DEFAULTS.auth },
     screenCapture: { ...DEFAULTS.screenCapture },
-    approval: { ...DEFAULTS.approval }
+    approval: { ...DEFAULTS.approval },
+    features: { ...DEFAULTS.features }
   };
   applyObject(out.appPolicy, p['appPolicy']);
   applyObject(out.folderPolicy, p['folderPolicy']);
@@ -114,6 +130,7 @@ function mergePolicy(partial: unknown): SecurityPolicy {
   applyObject(out.auth, p['auth']);
   applyObject(out.screenCapture, p['screenCapture']);
   applyObject(out.approval, p['approval']);
+  applyObject(out.features, p['features']);
   // Accept legacy flat shape where app allowlist keys live at the top level.
   applyObject(out.appPolicy, p);
   return out;
@@ -160,7 +177,8 @@ export function defaultPolicy(): SecurityPolicy {
     commandPolicy: { ...DEFAULTS.commandPolicy },
     auth: { ...DEFAULTS.auth },
     screenCapture: { ...DEFAULTS.screenCapture },
-    approval: { ...DEFAULTS.approval }
+    approval: { ...DEFAULTS.approval },
+    features: { ...DEFAULTS.features }
   };
 }
 
