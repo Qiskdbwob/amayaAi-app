@@ -52,6 +52,9 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    public static extern IntPtr GetWindowLongPtrW(IntPtr hWnd, int nIndex);
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetWindowRect(IntPtr hWnd, out Rect lpRect);
@@ -201,6 +204,33 @@ internal static class NativeMethods
     public const int SM_YVIRTUALSCREEN = 77;
     public const int SM_CXVIRTUALSCREEN = 78;
     public const int SM_CYVIRTUALSCREEN = 79;
+
+    // GetWindow uCmd values
+    public const uint GW_HWNDNEXT = 2;
+    public const uint GW_HWNDPREV = 3;
+    public const uint GW_OWNER = 4;
+
+    // Extended window styles for focusable detection
+    public const int GWL_EXSTYLE = -20;
+    public const int GWL_STYLE = -16;
+    public const uint WS_EX_NOACTIVATE = 0x08000000;
+    public const uint WS_EX_TOOLWINDOW = 0x00000080;
+    public const uint WS_POPUP = 0x80000000;
+    public const uint WS_CHILD = 0x40000000;
+
+    // PrintWindow flags
+    public const uint PW_CLIENTONLY = 0x00000001;
+    public const uint PW_RENDERFULLCONTENT = 0x00000002;
+
+    // ChildWindowFromPointEx flags
+    public const uint CWP_ALL = 0x0000;
+    public const uint CWP_SKIPINVISIBLE = 0x0001;
+    public const uint CWP_SKIPDISABLED = 0x0002;
+    public const uint CWP_SKIPTRANSPARENT = 0x0004;
+
+    // Token query / elevation
+    public const uint TOKEN_QUERY = 0x0008;
+    public const int TokenElevation = 20;
 
     public const uint PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 

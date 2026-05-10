@@ -37,9 +37,13 @@ internal static class WindowService
                     ProcessId = (int)pid,
                     ProcessName = SafeProcessName((int)pid),
                     Bounds = bounds,
+                    ClientBounds = ReadClientBounds(hWnd),
                     State = WindowState(hWnd),
                     Visible = true,
-                    Focused = hWnd == foreground
+                    Focused = hWnd == foreground,
+                    Focusable = IsFocusable(hWnd),
+                    ScaleFactor = DpiService.GetScaleFactorForWindow(hWnd),
+                    DpiAwareness = DpiService.GetAwarenessContext(hWnd)
                 });
             }
             catch
@@ -49,6 +53,28 @@ internal static class WindowService
             return true;
         }, IntPtr.Zero);
 
+        // Windows are enumerated top-to-bottom already. Assign the z-index
+        // explicitly so the client can rely on it even if we change collection
+        // order later.
+        for (int i = 0; i < windows.Count; i++)
+        {
+            windows[i] = new WindowInfo
+            {
+                Id = windows[i].Id,
+                Title = windows[i].Title,
+                ProcessId = windows[i].ProcessId,
+                ProcessName = windows[i].ProcessName,
+                Bounds = windows[i].Bounds,
+                ClientBounds = windows[i].ClientBounds,
+                State = windows[i].State,
+                Visible = windows[i].Visible,
+                Focused = windows[i].Focused,
+                Focusable = windows[i].Focusable,
+                ScaleFactor = windows[i].ScaleFactor,
+                DpiAwareness = windows[i].DpiAwareness,
+                ZIndex = i
+            };
+        }
         return windows;
     }
 
@@ -78,9 +104,13 @@ internal static class WindowService
                 ProcessId = (int)pid,
                 ProcessName = SafeProcessName((int)pid),
                 Bounds = bounds,
+                ClientBounds = ReadClientBounds(hWnd),
                 State = WindowState(hWnd),
                 Visible = NativeMethods.IsWindowVisible(hWnd),
-                Focused = focused
+                Focused = focused,
+                Focusable = IsFocusable(hWnd),
+                ScaleFactor = DpiService.GetScaleFactorForWindow(hWnd),
+                DpiAwareness = DpiService.GetAwarenessContext(hWnd)
             };
         }
         catch
@@ -222,6 +252,40 @@ internal static class WindowService
             Width = Math.Max(0, rect.Right - rect.Left),
             Height = Math.Max(0, rect.Bottom - rect.Top)
         };
+    }
+
+    private static WindowBounds? ReadClientBounds(IntPtr hWnd)
+    {
+        if (!NativeMethods.GetClientRect(hWnd, out var rect)) return null;
+        int width = Math.Max(0, rect.Right - rect.Left);
+        int height = Math.Max(0, rect.Bottom - rect.Top);
+        if (width == 0 && height == 0) return null;
+        var origin = new NativeMethods.POINT { X = rect.Left, Y = rect.Top };
+        if (!NativeMethods.ClientToScreen(hWnd, ref origin)) return null;
+        return new WindowBounds
+        {
+            X = origin.X,
+            Y = origin.Y,
+            Width = width,
+            Height = height
+        };
+    }
+
+    private static bool IsFocusable(IntPtr hWnd)
+    {
+        try
+        {
+            long exStyle = NativeMethods.GetWindowLongPtrW(hWnd, NativeMethods.GWL_EXSTYLE).ToInt64();
+            if ((exStyle & NativeMethods.WS_EX_NOACTIVATE) != 0) return false;
+            // Tool windows are technically focusable, but the caller usually means
+            // "a real target window" — keep them false to avoid noisy suggestions.
+            if ((exStyle & NativeMethods.WS_EX_TOOLWINDOW) != 0) return false;
+            return true;
+        }
+        catch
+        {
+            return true;
+        }
     }
 
     private static string SafeProcessName(int pid)
