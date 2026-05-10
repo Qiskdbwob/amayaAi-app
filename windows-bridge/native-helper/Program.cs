@@ -77,20 +77,27 @@ internal static class Program
             return request.Method switch
             {
                 "health.ping" => JsonRpcResponse.Success(request.Id, HealthService.Ping()),
+                "diagnostics" => JsonRpcResponse.Success(request.Id, DiagnosticsService.Collect()),
                 "window.list" => HandleWindowList(request),
                 "window.focus" => HandleWindowFocus(request),
                 "window.close" => HandleWindowClose(request),
                 "window.active" => HandleWindowActive(request),
+                "window.capture" => HandleWindowCapture(request),
                 "app.open" => HandleAppOpen(request),
                 "ui.tree" => HandleUiTree(request),
                 "ui.find_text" => HandleUiFindText(request),
                 "ui.click_element" => HandleUiClickElement(request),
+                "ui.hit_test" => HandleUiHitTest(request),
                 "mouse.click" => HandleMouseClick(request),
                 "mouse.move" => HandleMouseMove(request),
                 "mouse.scroll" => HandleMouseScroll(request),
                 "mouse.drag" => HandleMouseDrag(request),
+                "mouse.press" => HandleMousePress(request),
+                "mouse.release" => HandleMouseRelease(request),
+                "mouse.hover" => HandleMouseHover(request),
                 "keyboard.type" => HandleKeyboardType(request),
                 "keyboard.hotkey" => HandleKeyboardHotkey(request),
+                "keyboard.hold" => HandleKeyboardHold(request),
                 _ => JsonRpcResponse.Failure(request.Id, new HelperError
                 {
                     Code = HelperErrorCode.UnknownMethod,
@@ -228,16 +235,36 @@ internal static class Program
     private static JsonRpcResponse HandleMouseClick(JsonRpcRequest request)
     {
         var p = request.Params;
+        var focusWindowId = TryGetString(p, "focusWindowId");
+        var relativeToWindowId = TryGetString(p, "relativeToWindowId");
         int? x = TryGetInt(p, "x");
         int? y = TryGetInt(p, "y");
+        int? clientX = TryGetInt(p, "clientX");
+        int? clientY = TryGetInt(p, "clientY");
+
+        // Resolve client-relative coordinates if provided.
+        if (relativeToWindowId is not null && clientX is not null && clientY is not null)
+        {
+            var resolved = InputService.ResolveClientPoint(relativeToWindowId, clientX.Value, clientY.Value);
+            if (resolved is null)
+            {
+                return ArgsError(request.Id!, "relativeToWindowId is no longer a valid window");
+            }
+            x = resolved.Value.X;
+            y = resolved.Value.Y;
+            focusWindowId ??= relativeToWindowId;
+        }
+
         if (x is null || y is null)
         {
-            return ArgsError(request.Id!, "x and y are required integers");
+            return ArgsError(request.Id!, "x and y (or relativeToWindowId + clientX + clientY) are required");
         }
         MouseButtonParser.TryParse(TryGetString(p, "button"), out var button);
         int clicks = TryGetInt(p, "clicks") ?? 1;
+        var modifiers = TryGetString(p, "modifiers");
 
-        var (ok, reason) = InputService.Click(x.Value, y.Value, button, clicks);
+        var (ok, reason) = InputService.Click(
+            x.Value, y.Value, button, clicks, focusWindowId, modifiers);
         if (!ok)
         {
             return JsonRpcResponse.Failure(request.Id!, new HelperError
@@ -249,13 +276,26 @@ internal static class Program
                 Recoverable = true
             });
         }
+
+        var (_, _, topHandle, _, _, _) = InputService.HitTest(x.Value, y.Value);
+        NativeMethods.GetCursorPos(out var cursor);
+        var foreground = WindowService.Active();
         return JsonRpcResponse.Success(request.Id!, new
         {
             clicked = true,
             x = x.Value,
             y = y.Value,
             button = button.ToString().ToLowerInvariant(),
-            clicks
+            clicks,
+            cursor = new { x = cursor.X, y = cursor.Y },
+            foregroundWindow = foreground is null ? null : new
+            {
+                windowId = foreground.Id,
+                title = foreground.Title,
+                processName = foreground.ProcessName,
+                focused = foreground.Focused
+            },
+            hitWindow = topHandle == 0 ? null : topHandle.ToString()
         });
     }
 
@@ -269,8 +309,9 @@ internal static class Program
 
         int durationMs = TryGetInt(p, "durationMs") ?? 0;
         durationMs = Math.Clamp(durationMs, 0, 2000);
+        var focusWindowId = TryGetString(p, "focusWindowId");
 
-        var (ok, reason) = InputService.Move(x.Value, y.Value, durationMs);
+        var (ok, reason) = InputService.Move(x.Value, y.Value, durationMs, focusWindowId);
         if (!ok)
         {
             return JsonRpcResponse.Failure(request.Id!, new HelperError
@@ -282,7 +323,15 @@ internal static class Program
                 Recoverable = true
             });
         }
-        return JsonRpcResponse.Success(request.Id!, new { moved = true, x = x.Value, y = y.Value, durationMs });
+        NativeMethods.GetCursorPos(out var cursor);
+        return JsonRpcResponse.Success(request.Id!, new
+        {
+            moved = true,
+            x = x.Value,
+            y = y.Value,
+            durationMs,
+            cursor = new { x = cursor.X, y = cursor.Y }
+        });
     }
 
     private static JsonRpcResponse HandleMouseScroll(JsonRpcRequest request)
@@ -298,8 +347,9 @@ internal static class Program
             return ArgsError(request.Id!, "direction must be up, down, left, or right");
 
         int amount = Math.Clamp(TryGetInt(p, "amount") ?? 3, 1, 50);
+        var focusWindowId = TryGetString(p, "focusWindowId");
 
-        var (ok, reason) = InputService.Scroll(x.Value, y.Value, direction, amount);
+        var (ok, reason) = InputService.Scroll(x.Value, y.Value, direction, amount, focusWindowId);
         if (!ok)
         {
             return JsonRpcResponse.Failure(request.Id!, new HelperError
@@ -329,6 +379,7 @@ internal static class Program
 
         MouseButtonParser.TryParse(TryGetString(p, "button"), out var button);
         int durationMs = Math.Clamp(TryGetInt(p, "durationMs") ?? 400, 50, 5000);
+        var focusWindowId = TryGetString(p, "focusWindowId");
 
         // Parse optional waypoints: [{x, y}, ...]
         var waypoints = TryGetWaypoints(p, "waypoints");
@@ -336,7 +387,7 @@ internal static class Program
         var (ok, reason) = InputService.Drag(
             startX.Value, startY.Value,
             endX.Value, endY.Value,
-            button, durationMs, waypoints);
+            button, durationMs, waypoints, focusWindowId);
 
         if (!ok)
         {
@@ -394,6 +445,135 @@ internal static class Program
             });
         }
         return JsonRpcResponse.Success(request.Id!, new { pressed = true, keys = normalized });
+    }
+
+    private static JsonRpcResponse HandleKeyboardHold(JsonRpcRequest request)
+    {
+        var p = request.Params;
+        var key = TryGetString(p, "key");
+        int durationMs = TryGetInt(p, "durationMs") ?? 200;
+        var (ok, reason) = InputService.HoldKey(key, durationMs);
+        if (!ok)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = HelperErrorCode.InvalidArgs,
+                Message = reason ?? "keyboard.hold failed"
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, new { held = true, key, durationMs });
+    }
+
+    private static JsonRpcResponse HandleMousePress(JsonRpcRequest request)
+    {
+        var p = request.Params;
+        int? x = TryGetInt(p, "x");
+        int? y = TryGetInt(p, "y");
+        if (x is null || y is null) return ArgsError(request.Id!, "x and y are required integers");
+        MouseButtonParser.TryParse(TryGetString(p, "button"), out var button);
+        var focusWindowId = TryGetString(p, "focusWindowId");
+        var (ok, reason) = InputService.Press(x.Value, y.Value, button, focusWindowId);
+        if (!ok)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = HelperErrorCode.ExecutionFailed,
+                Message = reason ?? "mouse.press failed",
+                Recoverable = true
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, new { pressed = true, x = x.Value, y = y.Value, button = button.ToString().ToLowerInvariant() });
+    }
+
+    private static JsonRpcResponse HandleMouseRelease(JsonRpcRequest request)
+    {
+        var p = request.Params;
+        MouseButtonParser.TryParse(TryGetString(p, "button"), out var button);
+        var (ok, reason) = InputService.Release(button);
+        if (!ok)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = HelperErrorCode.ExecutionFailed,
+                Message = reason ?? "mouse.release failed",
+                Recoverable = true
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, new { released = true, button = button.ToString().ToLowerInvariant() });
+    }
+
+    private static JsonRpcResponse HandleMouseHover(JsonRpcRequest request)
+    {
+        var p = request.Params;
+        int? x = TryGetInt(p, "x");
+        int? y = TryGetInt(p, "y");
+        if (x is null || y is null) return ArgsError(request.Id!, "x and y are required integers");
+        int holdMs = Math.Clamp(TryGetInt(p, "holdMs") ?? 400, 0, 5000);
+        var focusWindowId = TryGetString(p, "focusWindowId");
+        var (ok, reason) = InputService.Hover(x.Value, y.Value, holdMs, focusWindowId);
+        if (!ok)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = reason == "coordinate outside virtual screen bounds"
+                    ? HelperErrorCode.InvalidArgs
+                    : HelperErrorCode.ExecutionFailed,
+                Message = reason ?? "mouse.hover failed",
+                Recoverable = true
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, new { hovered = true, x = x.Value, y = y.Value, holdMs });
+    }
+
+    private static JsonRpcResponse HandleUiHitTest(JsonRpcRequest request)
+    {
+        var p = request.Params;
+        int? x = TryGetInt(p, "x");
+        int? y = TryGetInt(p, "y");
+        if (x is null || y is null) return ArgsError(request.Id!, "x and y are required integers");
+        var (ok, reason, topLevel, immediate, clientX, clientY) = InputService.HitTest(x.Value, y.Value);
+        if (!ok)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = HelperErrorCode.NotFound,
+                Message = reason ?? "no window at coordinate"
+            });
+        }
+        var root = WindowService.Info(new IntPtr(topLevel), focused: false);
+        return JsonRpcResponse.Success(request.Id!, new
+        {
+            x = x.Value,
+            y = y.Value,
+            windowId = topLevel.ToString(),
+            immediateWindowId = immediate.ToString(),
+            clientX,
+            clientY,
+            window = root
+        });
+    }
+
+    private static JsonRpcResponse HandleWindowCapture(JsonRpcRequest request)
+    {
+        var windowId = TryGetString(request.Params, "windowId");
+        var (ok, reason, pngBytes, bounds, partial) = WindowCaptureService.CaptureWindow(windowId);
+        if (!ok || pngBytes is null)
+        {
+            return JsonRpcResponse.Failure(request.Id!, new HelperError
+            {
+                Code = reason == "window not found" ? HelperErrorCode.NotFound : HelperErrorCode.ExecutionFailed,
+                Message = reason ?? "window.capture failed",
+                Recoverable = true
+            });
+        }
+        return JsonRpcResponse.Success(request.Id!, new
+        {
+            captured = true,
+            imageBase64 = Convert.ToBase64String(pngBytes),
+            bounds,
+            partial,
+            format = "png"
+        });
     }
 
     private static JsonRpcResponse ArgsError(string id, string message) =>

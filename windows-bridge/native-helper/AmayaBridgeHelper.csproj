@@ -21,6 +21,15 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!--
+      System.Drawing.Common is a Windows-only runtime package. We use it purely
+      to wrap a GDI HDC for PrintWindow-based per-window capture. It adds about
+      1 MB to the helper but avoids taking on WinRT interop for now.
+    -->
+    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
+  </ItemGroup>
+
   <!--
     System.Text.Json is part of the .NET runtime from 8+ on, so no explicit
     PackageReference is needed. NU1510 would warn that the package is pruned.

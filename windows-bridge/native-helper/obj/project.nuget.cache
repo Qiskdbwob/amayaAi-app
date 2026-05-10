@@ -1,8 +1,11 @@
 {
   "version": 2,
-  "dgSpecHash": "U376I1tUf6s=",
+  "dgSpecHash": "9pe4ls6XaX0=",
   "success": true,
   "projectFilePath": "C:\\Users\\BiuBiu\\Documents\\my app\\amaya\\windows-bridge\\native-helper\\AmayaBridgeHelper.csproj",
-  "expectedPackageFiles": [],
+  "expectedPackageFiles": [
+    "C:\\Users\\BiuBiu\\.nuget\\packages\\microsoft.win32.systemevents\\9.0.0\\microsoft.win32.systemevents.9.0.0.nupkg.sha512",
+    "C:\\Users\\BiuBiu\\.nuget\\packages\\system.drawing.common\\9.0.0\\system.drawing.common.9.0.0.nupkg.sha512"
+  ],
   "logs": []
 }

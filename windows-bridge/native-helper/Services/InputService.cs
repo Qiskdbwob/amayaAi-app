@@ -11,14 +11,32 @@ internal static class InputService
 
     // ── mouse ────────────────────────────────────────────────────────────────
 
-    public static (bool Ok, string? Reason) Click(int x, int y, MouseButton button, int clicks)
+    public static (bool Ok, string? Reason) Click(
+        int x, int y, MouseButton button, int clicks,
+        string? focusWindowId = null,
+        string? modifiers = null)
     {
-        if (clicks < 1 || clicks > 2) return (false, "clicks must be 1 or 2");
+        if (clicks < 1 || clicks > 3) return (false, "clicks must be 1, 2, or 3");
 
         var (sx, sy, sw, sh) = ScreenInfoService.VirtualScreenBounds();
         if (x < sx || y < sy || x >= sx + sw || y >= sy + sh)
         {
             return (false, "coordinate outside virtual screen bounds");
+        }
+
+        if (!string.IsNullOrWhiteSpace(focusWindowId))
+        {
+            // Best effort; do not fail the click if the focus step fails — many
+            // clicks work fine even without a dedicated focus change.
+            _ = WindowService.Focus(focusWindowId);
+            Thread.Sleep(60);
+        }
+
+        // Modifiers (ctrl, shift, alt, win) pressed before the click and released after.
+        var modifierVks = ParseModifierKeys(modifiers);
+        foreach (var vk in modifierVks)
+        {
+            SendKey(vk, keyUp: false);
         }
 
         uint down, up;
@@ -44,8 +62,36 @@ internal static class InputService
             inputs[offset + 1] = new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = up } } };
         }
         uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+
+        // Always release modifiers, even if the click failed, to avoid sticky keys.
+        foreach (var vk in modifierVks.AsEnumerable().Reverse())
+        {
+            SendKey(vk, keyUp: true);
+        }
+
         if (sent != inputs.Length) return (false, "SendInput sent fewer mouse events than requested");
         return (true, null);
+    }
+
+    private static IReadOnlyList<ushort> ParseModifierKeys(string? modifiers)
+    {
+        if (string.IsNullOrWhiteSpace(modifiers)) return Array.Empty<ushort>();
+        var parts = modifiers.Split(new[] { '+', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        var result = new List<ushort>(parts.Length);
+        foreach (var raw in parts)
+        {
+            if (HotkeyMap.TryResolve(raw, out var vk))
+            {
+                result.Add(vk);
+            }
+        }
+        return result;
+    }
+
+    private static void SendKey(ushort vk, bool keyUp)
+    {
+        var input = new INPUT { type = INPUT_KEYBOARD, U = new InputUnion { ki = new KEYBDINPUT { wVk = vk, wScan = 0, dwFlags = keyUp ? KEYEVENTF_KEYUP : 0 } } };
+        SendInput(1, [input], Marshal.SizeOf<INPUT>());
     }
 
     /// <summary>
@@ -53,11 +99,17 @@ internal static class InputService
     /// durationMs=0 means instant; otherwise the cursor is interpolated over
     /// the given duration using ~60 Hz steps.
     /// </summary>
-    public static (bool Ok, string? Reason) Move(int x, int y, int durationMs)
+    public static (bool Ok, string? Reason) Move(int x, int y, int durationMs, string? focusWindowId = null)
     {
         var (sx, sy, sw, sh) = ScreenInfoService.VirtualScreenBounds();
         if (x < sx || y < sy || x >= sx + sw || y >= sy + sh)
             return (false, "coordinate outside virtual screen bounds");
+
+        if (!string.IsNullOrWhiteSpace(focusWindowId))
+        {
+            _ = WindowService.Focus(focusWindowId);
+            Thread.Sleep(40);
+        }
 
         if (durationMs <= 0)
         {
@@ -82,17 +134,85 @@ internal static class InputService
     }
 
     /// <summary>
+    /// Press the mouse button at (x, y) without releasing. Paired with <see cref="Release"/>
+    /// for spreadsheet-style selection, drag-with-modifier, and games needing held buttons.
+    /// </summary>
+    public static (bool Ok, string? Reason) Press(int x, int y, MouseButton button, string? focusWindowId = null)
+    {
+        var (sx, sy, sw, sh) = ScreenInfoService.VirtualScreenBounds();
+        if (x < sx || y < sy || x >= sx + sw || y >= sy + sh)
+            return (false, "coordinate outside virtual screen bounds");
+
+        if (!string.IsNullOrWhiteSpace(focusWindowId))
+        {
+            _ = WindowService.Focus(focusWindowId);
+            Thread.Sleep(40);
+        }
+
+        uint down = button switch
+        {
+            MouseButton.Right => MOUSEEVENTF_RIGHTDOWN,
+            MouseButton.Middle => MOUSEEVENTF_MIDDLEDOWN,
+            _ => MOUSEEVENTF_LEFTDOWN
+        };
+        var inputs = new[]
+        {
+            AbsoluteMoveInput(x, y),
+            new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = down } } }
+        };
+        uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        return sent == inputs.Length ? (true, null) : (false, "SendInput press failed");
+    }
+
+    /// <summary>
+    /// Release the mouse button previously pressed via <see cref="Press"/>.
+    /// </summary>
+    public static (bool Ok, string? Reason) Release(MouseButton button)
+    {
+        uint up = button switch
+        {
+            MouseButton.Right => MOUSEEVENTF_RIGHTUP,
+            MouseButton.Middle => MOUSEEVENTF_MIDDLEUP,
+            _ => MOUSEEVENTF_LEFTUP
+        };
+        var input = new INPUT { type = INPUT_MOUSE, U = new InputUnion { mi = new MOUSEINPUT { dwFlags = up } } };
+        uint sent = SendInput(1, [input], Marshal.SizeOf<INPUT>());
+        return sent == 1 ? (true, null) : (false, "SendInput release failed");
+    }
+
+    /// <summary>
+    /// Move to (x, y) and hold the cursor there for holdMs so tooltips / hover
+    /// menus have time to appear. Does not click.
+    /// </summary>
+    public static (bool Ok, string? Reason) Hover(int x, int y, int holdMs, string? focusWindowId = null)
+    {
+        holdMs = Math.Clamp(holdMs, 0, 5000);
+        var (ok, reason) = Move(x, y, 120, focusWindowId);
+        if (!ok) return (ok, reason);
+        if (holdMs > 0) Thread.Sleep(holdMs);
+        return (true, null);
+    }
+
+    /// <summary>
     /// Scroll at coordinate (x, y).
     /// direction: "up" | "down" | "left" | "right"
     /// amount: number of wheel ticks (WHEEL_DELTA = 120 per tick).
     /// </summary>
-    public static (bool Ok, string? Reason) Scroll(int x, int y, string direction, int amount)
+    public static (bool Ok, string? Reason) Scroll(
+        int x, int y, string direction, int amount,
+        string? focusWindowId = null)
     {
         if (amount < 1 || amount > 50) return (false, "amount must be between 1 and 50");
 
         var (sx, sy, sw, sh) = ScreenInfoService.VirtualScreenBounds();
         if (x < sx || y < sy || x >= sx + sw || y >= sy + sh)
             return (false, "coordinate outside virtual screen bounds");
+
+        if (!string.IsNullOrWhiteSpace(focusWindowId))
+        {
+            _ = WindowService.Focus(focusWindowId);
+            Thread.Sleep(60);
+        }
 
         // Move cursor to scroll target first so the OS delivers the event to
         // the correct window (Windows routes WM_MOUSEWHEEL to the window under
@@ -119,6 +239,32 @@ internal static class InputService
         };
         uint sent = SendInput(1, [input], Marshal.SizeOf<INPUT>());
         if (sent == 0) return (false, "SendInput returned 0");
+
+        // PostMessage fallback: some applications (e.g. certain WebView2 and
+        // DirectManipulation surfaces) ignore injected wheel events unless
+        // they arrive via WM_MOUSEWHEEL directly. We additionally post the
+        // message to the window under the cursor — it is a no-op when the
+        // SendInput path already worked, but rescues the case where it didn't.
+        try
+        {
+            var pt = new NativeMethods.POINT { X = x, Y = y };
+            var hWnd = NativeMethods.WindowFromPoint(pt);
+            if (hWnd != IntPtr.Zero)
+            {
+                // wParam high word = delta, low word = virtual keys (0 = none).
+                // lParam = screen coords packed (x low, y high).
+                int wParamHigh = delta & 0xFFFF;
+                IntPtr wParam = new IntPtr((wParamHigh << 16));
+                IntPtr lParam = new IntPtr((y << 16) | (x & 0xFFFF));
+                uint msg = horizontal ? 0x020Eu /* WM_MOUSEHWHEEL */ : 0x020Au /* WM_MOUSEWHEEL */;
+                _ = NativeMethods.PostMessageW(hWnd, msg, wParam, lParam);
+            }
+        }
+        catch
+        {
+            // Best-effort fallback; never fail the tool because of it.
+        }
+
         return (true, null);
     }
 
@@ -131,7 +277,8 @@ internal static class InputService
         int endX, int endY,
         MouseButton button,
         int durationMs,
-        IReadOnlyList<(int X, int Y)>? waypoints)
+        IReadOnlyList<(int X, int Y)>? waypoints,
+        string? focusWindowId = null)
     {
         var (sx, sy, sw, sh) = ScreenInfoService.VirtualScreenBounds();
         bool InBounds(int px, int py) =>
@@ -139,6 +286,12 @@ internal static class InputService
 
         if (!InBounds(startX, startY)) return (false, "start coordinate outside virtual screen bounds");
         if (!InBounds(endX, endY)) return (false, "end coordinate outside virtual screen bounds");
+
+        if (!string.IsNullOrWhiteSpace(focusWindowId))
+        {
+            _ = WindowService.Focus(focusWindowId);
+            Thread.Sleep(60);
+        }
 
         uint downFlag, upFlag;
         switch (button)
@@ -197,6 +350,60 @@ internal static class InputService
         }], Marshal.SizeOf<INPUT>());
 
         return (true, null);
+    }
+
+    /// <summary>
+    /// Press a single key down, wait for <paramref name="durationMs"/>, then release it.
+    /// Equivalent to Claude computer_use hold_key. Useful for games and
+    /// spreadsheet-style selection with held modifiers.
+    /// </summary>
+    public static (bool Ok, string? Reason) HoldKey(string? key, int durationMs)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return (false, "key is required");
+        if (!HotkeyMap.TryResolve(key, out var vk)) return (false, $"unknown key: {key}");
+        durationMs = Math.Clamp(durationMs, 10, 10_000);
+
+        var down = KeyInput(vk, keyUp: false);
+        uint sent = SendInput(1, [down], Marshal.SizeOf<INPUT>());
+        if (sent != 1) return (false, "SendInput key-down failed");
+        Thread.Sleep(durationMs);
+        var up = KeyInput(vk, keyUp: true);
+        SendInput(1, [up], Marshal.SizeOf<INPUT>());
+        return (true, null);
+    }
+
+    /// <summary>
+    /// Returns the top-level and immediate window under screen coordinates (x, y).
+    /// Used as a post-condition for visual click targets.
+    /// </summary>
+    public static (bool Ok, string? Reason, long TopLevel, long Immediate, int ClientX, int ClientY) HitTest(int x, int y)
+    {
+        var pt = new NativeMethods.POINT { X = x, Y = y };
+        var hit = NativeMethods.WindowFromPoint(pt);
+        if (hit == IntPtr.Zero) return (false, "no window at coordinate", 0, 0, 0, 0);
+
+        var root = NativeMethods.GetAncestor(hit, NativeMethods.GA_ROOT);
+        if (root == IntPtr.Zero) root = hit;
+
+        var client = new NativeMethods.POINT { X = x, Y = y };
+        NativeMethods.ScreenToClient(root, ref client);
+
+        return (true, null, root.ToInt64(), hit.ToInt64(), client.X, client.Y);
+    }
+
+    /// <summary>
+    /// Convert a client-relative (clientX, clientY) inside <paramref name="windowId"/>
+    /// into virtual-screen physical pixels. Returns null if the window is gone.
+    /// </summary>
+    public static (int X, int Y)? ResolveClientPoint(string? windowId, int clientX, int clientY)
+    {
+        if (string.IsNullOrWhiteSpace(windowId)) return null;
+        if (!long.TryParse(windowId, out var handleValue)) return null;
+        var hWnd = new IntPtr(handleValue);
+        if (!NativeMethods.IsWindow(hWnd)) return null;
+        var pt = new NativeMethods.POINT { X = clientX, Y = clientY };
+        if (!NativeMethods.ClientToScreen(hWnd, ref pt)) return null;
+        return (pt.X, pt.Y);
     }
 
     private static bool TryMoveCursor(int x, int y)
