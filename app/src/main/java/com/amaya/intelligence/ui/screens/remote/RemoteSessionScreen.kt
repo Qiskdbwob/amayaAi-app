@@ -1,6 +1,6 @@
 package com.amaya.intelligence.ui.screens.remote
 
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -8,11 +8,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.times
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -27,6 +25,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import com.amaya.intelligence.ui.components.shared.ignoreNestedScrollForBottomSheet
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -45,7 +44,6 @@ import com.amaya.intelligence.impl.ide.IdeProviderFactory
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.amaya.intelligence.ui.components.remote.WindowsBridgeChatPanelViewModel
 import com.amaya.intelligence.ui.components.remote.WindowsBridgeConnectionSetupSheet
-
 import androidx.compose.ui.graphics.Brush
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
@@ -54,7 +52,6 @@ import com.amaya.intelligence.ui.res.UiDefaults
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.amaya.intelligence.impl.common.mappers.RemoteIdeIcon
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.launch
 
 /**
@@ -79,6 +76,7 @@ fun RemoteSessionScreen(
     val gradients = LocalAmayaGradients.current
     val isDark = isSystemInDarkTheme()
     val scope = rememberCoroutineScope()
+    val sessionColors = remoteSessionColors()
 
     var ipAddress by remember { mutableStateOf("") }
     var port by remember { mutableStateOf("") }
@@ -112,125 +110,146 @@ fun RemoteSessionScreen(
         containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Box(modifier = Modifier.fillMaxSize().background(sessionColors.groupedBackground)) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(22.dp)
             ) {
                 // Standard spacing for the transparent header
-                Spacer(Modifier.statusBarsPadding().height(56.dp))
+                Spacer(Modifier.statusBarsPadding().height(52.dp))
 
-                // ── Connected state: minimal view ────────────────────
+                // ── Connected state ──────────────────────────────────
                 if (isConnected) {
-                    Surface(
-                        shape = RoundedCornerShape(24.dp),
-                        color = Color(0xFF34C759).copy(alpha = 0.10f),
-                        modifier = Modifier.fillMaxWidth(),
-                        border = androidx.compose.foundation.BorderStroke(
-                            1.dp, Color(0xFF34C759).copy(alpha = 0.2f)
-                        )
-                    ) {
+                    RemoteSessionSection("Connection") {
                         Row(
-                            modifier = Modifier.padding(20.dp),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(12.dp)
+                                    .size(32.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFF34C759))
-                            )
+                                    .background(Color(0xFF34C759).copy(alpha = 0.15f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(10.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF34C759))
+                                )
+                            }
                             Column(modifier = Modifier.weight(1f)) {
                                 val providerName = selectedIde?.let { IdeProviderFactory.getIdeInfo(it)?.displayName }
                                     ?: UiStrings.App.REMOTE_NAME
                                 Text(
                                     "${UiStrings.Connection.CONNECTED_TO} $providerName",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.SemiBold
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontWeight = FontWeight.Medium,
+                                        fontSize = 15.sp,
+                                        lineHeight = 19.sp
+                                    ),
+                                    color = sessionColors.primaryText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
-                                Spacer(Modifier.height(4.dp))
+                                Spacer(Modifier.height(2.dp))
                                 Text(
                                     "ws://${serverInfo ?: ""}",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.ExtraLight),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontSize = 12.5.sp,
+                                        lineHeight = 16.sp
+                                    ),
+                                    color = sessionColors.secondaryText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                             Button(
                                 onClick = { onConnected() },
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)
                             ) {
-                                Icon(Icons.AutoMirrored.Filled.Chat, null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(UiStrings.Connection.OPEN_CHAT)
+                                Icon(Icons.AutoMirrored.Filled.Chat, null, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    UiStrings.Connection.OPEN_CHAT,
+                                    style = MaterialTheme.typography.labelMedium
+                                )
                             }
                         }
                     }
                 } else {
-                    // ── Disconnected state: IDE selector + IP/Port ───────
+                    // ── Disconnected state: IDE selector ─────────────
 
                     // Error message
                     errorMessage?.let { error ->
                         Surface(
                             shape = RoundedCornerShape(16.dp),
                             color = MaterialTheme.colorScheme.error.copy(alpha = 0.10f),
+                            border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.20f)),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Row(
-                                modifier = Modifier.padding(16.dp),
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                Icon(Icons.Default.ErrorOutline, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                                Icon(
+                                    Icons.Default.ErrorOutline, null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(18.dp)
+                                )
                                 Text(
                                     error,
-                                    style = MaterialTheme.typography.bodySmall,
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
                                     color = MaterialTheme.colorScheme.error
                                 )
                             }
                         }
                     }
 
-                    val sectionTitleColor = if (isSystemInDarkTheme()) Color(0xFF98989D) else Color(0xFF8E8E93)
-                    // 1. IDE Selection
-                    Text(
-                        UiStrings.Connection.REMOTE_CONNECTION,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = sectionTitleColor,
-                        modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
-                    )
+                    // IDE + Windows Bridge grouped list
                     val allIdes = remember { IdeProviderFactory.getAll().filter { it.info.capabilities.requiresConnection } }
-                    allIdes.forEachIndexed { index, provider ->
-                        val info = provider.info
-                        val iconSpec = RemoteIdeIcon.resolve(info.id, isDark)
-                        IdeCard(
-                            name = info.displayName,
-                            description = info.description,
-                            iconSpec = iconSpec,
-                            isSelected = selectedIde == info.id,
-                            enabled = provider.isEnabled,
-                            onClick = { 
-                                selectedIde = info.id
-                                showConnectionSheet = true
-                            }
+                    val totalRows = allIdes.size + 1 // +1 for Windows Bridge
+
+                    RemoteSessionSection(UiStrings.Connection.REMOTE_CONNECTION) {
+                        allIdes.forEachIndexed { index, provider ->
+                            val info = provider.info
+                            val iconSpec = RemoteIdeIcon.resolve(info.id, isDark)
+                            val isFirst = index == 0
+                            val isLast = false // Windows Bridge always follows
+                            IdeRow(
+                                name = info.displayName,
+                                description = info.description,
+                                iconSpec = iconSpec,
+                                enabled = provider.isEnabled,
+                                isFirst = isFirst,
+                                isLast = isLast,
+                                onClick = {
+                                    selectedIde = info.id
+                                    showConnectionSheet = true
+                                }
+                            )
+                            RemoteSessionDivider()
+                        }
+                        // Windows Bridge — always last
+                        IdeRow(
+                            name = "Windows Bridge",
+                            description = "Control your Windows PC remotely",
+                            iconSpec = RemoteIdeIcon.Spec(imageVector = Icons.Default.DesktopWindows, tintable = true),
+                            enabled = true,
+                            isFirst = allIdes.isEmpty(),
+                            isLast = true,
+                            onClick = { showBridgeSheet = true }
                         )
                     }
 
-                    // ── Windows Bridge entry ─────────────────────────────────
-                    IdeCard(
-                        name = "Windows Bridge",
-                        description = "Control your Windows PC remotely",
-                        iconSpec = RemoteIdeIcon.Spec(imageVector = Icons.Default.DesktopWindows, tintable = true),
-                        isSelected = false,
-                        enabled = true,
-                        onClick = { showBridgeSheet = true }
-                    )
-
-                    Spacer(Modifier.height(100.dp))
+                    Spacer(Modifier.height(64.dp))
                 }
             }
 
@@ -319,110 +338,209 @@ fun RemoteSessionScreen(
     }
 }
 
+// ── iOS-style color tokens ───────────────────────────────────────────────────
+
+private data class RemoteSessionColors(
+    val groupedBackground: Color,
+    val groupSurface: Color,
+    val border: Color,
+    val separator: Color,
+    val iconBackground: Color,
+    val iconTint: Color,
+    val primaryText: Color,
+    val secondaryText: Color,
+    val headerText: Color
+)
+
 @Composable
-private fun IdeCard(
+private fun remoteSessionColors(): RemoteSessionColors {
+    val isDark = isSystemInDarkTheme()
+    return if (isDark) {
+        RemoteSessionColors(
+            groupedBackground = Color(0xFF0B0B0F),
+            groupSurface = Color(0xFF1C1C1E),
+            border = Color.White.copy(alpha = 0.10f),
+            separator = Color.White.copy(alpha = 0.10f),
+            iconBackground = Color(0xFF2C2C2E),
+            iconTint = Color(0xFFC7C7CC),
+            primaryText = Color(0xFFF2F2F7),
+            secondaryText = Color(0xFFEBEBF5).copy(alpha = 0.60f),
+            headerText = Color(0xFFEBEBF5).copy(alpha = 0.48f)
+        )
+    } else {
+        RemoteSessionColors(
+            groupedBackground = Color(0xFFF2F2F7),
+            groupSurface = Color.White,
+            border = Color.Black.copy(alpha = 0.08f),
+            separator = Color(0xFF3C3C43).copy(alpha = 0.13f),
+            iconBackground = Color(0xFFE9E9EE),
+            iconTint = Color(0xFF5F6368),
+            primaryText = Color(0xFF1C1C1E),
+            secondaryText = Color(0xFF3C3C43).copy(alpha = 0.62f),
+            headerText = Color(0xFF3C3C43).copy(alpha = 0.52f)
+        )
+    }
+}
+
+// ── Section container ────────────────────────────────────────────────────────
+
+@Composable
+private fun RemoteSessionSection(
+    title: String,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val colors = remoteSessionColors()
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Text(
+            text = title.uppercase(),
+            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
+            color = colors.headerText,
+            modifier = Modifier.padding(start = 16.dp)
+        )
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = colors.groupSurface,
+            border = BorderStroke(0.7.dp, colors.border),
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(content = content)
+        }
+    }
+}
+
+// ── IDE row ──────────────────────────────────────────────────────────────────
+
+@Composable
+private fun IdeRow(
     name: String,
     description: String,
     iconSpec: RemoteIdeIcon.Spec?,
-    isSelected: Boolean,
     enabled: Boolean,
+    isFirst: Boolean,
+    isLast: Boolean,
     onClick: () -> Unit
 ) {
+    val colors = remoteSessionColors()
     val isDark = isSystemInDarkTheme()
+    val itemShape = when {
+        isFirst && isLast -> RoundedCornerShape(16.dp)
+        isFirst -> RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
+        isLast -> RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp)
+        else -> RoundedCornerShape(0.dp)
+    }
+
     Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
-        shape = RoundedCornerShape(24.dp),
-        color = when {
-            isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = if (isDark) 0.85f else 0.72f)
-            !enabled -> MaterialTheme.colorScheme.surfaceContainerLow
-            else -> MaterialTheme.colorScheme.surfaceContainerHigh
-        },
-        border = if (isSelected) androidx.compose.foundation.BorderStroke(
-            1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-        ) else null,
-        tonalElevation = 0.dp
+        onClick = onClick,
+        enabled = enabled,
+        shape = itemShape,
+        color = Color.Transparent,
+        modifier = Modifier.fillMaxWidth()
     ) {
         Row(
-            modifier = Modifier.padding(20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            // Monochrome circular icon
             Box(
                 modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                    .size(32.dp)
+                    .clip(CircleShape)
                     .background(
-                        when {
-                            isSelected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                            else -> MaterialTheme.colorScheme.surface.copy(alpha = if (isDark) 0.85f else 1f)
-                        }
+                        if (enabled) colors.iconBackground
+                        else colors.iconBackground.copy(alpha = 0.5f)
                     ),
                 contentAlignment = Alignment.Center
             ) {
-                val tint = when {
-                    !enabled -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.24f)
-                    iconSpec?.tintable == true -> MaterialTheme.colorScheme.onSurface
-                    else -> Color.Unspecified
-                }
+                val tint = if (enabled) colors.iconTint else colors.iconTint.copy(alpha = 0.4f)
                 when {
                     iconSpec?.resId != null -> Icon(
                         painter = painterResource(id = iconSpec.resId),
                         contentDescription = null,
-                        modifier = Modifier.size(24.dp),
+                        modifier = Modifier.size(17.dp),
                         tint = tint
                     )
                     iconSpec?.imageVector != null -> Icon(
                         imageVector = iconSpec.imageVector,
                         contentDescription = null,
-                        modifier = Modifier.size(24.dp),
+                        modifier = Modifier.size(17.dp),
                         tint = tint
                     )
                     else -> Icon(
                         Icons.Default.Terminal,
                         contentDescription = null,
-                        modifier = Modifier.size(24.dp),
+                        modifier = Modifier.size(17.dp),
                         tint = tint
                     )
                 }
             }
+            Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    name,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (!enabled) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                            else MaterialTheme.colorScheme.onSurface
+                    text = name,
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 15.sp,
+                        lineHeight = 19.sp
+                    ),
+                    color = if (enabled) colors.primaryText else colors.primaryText.copy(alpha = 0.35f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    description,
-                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.ExtraLight),
-                    color = if (!enabled) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.2f)
-                            else MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (description.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontSize = 12.5.sp,
+                            lineHeight = 16.sp
+                        ),
+                        color = if (enabled) colors.secondaryText else colors.secondaryText.copy(alpha = 0.5f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
+            Spacer(Modifier.width(10.dp))
             if (!enabled) {
                 Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+                    shape = RoundedCornerShape(6.dp),
+                    color = colors.iconBackground
                 ) {
                     Text(
                         "Soon",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        color = colors.secondaryText.copy(alpha = 0.6f),
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                     )
                 }
-            } else if (isSelected) {
+            } else {
                 Icon(
-                    Icons.Default.CheckCircle, null,
-                    modifier = Modifier.size(22.dp),
-                    tint = MaterialTheme.colorScheme.primary
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = colors.secondaryText.copy(alpha = 0.55f),
+                    modifier = Modifier.size(18.dp)
                 )
             }
         }
     }
+}
+
+// ── Separator ────────────────────────────────────────────────────────────────
+
+@Composable
+private fun RemoteSessionDivider() {
+    val colors = remoteSessionColors()
+    HorizontalDivider(
+        modifier = Modifier.padding(start = 58.dp),
+        color = colors.separator,
+        thickness = 0.7.dp
+    )
 }
 
 @Composable
@@ -559,7 +677,7 @@ private fun ConnectionSetupSheet(
     onDismiss: () -> Unit
 ) {
     var showScanner by remember { mutableStateOf(false) }
-    val maxSheetHeight = 0.75f * androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp
+    val maxSheetHeight = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp * 0.75f
     val sheetState = rememberModalBottomSheetState(
         skipPartiallyExpanded = true
     )
