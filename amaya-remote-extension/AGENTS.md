@@ -14,6 +14,8 @@
 ## Editing Guidance
 - Prefer small changes in `src/controllers/`, `src/connectivity/`, `src/ide/`, `src/interfaces/`, `src/types/`, and `src/utils/`.
 - If changing the Antigravity client or discovery logic, keep the boundaries explicit so provider-neutral code stays isolated from Antigravity-specific details.
+- Before editing, crosscheck the current workspace tree and recent commits for this module.
+- If files, folders, or features change here, refresh this AGENTS file and the related docs map in the same change.
 - Follow the existing `package.json` scripts and TypeScript conventions in this module.
 
 ## File Tree
@@ -21,8 +23,8 @@
 amaya-remote-extension/
 ├─ AGENTS.md
 ├─ package.json
-├─ MODEL_DISCOVERY.md
-├─ REVERSE-ENGINEERING.md
+├─ docs/
+│  └─ antigravity/
 ├─ src/
 └─ test/
 ```
@@ -30,8 +32,8 @@ amaya-remote-extension/
 ## File Functions
 - `AGENTS.md`: module rules for the extension area.
 - `package.json`: extension metadata, activation, commands, and scripts.
-- `docs/MODEL_DISCOVERY.md`: model mapping and discovery notes.
-- `docs/REVERSE-ENGINEERING.md`: Antigravity API discovery and verification notes.
+- `docs/antigravity/MODEL_DISCOVERY.md`: model mapping and discovery notes.
+- `docs/antigravity/REVERSE-ENGINEERING.md`: Antigravity API discovery and verification notes.
 - `src/extension.ts`: extension entrypoint and bootstrap.
 - `src/controllers/`: message flow, lifecycle, workspace, and quota logic.
 - `src/connectivity/`: WebSocket and connection plumbing.

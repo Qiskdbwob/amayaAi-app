@@ -8,10 +8,12 @@
 - Use the existing provider abstraction to keep the rest of the app provider-neutral.
 - Keep streaming, session sync, message mapping, and protocol details here rather than in shared UI or local tool code.
 - Do not mix device-local tool behavior into this subtree.
+- Before changing transport, mapping, or streaming behavior, crosscheck the current workspace diff and recent commits for this subtree.
 
 ## Editing Guidance
 - Prefer small, explicit changes in clients, protocol helpers, stream managers, and mappers.
 - Preserve the separation between transport/discovery and higher-level application state.
+- If files, folders, or features change here, refresh this AGENTS file and the related README/docs references in the same pass.
 
 ## File Tree
 ```text

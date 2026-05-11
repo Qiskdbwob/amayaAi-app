@@ -1,92 +1,98 @@
 # Amaya
 
-Amaya is an intelligent, cross-platform AI assistant that supports Anthropic and OpenAI-compatible models, bridging a portable mobile experience with your development environments. It integrates a built-in remote bridge to IDEs for seamless workspace interaction, delivering a practical and secure coding companion.
+[![Android](https://img.shields.io/badge/Android-Kotlin-3DDC84)](app/)
+[![VS Code Extension](https://img.shields.io/badge/VS%20Code-Extension-007ACC)](amaya-remote-extension/)
+[![Windows Bridge](https://img.shields.io/badge/Windows-Bridge-0078D6)](windows-bridge/)
 
-## Overview
+Amaya is a mobile-first agent stack for Android, IDE workspace control, and Windows-side execution.
 
-The Amaya ecosystem is split into three primary components that work together:
+## Architecture
 
-1. **Local Intelligence (Mobile App)**  
-   A feature-rich Android application serving as the primary interface. It includes its own on-device persistence layer, chat UI, and support for multiple AI providers.
+- **Android app** - planner, chat UI, memory, skills, browser operator, local tools.
+- **VS Code extension** - IDE adapter, session bridge, workspace surface.
+- **Windows bridge** - execution plane for window, input, capture, clipboard, and file actions.
+- **Shared bridge contract** - message schema, tool names, risk policy, approvals, and session state.
 
-2. **Remote Execution (IDE Integration Bridge)**  
-   A built-in bridge that connects the mobile app to your development environment via IDE extensions. It enables direct interaction with your workspace, including file operations, command execution, and editor integration.
+## What it does
 
-3. **IDE Extension Layer**  
-   The extension runs inside the IDE and establishes a WebSocket connection to Amaya through the remote feature. It acts as the execution layer, exposing workspace capabilities (files, terminal, editor actions) and streaming results back to the mobile app in real-time.
+- Agent chat with multiple provider setups
+- Local-first memory and reusable skills
+- Android browser automation
+- Remote workspace orchestration from mobile into an IDE
+- Session sync, tool routing, and capability gating
+- Windows-native tool execution through a helper process
 
-## Directory Structure
 
-This monorepo contains the following primary directories:
+## Quickstart
 
-- `app/`  
-  Kotlin-based Android application containing the main chat interface (`ChatScreen`), local database (`Room`), and networking layer.
+### 1. Android
 
-- `amaya-remote-extension/`  
-  TypeScript-based IDE integration (currently targeting VS Code) that provides workspace access and execution capabilities via WebSocket communication. See [Extension README](./amaya-remote-extension/README.md) for details.
+```bash
+./gradlew installDebug
+```
 
-## Capabilities
+### 2. VS Code extension
 
-### Local AI & Personalization
+```bash
+cd amaya-remote-extension
+npm install
+npx @vscode/vsce package
+```
 
-- **Anthropic support [experimental]**: dedicated support for Anthropic models (non-tested), because i don't have money for access Anthropic API lol
-- **OpenAI-compatible support**: works with OpenAI-style APIs.
-- **Personalization modes**:
-  - **Simple mode**: style, tone, characteristics, and user preferences.
-  - **Pro mode**: structured context via `agent.md`, `soul.md`, `identity.md`, `user.md`, `memory.md`.
-- **MCP support**: HTTP-based Model Context Protocol servers.
-- **Reminder system**: cronjob-based scheduling.
+### 3. Windows bridge
 
-### Local Workspace Access (Android)
+```bash
+cd windows-bridge
+npm install
+npm run verify
+npm run package
+```
 
-- **Local storage access**: read and interact with files on the device.
-- **File discovery**: search, locate, and inspect files.
-- **Contextual understanding**: query and analyze local project data.
-- **Lightweight generation**: create notes, summaries, and simple documentation from local content.
+## Screenshots
 
-### Agent & Model Management
+Add product screenshots here when ready.
 
-- **Multi-agent support**: manage multiple AI agents.
-- **Flexible configuration**:
-  - API keys
-  - Base URLs
-  - Model selection
-- **Provider compatibility**: Anthropic and OpenAI-compatible backends.
+- `docs/media/` for README images
+- `docs/media/demo-android.png`
+- `docs/media/demo-bridge.png`
 
-### Remote Workspace & IDE Integration [BETA]
+## Demo
 
-- **Workspace access**: directly read, analyze, and modify project files through IDE integration.
-- **Unified parsing pipeline**: all AI outputs are normalized into a consistent structure:
-  - tool calls
-  - reasoning/thinking streams
-  - final responses
-- **Structured UI rendering**: outputs are transformed into clean, interactive elements (chat, tool calls, streaming).
-- **Code generation via mobile**: write, edit, and iterate on code from your phone, with seamless session switching.
-- **Streaming & sync**: real-time communication with consistent session state.
-- **Execution flow support**: handles multi-step actions, intermediate states, and progressive updates.
+- Android app: chat, memory, skills, and browser control.
+- IDE bridge: workspace actions from mobile into your editor session.
+- Windows bridge: native window, input, and capture execution.
 
-## IDE Support Roadmap
+## Repo layout
 
-- **Google Antigravity**
-  - Generate code directly from mobile
-  - Code diff support for reviewing (currenly read-only on tool call write_file)
-  - Conversation history support
-  - AI model list with quota tracking and reset time
-  - Conversation modes (planning / fast)
-  - Terminal command approval system (accept / decline before execution)
-  - Send images from mobile to IDE
-  - Full parsing support across all models:
-    - tool calls
-    - thinking/reasoning
-    - text streaming
+- `app/` - Android application.
+- `amaya-remote-extension/` - VS Code extension.
+- `windows-bridge/` - Electron bridge and native helper.
+- `docs/` - protocol notes and implementation docs.
 
-## Limitations
-This currently only support Google Antigravity IDE. The extension will not work with other IDEs. Maybe in the future I will add support for other IDEs.
+## Roadmap
 
-## Documentation & Contribution
+- Broaden IDE support beyond Google Antigravity.
+- Expand bridge approvals and safety controls.
+- Polish pairing, session recovery, and tool visibility.
+- Add more demo assets and release notes.
 
-For detailed contribution guidelines and domain-specific rules:
+## Current focus
+
+The VS Code Extension is currently wired to Google Antigravity on the extension side.
+
+## Contributing
+
+- Read the nearest `AGENTS.md` before changing code.
+- Keep changes scoped to the active module.
+- Update docs when a feature or folder changes.
+
+## License
+
+See `LICENSE`.
+
+## Docs
 
 - `AGENTS.md`
-- `amaya-remote-extension/AGENTS.md`
 - `app/AGENTS.md`
+- `amaya-remote-extension/AGENTS.md`
+- `windows-bridge/AGENTS.md`

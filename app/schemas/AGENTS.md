@@ -1,3 +1,13 @@
+# App Schema Snapshot Instructions
+
+## Scope
+- This file applies to `app/schemas/` and the exported Room schema snapshots in this folder.
+
+## Rules
+- Keep these snapshots aligned with `data/local/db/AppDatabase.kt`, entities, and migration changes.
+- When a schema version changes, update this file and the generated JSON snapshots in the same pass.
+- Crosscheck recent commits touching Room schema, DAO, or migration code before finalizing schema updates.
+
 # 🧱 DESAIN VERSIONING (v1 → v10)
 
 ## ✅ V1 (Initial Release — Foundation)

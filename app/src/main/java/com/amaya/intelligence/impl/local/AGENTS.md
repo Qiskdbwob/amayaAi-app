@@ -9,10 +9,12 @@
 - Keep remote API assumptions out of this layer.
 - Prefer Android-native patterns for services, background work, and local state.
 - Local chat must persist or resolve the active conversation id before starting a model turn when downstream session-memory or reflection code needs a stable session id.
+- Before changing local runtime flow, crosscheck the current workspace diff and recent commits for the touched subtree.
 
 ## Coordination
 - Coordinate with `data/local/` for storage-backed behavior, `data/repository/` for memory/skill/session repositories, and with `tools/` and `service/` for execution/runtime behavior.
 - If a change needs remote integration, move the remote-specific part to the remote instruction subtree instead of broadening this file.
+- If files, folders, or features change here, update this AGENTS file and the nearest runtime docs in the same change.
 
 ## File Tree
 ```text

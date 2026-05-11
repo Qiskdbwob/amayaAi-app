@@ -8,10 +8,12 @@
 - Treat this layer as the boundary between Android and external services.
 - Keep serialization, auth/token handling, and provider-specific mapping here rather than in UI or local runtime code.
 - Avoid adding file-system, shell, or other device-local behavior in this subtree.
+- Before changing provider contracts or payload shapes, crosscheck the current workspace diff and recent commits for the affected remote surface.
 
 ## Coordination
 - Coordinate remote transport and model mapping changes with `impl/ide/antigravity/` when the runtime flow depends on Antigravity-specific behavior.
 - Keep provider adapters explicit so shared app code stays agnostic.
+- If a change adds or renames remote-facing files or folders, update this AGENTS file and any parent Android instructions in the same patch.
 
 ## File Tree
 ```text
