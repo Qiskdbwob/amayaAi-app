@@ -19,13 +19,25 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import java.time.LocalDateTime
 
+/**
+ * Welcome state shown when a chat has no messages.
+ *
+ * [header] is an optional slot rendered above the greeting — used by remote
+ * sessions (Windows Bridge, Antigravity) to surface a "connected" pill without
+ * each caller re-implementing the layout.
+ *
+ * [showWorkspaceChip] hides the "Select Workspace" / current-workspace chip for
+ * sessions that don't use workspaces (e.g. Windows Bridge).
+ */
 @Composable
 fun WelcomeScreen(
     onPromptClick: (String) -> Unit,
     currentWorkspace: String?,
     onNewProjectClick: () -> Unit,
     workspaces: List<com.amaya.intelligence.domain.models.RemoteWorkspace> = emptyList(),
-    onWorkspaceClick: () -> Unit = {}
+    onWorkspaceClick: () -> Unit = {},
+    showWorkspaceChip: Boolean = true,
+    header: (@Composable () -> Unit)? = null
 ) {
     val greetings = listOf(
         "What's on your mind?",
@@ -46,6 +58,11 @@ fun WelcomeScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
+        if (header != null) {
+            header()
+            Spacer(Modifier.height(16.dp))
+        }
+
         Text(
             greeting,
             style = MaterialTheme.typography.headlineMedium,
@@ -53,58 +70,60 @@ fun WelcomeScreen(
             fontWeight = FontWeight.SemiBold
         )
 
-        Spacer(Modifier.height(24.dp))
+        if (showWorkspaceChip) {
+            Spacer(Modifier.height(24.dp))
 
-        if (currentWorkspace != null) {
-            val folderName = currentWorkspace.substringAfterLast("/").substringAfterLast("\\")
-            Surface(
-                onClick = onWorkspaceClick,
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            if (currentWorkspace != null) {
+                val folderName = currentWorkspace.substringAfterLast("/").substringAfterLast("\\")
+                Surface(
+                    onClick = onWorkspaceClick,
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                 ) {
-                    Icon(
-                        Icons.Default.Folder,
-                        null,
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        folderName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Folder,
+                            null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            folderName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    }
                 }
-            }
-        } else {
-            Surface(
-                onClick = onNewProjectClick,
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.primaryContainer,
-                border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            } else {
+                Surface(
+                    onClick = onNewProjectClick,
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                 ) {
-                    Icon(
-                        Icons.Default.AccountTree,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        "Select Workspace\u2026",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        fontWeight = FontWeight.Medium
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.AccountTree,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "Select Workspace\u2026",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
             }
         }

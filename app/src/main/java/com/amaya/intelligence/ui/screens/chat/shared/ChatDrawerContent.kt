@@ -272,7 +272,9 @@ fun ChatDrawerContent(
     onExit: () -> Unit,
     hasMoreConversations: () -> Boolean,
     loadMoreConversations: () -> Unit,
-    scope: CoroutineScope
+    scope: CoroutineScope,
+    sessionDisconnectVisible: Boolean = false,
+    onRequestSessionDisconnect: () -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var isSearchExpanded by remember { mutableStateOf(false) }
@@ -398,6 +400,26 @@ fun ChatDrawerContent(
             }
 
             if (!isSearchExpanded) {
+                if (sessionDisconnectVisible) {
+                    androidx.compose.material3.SmallFloatingActionButton(
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            onRequestSessionDisconnect()
+                        },
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .navigationBarsPadding()
+                            .padding(end = 140.dp, bottom = 26.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LinkOff,
+                            contentDescription = "Disconnect session",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
                 ExtendedFloatingActionButton(
                     onClick = {
                         onClearConversation()
@@ -693,20 +715,26 @@ private fun DrawerNormalContent(
         }
 
         // Quick Access card
-        IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
-            IosRowWithChevron(
-                icon = Icons.Default.FolderOpen,
-                title = "Projects",
-                onClick = onNavigateToWorkspace
-            )
-            
-            if (!isRemoteMode) {
-                IosRowSeparator()
-                IosRowWithChevron(
-                    icon = Icons.Default.Devices,
-                    title = "Remote Session",
-                    onClick = onNavigateToRemoteSession
-                )
+        val showProjects = sessionMode != IntelligenceSessionManager.SessionMode.WINDOWS_BRIDGE
+        val showRemoteSessionRow = !isRemoteMode
+        if (showProjects || showRemoteSessionRow) {
+            IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
+                if (showProjects) {
+                    IosRowWithChevron(
+                        icon = Icons.Default.FolderOpen,
+                        title = "Projects",
+                        onClick = onNavigateToWorkspace
+                    )
+                }
+
+                if (showRemoteSessionRow) {
+                    if (showProjects) IosRowSeparator()
+                    IosRowWithChevron(
+                        icon = Icons.Default.Devices,
+                        title = "Remote Session",
+                        onClick = onNavigateToRemoteSession
+                    )
+                }
             }
         }
 

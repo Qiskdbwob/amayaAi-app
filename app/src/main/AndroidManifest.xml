@@ -279,14 +279,6 @@
             android:exported="false" />
 
         <activity
-            android:name=".ui.activities.bridge.WindowsBridgeActivity"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
-            android:screenOrientation="portrait"
-            android:windowSoftInputMode="adjustResize"
-            android:theme="@style/Theme.Amaya"
-            android:exported="false" />
-
-        <activity
             android:name=".ui.activities.bridge.WindowsBridgeChatActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:screenOrientation="portrait"

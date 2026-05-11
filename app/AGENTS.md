@@ -9,7 +9,7 @@
 - Preserve the split between remote and local responsibilities.
 - Keep UI, domain, data, implementation, and service code separated by package intent.
 - Keep memory/skills domain rules in `domain/memory/` and `domain/skills/`; keep persistence implementations in `data/local/` + `data/repository/`; keep user-facing controls in `ui/screens/amaya/` and `ui/screens/selfimprovement/`.
-- Keep bridge contract and runtime code in `domain/bridge/` and `impl/bridge/windows/`; keep bridge UI in `ui/activities/bridge/`, `ui/screens/bridge/`, and `ui/screens/chat/bridge/`.
+- Keep bridge contract and runtime code in `domain/bridge/` and `impl/bridge/windows/`; keep bridge entry points in `ui/activities/bridge/WindowsBridgeChatActivity.kt` and `ui/screens/chat/bridge/`. Chat-side bridge surfaces (banner, approval card, welcome pill, connection setup sheet, session info sheet, agent control dialog, shared ViewModel) live in `ui/components/remote/` so they can be reused across local and bridge chat.
 - Keep browser automation logic inside `impl/local/browser/`, browser UI inside `ui/activities/browser/` and `ui/screens/browser/`, and the parent tool wrapper inside `tools/BrowserUseToolset.kt`.
 - Do not move extension-specific logic into the Android module.
 
@@ -45,7 +45,6 @@ app/
 		│	├─ com/amaya/intelligence/ui/activities/bridge/
 		│	├─ com/amaya/intelligence/ui/activities/browser/
 		│	├─ com/amaya/intelligence/ui/components/shared/
-		│	├─ com/amaya/intelligence/ui/screens/bridge/
 		│	├─ com/amaya/intelligence/ui/screens/chat/bridge/
 		│	├─ com/amaya/intelligence/ui/screens/browser/
 		│	└─ com/amaya/intelligence/utils/
@@ -68,7 +67,6 @@ app/
 - `src/main/java/com/amaya/intelligence/service/`: app services, receivers, and workers.
 - `src/main/java/com/amaya/intelligence/ui/activities/browser/`: fullscreen browser operator activity.
 - `src/main/java/com/amaya/intelligence/ui/`: Compose UI screens, activities, and theme.
-- `src/main/java/com/amaya/intelligence/ui/screens/bridge/`: bridge screen, state, and view model entry points.
 - `src/main/java/com/amaya/intelligence/ui/screens/chat/bridge/`: bridge chat screen wiring and chat-specific bridge UI entry points.
 - `src/main/java/com/amaya/intelligence/ui/screens/browser/`: browser operator screen and control dock.
 - `src/main/java/com/amaya/intelligence/ui/components/shared/`: reusable shared UI components, including browser tool cards.

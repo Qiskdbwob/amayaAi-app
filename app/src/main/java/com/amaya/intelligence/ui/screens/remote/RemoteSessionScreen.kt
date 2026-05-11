@@ -42,6 +42,9 @@ import java.util.concurrent.Executors
 import com.amaya.intelligence.domain.models.ConnectionState
 import com.amaya.intelligence.impl.ide.antigravity.client.RemoteSessionClient
 import com.amaya.intelligence.impl.ide.IdeProviderFactory
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.amaya.intelligence.ui.components.remote.WindowsBridgeChatPanelViewModel
+import com.amaya.intelligence.ui.components.remote.WindowsBridgeConnectionSetupSheet
 
 import androidx.compose.ui.graphics.Brush
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
@@ -65,11 +68,14 @@ import kotlinx.coroutines.launch
 fun RemoteSessionScreen(
     client: RemoteSessionClient,
     onBack: () -> Unit,
-    onConnected: () -> Unit
+    onConnected: () -> Unit,
+    onWindowsBridgeConnected: () -> Unit = onConnected,
+    bridgeViewModel: WindowsBridgeChatPanelViewModel = hiltViewModel()
 ) {
     val connectionState by client.connectionState.collectAsState()
     val errorMessage by client.errorMessage.collectAsState()
     val serverInfo by client.serverInfo.collectAsState()
+    val bridgeState by bridgeViewModel.state.collectAsState()
     val gradients = LocalAmayaGradients.current
     val isDark = isSystemInDarkTheme()
     val scope = rememberCoroutineScope()
@@ -91,6 +97,16 @@ fun RemoteSessionScreen(
         }
     }
     var showConnectionSheet by remember { mutableStateOf(false) }
+    var showBridgeSheet by remember { mutableStateOf(false) }
+    var bridgeConnectInFlight by remember { mutableStateOf(false) }
+
+    LaunchedEffect(bridgeState.isConnected, bridgeConnectInFlight) {
+        if (bridgeState.isConnected && bridgeConnectInFlight) {
+            bridgeConnectInFlight = false
+            showBridgeSheet = false
+            onWindowsBridgeConnected()
+        }
+    }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -205,23 +221,13 @@ fun RemoteSessionScreen(
                     }
 
                     // ── Windows Bridge entry ─────────────────────────────────
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        "WINDOWS BRIDGE",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = sectionTitleColor,
-                        modifier = Modifier.padding(start = 8.dp, bottom = 4.dp)
-                    )
-                    val context = androidx.compose.ui.platform.LocalContext.current
                     IdeCard(
                         name = "Windows Bridge",
-                        description = "Remote tool executor — control your Windows PC",
+                        description = "Control your Windows PC remotely",
                         iconSpec = RemoteIdeIcon.Spec(imageVector = Icons.Default.DesktopWindows, tintable = true),
                         isSelected = false,
                         enabled = true,
-                        onClick = {
-                            com.amaya.intelligence.ui.activities.bridge.WindowsBridgeActivity.start(context)
-                        }
+                        onClick = { showBridgeSheet = true }
                     )
 
                     Spacer(Modifier.height(100.dp))
@@ -293,6 +299,20 @@ fun RemoteSessionScreen(
                         port.toIntOrNull()?.let { client.connect(ipAddress, it) }
                     },
                     onDismiss = { showConnectionSheet = false }
+                )
+            }
+
+            if (showBridgeSheet) {
+                WindowsBridgeConnectionSetupSheet(
+                    state = bridgeState,
+                    onHostChange = bridgeViewModel::updateHost,
+                    onPortChange = bridgeViewModel::updatePort,
+                    onTokenChange = bridgeViewModel::updateToken,
+                    onConnect = {
+                        bridgeConnectInFlight = true
+                        bridgeViewModel.connect()
+                    },
+                    onDismiss = { showBridgeSheet = false }
                 )
             }
         }

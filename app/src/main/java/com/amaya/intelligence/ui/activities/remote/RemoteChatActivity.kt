@@ -14,6 +14,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
+import com.amaya.intelligence.domain.ai.displayName
 import com.amaya.intelligence.impl.ide.antigravity.client.RemoteSessionClient
 import com.amaya.intelligence.ui.screens.chat.shared.ChatScreen
 import com.amaya.intelligence.ui.theme.AmayaTheme
@@ -23,6 +24,8 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class RemoteChatActivity : AppCompatActivity() {
 
+    @Inject
+    lateinit var remoteSessionClient: RemoteSessionClient
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,6 +62,11 @@ class RemoteChatActivity : AppCompatActivity() {
                         },
                         onExit = {
                             finish()
+                        },
+                        sessionDisconnectName =
+                            IntelligenceSessionManager.SessionMode.ANTIGRAVITY.displayName(),
+                        onConfirmSessionDisconnect = {
+                            remoteSessionClient.disconnect()
                         }
                     )
                 }

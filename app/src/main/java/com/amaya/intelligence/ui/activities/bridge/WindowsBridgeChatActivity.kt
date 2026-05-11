@@ -49,7 +49,11 @@ class WindowsBridgeChatActivity : AppCompatActivity() {
                             com.amaya.intelligence.ui.activities.settings.local.LocalSettingsActivity.start(this@WindowsBridgeChatActivity)
                         },
                         onNavigateToWorkspace = {
-                            com.amaya.intelligence.ui.activities.bridge.WindowsBridgeActivity.start(this@WindowsBridgeChatActivity)
+                            // Windows Bridge chat has no separate workspace screen;
+                            // reuse the Remote Session screen for reconfiguring the
+                            // connection.
+                            com.amaya.intelligence.ui.activities.remote.RemoteSessionActivity
+                                .start(this@WindowsBridgeChatActivity)
                         },
                         onExit = { finish() }
                     )

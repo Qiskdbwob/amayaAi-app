@@ -47,6 +47,7 @@ fun LocalChatScreen(
         // Main chat screen fills the entire area
         ChatScreen(
             viewModel = viewModel,
+            bridgeViewModel = bridgeViewModel,
             activeReminderCount = activeReminderCount,
             config = config,
             onNavigateToSettings = onNavigateToSettings,
@@ -66,11 +67,12 @@ fun LocalChatScreen(
                 .padding(top = topOffset)
                 .zIndex(10f)
         ) {
-            // Connection banner
+            // Connection banner: tapping "view screen" opens the dedicated bridge
+            // chat activity so the user can interact with tools in place.
             WindowsBridgeConnectionBanner(
                 state = bridgeState,
                 onViewScreen = {
-                    com.amaya.intelligence.ui.activities.bridge.WindowsBridgeActivity.start(context)
+                    com.amaya.intelligence.ui.activities.bridge.WindowsBridgeChatActivity.start(context)
                 },
                 onToggleAgentControl = {
                     if (!bridgeState.isAgentControlEnabled) {

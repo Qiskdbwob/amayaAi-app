@@ -56,6 +56,7 @@ import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
+import com.amaya.intelligence.domain.ai.displayName
 import com.amaya.intelligence.domain.models.ConnectionState
 import com.amaya.intelligence.domain.models.ToolExecution
 import com.amaya.intelligence.ui.components.shared.ConfirmationDialog
@@ -64,6 +65,8 @@ import com.amaya.intelligence.ui.components.shared.LocalhostLinkBottomSheet
 import com.amaya.intelligence.ui.components.shared.LocalhostLinkInfo
 import com.amaya.intelligence.ui.components.shared.LocalhostLinkInfoParser
 import com.amaya.intelligence.ui.components.shared.ModelSelectorSheet
+import com.amaya.intelligence.ui.components.remote.WindowsBridgeChatPanelViewModel
+import com.amaya.intelligence.ui.components.remote.WindowsBridgeSessionInfoSheet
 import com.amaya.intelligence.ui.components.local.SessionInfoSheet
 import com.amaya.intelligence.ui.components.local.TodoSheet
 import com.amaya.intelligence.utils.NetworkUtils
@@ -80,13 +83,16 @@ private const val CHAT_DRAWER_LOG_TAG = "ChatDrawerDebug"
 @Composable
 fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel(),
+    bridgeViewModel: WindowsBridgeChatPanelViewModel = hiltViewModel(),
     activeReminderCount: Int = -1,
     isRemoteModeOverride: Boolean? = null,
     config: ChatScreenConfig? = null,
     onNavigateToSettings: () -> Unit = {},
     onNavigateToWorkspace: () -> Unit = {},
     onNavigateToRemoteSession: () -> Unit = {},
-    onExit: () -> Unit = {}
+    onExit: () -> Unit = {},
+    sessionDisconnectName: String? = null,
+    onConfirmSessionDisconnect: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
@@ -98,6 +104,9 @@ fun ChatScreen(
     val conversationsFlow = viewModel.conversations
 
     val isRemoteMode = isRemoteModeOverride ?: uiState.sessionMode.isRemote()
+    val isBridgeMode = uiState.sessionMode ==
+        com.amaya.intelligence.domain.ai.IntelligenceSessionManager.SessionMode.WINDOWS_BRIDGE
+    val bridgeState by bridgeViewModel.state.collectAsState()
     val connectionState = uiState.connectionState
     val workspaces by viewModel.workspaces.collectAsState()
 
@@ -121,7 +130,9 @@ fun ChatScreen(
 
     var showModelSelector by remember { mutableStateOf(false) }
     var showSessionInfo by remember { mutableStateOf(false) }
+    var showBridgeSessionInfo by remember { mutableStateOf(false) }
     var showTodoSheet by remember { mutableStateOf(false) }
+    var showDisconnectDialog by remember { mutableStateOf(false) }
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     var inputBarHeight by remember { mutableStateOf(0) }
@@ -373,8 +384,17 @@ fun ChatScreen(
         )
     }
 
-    BackHandler(enabled = uiState.messages.isNotEmpty() || (isRemoteMode && isRemoteModeOverride == true)) {
-        if (isRemoteMode) onExit() else doClearConversation()
+    BackHandler(
+        enabled = uiState.messages.isNotEmpty() ||
+            (isRemoteMode && (isRemoteModeOverride == true || onConfirmSessionDisconnect != null))
+    ) {
+        if (isRemoteMode) {
+            if (onConfirmSessionDisconnect != null) {
+                showDisconnectDialog = true
+            } else {
+                onExit()
+            }
+        } else doClearConversation()
     }
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -486,7 +506,9 @@ fun ChatScreen(
                     onInputTextChange = { inputText = it },
                     onSendMessage = doSendMessage,
                     onNavigateToWorkspace = onNavigateToWorkspace,
-                    workspaces = workspaces
+                    workspaces = workspaces,
+                    bridgeState = bridgeState,
+                    isStreaming = uiState.isStreaming
                 )
             } else {
                 ChatMessageList(
@@ -549,6 +571,7 @@ fun ChatScreen(
                 title = topBarTitle,
                 subtitle = topBarSubtitle,
                 isRemoteMode = isRemoteMode,
+                isBridgeMode = isBridgeMode,
                 isStreaming = uiState.isStreaming,
                 streamingLabel = streamingLabel,
                 idleLabel = idleLabel,
@@ -571,6 +594,7 @@ fun ChatScreen(
                 onTitleClick = { showModelSelector = true },
                 onMoreClick = {
                     when {
+                        isBridgeMode -> showBridgeSessionInfo = true
                         isRemoteMode -> viewModel.refreshState()
                         todoItems.isNotEmpty() -> showTodoSheet = true
                         else -> showSessionInfo = true
@@ -690,7 +714,11 @@ fun ChatScreen(
                 onExit = onExit,
                 hasMoreConversations = doHasMoreConversations,
                 loadMoreConversations = doLoadMoreConversations,
-                scope = scope
+                scope = scope,
+                sessionDisconnectVisible = isRemoteMode &&
+                    (isBridgeMode && bridgeState.isConnected ||
+                        !isBridgeMode && onConfirmSessionDisconnect != null),
+                onRequestSessionDisconnect = { showDisconnectDialog = true }
             )
         }
         }
@@ -749,6 +777,55 @@ fun ChatScreen(
             outputPriceOverride = selectedModelItem?.outputPricePerMillionTokens
         )
     }
+
+    if (showBridgeSessionInfo && isBridgeMode) {
+        var pendingEnableAgentControl by remember { mutableStateOf(false) }
+        WindowsBridgeSessionInfoSheet(
+            state = bridgeState,
+            onToggleAgentControl = {
+                if (bridgeState.isAgentControlEnabled) {
+                    bridgeViewModel.disableAgentControl()
+                } else {
+                    pendingEnableAgentControl = true
+                }
+            },
+            onCapture = { bridgeViewModel.captureScreen() },
+            onClearCapture = { bridgeViewModel.clearCapture() },
+            onDisconnect = {
+                bridgeViewModel.disconnect()
+                onExit()
+            },
+            onDismiss = { showBridgeSessionInfo = false }
+        )
+        if (pendingEnableAgentControl) {
+            com.amaya.intelligence.ui.components.remote.WindowsBridgeAgentControlDialog(
+                onConfirm = {
+                    pendingEnableAgentControl = false
+                    bridgeViewModel.confirmEnableAgentControl()
+                },
+                onDismiss = { pendingEnableAgentControl = false }
+            )
+        }
+    }
+
+    if (showDisconnectDialog) {
+        val disconnectName = sessionDisconnectName
+            ?: if (isBridgeMode) "Windows Bridge" else uiState.sessionMode.displayName()
+        com.amaya.intelligence.ui.components.shared.SessionDisconnectDialog(
+            sessionName = disconnectName,
+            onConfirm = {
+                showDisconnectDialog = false
+                val handler = onConfirmSessionDisconnect
+                if (handler != null) {
+                    handler()
+                } else if (isBridgeMode) {
+                    bridgeViewModel.disconnect()
+                }
+                onExit()
+            },
+            onDismiss = { showDisconnectDialog = false }
+        )
+    }
 }
 
 @Composable
@@ -756,6 +833,7 @@ private fun ChatFloatingTopBar(
     title: String,
     subtitle: String,
     isRemoteMode: Boolean,
+    isBridgeMode: Boolean,
     isStreaming: Boolean,
     streamingLabel: String,
     idleLabel: String,
@@ -891,8 +969,8 @@ private fun ChatFloatingTopBar(
         }
 
         LiquidOrbButton(
-            icon = if (isRemoteMode) Icons.Default.Refresh else Icons.Default.MoreVert,
-            contentDescription = if (isRemoteMode) "Refresh" else "More",
+            icon = if (isRemoteMode && !isBridgeMode) Icons.Default.Refresh else Icons.Default.MoreVert,
+            contentDescription = if (isRemoteMode && !isBridgeMode) "Refresh" else "More",
             color = orbColor,
             borderColor = borderColor,
             onClick = onMoreClick,

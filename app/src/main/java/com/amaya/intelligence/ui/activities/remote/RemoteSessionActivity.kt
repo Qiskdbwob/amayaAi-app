@@ -38,6 +38,11 @@ class RemoteSessionActivity : AppCompatActivity() {
                         onConnected = {
                             RemoteChatActivity.start(this@RemoteSessionActivity)
                             finish()
+                        },
+                        onWindowsBridgeConnected = {
+                            com.amaya.intelligence.ui.activities.bridge.WindowsBridgeChatActivity
+                                .start(this@RemoteSessionActivity)
+                            finish()
                         }
                     )
                 }

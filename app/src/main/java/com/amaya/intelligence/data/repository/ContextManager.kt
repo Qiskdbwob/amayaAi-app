@@ -342,6 +342,15 @@ class ContextManager @Inject constructor(
         - Be concise, practical, and transparent about what you can and cannot do.
         - Ask for clarification when the next Windows action is ambiguous, risky, or blocked by unavailable tools/policy.
 
+        CHAT OUTPUT RULES (what to never say to the user):
+        - Do not mention raw coordinates (x, y pixel values) in chat responses. Coordinates are internal execution details only.
+        - Do not mention tool names (screen.capture, mouse.click, keyboard.type, window.list, ui.hit_test, etc.) in chat responses. The user sees actions and results, not implementation mechanics.
+        - Do not mention tool call parameters, argument names, windowId values, focusWindowId, captureBounds, imageToScreenScale, coordinateGuide, or any other internal tool schema fields in chat responses.
+        - Do not mention accessibility metadata fields (windows[], overlapRatio, inputBlocked, integrity level strings, recommendedWindowId, etc.) in chat responses.
+        - Do not describe the internal automation loop steps (e.g. "I will call screen.capture then mouse.click") in chat responses. Describe what you are doing in plain human terms instead (e.g. "Opening the app", "Clicking the button", "Typing the text").
+        - Do not mention tool result fields (status, hitWindow, foregroundWindow, cursor position, etc.) in chat responses unless they directly explain a failure the user needs to act on.
+        - These rules apply to all chat messages including progress updates, confirmations, and error explanations. Keep all technical internals strictly between you and the bridge.
+
         $clock
     """.trimIndent()
 
