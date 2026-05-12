@@ -1,5 +1,14 @@
 package com.amaya.intelligence.ui.screens.cronjob.local
 
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -13,14 +22,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.amaya.intelligence.data.repository.CronJobRepository
+import com.amaya.intelligence.ui.components.shared.PermissionRequirementSheet
+import com.amaya.intelligence.ui.components.shared.PermissionType
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.screens.cronjob.shared.CronJobEditSheet
 import com.amaya.intelligence.ui.screens.cronjob.shared.CronJobList
 import kotlinx.coroutines.launch
-import androidx.compose.ui.platform.LocalContext
 
 private data class IosCronJobScreenColors(
     val groupedBackground: Color,
@@ -58,15 +70,33 @@ fun LocalCronJobScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val jobs by cronJobRepository.allJobs.collectAsState(initial = emptyList())
 
-    var showAlarmPermissionDialog by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        if (!cronJobRepository.canScheduleExact()) {
-            showAlarmPermissionDialog = true
-        }
-    }
     val topPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 72.dp
 
     var showAddSheet by remember { mutableStateOf(false) }
+    var showNotificationPermissionSheet by remember { mutableStateOf(false) }
+    var showAlarmPermissionSheet by remember { mutableStateOf(false) }
+
+    fun openAddFlow() {
+        when {
+            !canPostNotifications(context) -> showNotificationPermissionSheet = true
+            !cronJobRepository.canScheduleExact() -> showAlarmPermissionSheet = true
+            else -> showAddSheet = true
+        }
+    }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { granted ->
+            showNotificationPermissionSheet = false
+            if (granted) {
+                if (cronJobRepository.canScheduleExact()) {
+                    showAddSheet = true
+                } else {
+                    showAlarmPermissionSheet = true
+                }
+            }
+        }
+    )
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -88,13 +118,13 @@ fun LocalCronJobScreen(
             )
 
             TopAppBar(
-                title = { 
+                title = {
                     Text(
-                        "Reminders", 
-                        style = MaterialTheme.typography.titleLarge, 
+                        "Reminders",
+                        style = MaterialTheme.typography.titleLarge,
                         modifier = Modifier.padding(start = 12.dp),
                         fontWeight = FontWeight.SemiBold
-                    ) 
+                    )
                 },
                 navigationIcon = {
                     SettingsBackButton(onClick = onNavigateBack)
@@ -106,11 +136,11 @@ fun LocalCronJobScreen(
                             .size(36.dp)
                             .clip(CircleShape)
                             .background(colors.iconBackground)
-                            .clickable { showAddSheet = true },
+                            .clickable { openAddFlow() },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            Icons.Default.AddAlarm, 
+                            Icons.Default.AddAlarm,
                             "Add Reminder",
                             modifier = Modifier.size(20.dp),
                             tint = colors.iconTint
@@ -127,18 +157,29 @@ fun LocalCronJobScreen(
         }
     }
 
-    if (showAlarmPermissionDialog) {
-        com.amaya.intelligence.ui.components.shared.PermissionRequirementSheet(
-            permissionType = com.amaya.intelligence.ui.components.shared.PermissionType.EXACT_ALARM,
+    if (showNotificationPermissionSheet) {
+        PermissionRequirementSheet(
+            permissionType = PermissionType.NOTIFICATIONS,
             onGrant = {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-                    val intent = android.content.Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                        data = android.net.Uri.parse("package:${context.packageName}")
-                    }
-                    context.startActivity(intent)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    showNotificationPermissionSheet = false
+                    openAddFlow()
                 }
             },
-            onDismiss = { showAlarmPermissionDialog = false }
+            onDismiss = { showNotificationPermissionSheet = false }
+        )
+    }
+
+    if (showAlarmPermissionSheet) {
+        PermissionRequirementSheet(
+            permissionType = PermissionType.EXACT_ALARM,
+            onGrant = {
+                showAlarmPermissionSheet = false
+                openExactAlarmSettings(context)
+            },
+            onDismiss = { showAlarmPermissionSheet = false }
         )
     }
 
@@ -153,5 +194,21 @@ fun LocalCronJobScreen(
                 }
             }
         )
+    }
+}
+
+private fun canPostNotifications(context: Context): Boolean {
+    return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS
+        ) == PackageManager.PERMISSION_GRANTED
+}
+
+private fun openExactAlarmSettings(context: Context) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+            data = Uri.parse("package:${context.packageName}")
+        })
     }
 }

@@ -23,11 +23,15 @@ import com.amaya.intelligence.ui.theme.AmayaTheme
 class LocalProjectActivity : AppCompatActivity() {
 
     private var hasStoragePermission by mutableStateOf(false)
+    private var showStoragePermissionSheet by mutableStateOf(false)
 
     private val legacyStoragePermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
             if (grants.values.all { it }) {
                 hasStoragePermission = true
+                showStoragePermissionSheet = false
+            } else {
+                showStoragePermissionSheet = true
             }
         }
 
@@ -35,6 +39,7 @@ class LocalProjectActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         checkStoragePermission()
+        showStoragePermissionSheet = !hasStoragePermission
         setContent {
             AmayaTheme {
                 LocalProjectBrowserScreen(
@@ -48,10 +53,13 @@ class LocalProjectActivity : AppCompatActivity() {
                     }
                 )
 
-                if (!hasStoragePermission) {
+                if (!hasStoragePermission && showStoragePermissionSheet) {
                     PermissionRequirementSheet(
                         permissionType = PermissionType.STORAGE,
-                        onGrant = { requestStoragePermission() },
+                        onGrant = {
+                            showStoragePermissionSheet = false
+                            requestStoragePermission()
+                        },
                         onDismiss = {
                             if (!hasStoragePermission) {
                                 setResult(RESULT_CANCELED)
@@ -67,6 +75,9 @@ class LocalProjectActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         checkStoragePermission()
+        if (!hasStoragePermission) {
+            showStoragePermissionSheet = true
+        }
     }
 
     private fun checkStoragePermission() {

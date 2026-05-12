@@ -1,13 +1,44 @@
 package com.amaya.intelligence.ui.components.shared
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.amaya.intelligence.ui.theme.LocalAmayaGradients
+import kotlinx.coroutines.launch
 
 enum class PermissionType {
     STORAGE,
@@ -74,26 +105,92 @@ fun PermissionRequirementSheet(
 ) {
     val spec = permissionType.toSpec()
     val sheetState = rememberLockedModalBottomSheetState()
+    val scope = rememberCoroutineScope()
+    val gradients = LocalAmayaGradients.current
+    val maxSheetHeight = (0.98f * LocalConfiguration.current.screenHeightDp).dp
 
-    StandardModalBottomSheet(
+    fun closeSheet(afterClose: (() -> Unit)? = null) {
+        scope.launch { sheetState.hide() }.invokeOnCompletion {
+            if (!sheetState.isVisible) afterClose?.invoke()
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = { closeSheet(onDismiss) },
         sheetState = sheetState,
-        onDismissRequest = onDismiss,
-        title = spec.title,
-        icon = spec.icon,
-        subtitle = spec.subtitle,
-        showCloseButton = true,
-        dismissible = true
+        properties = lockedModalBottomSheetProperties(),
+        containerColor = MaterialTheme.colorScheme.surface,
+        dragHandle = null,
+        shape = responsiveBottomSheetShape(sheetState)
     ) {
-        PermissionSheetBody(
-            spec = spec,
-            granted = false,
-            onPrimary = {
-                onDismiss()
-                onGrant()
-            },
-            onSecondary = onDismiss,
-            primaryLabel = spec.actionLabel,
-            secondaryLabel = "Maybe later"
-        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = maxSheetHeight)
+                .navigationBarsPadding()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .ignoreNestedScrollForBottomSheet()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp)
+                    .padding(bottom = 28.dp)
+            ) {
+                Spacer(Modifier.height(92.dp))
+                PermissionSheetBody(
+                    spec = spec,
+                    granted = false,
+                    onPrimary = { closeSheet(onGrant) },
+                    onSecondary = { closeSheet(onDismiss) },
+                    primaryLabel = spec.actionLabel,
+                    secondaryLabel = "Maybe later"
+                )
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .background(gradients.modalTopScrim)
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(32.dp)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = responsiveDragHandleAlpha(sheetState)))
+                    )
+                }
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = spec.title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+                                    .compositeOver(MaterialTheme.colorScheme.background)
+                            )
+                            .clickable { closeSheet(onDismiss) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Close, "Dismiss", modifier = Modifier.size(20.dp))
+                    }
+                }
+            }
+        }
     }
 }

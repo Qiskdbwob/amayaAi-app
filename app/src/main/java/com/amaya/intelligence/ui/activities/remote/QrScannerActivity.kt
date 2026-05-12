@@ -29,6 +29,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.amaya.intelligence.ui.theme.AmayaTheme
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
@@ -44,7 +45,7 @@ class QrScannerActivity : ComponentActivity() {
         cameraExecutor = Executors.newSingleThreadExecutor()
 
         setContent {
-            MaterialTheme {
+            AmayaTheme {
                 QrScannerScreen(
                     onQrDetected = { data ->
                         val resultIntent = Intent().apply {
@@ -81,14 +82,15 @@ fun QrScannerScreen(
         )
     }
 
+    var showPermissionSheet by remember { mutableStateOf(false) }
+
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { granted ->
             hasCameraPermission = granted
+            showPermissionSheet = !granted
         }
     )
-
-    var showPermissionSheet by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         if (!hasCameraPermission) {
@@ -99,9 +101,12 @@ fun QrScannerScreen(
     if (showPermissionSheet) {
         com.amaya.intelligence.ui.components.shared.PermissionRequirementSheet(
             permissionType = com.amaya.intelligence.ui.components.shared.PermissionType.CAMERA,
-            onGrant = { launcher.launch(Manifest.permission.CAMERA) },
-            onDismiss = { 
-                showPermissionSheet = false 
+            onGrant = {
+                showPermissionSheet = false
+                launcher.launch(Manifest.permission.CAMERA)
+            },
+            onDismiss = {
+                showPermissionSheet = false
                 if (!hasCameraPermission) onClose()
             }
         )
