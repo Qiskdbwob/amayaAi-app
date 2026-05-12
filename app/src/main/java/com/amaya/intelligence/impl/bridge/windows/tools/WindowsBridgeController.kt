@@ -3,6 +3,7 @@ package com.amaya.intelligence.impl.bridge.windows.tools
 import com.amaya.intelligence.di.ApplicationScope
 import com.amaya.intelligence.domain.bridge.ApprovalDecision
 import com.amaya.intelligence.domain.bridge.ApprovalRequest
+import com.amaya.intelligence.domain.bridge.BridgeEnvelope
 import com.amaya.intelligence.domain.bridge.BridgeRiskLevel
 import com.amaya.intelligence.impl.bridge.windows.WindowsBridgeClientConfig
 import com.amaya.intelligence.impl.bridge.windows.WindowsBridgeClientEvent
@@ -10,12 +11,15 @@ import com.amaya.intelligence.impl.bridge.windows.WindowsBridgeConnectionState
 import com.amaya.intelligence.impl.bridge.windows.WindowsBridgeSessionClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
@@ -43,6 +47,14 @@ class WindowsBridgeController @Inject constructor(
     private val clientRef = AtomicReference<WindowsBridgeSessionClient?>(null)
     private val executorRef = AtomicReference<WindowsBridgeToolExecutor?>(null)
     private val registry = WindowsBridgeToolRegistry()
+
+    /**
+     * Replays envelopes received from the bridge to opportunistic subscribers
+     * (e.g. the opencode agent client). Unlike `WindowsBridgeSessionClient.events`
+     * the flow survives client reconnects because it lives on the controller.
+     */
+    private val _envelopes = MutableSharedFlow<BridgeEnvelope>(extraBufferCapacity = 128)
+    val envelopes: SharedFlow<BridgeEnvelope> = _envelopes.asSharedFlow()
 
     private val _agentControlEnabled = MutableStateFlow(false)
     val agentControlEnabled: StateFlow<Boolean> = _agentControlEnabled.asStateFlow()
@@ -237,6 +249,9 @@ class WindowsBridgeController @Inject constructor(
 
     private fun handleEvent(event: WindowsBridgeClientEvent) {
         when (event) {
+            is WindowsBridgeClientEvent.EnvelopeReceived -> {
+                _envelopes.tryEmit(event.envelope)
+            }
             is WindowsBridgeClientEvent.SessionCreated -> {
                 if (event.sessionId.isNotBlank()) activeSessionId = event.sessionId
                 // Push the latest Agent Control state to the bridge after a reconnect
@@ -254,5 +269,13 @@ class WindowsBridgeController @Inject constructor(
             }
             else -> { /* other events handled by the tool executor */ }
         }
+    }
+
+    /**
+     * Send an envelope through the active bridge client. Returns false when there
+     * is no client yet (the controller hasn't been connected).
+     */
+    fun sendEnvelope(envelope: BridgeEnvelope): Boolean {
+        return clientRef.get()?.sendEnvelope(envelope) ?: false
     }
 }

@@ -13,6 +13,7 @@ object IdeProviderFactory {
     init {
         // Register default providers
         register(com.amaya.intelligence.impl.ide.antigravity.AntigravityProvider)
+        register(com.amaya.intelligence.impl.ide.opencode.OpencodeProvider)
         register(com.amaya.intelligence.impl.ide.cursor.CursorProvider)
         register(com.amaya.intelligence.impl.ide.windsurf.WindsurfProvider)
     }

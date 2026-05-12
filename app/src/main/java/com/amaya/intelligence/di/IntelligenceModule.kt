@@ -10,6 +10,7 @@ import com.amaya.intelligence.di.ApplicationScope
 import com.amaya.intelligence.impl.local.LocalIntelligenceService
 import com.amaya.intelligence.impl.bridge.windows.services.WindowsBridgeIntelligenceService
 import com.amaya.intelligence.impl.ide.antigravity.services.AntigravityIntelligenceService
+import com.amaya.intelligence.impl.ide.opencode.services.OpencodeIntelligenceService
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -42,6 +43,11 @@ object IntelligenceModule {
     @Singleton
     fun provideAntigravityService(service: AntigravityIntelligenceService): IntelligenceService = service
 
+    @Provides
+    @Named("opencode")
+    @Singleton
+    fun provideOpencodeService(service: OpencodeIntelligenceService): IntelligenceService = service
+
     /**
      * Provides the active IntelligenceService based on SessionManager.
      * Note: This provides a "Delegate" that resolves the service dynamically.
@@ -53,13 +59,15 @@ object IntelligenceModule {
         @ApplicationScope appScope: CoroutineScope,
         @Named("local") localService: IntelligenceService,
         @Named("windows_bridge") windowsBridgeService: IntelligenceService,
-        @Named("antigravity") antigravityService: IntelligenceService
+        @Named("antigravity") antigravityService: IntelligenceService,
+        @Named("opencode") opencodeService: IntelligenceService
     ): IntelligenceService {
         return object : IntelligenceService {
             private val active: IntelligenceService
                 get() = when (sessionManager.currentMode.value) {
                     IntelligenceSessionManager.SessionMode.LOCAL -> localService
                     IntelligenceSessionManager.SessionMode.WINDOWS_BRIDGE -> windowsBridgeService
+                    IntelligenceSessionManager.SessionMode.OPENCODE -> opencodeService
                     else -> antigravityService
                 }
 
@@ -73,6 +81,7 @@ object IntelligenceModule {
                         val service = when (mode) {
                             IntelligenceSessionManager.SessionMode.LOCAL -> localService
                             IntelligenceSessionManager.SessionMode.WINDOWS_BRIDGE -> windowsBridgeService
+                            IntelligenceSessionManager.SessionMode.OPENCODE -> opencodeService
                             else -> antigravityService
                         }
                         selector(service)

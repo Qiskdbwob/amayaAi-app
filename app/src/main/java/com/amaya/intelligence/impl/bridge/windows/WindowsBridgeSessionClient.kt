@@ -377,6 +377,33 @@ class WindowsBridgeSessionClient(
             BridgeMessageType.TOOL_CALL ->
                 // Unexpected (bridge shouldn't initiate tool calls), but forward raw.
                 emit(WindowsBridgeClientEvent.EnvelopeReceived(envelope))
+            // CLI agent runtime (opencode / claude-code / codex) envelopes —
+            // forwarded raw so downstream agent clients can decode themselves.
+            BridgeMessageType.AGENT_RUNTIME_STATUS_REQUEST,
+            BridgeMessageType.AGENT_RUNTIME_START,
+            BridgeMessageType.AGENT_RUNTIME_STOP,
+            BridgeMessageType.AGENT_RUNTIME_RESTART,
+            BridgeMessageType.AGENT_CONFIG_REQUEST,
+            BridgeMessageType.AGENT_PROVIDER_LIST_REQUEST,
+            BridgeMessageType.AGENT_MODEL_LIST_REQUEST,
+            BridgeMessageType.AGENT_MCP_LIST_REQUEST,
+            BridgeMessageType.AGENT_SESSION_LIST_REQUEST,
+            BridgeMessageType.AGENT_SESSION_CREATE,
+            BridgeMessageType.AGENT_SESSION_DELETE,
+            BridgeMessageType.AGENT_SESSION_PROMPT,
+            BridgeMessageType.AGENT_SESSION_ABORT,
+            BridgeMessageType.AGENT_PERMISSION_REPLY,
+            BridgeMessageType.AGENT_QUESTION_REPLY,
+            BridgeMessageType.AGENT_RUNTIME_STATUS,
+            BridgeMessageType.AGENT_CONFIG,
+            BridgeMessageType.AGENT_PROVIDER_LIST,
+            BridgeMessageType.AGENT_MODEL_LIST,
+            BridgeMessageType.AGENT_MCP_LIST,
+            BridgeMessageType.AGENT_SESSION_LIST,
+            BridgeMessageType.AGENT_SESSION_CREATED,
+            BridgeMessageType.AGENT_SESSION_DELETED,
+            BridgeMessageType.AGENT_EVENT ->
+                emit(WindowsBridgeClientEvent.EnvelopeReceived(envelope))
         }
     }
 
