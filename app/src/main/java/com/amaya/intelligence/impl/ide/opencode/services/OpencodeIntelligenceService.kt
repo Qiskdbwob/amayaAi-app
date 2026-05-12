@@ -55,7 +55,8 @@ class OpencodeIntelligenceService @Inject constructor(
     private val _uiState = MutableStateFlow(
         ChatUiState(
             sessionMode = IntelligenceSessionManager.SessionMode.OPENCODE,
-            connectionState = mapConnectionState(bridgeController.currentConnectionState())
+            connectionState = mapConnectionState(bridgeController.currentConnectionState()),
+            conversationModeId = AgentModes.BUILD
         )
     )
     override val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
@@ -115,6 +116,11 @@ class OpencodeIntelligenceService @Inject constructor(
             AgentModes.BUILD, AgentModes.PLAN -> newMode
             else -> AgentModes.BUILD
         }
+        _uiState.update { it.copy(conversationModeId = _mode.value) }
+    }
+
+    override fun setConversationModeId(modeId: String) {
+        setMode(modeId)
     }
 
     // ── IntelligenceService ────────────────────────────────────────────────

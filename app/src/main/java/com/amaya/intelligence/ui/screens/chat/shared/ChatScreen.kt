@@ -93,7 +93,14 @@ fun ChatScreen(
     onNavigateToOpencode: (() -> Unit)? = null,
     onExit: () -> Unit = {},
     sessionDisconnectName: String? = null,
-    onConfirmSessionDisconnect: (() -> Unit)? = null
+    onConfirmSessionDisconnect: (() -> Unit)? = null,
+    /**
+     * Optional slot rendered below the top app bar and above the message list.
+     * Used by opencode (Plan/Build pill, permission card) so the overlay moves
+     * with the chat content when the drawer opens instead of sitting on top
+     * of the drawer.
+     */
+    topOverlay: (@Composable () -> Unit)? = null
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
@@ -735,10 +742,18 @@ fun ChatScreen(
     }
 
     if (showConversationModeSheet && isRemoteMode && config?.showConversationModeSelector != false) {
+        val providerModes = remember(uiState.sessionMode) {
+            com.amaya.intelligence.impl.ide.IdeProviderFactory.get(uiState.sessionMode.ideId)
+                ?.conversationModes
+                ?: com.amaya.intelligence.domain.models.ConversationModeOption.ANTIGRAVITY
+        }
+        val selectedId = uiState.conversationModeId
+            ?: uiState.conversationMode.wireValue
         ConversationModeSheet(
-            currentMode = uiState.conversationMode,
-            onSelect = { mode ->
-                viewModel.setConversationMode(mode)
+            options = providerModes,
+            selectedId = selectedId,
+            onSelect = { option ->
+                viewModel.setConversationModeId(option.id)
                 showConversationModeSheet = false
             },
             onDismiss = { showConversationModeSheet = false }

@@ -1,6 +1,8 @@
 package com.amaya.intelligence.impl.ide.opencode
 
 import com.amaya.intelligence.domain.ai.IdeProvider
+import com.amaya.intelligence.domain.bridge.AgentModes
+import com.amaya.intelligence.domain.models.ConversationModeOption
 import com.amaya.intelligence.domain.models.IdeCapabilities
 import com.amaya.intelligence.domain.models.IdeInfo
 
@@ -34,4 +36,17 @@ object OpencodeProvider : IdeProvider {
     )
 
     override val isEnabled: Boolean = true
+
+    override val conversationModes: List<ConversationModeOption> = listOf(
+        ConversationModeOption(
+            id = AgentModes.BUILD,
+            displayName = "Build",
+            description = "Agent executes tool calls directly. Use when you already know what to change."
+        ),
+        ConversationModeOption(
+            id = AgentModes.PLAN,
+            displayName = "Plan",
+            description = "Agent explains the plan without touching files. Switch to Build to execute."
+        )
+    )
 }

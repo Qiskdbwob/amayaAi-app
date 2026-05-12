@@ -24,6 +24,7 @@ data class ChatUiState(
     val activeProviderId: String          = "",
     val conversationId: String?           = null,
     val conversationMode: ConversationMode = ConversationMode.PLANNING,
+    val conversationModeId: String?        = null,
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     val sessionMode: com.amaya.intelligence.domain.ai.IntelligenceSessionManager.SessionMode = com.amaya.intelligence.domain.ai.IntelligenceSessionManager.SessionMode.LOCAL,
     val serverIp: String? = null

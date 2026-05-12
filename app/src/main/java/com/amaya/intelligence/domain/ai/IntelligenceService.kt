@@ -43,6 +43,18 @@ interface IntelligenceService {
     fun respondToToolInteraction(executionId: String, confirmed: Boolean) {}
     fun connect(ip: String, port: Int) {}
     fun setConversationMode(mode: ConversationMode) {}
+
+    /**
+     * Generic hook: pick a conversation mode by its provider-defined id.
+     * Default implementation bridges legacy "planning"/"fast" to
+     * [setConversationMode] so existing providers keep working without changes.
+     */
+    fun setConversationModeId(modeId: String) {
+        when (modeId) {
+            ConversationMode.PLANNING.wireValue -> setConversationMode(ConversationMode.PLANNING)
+            ConversationMode.FAST.wireValue -> setConversationMode(ConversationMode.FAST)
+        }
+    }
 }
 
 /**

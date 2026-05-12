@@ -129,6 +129,7 @@ object IntelligenceModule {
             override fun resync() = active.resync()
             override fun refreshState() = active.refreshState()
             override fun setConversationMode(mode: ConversationMode) = active.setConversationMode(mode)
+            override fun setConversationModeId(modeId: String) = active.setConversationModeId(modeId)
             override fun refreshModels() = active.refreshModels()
         }
     }

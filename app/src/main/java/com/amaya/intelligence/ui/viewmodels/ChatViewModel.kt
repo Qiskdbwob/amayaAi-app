@@ -157,6 +157,10 @@ class ChatViewModel @Inject constructor(
         intelligenceService.setConversationMode(mode)
     }
 
+    fun setConversationModeId(modeId: String) {
+        intelligenceService.setConversationModeId(modeId)
+    }
+
     fun refreshModels() {
         intelligenceService.refreshModels()
     }

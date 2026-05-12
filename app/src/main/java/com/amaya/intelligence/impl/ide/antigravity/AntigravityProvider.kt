@@ -1,6 +1,7 @@
 package com.amaya.intelligence.impl.ide.antigravity
 
 import com.amaya.intelligence.domain.ai.IdeProvider
+import com.amaya.intelligence.domain.models.ConversationModeOption
 import com.amaya.intelligence.domain.models.IdeCapabilities
 import com.amaya.intelligence.domain.models.IdeInfo
 
@@ -32,4 +33,7 @@ object AntigravityProvider : IdeProvider {
     )
     
     override val isEnabled: Boolean = true
+
+    override val conversationModes: List<ConversationModeOption> =
+        ConversationModeOption.ANTIGRAVITY
 }

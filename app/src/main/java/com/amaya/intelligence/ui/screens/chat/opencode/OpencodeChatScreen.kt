@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayCircle
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -37,7 +36,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.domain.bridge.AgentModes
@@ -49,12 +47,13 @@ import com.amaya.intelligence.ui.viewmodels.ChatViewModel
 import com.amaya.intelligence.ui.viewmodels.opencode.OpencodeChatPanelViewModel
 
 /**
- * Opencode chat surface. Re-uses the shared [ChatScreen] and overlays opencode
- * specific chrome:
- *   - a Plan / Build mode pill under the top app bar, and
- *   - a permission approval card when opencode requests a tool permission.
+ * Opencode chat surface. The Plan/Build mode selector is owned by the generic
+ * Conversation Mode sheet — [OpencodeProvider.conversationModes] declares the
+ * options so we don't duplicate the pill here.
  *
- * Foreground service is started to keep the bridge WS alive while we're here.
+ * The only opencode-specific overlay this screen renders is the permission
+ * approval card, anchored under the top app bar and inside the chat content
+ * box so the drawer overlaps it when opened.
  */
 @Composable
 fun OpencodeChatScreen(
@@ -101,6 +100,10 @@ fun OpencodeChatScreen(
         onToolAccept = { _ -> panelViewModel.approvePermission() },
         onToolDecline = { _ -> panelViewModel.rejectPermission() }
     ).copy(
+        // Opencode exposes Plan/Build via the generic conversation-mode picker
+        // that lives inside the chat input bar. Turning it on here lets the
+        // shared ChatInput surface the pill + bottom sheet.
+        showConversationModeSelector = true,
         selectedAgentFallbackLabel = "Select Opencode Model",
         streamingLabel = "Opencode streaming",
         idleLabel = "Opencode ready"
@@ -117,173 +120,89 @@ fun OpencodeChatScreen(
             sessionDisconnectName = "Opencode"
         )
 
-        val topOffset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 88.dp
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .align(Alignment.TopStart)
-                .padding(top = topOffset, start = 16.dp, end = 16.dp)
-                .zIndex(10f),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            OpencodeModeBar(
-                mode = panelState.mode,
-                isRuntimeReady = panelState.isRuntimeReady,
-                onModeChange = panelViewModel::setMode
+        panelState.pendingPermission?.let { request ->
+            OpencodePermissionOverlay(
+                request = request,
+                onApproveOnce = panelViewModel::approvePermission,
+                onApproveAlways = panelViewModel::approvePermissionAlways,
+                onReject = panelViewModel::rejectPermission
             )
-
-            panelState.pendingPermission?.let { request ->
-                OpencodePermissionCard(
-                    request = request,
-                    onApproveOnce = panelViewModel::approvePermission,
-                    onApproveAlways = panelViewModel::approvePermissionAlways,
-                    onReject = panelViewModel::rejectPermission
-                )
-            }
         }
     }
 }
 
 @Composable
-private fun OpencodeModeBar(
-    mode: String,
-    isRuntimeReady: Boolean,
-    onModeChange: (String) -> Unit
-) {
-    Surface(
-        shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp,
-        modifier = Modifier.wrapContentSizeFillWidth()
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            ModePill(
-                label = "Plan",
-                selected = mode == AgentModes.PLAN,
-                enabled = isRuntimeReady,
-                onClick = { onModeChange(AgentModes.PLAN) }
-            )
-            ModePill(
-                label = "Build",
-                selected = mode == AgentModes.BUILD,
-                enabled = isRuntimeReady,
-                onClick = { onModeChange(AgentModes.BUILD) }
-            )
-            if (!isRuntimeReady) {
-                Spacer(Modifier.width(6.dp))
-                Icon(
-                    Icons.Default.Lock,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(14.dp)
-                )
-                Text(
-                    "runtime offline",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(end = 8.dp)
-                )
-            }
-        }
-    }
+private fun BoxScopeAlignTop(content: @Composable () -> Unit) {
+    content()
 }
 
 @Composable
-private fun ModePill(
-    label: String,
-    selected: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit
-) {
-    val bg = when {
-        !enabled -> MaterialTheme.colorScheme.surface
-        selected -> MaterialTheme.colorScheme.primary
-        else -> MaterialTheme.colorScheme.surfaceVariant
-    }
-    val fg = when {
-        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant
-        selected -> MaterialTheme.colorScheme.onPrimary
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    Surface(
-        onClick = onClick,
-        enabled = enabled,
-        shape = RoundedCornerShape(999.dp),
-        color = bg,
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
-            color = fg,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-        )
-    }
-}
-
-@Composable
-private fun OpencodePermissionCard(
+private fun OpencodePermissionOverlay(
     request: OpencodePermissionRequest,
     onApproveOnce: () -> Unit,
     onApproveAlways: () -> Unit,
     onReject: () -> Unit
 ) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.tertiaryContainer,
-        tonalElevation = 3.dp,
-        modifier = Modifier.fillMaxWidth()
+    val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+            .padding(top = statusBar + 80.dp),
+        contentAlignment = Alignment.TopCenter
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.tertiaryContainer,
+            tonalElevation = 3.dp,
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.PlayCircle,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(Modifier.width(8.dp))
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.PlayCircle,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Opencode needs approval",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+                val title = request.title.ifBlank { request.kind ?: "Tool call" }
                 Text(
-                    text = "Opencode needs approval",
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 18.sp),
                     color = MaterialTheme.colorScheme.onTertiaryContainer
                 )
-            }
-            val title = request.title.ifBlank { request.kind ?: "Tool call" }
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp, lineHeight = 18.sp),
-                color = MaterialTheme.colorScheme.onTertiaryContainer
-            )
-            request.description?.takeIf { it.isNotBlank() }?.let { desc ->
-                Text(
-                    text = desc,
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f)
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(
-                    onClick = onReject,
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                request.description?.takeIf { it.isNotBlank() }?.let { desc ->
+                    Text(
+                        text = desc,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                        color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f)
                     )
-                ) { Text("Reject") }
-                TextButton(onClick = onApproveAlways) { Text("Always") }
-                Spacer(Modifier.weight(1f))
-                Button(
-                    onClick = onApproveOnce,
-                    shape = RoundedCornerShape(12.dp)
-                ) { Text("Allow once") }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = onReject,
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    ) { Text("Reject") }
+                    TextButton(onClick = onApproveAlways) { Text("Always") }
+                    Spacer(Modifier.weight(1f))
+                    Button(
+                        onClick = onApproveOnce,
+                        shape = RoundedCornerShape(12.dp)
+                    ) { Text("Allow once") }
+                }
             }
         }
     }
 }
-
-private fun Modifier.wrapContentSizeFillWidth(): Modifier = this.fillMaxWidth()

@@ -33,6 +33,8 @@ fun ChatInput(
     onClearAttachment: () -> Unit = {},
     onClearImageAttachment: () -> Unit = {},
     conversationMode: ConversationMode = ConversationMode.PLANNING,
+    conversationModeLabel: String? = null,
+    conversationModeIsFast: Boolean = conversationMode == ConversationMode.FAST,
     showConversationModeSelector: Boolean = false,
     onShowConversationModeSelector: () -> Unit = {},
     workspacePath: String? = null,
@@ -75,13 +77,14 @@ fun ChatInput(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Icon(
-                        if (conversationMode == ConversationMode.PLANNING) Icons.Default.Lightbulb else Icons.Default.Bolt,
+                        if (conversationModeIsFast) Icons.Default.Bolt else Icons.Default.Lightbulb,
                         contentDescription = null,
                         modifier = Modifier.size(14.dp),
                         tint = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        text = if (conversationMode == ConversationMode.PLANNING) "Planning" else "Fast",
+                        text = conversationModeLabel
+                            ?: if (conversationMode == ConversationMode.PLANNING) "Planning" else "Fast",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurface
                     )

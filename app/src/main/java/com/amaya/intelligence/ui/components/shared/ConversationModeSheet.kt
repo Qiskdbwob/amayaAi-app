@@ -2,13 +2,28 @@ package com.amaya.intelligence.ui.components.shared
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Forum
-import androidx.compose.material3.*
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -18,19 +33,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import kotlinx.coroutines.launch
-import com.amaya.intelligence.domain.models.ConversationMode
+import com.amaya.intelligence.domain.models.ConversationModeOption
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
-import com.amaya.intelligence.ui.components.shared.rememberLockedModalBottomSheetState
-import com.amaya.intelligence.ui.components.shared.ignoreNestedScrollForBottomSheet
 
+/**
+ * Generic conversation-mode picker. Each provider supplies its own list of
+ * [options] through its `IdeProvider.conversationModes` declaration, so the UI
+ * stays provider-neutral.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationModeSheet(
-    currentMode: ConversationMode,
-    onSelect: (ConversationMode) -> Unit,
+    options: List<ConversationModeOption>,
+    selectedId: String?,
+    title: String = "Conversation Mode",
+    onSelect: (ConversationModeOption) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberLockedModalBottomSheetState()
@@ -39,16 +57,15 @@ fun ConversationModeSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        properties = com.amaya.intelligence.ui.components.shared.lockedModalBottomSheetProperties(),
+        properties = lockedModalBottomSheetProperties(),
         containerColor = MaterialTheme.colorScheme.surface,
         dragHandle = null,
-        shape = com.amaya.intelligence.ui.components.shared.responsiveBottomSheetShape(sheetState)
+        shape = responsiveBottomSheetShape(sheetState)
     ) {
         val gradients = LocalAmayaGradients.current
         val scrollState = rememberScrollState()
 
         Box(modifier = Modifier.fillMaxWidth().weight(1f, fill = false)) {
-            // Bottom Layer: Scrolling Content
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -60,38 +77,29 @@ fun ConversationModeSheet(
             ) {
                 Spacer(Modifier.height(90.dp))
 
-                ConversationModeItem(
-                    title = "Planning",
-                    description = "Agent can plan before executing tasks. Use for deep research, complex tasks, or collaborative work",
-                    isSelected = currentMode == ConversationMode.PLANNING,
-                    onClick = {
-                        scope.launch {
-                            sheetState.hide()
-                        }.invokeOnCompletion {
-                            if (!sheetState.isVisible) {
-                                onSelect(ConversationMode.PLANNING)
+                if (options.isEmpty()) {
+                    Text(
+                        text = "This provider has no conversation modes.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        modifier = Modifier.padding(16.dp)
+                    )
+                } else {
+                    options.forEach { option ->
+                        ConversationModeItem(
+                            option = option,
+                            isSelected = option.id == selectedId,
+                            onClick = {
+                                scope.launch { sheetState.hide() }.invokeOnCompletion {
+                                    if (!sheetState.isVisible) onSelect(option)
+                                }
                             }
-                        }
+                        )
                     }
-                )
-
-                ConversationModeItem(
-                    title = "Fast",
-                    description = "Agent will execute tasks directly. Use for simple tasks that can be completed faster",
-                    isSelected = currentMode == ConversationMode.FAST,
-                    onClick = {
-                        scope.launch {
-                            sheetState.hide()
-                        }.invokeOnCompletion {
-                            if (!sheetState.isVisible) {
-                                onSelect(ConversationMode.FAST)
-                            }
-                        }
-                    }
-                )
+                }
             }
 
-            // Top Layer: Blurred Header Overlay
+            // Header overlay
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -107,7 +115,7 @@ fun ConversationModeSheet(
                         modifier = Modifier
                             .width(32.dp).height(4.dp)
                             .clip(RoundedCornerShape(2.dp))
-                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = com.amaya.intelligence.ui.components.shared.responsiveDragHandleAlpha(sheetState)))
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = responsiveDragHandleAlpha(sheetState)))
                     )
                 }
                 Box(
@@ -115,7 +123,7 @@ fun ConversationModeSheet(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        "Conversation Mode",
+                        title,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                     )
@@ -145,8 +153,7 @@ fun ConversationModeSheet(
 
 @Composable
 private fun ConversationModeItem(
-    title: String,
-    description: String,
+    option: ConversationModeOption,
     isSelected: Boolean,
     onClick: () -> Unit
 ) {
@@ -162,17 +169,19 @@ private fun ConversationModeItem(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = title,
+                    text = option.displayName,
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.SemiBold,
                     color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                 )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                )
+                if (option.description.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = option.description,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
             }
         }
     }

@@ -133,6 +133,8 @@ fun ChatBottomSection(
                 onClearImageAttachment()
             },
             conversationMode = uiState.conversationMode,
+            conversationModeLabel = resolveConversationModeLabel(uiState),
+            conversationModeIsFast = resolveConversationModeIsFast(uiState),
             showConversationModeSelector = showConversationModeSelector,
             onShowConversationModeSelector = onShowConversationModeSheet,
             workspacePath = uiState.workspacePath,
@@ -171,4 +173,18 @@ fun ChatBottomSection(
             onStopGeneration = onStopGeneration
         )
     }
+}
+
+private fun resolveConversationModeLabel(state: ChatUiState): String? {
+    val modeId = state.conversationModeId ?: state.conversationMode.wireValue
+    val provider = com.amaya.intelligence.impl.ide.IdeProviderFactory.get(state.sessionMode.ideId)
+        ?: return null
+    return provider.conversationModes.firstOrNull { it.id == modeId }?.displayName
+}
+
+private fun resolveConversationModeIsFast(state: ChatUiState): Boolean {
+    // Treat "Build"/"Fast" style modes as execute-immediately. Everything else
+    // (Plan/Planning/Architect/Review) maps to the Lightbulb icon.
+    val modeId = (state.conversationModeId ?: state.conversationMode.wireValue).lowercase()
+    return modeId == "build" || modeId == "fast"
 }
