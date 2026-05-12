@@ -28,6 +28,8 @@
 import WebSocket from 'ws';
 import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 const { values } = parseArgs({
   options: {
@@ -41,10 +43,19 @@ const { values } = parseArgs({
     provider: { type: 'string' },
     model: { type: 'string' },
     'skip-prompt': { type: 'boolean', default: false },
-    'wait-ms': { type: 'string', default: '60000' }
+    'wait-ms': { type: 'string', default: '60000' },
+    verbose: { type: 'boolean', default: false },
+    'raw-log': { type: 'string' }
   },
   strict: true
 });
+
+const VERBOSE = values.verbose;
+const RAW_LOG = values['raw-log'];
+if (RAW_LOG) {
+  mkdirSync(dirname(RAW_LOG), { recursive: true });
+  writeFileSync(RAW_LOG, '');
+}
 
 const HOST = values.host;
 const PORT = Number(values.port);
@@ -112,6 +123,13 @@ socket.on('message', (raw) => {
   } catch (err) {
     console.warn('[cli] failed to parse envelope', err);
     return;
+  }
+  if (RAW_LOG) {
+    try {
+      appendFileSync(RAW_LOG, raw.toString('utf8') + '\n');
+    } catch (err) {
+      console.warn('[cli] raw log write failed', err);
+    }
   }
   handleEnvelope(env);
 });
@@ -227,6 +245,9 @@ function handleEnvelope(env) {
 function handleAgentEvent(payload) {
   const kind = payload.kind;
   const data = payload.data ?? {};
+  if (VERBOSE) {
+    console.log(`\n[evt:${kind}]`, JSON.stringify(data).slice(0, 400));
+  }
   switch (kind) {
     case 'message.part.text': {
       const text = data.text ?? '';

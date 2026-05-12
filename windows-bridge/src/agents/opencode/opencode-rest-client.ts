@@ -165,8 +165,12 @@ export class OpencodeRestClient {
       const response = await fetch(url, init);
       const text = await response.text();
       if (!response.ok) {
+        logger.warn(
+          SCOPE,
+          `${method} ${path} failed HTTP ${response.status} body=${text.slice(0, 512)}`
+        );
         throw new OpencodeRestError(
-          `opencode ${method} ${path} → HTTP ${response.status}`,
+          `opencode ${method} ${path} → HTTP ${response.status}: ${text.slice(0, 256)}`,
           response.status,
           text
         );

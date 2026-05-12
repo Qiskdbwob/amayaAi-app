@@ -201,18 +201,31 @@ export class OpencodeAgentProvider extends AgentProvider {
 
   async prompt(payload: AgentSessionPromptPayload): Promise<void> {
     const rest = this.ensureRest();
-    const body: Record<string, unknown> = {
-      parts: payload.parts.map((part) => ({
-        type: part.type,
-        text: part.text,
-        url: part.url,
-        mime: part.mime,
-        filename: part.filename,
-        dataBase64: part.dataBase64
-      }))
-    };
+    // opencode's REST API uses uppercase *ID keys (`providerID`, `modelID`).
+    // Map from our neutral camelCase shape here so Android clients can stay
+    // provider-neutral.
+    const parts = payload.parts
+      .map((part) => {
+        const mapped: Record<string, unknown> = { type: part.type };
+        if (typeof part.text === 'string') mapped.text = part.text;
+        if (part.url) mapped.url = part.url;
+        if (part.mime) mapped.mime = part.mime;
+        if (part.filename) mapped.filename = part.filename;
+        if (part.dataBase64) mapped.dataBase64 = part.dataBase64;
+        return mapped;
+      })
+      .filter((p) => {
+        if (p.type === 'text') return typeof p.text === 'string' && (p.text as string).length > 0;
+        return true;
+      });
+    const body: Record<string, unknown> = { parts };
     if (payload.agent) body.agent = payload.agent;
-    if (payload.model) body.model = payload.model;
+    if (payload.model?.providerId && payload.model?.modelId) {
+      body.model = {
+        providerID: payload.model.providerId,
+        modelID: payload.model.modelId
+      };
+    }
     await rest.promptAsync(payload.sessionId, body);
   }
 

@@ -239,7 +239,19 @@ class OpencodeClient @Inject constructor(
             BridgeMessageType.AGENT_SESSION_DELETED -> handleSessionDeleted(envelope)
             BridgeMessageType.AGENT_SESSION_MESSAGES -> handleSessionMessages(envelope)
             BridgeMessageType.AGENT_EVENT -> handleAgentEvent(envelope)
+            BridgeMessageType.ERROR -> handleBridgeError(envelope)
             else -> Unit
+        }
+    }
+
+    private fun handleBridgeError(envelope: BridgeEnvelope) {
+        val message = envelope.payload["message"] as? String ?: "bridge error"
+        val code = envelope.payload["code"] as? String
+        val requestType = envelope.payload["requestType"] as? String
+        // Only surface errors that are relevant to the agent flow so we don't
+        // spam the UI with unrelated failures.
+        if (requestType == null || requestType.startsWith("agent.")) {
+            _events.tryEmit(Event.Error("${code ?: "ERROR"}: $message"))
         }
     }
 
