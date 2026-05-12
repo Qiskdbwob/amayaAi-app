@@ -8,6 +8,7 @@ import com.amaya.intelligence.di.ApplicationScope
 import com.amaya.intelligence.domain.ai.IntelligenceService
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.domain.bridge.AgentModes
+import com.amaya.intelligence.domain.models.AgentSelectorItem
 import com.amaya.intelligence.domain.models.ChatUiState
 import com.amaya.intelligence.domain.models.ConnectionState
 import com.amaya.intelligence.domain.models.MessageStep
@@ -18,8 +19,11 @@ import com.amaya.intelligence.domain.models.ToolStatus
 import com.amaya.intelligence.domain.models.UiMessage
 import com.amaya.intelligence.impl.bridge.windows.WindowsBridgeConnectionState
 import com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeController
+import com.amaya.intelligence.impl.common.mappers.AgentMapper
 import com.amaya.intelligence.impl.ide.opencode.OpencodeClient
 import com.amaya.intelligence.impl.ide.opencode.OpencodeMessagePartUpdate
+import com.amaya.intelligence.impl.ide.opencode.OpencodeModelSummary
+import com.amaya.intelligence.impl.ide.opencode.OpencodeSessionSummary
 import com.amaya.intelligence.tools.TodoItem
 import com.amaya.intelligence.tools.TodoRepository
 import com.amaya.intelligence.tools.TodoStatus
@@ -104,6 +108,14 @@ class OpencodeIntelligenceService @Inject constructor(
                         sessionMode = IntelligenceSessionManager.SessionMode.OPENCODE,
                         error = snapshot.lastError
                     )
+                }
+                // As soon as the opencode runtime is ready, pull providers,
+                // models, and sessions so the sidebar + agent picker have
+                // something to show.
+                if (snapshot.isReady) {
+                    opencodeClient.requestProviders()
+                    opencodeClient.requestModels()
+                    opencodeClient.requestSessions()
                 }
             }
         }
@@ -221,7 +233,20 @@ class OpencodeIntelligenceService @Inject constructor(
     }
 
     override fun setSelectedAgent(agentId: String) {
-        _uiState.update { it.copy(activeAgentId = agentId, selectedModel = agentId) }
+        val parts = agentId.split('|', limit = 3)
+        if (parts.size == 3 && parts[0] == "opencode") {
+            val providerId = parts[1]
+            val modelId = parts[2]
+            _uiState.update {
+                it.copy(
+                    activeAgentId = agentId,
+                    selectedModel = modelId,
+                    activeProviderId = providerId
+                )
+            }
+        } else {
+            _uiState.update { it.copy(activeAgentId = agentId, selectedModel = agentId) }
+        }
     }
 
     override fun clearError() {
@@ -251,15 +276,24 @@ class OpencodeIntelligenceService @Inject constructor(
     private fun scheduleSend(content: String) {
         val existing = activeSessionId
         val currentMode = _mode.value
+        val providerId = _uiState.value.activeProviderId.ifBlank { null }
+        val modelId = _uiState.value.selectedModel.ifBlank { null }
         if (existing != null) {
             opencodeClient.sendPrompt(
                 sessionId = existing,
                 text = content,
-                agent = currentMode
+                agent = currentMode,
+                providerId = providerId,
+                modelId = modelId
             )
         } else {
             pendingPrompt = content
-            opencodeClient.createSession(title = content.take(48), agent = currentMode)
+            opencodeClient.createSession(
+                title = content.take(48),
+                agent = currentMode,
+                modelId = modelId,
+                providerId = providerId
+            )
         }
     }
 
@@ -272,16 +306,21 @@ class OpencodeIntelligenceService @Inject constructor(
                     opencodeClient.sendPrompt(
                         sessionId = event.session.sessionId,
                         text = content,
-                        agent = _mode.value
+                        agent = _mode.value,
+                        providerId = _uiState.value.activeProviderId.ifBlank { null },
+                        modelId = _uiState.value.selectedModel.ifBlank { null }
                     )
                 }
                 pendingPrompt = null
+                persistCurrentConversationAsync()
+                opencodeClient.requestSessions()
             }
             is OpencodeClient.Event.SessionDeleted -> {
                 if (event.sessionId == activeSessionId) {
                     activeSessionId = null
                     _uiState.update { it.copy(conversationId = null) }
                 }
+                scope.launch { purgeConversationByOpencodeSessionId(event.sessionId) }
             }
             is OpencodeClient.Event.MessagePart -> handleMessagePart(event.update)
             is OpencodeClient.Event.SessionStatus -> Unit
@@ -291,13 +330,16 @@ class OpencodeIntelligenceService @Inject constructor(
             is OpencodeClient.Event.PermissionAsked -> Unit
             is OpencodeClient.Event.PlanUpdate -> handlePlanUpdate(event.entries)
             is OpencodeClient.Event.TodoUpdate -> handleTodoUpdate(event.todos)
-            is OpencodeClient.Event.Sessions,
-            is OpencodeClient.Event.Providers,
-            is OpencodeClient.Event.Models,
-            is OpencodeClient.Event.Mcp,
-            is OpencodeClient.Event.Runtime,
-            is OpencodeClient.Event.Config,
-            is OpencodeClient.Event.SessionCreated -> Unit
+            is OpencodeClient.Event.Sessions -> handleSessionList(event.sessions)
+            is OpencodeClient.Event.Providers -> Unit
+            is OpencodeClient.Event.Models -> handleModelList(
+                models = event.models,
+                defaultProviderId = event.defaultProviderId,
+                defaultModelId = event.defaultModelId
+            )
+            is OpencodeClient.Event.Mcp -> Unit
+            is OpencodeClient.Event.Runtime -> Unit
+            is OpencodeClient.Event.Config -> Unit
             is OpencodeClient.Event.Error -> _uiState.update {
                 it.copy(error = event.message, isLoading = false, isStreaming = false)
             }
@@ -588,5 +630,115 @@ class OpencodeIntelligenceService @Inject constructor(
         WindowsBridgeConnectionState.CLOSING -> ConnectionState.CONNECTING
         WindowsBridgeConnectionState.DISCONNECTED,
         WindowsBridgeConnectionState.ERROR -> ConnectionState.DISCONNECTED
+    }
+
+    // ── Models → AgentSelectorItem ─────────────────────────────────────────
+
+    private fun handleModelList(
+        models: List<OpencodeModelSummary>,
+        defaultProviderId: String?,
+        defaultModelId: String?
+    ) {
+        val items = models.map { model ->
+            AgentSelectorItem(
+                id = "opencode|${model.providerId}|${model.modelId}",
+                name = model.displayName.ifBlank { model.modelId },
+                modelId = model.modelId,
+                iconType = AgentMapper.getIconTypeForProvider(model.providerId)
+                    ?: AgentMapper.getIconType(model.modelId)
+                    ?: "default",
+                providerId = model.providerId,
+                providerName = model.providerId.replaceFirstChar { it.uppercase() },
+                statusLabel = "Opencode",
+                contextWindowTokens = model.contextWindowTokens,
+                maxOutputTokens = model.maxOutputTokens,
+                capabilityLabels = buildList {
+                    if (model.supportsImages) add("vision")
+                }.take(4),
+                contextWindowLabel = model.contextWindowTokens?.let { formatTokenCount(it) },
+                sourceLabel = "opencode",
+                isRemote = true
+            )
+        }
+        val currentProvider = _uiState.value.activeProviderId.ifBlank { null }
+        val currentModel = _uiState.value.selectedModel.ifBlank { null }
+        val effectiveProvider = currentProvider ?: defaultProviderId
+        val effectiveModel = currentModel ?: defaultModelId
+        val effectiveId = if (effectiveProvider != null && effectiveModel != null) {
+            "opencode|$effectiveProvider|$effectiveModel"
+        } else {
+            items.firstOrNull()?.id
+        }
+        _uiState.update {
+            it.copy(
+                agentConfigs = items,
+                activeAgentId = effectiveId ?: it.activeAgentId,
+                activeProviderId = effectiveProvider ?: it.activeProviderId,
+                selectedModel = effectiveModel ?: it.selectedModel
+            )
+        }
+    }
+
+    // ── Opencode session list → ConversationEntity rows ────────────────────
+
+    private fun handleSessionList(sessions: List<OpencodeSessionSummary>) {
+        scope.launch {
+            val existing = conversationDao
+                .getConversationsByScope(ConversationScope.OPENCODE.wireName)
+            val existingBySessionId: Map<String, com.amaya.intelligence.data.local.entity.ConversationEntity> =
+                existing.mapNotNull { row ->
+                    val sid = extractOpencodeSessionId(row.messagesJson) ?: return@mapNotNull null
+                    sid to row
+                }.toMap()
+            for (session in sessions) {
+                val prior = existingBySessionId[session.sessionId]
+                if (prior == null) {
+                    val title = session.title
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "Opencode session"
+                    val json = JSONObject().apply {
+                        put("opencodeSessionId", session.sessionId)
+                        put("messages", JSONArray())
+                    }.toString()
+                    conversationDao.insertConversation(
+                        com.amaya.intelligence.data.local.entity.ConversationEntity(
+                            title = title.take(60),
+                            workspacePath = null,
+                            messagesJson = json,
+                            createdAt = session.createdAt,
+                            updatedAt = session.updatedAt,
+                            scope = ConversationScope.OPENCODE.wireName
+                        )
+                    )
+                } else {
+                    val newTitle = session.title
+                        ?.trim()
+                        ?.takeIf { it.isNotBlank() }
+                        ?: prior.title
+                    if (prior.title != newTitle || prior.updatedAt < session.updatedAt) {
+                        conversationDao.updateConversation(
+                            prior.copy(title = newTitle.take(60), updatedAt = session.updatedAt)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun purgeConversationByOpencodeSessionId(sessionId: String) {
+        val rows = conversationDao.getConversationsByScope(ConversationScope.OPENCODE.wireName)
+        for (row in rows) {
+            val sid = extractOpencodeSessionId(row.messagesJson)
+            if (sid == sessionId) {
+                conversationDao.deleteConversationById(row.id)
+            }
+        }
+    }
+
+    private fun formatTokenCount(count: Int): String = when {
+        count >= 1_000_000 -> if (count % 1_000_000 == 0) "${count / 1_000_000}M" else String.format("%.1fM", count / 1_000_000.0)
+        count >= 1_000 -> if (count % 1_000 == 0) "${count / 1_000}k" else String.format("%.1fk", count / 1_000.0)
+        else -> count.toString()
     }
 }

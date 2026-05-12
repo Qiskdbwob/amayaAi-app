@@ -30,6 +30,18 @@ interface ConversationDao {
     """)
     fun observeConversationsByScope(scope: String): Flow<List<ConversationEntity>>
 
+    /**
+     * One-shot snapshot of conversations in a scope, with the full `messages_json`
+     * body. Used when we need to inspect payload metadata (e.g. opencode session id).
+     */
+    @Query("""
+        SELECT *
+        FROM conversations
+        WHERE scope = :scope
+        ORDER BY updated_at DESC
+    """)
+    suspend fun getConversationsByScope(scope: String): List<ConversationEntity>
+
     @Query("SELECT * FROM conversations WHERE id = :id")
     suspend fun getConversationById(id: Long): ConversationEntity?
 
