@@ -6,7 +6,8 @@ import androidx.room.PrimaryKey
 
 enum class ConversationScope(val wireName: String) {
     LOCAL("local"),
-    WINDOWS_BRIDGE("windows_bridge");
+    WINDOWS_BRIDGE("windows_bridge"),
+    OPENCODE("opencode");
 
     companion object {
         fun fromWireName(value: String?): ConversationScope =

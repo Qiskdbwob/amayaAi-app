@@ -52,6 +52,22 @@ export abstract class AgentProvider extends EventEmitter {
   abstract replyPermission(payload: AgentPermissionReplyPayload): Promise<void>;
   abstract replyQuestion(payload: AgentQuestionReplyPayload): Promise<void>;
 
+  // ── Optional PTY surface. Providers may override to expose a pseudo-terminal
+  //     connection to their underlying CLI. Default implementations throw so the
+  //     router can surface a clear error message.
+  async openPty(_payload: Record<string, unknown>): Promise<{ ptyId: string }> {
+    throw new Error(`${this.runtimeId}: PTY not supported`);
+  }
+  async resizePty(_ptyId: string, _cols: number, _rows: number): Promise<void> {
+    throw new Error(`${this.runtimeId}: PTY not supported`);
+  }
+  async writePty(_ptyId: string, _dataBase64: string): Promise<void> {
+    throw new Error(`${this.runtimeId}: PTY not supported`);
+  }
+  async closePty(_ptyId: string): Promise<void> {
+    // no-op default so cleanup on disconnect doesn't throw for non-PTY runtimes.
+  }
+
   /** Called by bridge during shutdown. Must be idempotent. */
   abstract dispose(): Promise<void>;
 

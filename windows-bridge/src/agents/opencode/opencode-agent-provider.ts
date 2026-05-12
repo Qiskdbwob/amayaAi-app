@@ -25,6 +25,7 @@ import { OpencodeRestClient } from './opencode-rest-client';
 import { OpencodeEventStream } from './opencode-event-stream';
 import { mapOpencodeEvent } from './opencode-event-mapper';
 import { sanitizeOpencodeConfig } from './opencode-config-sanitizer';
+import { OpencodePtyBridge } from './opencode-pty-bridge';
 
 const SCOPE = 'opencode.provider';
 const OPENCODE_RUNTIME_ID = 'opencode';
@@ -45,6 +46,7 @@ export class OpencodeAgentProvider extends AgentProvider {
   private readonly server = new OpencodeServerManager();
   private rest: OpencodeRestClient | null = null;
   private events: OpencodeEventStream | null = null;
+  private ptyBridge: OpencodePtyBridge | null = null;
   private lastStatus: AgentRuntimeStatus = 'stopped';
   private lastVersion: string | null = null;
   private lastError: string | null = null;
@@ -98,6 +100,19 @@ export class OpencodeAgentProvider extends AgentProvider {
       if (!next.baseUrl) throw new Error('opencode serve returned no URL');
       this.rest = new OpencodeRestClient({ baseUrl: next.baseUrl });
       this.startEventStream();
+      this.ptyBridge = new OpencodePtyBridge({
+        baseUrl: next.baseUrl,
+        authHeader: this.rest.authHeaderValue()
+      });
+      this.ptyBridge.on('output', (payload) => {
+        this.emit('pty_event', { kind: 'output', ...payload });
+      });
+      this.ptyBridge.on('closed', (payload) => {
+        this.emit('pty_event', { kind: 'closed', ...payload });
+      });
+      this.ptyBridge.on('opened', (payload) => {
+        this.emit('pty_event', { kind: 'opened', ...payload });
+      });
       return this.info();
     } catch (err) {
       logger.error(SCOPE, `start failed: ${(err as Error).message}`);
@@ -109,6 +124,8 @@ export class OpencodeAgentProvider extends AgentProvider {
     this.events?.close('runtime_stop');
     this.events = null;
     this.rest = null;
+    this.ptyBridge?.disposeAll();
+    this.ptyBridge = null;
     await this.server.stop();
   }
 
@@ -214,6 +231,43 @@ export class OpencodeAgentProvider extends AgentProvider {
   async replyQuestion(payload: AgentQuestionReplyPayload): Promise<void> {
     const rest = this.ensureRest();
     await rest.replyQuestion(payload.questionId, { reply: payload.reply });
+  }
+
+  // ── PTY ──────────────────────────────────────────────────────────────────
+
+  override async openPty(payload: Record<string, unknown>): Promise<{ ptyId: string }> {
+    const bridge = this.ensurePty();
+    const command = typeof payload.command === 'string' ? payload.command : '';
+    if (!command) throw new Error('openPty requires a command');
+    return bridge.open({
+      command,
+      args: Array.isArray(payload.args) ? (payload.args as string[]) : undefined,
+      cwd: typeof payload.cwd === 'string' ? (payload.cwd as string) : undefined,
+      title: typeof payload.title === 'string' ? (payload.title as string) : undefined,
+      env: (payload.env as Record<string, string> | undefined) ?? undefined,
+      cols: typeof payload.cols === 'number' ? (payload.cols as number) : undefined,
+      rows: typeof payload.rows === 'number' ? (payload.rows as number) : undefined
+    });
+  }
+
+  override async resizePty(ptyId: string, cols: number, rows: number): Promise<void> {
+    const bridge = this.ensurePty();
+    await bridge.resize(ptyId, cols, rows);
+  }
+
+  override async writePty(ptyId: string, dataBase64: string): Promise<void> {
+    const bridge = this.ensurePty();
+    bridge.input(ptyId, dataBase64);
+  }
+
+  override async closePty(ptyId: string): Promise<void> {
+    await this.ptyBridge?.close(ptyId);
+  }
+
+  private ensurePty(): OpencodePtyBridge {
+    const bridge = this.ptyBridge;
+    if (!bridge) throw new Error('OPENCODE_NOT_READY');
+    return bridge;
   }
 
   // ── Internals ────────────────────────────────────────────────────────────

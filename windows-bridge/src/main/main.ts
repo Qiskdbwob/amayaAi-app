@@ -71,6 +71,17 @@ async function bootstrap(): Promise<void> {
   const agentRouter = new AgentRouter();
   const opencodeProvider = new OpencodeAgentProvider();
   agentRouter.register(opencodeProvider);
+  // Kick off the opencode runtime in the background so the user can open chat
+  // immediately without manually pressing "Start". Failures are surfaced through
+  // the runtime-status channel; we never let them crash the bridge.
+  opencodeProvider
+    .start()
+    .then((info) => {
+      logger.info('main', `opencode runtime ready status=${info.status} url=${info.baseUrl ?? '-'}`);
+    })
+    .catch((err) => {
+      logger.warn('main', `opencode auto-start failed: ${(err as Error).message}`);
+    });
 
   const server = new WindowsBridgeWebSocketServer(
     {

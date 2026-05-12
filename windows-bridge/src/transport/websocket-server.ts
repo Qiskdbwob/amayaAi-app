@@ -98,6 +98,9 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
     this.agentRouter?.on('status_changed', (info: AgentRuntimeInfo) =>
       this.sendAgentRuntimeStatus(info)
     );
+    this.agentRouter?.on('pty_event', (event: Record<string, unknown>) =>
+      this.sendPtyEvent(event)
+    );
   }
 
   start(): void {
@@ -366,6 +369,10 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
       case BridgeMessageType.AGENT_SESSION_ABORT:
       case BridgeMessageType.AGENT_PERMISSION_REPLY:
       case BridgeMessageType.AGENT_QUESTION_REPLY:
+      case BridgeMessageType.AGENT_PTY_OPEN:
+      case BridgeMessageType.AGENT_PTY_RESIZE:
+      case BridgeMessageType.AGENT_PTY_INPUT:
+      case BridgeMessageType.AGENT_PTY_CLOSE:
         await this.handleAgentEnvelope(env, sessionId, deviceId);
         break;
       default:
@@ -877,6 +884,47 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
           await provider.replyQuestion(payload);
           break;
         }
+        case BridgeMessageType.AGENT_PTY_OPEN: {
+          const result = await provider.openPty(env.payload as Record<string, unknown>);
+          this.sendEnvelope(
+            BridgeMessageType.AGENT_PTY_OPENED,
+            sessionId,
+            deviceId,
+            {
+              runtimeId,
+              ptyId: result.ptyId,
+              requestId: env.id
+            }
+          );
+          break;
+        }
+        case BridgeMessageType.AGENT_PTY_RESIZE: {
+          const ptyId = env.payload['ptyId'] as string | undefined;
+          const cols = Number(env.payload['cols'] ?? 0);
+          const rows = Number(env.payload['rows'] ?? 0);
+          if (!ptyId || !cols || !rows) break;
+          await provider.resizePty(ptyId, cols, rows);
+          break;
+        }
+        case BridgeMessageType.AGENT_PTY_INPUT: {
+          const ptyId = env.payload['ptyId'] as string | undefined;
+          const data = env.payload['dataBase64'] as string | undefined;
+          if (!ptyId || !data) break;
+          await provider.writePty(ptyId, data);
+          break;
+        }
+        case BridgeMessageType.AGENT_PTY_CLOSE: {
+          const ptyId = env.payload['ptyId'] as string | undefined;
+          if (!ptyId) break;
+          await provider.closePty(ptyId);
+          this.sendEnvelope(
+            BridgeMessageType.AGENT_PTY_CLOSED,
+            sessionId,
+            deviceId,
+            { runtimeId, ptyId, reason: 'closed_by_client' }
+          );
+          break;
+        }
         default:
           break;
       }
@@ -922,6 +970,25 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
       snap.sessionId,
       snap.deviceId ?? 'unknown_device',
       event as unknown as Record<string, unknown>
+    );
+  }
+
+  private sendPtyEvent(event: Record<string, unknown>): void {
+    const snap = this.sessions.snapshot;
+    const socket = this.activeSocket;
+    if (!socket || !snap.sessionId) return;
+    const kind = (event.kind as string | undefined) ?? 'output';
+    const type = kind === 'output'
+      ? BridgeMessageType.AGENT_PTY_OUTPUT
+      : kind === 'opened'
+        ? BridgeMessageType.AGENT_PTY_OPENED
+        : BridgeMessageType.AGENT_PTY_CLOSED;
+    this.sendDirect(
+      socket,
+      type,
+      snap.sessionId,
+      snap.deviceId ?? 'unknown_device',
+      event
     );
   }
 

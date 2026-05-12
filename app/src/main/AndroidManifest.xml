@@ -338,6 +338,11 @@
             android:name="com.amaya.intelligence.impl.ide.antigravity.client.RemoteSessionForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name="com.amaya.intelligence.impl.ide.opencode.OpencodeSessionForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

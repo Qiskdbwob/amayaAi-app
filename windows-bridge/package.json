@@ -11,7 +11,7 @@
     "build:helper": "dotnet publish native-helper/AmayaBridgeHelper.csproj -c Release -r win-x64 --self-contained false",
     "build:helper:self-contained": "dotnet publish native-helper/AmayaBridgeHelper.csproj -c Release -r win-x64 --self-contained true",
     "copy:helper": "node scripts/copy-helper.mjs",
-    "test": "npm run build && node --test scripts/test-sanitizer.mjs",
+    "test": "npm run build && node --test scripts/test-sanitizer.mjs scripts/test-event-mapper.mjs",
     "verify": "npm run typecheck && npm run build:helper && npm run copy:helper && npm run build && npm test",
     "package": "npm run verify && electron-builder",
     "package:dir": "npm run verify && electron-builder --dir",

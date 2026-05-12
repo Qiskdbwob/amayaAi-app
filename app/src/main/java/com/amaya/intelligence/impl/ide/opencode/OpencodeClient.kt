@@ -62,6 +62,9 @@ class OpencodeClient @Inject constructor(
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 128)
     val events: SharedFlow<Event> = _events.asSharedFlow()
 
+    private val _pendingPermission = MutableStateFlow<OpencodePermissionRequest?>(null)
+    val pendingPermission: StateFlow<OpencodePermissionRequest?> = _pendingPermission.asStateFlow()
+
     private var subscriptionJob: Job? = null
     @Volatile private var attached: Boolean = false
     private val attachLock = Any()
@@ -202,6 +205,16 @@ class OpencodeClient @Inject constructor(
             "reply" to reply
         )
     )
+
+    /**
+     * Reply to whatever permission is currently pending. No-op when nothing is
+     * awaiting a reply, so callers can wire this to buttons without guarding.
+     */
+    fun respondCurrentPermission(reply: String) {
+        val pending = _pendingPermission.value ?: return
+        replyPermission(pending.sessionId, pending.permissionId, reply)
+        _pendingPermission.value = null
+    }
 
     // ── Inbound handling ─────────────────────────────────────────────────────
 
@@ -345,17 +358,22 @@ class OpencodeClient @Inject constructor(
             )
             AgentEventKind.PERMISSION_ASKED -> {
                 val permissionId = data["id"] as? String ?: data["permissionId"] as? String ?: return
-                _events.tryEmit(
-                    Event.PermissionAsked(
-                        OpencodePermissionRequest(
-                            sessionId = sessionId.orEmpty(),
-                            permissionId = permissionId,
-                            title = (data["title"] as? String).orEmpty(),
-                            kind = data["kind"] as? String,
-                            description = data["description"] as? String
-                        )
-                    )
+                val request = OpencodePermissionRequest(
+                    sessionId = sessionId.orEmpty(),
+                    permissionId = permissionId,
+                    title = (data["title"] as? String).orEmpty(),
+                    kind = data["kind"] as? String,
+                    description = data["description"] as? String
                 )
+                _pendingPermission.value = request
+                _events.tryEmit(Event.PermissionAsked(request))
+            }
+            AgentEventKind.PERMISSION_REPLIED -> {
+                val permissionId = data["id"] as? String ?: data["permissionId"] as? String
+                val pending = _pendingPermission.value
+                if (pending != null && (permissionId == null || pending.permissionId == permissionId)) {
+                    _pendingPermission.value = null
+                }
             }
             AgentEventKind.PLAN_UPDATE -> {
                 @Suppress("UNCHECKED_CAST")

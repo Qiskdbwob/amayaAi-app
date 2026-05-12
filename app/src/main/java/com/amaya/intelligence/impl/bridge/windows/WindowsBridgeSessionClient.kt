@@ -402,7 +402,14 @@ class WindowsBridgeSessionClient(
             BridgeMessageType.AGENT_SESSION_LIST,
             BridgeMessageType.AGENT_SESSION_CREATED,
             BridgeMessageType.AGENT_SESSION_DELETED,
-            BridgeMessageType.AGENT_EVENT ->
+            BridgeMessageType.AGENT_EVENT,
+            BridgeMessageType.AGENT_PTY_OPEN,
+            BridgeMessageType.AGENT_PTY_RESIZE,
+            BridgeMessageType.AGENT_PTY_INPUT,
+            BridgeMessageType.AGENT_PTY_CLOSE,
+            BridgeMessageType.AGENT_PTY_OPENED,
+            BridgeMessageType.AGENT_PTY_OUTPUT,
+            BridgeMessageType.AGENT_PTY_CLOSED ->
                 emit(WindowsBridgeClientEvent.EnvelopeReceived(envelope))
         }
     }

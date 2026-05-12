@@ -27,6 +27,9 @@ export class AgentRouter extends EventEmitter {
     provider.on('status_changed', (info: AgentRuntimeInfo) => {
       this.emit('status_changed', info);
     });
+    provider.on('pty_event', (event: Record<string, unknown>) => {
+      this.emit('pty_event', { runtimeId: provider.runtimeId, ...event });
+    });
   }
 
   get(runtimeId: string): AgentProvider | null {

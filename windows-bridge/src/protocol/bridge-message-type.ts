@@ -54,7 +54,16 @@ export const BridgeMessageType = {
   AGENT_SESSION_LIST: 'agent.session.list',
   AGENT_SESSION_CREATED: 'agent.session.created',
   AGENT_SESSION_DELETED: 'agent.session.deleted',
-  AGENT_EVENT: 'agent.event'
+  AGENT_EVENT: 'agent.event',
+
+  // PTY pass-through
+  AGENT_PTY_OPEN: 'agent.pty.open',
+  AGENT_PTY_RESIZE: 'agent.pty.resize',
+  AGENT_PTY_INPUT: 'agent.pty.input',
+  AGENT_PTY_CLOSE: 'agent.pty.close',
+  AGENT_PTY_OPENED: 'agent.pty.opened',
+  AGENT_PTY_OUTPUT: 'agent.pty.output',
+  AGENT_PTY_CLOSED: 'agent.pty.closed'
 } as const;
 
 export type BridgeMessageType =
