@@ -90,6 +90,7 @@ fun ChatScreen(
     onNavigateToSettings: () -> Unit = {},
     onNavigateToWorkspace: () -> Unit = {},
     onNavigateToRemoteSession: () -> Unit = {},
+    onNavigateToOpencode: (() -> Unit)? = null,
     onExit: () -> Unit = {},
     sessionDisconnectName: String? = null,
     onConfirmSessionDisconnect: (() -> Unit)? = null
@@ -711,6 +712,7 @@ fun ChatScreen(
                 onNavigateToSettings = onNavigateToSettings,
                 onNavigateToWorkspace = onNavigateToWorkspace,
                 onNavigateToRemoteSession = onNavigateToRemoteSession,
+                onNavigateToOpencode = onNavigateToOpencode,
                 onExit = onExit,
                 hasMoreConversations = doHasMoreConversations,
                 loadMoreConversations = doLoadMoreConversations,

@@ -43,10 +43,6 @@ class RemoteSessionActivity : AppCompatActivity() {
                             com.amaya.intelligence.ui.activities.bridge.WindowsBridgeChatActivity
                                 .start(this@RemoteSessionActivity)
                             finish()
-                        },
-                        onOpencodeSelected = {
-                            com.amaya.intelligence.ui.activities.opencode.OpencodeSessionActivity
-                                .start(this@RemoteSessionActivity)
                         }
                     )
                 }

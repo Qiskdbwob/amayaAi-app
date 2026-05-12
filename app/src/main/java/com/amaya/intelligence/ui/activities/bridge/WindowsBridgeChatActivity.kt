@@ -55,6 +55,10 @@ class WindowsBridgeChatActivity : AppCompatActivity() {
                             com.amaya.intelligence.ui.activities.remote.RemoteSessionActivity
                                 .start(this@WindowsBridgeChatActivity)
                         },
+                        onNavigateToOpencode = {
+                            com.amaya.intelligence.ui.activities.opencode.OpencodeSessionActivity
+                                .start(this@WindowsBridgeChatActivity)
+                        },
                         onExit = { finish() }
                     )
                 }

@@ -269,6 +269,7 @@ fun ChatDrawerContent(
     onNavigateToSettings: () -> Unit,
     onNavigateToWorkspace: () -> Unit,
     onNavigateToRemoteSession: () -> Unit,
+    onNavigateToOpencode: (() -> Unit)? = null,
     onExit: () -> Unit,
     hasMoreConversations: () -> Boolean,
     loadMoreConversations: () -> Unit,
@@ -379,6 +380,12 @@ fun ChatDrawerContent(
                     onNavigateToRemoteSession = {
                         onNavigateToRemoteSession()
                         scope.launch { drawerState.close() }
+                    },
+                    onNavigateToOpencode = onNavigateToOpencode?.let { callback ->
+                        {
+                            callback()
+                            scope.launch { drawerState.close() }
+                        }
                     },
                     onNavigateToSettings = {
                         onNavigateToSettings()
@@ -639,6 +646,7 @@ private fun DrawerNormalContent(
     onClearConversation: () -> Unit,
     onNavigateToWorkspace: () -> Unit,
     onNavigateToRemoteSession: () -> Unit,
+    onNavigateToOpencode: (() -> Unit)?,
     onNavigateToSettings: () -> Unit,
     onExit: () -> Unit,
     onLoadConversation: (Long) -> Unit,
@@ -717,7 +725,8 @@ private fun DrawerNormalContent(
         // Quick Access card
         val showProjects = sessionMode != IntelligenceSessionManager.SessionMode.WINDOWS_BRIDGE
         val showRemoteSessionRow = !isRemoteMode
-        if (showProjects || showRemoteSessionRow) {
+        val showOpencodeRow = onNavigateToOpencode != null
+        if (showProjects || showRemoteSessionRow || showOpencodeRow) {
             IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
                 if (showProjects) {
                     IosRowWithChevron(
@@ -727,8 +736,17 @@ private fun DrawerNormalContent(
                     )
                 }
 
-                if (showRemoteSessionRow) {
+                if (showOpencodeRow) {
                     if (showProjects) IosRowSeparator()
+                    IosRowWithChevron(
+                        icon = Icons.Default.Terminal,
+                        title = "Opencode",
+                        onClick = { onNavigateToOpencode?.invoke() }
+                    )
+                }
+
+                if (showRemoteSessionRow) {
+                    if (showProjects || showOpencodeRow) IosRowSeparator()
                     IosRowWithChevron(
                         icon = Icons.Default.Devices,
                         title = "Remote Session",

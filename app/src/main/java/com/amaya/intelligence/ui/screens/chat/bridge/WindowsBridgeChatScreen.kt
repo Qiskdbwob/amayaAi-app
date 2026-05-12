@@ -13,6 +13,7 @@ fun WindowsBridgeChatScreen(
     bridgeViewModel: WindowsBridgeChatPanelViewModel = hiltViewModel(),
     onNavigateToSettings: () -> Unit = {},
     onNavigateToWorkspace: () -> Unit = {},
+    onNavigateToOpencode: () -> Unit = {},
     onExit: () -> Unit = {}
 ) {
     val config = windowsBridgeChatScreenConfig(
@@ -29,6 +30,7 @@ fun WindowsBridgeChatScreen(
         config = config,
         onNavigateToSettings = onNavigateToSettings,
         onNavigateToWorkspace = onNavigateToWorkspace,
+        onNavigateToOpencode = onNavigateToOpencode,
         onExit = onExit,
         sessionDisconnectName = "Windows Bridge",
         onConfirmSessionDisconnect = { bridgeViewModel.disconnect() }

@@ -67,7 +67,6 @@ fun RemoteSessionScreen(
     onBack: () -> Unit,
     onConnected: () -> Unit,
     onWindowsBridgeConnected: () -> Unit = onConnected,
-    onOpencodeSelected: () -> Unit = {},
     bridgeViewModel: WindowsBridgeChatPanelViewModel = hiltViewModel()
 ) {
     val connectionState by client.connectionState.collectAsState()
@@ -218,17 +217,18 @@ fun RemoteSessionScreen(
                     val allIdes = remember {
                         IdeProviderFactory.getAll()
                             .filter { it.info.capabilities.requiresConnection }
-                            // Opencode has its own dedicated landing flow, keep it out of the IDE list.
+                            // Opencode is reached from inside the Windows Bridge sidebar now,
+                            // keep it out of the top-level Remote Session list.
                             .filter { it.ideId != "opencode" }
                     }
-                    val totalRows = allIdes.size + 2 // +1 Windows Bridge, +1 Opencode
+                    val totalRows = allIdes.size + 1 // +1 Windows Bridge
 
                     RemoteSessionSection(UiStrings.Connection.REMOTE_CONNECTION) {
                         allIdes.forEachIndexed { index, provider ->
                             val info = provider.info
                             val iconSpec = RemoteIdeIcon.resolve(info.id, isDark)
                             val isFirst = index == 0
-                            val isLast = false // Windows Bridge + Opencode always follow
+                            val isLast = false // Windows Bridge always follows
                             IdeRow(
                                 name = info.displayName,
                                 description = info.description,
@@ -243,26 +243,15 @@ fun RemoteSessionScreen(
                             )
                             RemoteSessionDivider()
                         }
-                        // Windows Bridge row
+                        // Windows Bridge — always last
                         IdeRow(
                             name = "Windows Bridge",
                             description = "Control your Windows PC remotely",
                             iconSpec = RemoteIdeIcon.Spec(imageVector = Icons.Default.DesktopWindows, tintable = true),
                             enabled = true,
                             isFirst = allIdes.isEmpty(),
-                            isLast = false,
-                            onClick = { showBridgeSheet = true }
-                        )
-                        RemoteSessionDivider()
-                        // Opencode row — always last. Dedicated landing screen.
-                        IdeRow(
-                            name = "Opencode",
-                            description = "Run the opencode CLI agent through your Windows bridge",
-                            iconSpec = RemoteIdeIcon.Spec(imageVector = Icons.Default.Terminal, tintable = true),
-                            enabled = true,
-                            isFirst = false,
                             isLast = true,
-                            onClick = onOpencodeSelected
+                            onClick = { showBridgeSheet = true }
                         )
                     }
 
