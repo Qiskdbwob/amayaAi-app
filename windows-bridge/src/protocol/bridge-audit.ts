@@ -11,7 +11,9 @@ export type BridgeAuditEventType =
   | 'tool_cancelled'
   | 'session_paused'
   | 'session_resumed'
-  | 'session_closed';
+  | 'session_closed'
+  | 'agent_prompt'
+  | 'agent_permission_replied';
 
 export type BridgeAuditActor =
   | 'android_user'

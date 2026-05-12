@@ -17,7 +17,9 @@ enum class BridgeAuditEventType(val wireName: String) {
     TOOL_CANCELLED("tool_cancelled"),
     SESSION_PAUSED("session_paused"),
     SESSION_RESUMED("session_resumed"),
-    SESSION_CLOSED("session_closed");
+    SESSION_CLOSED("session_closed"),
+    AGENT_PROMPT("agent_prompt"),
+    AGENT_PERMISSION_REPLIED("agent_permission_replied");
 
     companion object {
         private val byWireName = values().associateBy { it.wireName }

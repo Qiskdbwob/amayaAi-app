@@ -866,6 +866,31 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
         }
         case BridgeMessageType.AGENT_SESSION_PROMPT: {
           const payload = env.payload as unknown as AgentSessionPromptPayload;
+          this.audit.append({
+            id: newId(),
+            sessionId,
+            eventType: 'agent_prompt',
+            tool: `agent.${runtimeId}.prompt`,
+            timestamp: nowMs(),
+            actor: 'android_agent',
+            argsPreview: {
+              runtimeId,
+              session: payload.sessionId,
+              mode: payload.agent ?? 'build',
+              parts: Array.isArray(payload.parts)
+                ? payload.parts.map((part) => {
+                    const item = part as unknown as Record<string, unknown>;
+                    return {
+                      type: item['type'],
+                      length: typeof item['text'] === 'string'
+                        ? (item['text'] as string).length
+                        : undefined,
+                      filename: item['filename']
+                    };
+                  })
+                : []
+            }
+          });
           await provider.prompt(payload);
           break;
         }
@@ -876,6 +901,20 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
         }
         case BridgeMessageType.AGENT_PERMISSION_REPLY: {
           const payload = env.payload as unknown as AgentPermissionReplyPayload;
+          this.audit.append({
+            id: newId(),
+            sessionId,
+            eventType: 'agent_permission_replied',
+            tool: `agent.${runtimeId}.permission`,
+            timestamp: nowMs(),
+            actor: 'android_user',
+            argsPreview: {
+              runtimeId,
+              session: payload.sessionId,
+              permissionId: payload.permissionId,
+              reply: payload.reply
+            }
+          });
           await provider.replyPermission(payload);
           break;
         }
