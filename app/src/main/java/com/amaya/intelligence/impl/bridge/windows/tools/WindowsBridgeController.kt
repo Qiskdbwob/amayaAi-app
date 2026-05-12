@@ -42,7 +42,7 @@ import javax.inject.Singleton
 @Singleton
 class WindowsBridgeController @Inject constructor(
     @ApplicationScope private val appScope: CoroutineScope
-) {
+) : OpencodeBridgeTransport {
 
     private val clientRef = AtomicReference<WindowsBridgeSessionClient?>(null)
     private val executorRef = AtomicReference<WindowsBridgeToolExecutor?>(null)
@@ -54,7 +54,7 @@ class WindowsBridgeController @Inject constructor(
      * the flow survives client reconnects because it lives on the controller.
      */
     private val _envelopes = MutableSharedFlow<BridgeEnvelope>(extraBufferCapacity = 128)
-    val envelopes: SharedFlow<BridgeEnvelope> = _envelopes.asSharedFlow()
+    override val envelopes: SharedFlow<BridgeEnvelope> = _envelopes.asSharedFlow()
 
     private val _agentControlEnabled = MutableStateFlow(false)
     val agentControlEnabled: StateFlow<Boolean> = _agentControlEnabled.asStateFlow()
@@ -275,7 +275,7 @@ class WindowsBridgeController @Inject constructor(
      * Send an envelope through the active bridge client. Returns false when there
      * is no client yet (the controller hasn't been connected).
      */
-    fun sendEnvelope(envelope: BridgeEnvelope): Boolean {
+    override fun sendEnvelope(envelope: BridgeEnvelope): Boolean {
         return clientRef.get()?.sendEnvelope(envelope) ?: false
     }
 }

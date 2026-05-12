@@ -4,7 +4,7 @@ import com.amaya.intelligence.domain.bridge.AgentEventKind
 import com.amaya.intelligence.domain.bridge.AgentMessagePart
 import com.amaya.intelligence.domain.bridge.BridgeEnvelope
 import com.amaya.intelligence.domain.bridge.BridgeMessageType
-import com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeController
+import com.amaya.intelligence.impl.bridge.windows.tools.OpencodeBridgeTransport
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -22,12 +22,12 @@ import javax.inject.Singleton
 /**
  * Android facade for the opencode runtime exposed by the Windows Bridge.
  *
- * Rides on top of [WindowsBridgeController] — the controller owns the actual
- * WebSocket client, so this facade stays dormant until the user pairs a bridge.
+ * Talks to the bridge only via the small [OpencodeBridgeTransport] surface so
+ * unit tests can swap in a fake transport.
  */
 @Singleton
 class OpencodeClient @Inject constructor(
-    private val controller: WindowsBridgeController
+    private val transport: OpencodeBridgeTransport
 ) {
 
     sealed class Event {
@@ -79,7 +79,7 @@ class OpencodeClient @Inject constructor(
             attached = true
         }
         subscriptionJob = scope.launch {
-            controller.envelopes.collect { envelope ->
+            transport.envelopes.collect { envelope ->
                 runCatching { handleEnvelope(envelope) }
                     .onFailure {
                         _events.tryEmit(Event.Error("OpencodeClient dispatch failed: ${it.message}"))
@@ -416,7 +416,7 @@ class OpencodeClient @Inject constructor(
             timestamp = System.currentTimeMillis(),
             payload = payload
         )
-        controller.sendEnvelope(envelope)
+        transport.sendEnvelope(envelope)
     }
 
     private fun Map<String, Any?>.toRuntimeSnapshot(): OpencodeRuntimeSnapshot? {
