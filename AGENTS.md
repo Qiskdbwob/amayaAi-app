@@ -75,9 +75,13 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/domain/memory/`: memory classification, safety, normalization, proposals, dedupe, and compaction domain logic.
 - `app/src/main/java/com/amaya/intelligence/domain/skills/`: reusable skill domain models and patch/usage helpers.
 - `app/src/main/java/com/amaya/intelligence/impl/ide/antigravity/`: Antigravity provider, protocol, client, and event mapping.
+- `app/src/main/java/com/amaya/intelligence/impl/ide/opencode/`: Opencode CLI agent client, models, and IntelligenceService driven by the Windows Bridge `agent.*` envelopes.
 - `app/src/main/java/com/amaya/intelligence/impl/local/`: local runtime, browser automation, service, and tool execution flow.
 - `app/src/main/java/com/amaya/intelligence/ui/activities/browser/`: fullscreen browser operator entry point.
+- `app/src/main/java/com/amaya/intelligence/ui/activities/opencode/`: activities for Opencode landing, chat, and settings screens.
 - `app/src/main/java/com/amaya/intelligence/ui/screens/browser/`: browser operator Compose screen and control dock.
+- `app/src/main/java/com/amaya/intelligence/ui/screens/opencode/`: Opencode landing and settings Compose screens.
+- `app/src/main/java/com/amaya/intelligence/ui/screens/chat/opencode/`: Opencode chat Compose wrapper reusing the shared ChatScreen.
 - `app/src/main/java/com/amaya/intelligence/ui/components/shared/BrowserToolCallCard.kt`: browser parent tool renderer in chat.
 - `app/src/main/java/com/amaya/intelligence/tools/BrowserUseToolset.kt`: parent browser tool wrapper and legacy aliases.
 - `app/src/main/java/com/amaya/intelligence/tools/MemoryManageTool.kt`: saved-memory list/search/update/remove tool.
@@ -85,3 +89,4 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/utils/LocalStreamPerfLog.kt`: temporary local streaming profiler.
 - `app/src/main/java/com/amaya/intelligence/impl/local/browser/`: WebView controller, session manager, DOM inspection, and safety guard.
 - `windows-bridge/`: Electron Windows bridge main process, transport, permissions, audit, and native helper runtime.
+- `windows-bridge/src/agents/`: CLI coding-agent runtimes (opencode, claude-code, codex) behind the shared `AgentProvider` contract.

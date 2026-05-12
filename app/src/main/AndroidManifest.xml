@@ -287,6 +287,30 @@
             android:exported="false" />
 
         <activity
+            android:name=".ui.activities.opencode.OpencodeSessionActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya"
+            android:exported="false" />
+
+        <activity
+            android:name=".ui.activities.opencode.OpencodeChatActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya"
+            android:exported="false" />
+
+        <activity
+            android:name=".ui.activities.opencode.OpencodeSettingsActivity"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya"
+            android:exported="false" />
+
+        <activity
             android:name=".ui.activities.remote.RemoteChatActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:screenOrientation="portrait"

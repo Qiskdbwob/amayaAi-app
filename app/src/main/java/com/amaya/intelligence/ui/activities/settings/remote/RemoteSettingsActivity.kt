@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import com.amaya.intelligence.ui.activities.opencode.OpencodeSettingsActivity
 import com.amaya.intelligence.ui.screens.settings.remote.RemoteSettingsScreen
 import com.amaya.intelligence.ui.theme.AmayaTheme
 
@@ -15,7 +16,10 @@ class RemoteSettingsActivity : AppCompatActivity() {
         setContent {
             AmayaTheme {
                 RemoteSettingsScreen(
-                    onNavigateBack = { finish() }
+                    onNavigateBack = { finish() },
+                    onNavigateToOpencode = {
+                        OpencodeSettingsActivity.start(this@RemoteSettingsActivity)
+                    }
                 )
             }
         }
