@@ -43,6 +43,10 @@ class OpencodeClient @Inject constructor(
         data class Sessions(val sessions: List<OpencodeSessionSummary>) : Event()
         data class SessionCreated(val session: OpencodeSessionSummary) : Event()
         data class SessionDeleted(val sessionId: String) : Event()
+        data class SessionMessages(
+            val sessionId: String,
+            val messages: List<Map<String, Any?>>
+        ) : Event()
         data class MessagePart(val update: OpencodeMessagePartUpdate) : Event()
         data class PermissionAsked(val request: OpencodePermissionRequest) : Event()
         data class SessionStatus(
@@ -147,6 +151,11 @@ class OpencodeClient @Inject constructor(
         mapOf("runtimeId" to OPENCODE_RUNTIME_ID)
     )
 
+    fun requestSessionMessages(sessionId: String) = send(
+        BridgeMessageType.AGENT_SESSION_MESSAGES_REQUEST,
+        mapOf("runtimeId" to OPENCODE_RUNTIME_ID, "sessionId" to sessionId)
+    )
+
     fun createSession(title: String? = null, agent: String? = null, modelId: String? = null, providerId: String? = null) =
         send(
             BridgeMessageType.AGENT_SESSION_CREATE,
@@ -228,6 +237,7 @@ class OpencodeClient @Inject constructor(
             BridgeMessageType.AGENT_SESSION_LIST -> handleSessions(envelope)
             BridgeMessageType.AGENT_SESSION_CREATED -> handleSessionCreated(envelope)
             BridgeMessageType.AGENT_SESSION_DELETED -> handleSessionDeleted(envelope)
+            BridgeMessageType.AGENT_SESSION_MESSAGES -> handleSessionMessages(envelope)
             BridgeMessageType.AGENT_EVENT -> handleAgentEvent(envelope)
             else -> Unit
         }
@@ -316,6 +326,13 @@ class OpencodeClient @Inject constructor(
         _events.tryEmit(Event.SessionDeleted(sessionId))
     }
 
+    private fun handleSessionMessages(envelope: BridgeEnvelope) {
+        val sessionId = envelope.payload["sessionId"] as? String ?: return
+        @Suppress("UNCHECKED_CAST")
+        val raw = (envelope.payload["messages"] as? List<Map<String, Any?>>).orEmpty()
+        _events.tryEmit(Event.SessionMessages(sessionId, raw))
+    }
+
     private fun handleAgentEvent(envelope: BridgeEnvelope) {
         val kind = envelope.payload["kind"] as? String ?: return
         val sessionId = envelope.payload["sessionId"] as? String
@@ -329,7 +346,8 @@ class OpencodeClient @Inject constructor(
                         messageId = data["messageId"] as? String,
                         partId = data["partId"] as? String,
                         partType = OpencodeMessagePartUpdate.PartType.TEXT,
-                        text = (data["text"] as? String).orEmpty()
+                        text = (data["text"] as? String).orEmpty(),
+                        timeEnd = (data["timeEnd"] as? Number)?.toLong()
                     )
                 )
             )

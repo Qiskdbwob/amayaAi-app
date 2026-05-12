@@ -187,20 +187,27 @@ class OpencodeIntelligenceService @Inject constructor(
                     ?: return@launch
                 currentRoomConversationId = entity.id
                 val parsed = parseMessagesFromJson(entity.messagesJson)
-                activeSessionId = extractOpencodeSessionId(entity.messagesJson)
+                val opencodeSession = extractOpencodeSessionId(entity.messagesJson)
+                activeSessionId = opencodeSession
+                currentAssistantMessageId = null
                 _uiState.update {
                     it.copy(
                         conversationId = entity.id.toString(),
                         messages = parsed,
-                        isLoading = false,
+                        isLoading = opencodeSession != null && parsed.isEmpty(),
                         isStreaming = false,
                         error = null
                     )
                 }
+                // Always ask opencode for the authoritative history so the UI
+                // reflects what actually happened on the server, even if our
+                // local Room copy is empty (e.g. sessions created via TUI).
+                opencodeSession?.let { opencodeClient.requestSessionMessages(it) }
             }
         } else {
             activeSessionId = id
             _uiState.update { it.copy(conversationId = id) }
+            opencodeClient.requestSessionMessages(id)
         }
     }
 
@@ -323,7 +330,7 @@ class OpencodeIntelligenceService @Inject constructor(
                 scope.launch { purgeConversationByOpencodeSessionId(event.sessionId) }
             }
             is OpencodeClient.Event.MessagePart -> handleMessagePart(event.update)
-            is OpencodeClient.Event.SessionStatus -> Unit
+            is OpencodeClient.Event.SessionStatus -> handleSessionStatus(event)
             is OpencodeClient.Event.SessionError -> _uiState.update {
                 it.copy(error = event.message, isLoading = false, isStreaming = false)
             }
@@ -331,6 +338,7 @@ class OpencodeIntelligenceService @Inject constructor(
             is OpencodeClient.Event.PlanUpdate -> handlePlanUpdate(event.entries)
             is OpencodeClient.Event.TodoUpdate -> handleTodoUpdate(event.todos)
             is OpencodeClient.Event.Sessions -> handleSessionList(event.sessions)
+            is OpencodeClient.Event.SessionMessages -> handleHistoryLoaded(event.sessionId, event.messages)
             is OpencodeClient.Event.Providers -> Unit
             is OpencodeClient.Event.Models -> handleModelList(
                 models = event.models,
@@ -346,39 +354,151 @@ class OpencodeIntelligenceService @Inject constructor(
         }
     }
 
-    private fun handleMessagePart(update: OpencodeMessagePartUpdate) {
-        when (update.partType) {
-            OpencodeMessagePartUpdate.PartType.TEXT -> appendAssistantText(update.text)
-            OpencodeMessagePartUpdate.PartType.THOUGHT -> appendThinking(update.text)
-            OpencodeMessagePartUpdate.PartType.TOOL -> upsertToolStep(update)
-            OpencodeMessagePartUpdate.PartType.OTHER -> Unit
+    private fun handleSessionStatus(event: OpencodeClient.Event.SessionStatus) {
+        // Opencode signals stream completion via `session.idle` (kind mapped onto
+        // SessionStatus in the client) or the data blob `idle = true`. Use either
+        // signal to flip streaming indicators.
+        val raw = event.data
+        val idle = raw["opencodeType"] == "session.idle" ||
+            (raw["status"] as? Map<*, *>)?.get("type") == "idle" ||
+            raw["idle"] == true
+        if (idle) {
+            _uiState.update { it.copy(isLoading = false, isStreaming = false) }
+        }
+    }
+
+    private fun handleHistoryLoaded(
+        sessionId: String,
+        messages: List<Map<String, Any?>>
+    ) {
+        if (sessionId != activeSessionId) return
+        val parsed = messages.mapNotNull { raw ->
+            mapOpencodeMessageEntry(raw)
+        }
+        currentAssistantMessageId = null
+        _uiState.update {
+            it.copy(
+                messages = parsed,
+                isLoading = false,
+                isStreaming = false
+            )
         }
         persistCurrentConversationAsync()
     }
 
-    private fun appendAssistantText(delta: String) {
-        if (delta.isBlank()) return
+    /**
+     * Convert a single `GET /session/{id}/message` entry to a [UiMessage]. The
+     * shape is `{ info: { ..., role }, parts: [{ type, text, ... }] }`.
+     */
+    private fun mapOpencodeMessageEntry(raw: Map<String, Any?>): UiMessage? {
+        val info = raw["info"] as? Map<*, *> ?: raw
+        val role = when ((info["role"] as? String)?.lowercase()) {
+            "user" -> MessageRole.USER
+            "assistant" -> MessageRole.ASSISTANT
+            "system" -> MessageRole.SYSTEM
+            else -> return null
+        }
+        @Suppress("UNCHECKED_CAST")
+        val parts = (raw["parts"] as? List<Map<String, Any?>>).orEmpty()
+        val steps = mutableListOf<MessageStep>()
+        val tools = mutableListOf<ToolExecution>()
+        val textBuilder = StringBuilder()
+        for (part in parts) {
+            when (part["type"]) {
+                "text" -> {
+                    val text = (part["text"] as? String).orEmpty()
+                    if (text.isNotBlank()) {
+                        steps.add(
+                            MessageStep.Text(
+                                id = (part["id"] as? String) ?: UUID.randomUUID().toString(),
+                                content = text
+                            )
+                        )
+                        textBuilder.append(text)
+                    }
+                }
+                "tool", "tool_use" -> {
+                    val toolName = (part["tool"] as? String) ?: "tool"
+                    val state = part["state"] as? Map<*, *>
+                    val status = when (state?.get("status") as? String) {
+                        "completed", "success" -> ToolStatus.SUCCESS
+                        "error", "failed" -> ToolStatus.ERROR
+                        else -> ToolStatus.SUCCESS
+                    }
+                    val exec = ToolExecution(
+                        toolCallId = (part["id"] as? String) ?: UUID.randomUUID().toString(),
+                        name = toolName,
+                        arguments = emptyMap(),
+                        status = status
+                    )
+                    tools.add(exec)
+                    steps.add(MessageStep.ToolCall(execution = exec))
+                }
+                else -> Unit
+            }
+        }
+        val timestamp = (info["time"] as? Map<*, *>)?.get("created") as? Number
+        return UiMessage(
+            id = (info["id"] as? String) ?: UUID.randomUUID().toString(),
+            role = role,
+            content = textBuilder.toString(),
+            timestamp = timestamp?.toLong() ?: System.currentTimeMillis(),
+            toolExecutions = tools,
+            steps = steps
+        )
+    }
+
+    private fun handleMessagePart(update: OpencodeMessagePartUpdate) {
+        when (update.partType) {
+            OpencodeMessagePartUpdate.PartType.TEXT -> replaceAssistantText(update)
+            OpencodeMessagePartUpdate.PartType.THOUGHT -> replaceThinking(update)
+            OpencodeMessagePartUpdate.PartType.TOOL -> upsertToolStep(update)
+            OpencodeMessagePartUpdate.PartType.OTHER -> Unit
+        }
+        if (update.timeEnd != null) {
+            _uiState.update { it.copy(isLoading = false, isStreaming = false) }
+        }
+        persistCurrentConversationAsync()
+    }
+
+    private fun replaceAssistantText(update: OpencodeMessagePartUpdate) {
         ensureAssistantMessage()
+        val partId = update.partId ?: DEFAULT_TEXT_PART_ID
         _uiState.update { state ->
             val id = currentAssistantMessageId ?: return@update state
             state.copy(messages = state.messages.map { msg ->
-                if (msg.id != id) msg
-                else msg.copy(
-                    content = msg.content + delta,
-                    steps = appendTextStep(msg.steps, delta)
-                )
+                if (msg.id != id) return@map msg
+                val steps = replaceTextStep(msg.steps, partId, update.text)
+                val newContent = steps.filterIsInstance<MessageStep.Text>()
+                    .joinToString(separator = "") { it.content }
+                msg.copy(content = newContent, steps = steps)
             })
         }
     }
 
-    private fun appendThinking(delta: String) {
-        if (delta.isBlank()) return
+    private fun replaceTextStep(
+        steps: List<MessageStep>,
+        partId: String,
+        text: String
+    ): List<MessageStep> {
+        val existingIndex = steps.indexOfFirst { it is MessageStep.Text && it.id == partId }
+        return if (existingIndex >= 0) {
+            val step = steps[existingIndex] as MessageStep.Text
+            steps.toMutableList().apply {
+                set(existingIndex, step.copy(content = text))
+            }
+        } else {
+            steps + MessageStep.Text(id = partId, content = text)
+        }
+    }
+
+    private fun replaceThinking(update: OpencodeMessagePartUpdate) {
         ensureAssistantMessage()
         _uiState.update { state ->
             val id = currentAssistantMessageId ?: return@update state
             state.copy(messages = state.messages.map { msg ->
                 if (msg.id != id) msg
-                else msg.copy(thinking = (msg.thinking ?: "") + delta, isThinking = true)
+                else msg.copy(thinking = update.text, isThinking = update.timeEnd == null)
             })
         }
     }
@@ -457,21 +577,16 @@ class OpencodeIntelligenceService @Inject constructor(
         todoRepository.replaceAll(items)
     }
 
-    private fun appendTextStep(steps: List<MessageStep>, delta: String): List<MessageStep> {
-        val last = steps.lastOrNull()
-        return if (last is MessageStep.Text) {
-            steps.dropLast(1) + last.copy(content = last.content + delta)
-        } else {
-            steps + MessageStep.Text(content = delta)
-        }
-    }
-
     private fun ensureAssistantMessage() {
         val id = currentAssistantMessageId
         if (id != null && _uiState.value.messages.any { it.id == id }) return
         val msg = UiMessage(role = MessageRole.ASSISTANT, content = "")
         currentAssistantMessageId = msg.id
         _uiState.update { it.copy(messages = it.messages + msg) }
+    }
+
+    private companion object {
+        const val DEFAULT_TEXT_PART_ID = "assistant-text"
     }
 
     // ── Persistence ─────────────────────────────────────────────────────────

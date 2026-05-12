@@ -402,6 +402,8 @@ class WindowsBridgeSessionClient(
             BridgeMessageType.AGENT_SESSION_LIST,
             BridgeMessageType.AGENT_SESSION_CREATED,
             BridgeMessageType.AGENT_SESSION_DELETED,
+            BridgeMessageType.AGENT_SESSION_MESSAGES_REQUEST,
+            BridgeMessageType.AGENT_SESSION_MESSAGES,
             BridgeMessageType.AGENT_EVENT,
             BridgeMessageType.AGENT_PTY_OPEN,
             BridgeMessageType.AGENT_PTY_RESIZE,

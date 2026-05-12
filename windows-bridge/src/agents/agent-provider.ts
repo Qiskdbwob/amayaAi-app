@@ -49,6 +49,15 @@ export abstract class AgentProvider extends EventEmitter {
   abstract prompt(payload: AgentSessionPromptPayload): Promise<void>;
   abstract abort(sessionId: string): Promise<void>;
 
+  /**
+   * Fetch the full message history for a session. Default implementation
+   * returns empty so providers that don't support history lookup (yet) do
+   * not have to stub the method.
+   */
+  async listSessionMessages(_sessionId: string): Promise<unknown[]> {
+    return [];
+  }
+
   abstract replyPermission(payload: AgentPermissionReplyPayload): Promise<void>;
   abstract replyQuestion(payload: AgentQuestionReplyPayload): Promise<void>;
 

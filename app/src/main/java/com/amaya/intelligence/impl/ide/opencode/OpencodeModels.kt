@@ -74,7 +74,8 @@ data class OpencodeMessagePartUpdate(
     val partType: PartType,
     val text: String = "",
     val toolName: String? = null,
-    val toolState: String? = null
+    val toolState: String? = null,
+    val timeEnd: Long? = null
 ) {
     enum class PartType { TEXT, THOUGHT, TOOL, OTHER }
 }

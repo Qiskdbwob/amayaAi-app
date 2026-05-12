@@ -68,6 +68,8 @@ enum class BridgeMessageType(val wireName: String) {
     AGENT_SESSION_LIST("agent.session.list"),
     AGENT_SESSION_CREATED("agent.session.created"),
     AGENT_SESSION_DELETED("agent.session.deleted"),
+    AGENT_SESSION_MESSAGES_REQUEST("agent.session.messages.request"),
+    AGENT_SESSION_MESSAGES("agent.session.messages"),
     AGENT_EVENT("agent.event"),
 
     // PTY pass-through (opencode /pty/{id}/connect)

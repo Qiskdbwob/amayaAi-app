@@ -221,6 +221,15 @@ export class OpencodeAgentProvider extends AgentProvider {
     await rest.abortSession(sessionId);
   }
 
+  override async listSessionMessages(sessionId: string): Promise<unknown[]> {
+    const rest = this.ensureRest();
+    const raw = (await rest.get(`/session/${encodeURIComponent(sessionId)}/message`)) as unknown;
+    if (Array.isArray(raw)) return raw as unknown[];
+    const dataField = (raw as Record<string, unknown> | null)?.data;
+    if (Array.isArray(dataField)) return dataField as unknown[];
+    return [];
+  }
+
   async replyPermission(payload: AgentPermissionReplyPayload): Promise<void> {
     const rest = this.ensureRest();
     await rest.replyPermission(payload.sessionId, payload.permissionId, {

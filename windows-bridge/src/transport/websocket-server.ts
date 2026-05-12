@@ -373,6 +373,7 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
       case BridgeMessageType.AGENT_PTY_RESIZE:
       case BridgeMessageType.AGENT_PTY_INPUT:
       case BridgeMessageType.AGENT_PTY_CLOSE:
+      case BridgeMessageType.AGENT_SESSION_MESSAGES_REQUEST:
         await this.handleAgentEnvelope(env, sessionId, deviceId);
         break;
       default:
@@ -842,6 +843,30 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
           );
           break;
         }
+        case BridgeMessageType.AGENT_SESSION_MESSAGES_REQUEST: {
+          const requestedSession = env.payload['sessionId'];
+          if (typeof requestedSession !== 'string' || !requestedSession) {
+            this.sendAgentError(
+              sessionId,
+              deviceId,
+              env,
+              'agent.session.messages.request missing sessionId'
+            );
+            break;
+          }
+          const messages = await provider.listSessionMessages(requestedSession);
+          this.sendEnvelope(
+            BridgeMessageType.AGENT_SESSION_MESSAGES,
+            sessionId,
+            deviceId,
+            {
+              runtimeId,
+              sessionId: requestedSession,
+              messages
+            }
+          );
+          break;
+        }
         case BridgeMessageType.AGENT_SESSION_CREATE: {
           const payload = env.payload as unknown as AgentSessionCreatePayload;
           const created = await provider.createSession(payload);
@@ -990,6 +1015,8 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
         return BridgeMessageType.AGENT_MCP_LIST;
       case BridgeMessageType.AGENT_SESSION_LIST_REQUEST:
         return BridgeMessageType.AGENT_SESSION_LIST;
+      case BridgeMessageType.AGENT_SESSION_MESSAGES_REQUEST:
+        return BridgeMessageType.AGENT_SESSION_MESSAGES;
       case BridgeMessageType.AGENT_SESSION_CREATE:
         return BridgeMessageType.AGENT_SESSION_CREATED;
       case BridgeMessageType.AGENT_SESSION_DELETE:
