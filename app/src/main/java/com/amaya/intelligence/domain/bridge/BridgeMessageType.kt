@@ -39,7 +39,36 @@ enum class BridgeMessageType(val wireName: String) {
 
     // Audit + transport-level error
     AUDIT_EVENT("audit.event"),
-    ERROR("error");
+    ERROR("error"),
+
+    // CLI Coding Agent runtime (opencode, claude-code, codex, ...)
+    // Android → Bridge
+    AGENT_RUNTIME_STATUS_REQUEST("agent.runtime.status.request"),
+    AGENT_RUNTIME_START("agent.runtime.start"),
+    AGENT_RUNTIME_STOP("agent.runtime.stop"),
+    AGENT_RUNTIME_RESTART("agent.runtime.restart"),
+    AGENT_CONFIG_REQUEST("agent.config.request"),
+    AGENT_PROVIDER_LIST_REQUEST("agent.provider.list.request"),
+    AGENT_MODEL_LIST_REQUEST("agent.model.list.request"),
+    AGENT_MCP_LIST_REQUEST("agent.mcp.list.request"),
+    AGENT_SESSION_LIST_REQUEST("agent.session.list.request"),
+    AGENT_SESSION_CREATE("agent.session.create"),
+    AGENT_SESSION_DELETE("agent.session.delete"),
+    AGENT_SESSION_PROMPT("agent.session.prompt"),
+    AGENT_SESSION_ABORT("agent.session.abort"),
+    AGENT_PERMISSION_REPLY("agent.permission.reply"),
+    AGENT_QUESTION_REPLY("agent.question.reply"),
+
+    // Bridge → Android
+    AGENT_RUNTIME_STATUS("agent.runtime.status"),
+    AGENT_CONFIG("agent.config"),
+    AGENT_PROVIDER_LIST("agent.provider.list"),
+    AGENT_MODEL_LIST("agent.model.list"),
+    AGENT_MCP_LIST("agent.mcp.list"),
+    AGENT_SESSION_LIST("agent.session.list"),
+    AGENT_SESSION_CREATED("agent.session.created"),
+    AGENT_SESSION_DELETED("agent.session.deleted"),
+    AGENT_EVENT("agent.event");
 
     companion object {
         private val byWireName: Map<String, BridgeMessageType> =

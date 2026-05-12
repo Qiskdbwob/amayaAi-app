@@ -25,6 +25,22 @@ import { nowMs } from '../shared/time';
 import type { NativeHelperClient } from '../native/native-helper-client';
 import type { TrustedDeviceStore } from '../permissions/trusted-device-store';
 import type { PairingTokenStore } from '../permissions/pairing-token-store';
+import type { AgentRouter } from '../agents/agent-router';
+import type {
+  AgentEventPayload,
+  AgentMcpEntry,
+  AgentModelEntry,
+  AgentModelRef,
+  AgentPermissionReplyPayload,
+  AgentProviderEntry,
+  AgentQuestionReplyPayload,
+  AgentRuntimeInfo,
+  AgentRuntimeStartPayload,
+  AgentSessionCreatePayload,
+  AgentSessionDeletePayload,
+  AgentSessionPromptPayload,
+  AgentSessionSummary
+} from '../protocol/bridge-agent';
 
 const SCOPE = 'ws';
 const BRIDGE_DEVICE_ID = 'windows_bridge';
@@ -67,13 +83,20 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
     private readonly policy: SecurityPolicy,
     private readonly helper: NativeHelperClient | null = null,
     private readonly trustedDevices: TrustedDeviceStore | null = null,
-    private readonly pairingTokens: PairingTokenStore | null = null
+    private readonly pairingTokens: PairingTokenStore | null = null,
+    private readonly agentRouter: AgentRouter | null = null
   ) {
     super();
     this.approvals = new ApprovalManager(policy.approval.timeoutMs);
     this.sessions.on('snapshot', (snap) => this.emit('snapshot', snap));
     this.approvals.on('requested', (request) =>
       this.sendApprovalRequest(request)
+    );
+    this.agentRouter?.on('agent_event', (event: AgentEventPayload) =>
+      this.sendAgentEvent(event)
+    );
+    this.agentRouter?.on('status_changed', (info: AgentRuntimeInfo) =>
+      this.sendAgentRuntimeStatus(info)
     );
   }
 
@@ -327,6 +350,23 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
         } catch {
           /* ignore */
         }
+        break;
+      case BridgeMessageType.AGENT_RUNTIME_STATUS_REQUEST:
+      case BridgeMessageType.AGENT_RUNTIME_START:
+      case BridgeMessageType.AGENT_RUNTIME_STOP:
+      case BridgeMessageType.AGENT_RUNTIME_RESTART:
+      case BridgeMessageType.AGENT_CONFIG_REQUEST:
+      case BridgeMessageType.AGENT_PROVIDER_LIST_REQUEST:
+      case BridgeMessageType.AGENT_MODEL_LIST_REQUEST:
+      case BridgeMessageType.AGENT_MCP_LIST_REQUEST:
+      case BridgeMessageType.AGENT_SESSION_LIST_REQUEST:
+      case BridgeMessageType.AGENT_SESSION_CREATE:
+      case BridgeMessageType.AGENT_SESSION_DELETE:
+      case BridgeMessageType.AGENT_SESSION_PROMPT:
+      case BridgeMessageType.AGENT_SESSION_ABORT:
+      case BridgeMessageType.AGENT_PERMISSION_REPLY:
+      case BridgeMessageType.AGENT_QUESTION_REPLY:
+        await this.handleAgentEnvelope(env, sessionId, deviceId);
         break;
       default:
         logger.debug(SCOPE, `unhandled inbound type=${env.type}`);
@@ -655,6 +695,267 @@ export class WindowsBridgeWebSocketServer extends EventEmitter {
         status: request.status
       }
     );
+  }
+
+  // ── Agent runtime (opencode, claude-code, codex) ────────────────────────
+
+  private async handleAgentEnvelope(
+    env: BridgeEnvelope,
+    sessionId: string,
+    deviceId: string
+  ): Promise<void> {
+    const router = this.agentRouter;
+    const runtimeId =
+      typeof env.payload['runtimeId'] === 'string'
+        ? (env.payload['runtimeId'] as string)
+        : '';
+    const provider = runtimeId ? router?.get(runtimeId) ?? null : null;
+    const replyType = this.agentReplyType(env.type);
+    if (!router) {
+      this.sendAgentError(
+        sessionId,
+        deviceId,
+        env,
+        'agent router not configured on this bridge'
+      );
+      return;
+    }
+    if (!provider) {
+      this.sendAgentError(
+        sessionId,
+        deviceId,
+        env,
+        `unknown agent runtime: ${runtimeId || '<missing>'}`
+      );
+      return;
+    }
+
+    try {
+      switch (env.type) {
+        case BridgeMessageType.AGENT_RUNTIME_STATUS_REQUEST: {
+          const info = provider.info();
+          this.sendEnvelope(replyType, sessionId, deviceId, {
+            ...info,
+            runtimes: router.list().map((p) => p.info())
+          });
+          break;
+        }
+        case BridgeMessageType.AGENT_RUNTIME_START: {
+          const payload = env.payload as unknown as AgentRuntimeStartPayload;
+          const info = await provider.start(payload);
+          this.sendEnvelope(
+            BridgeMessageType.AGENT_RUNTIME_STATUS,
+            sessionId,
+            deviceId,
+            {
+              ...info,
+              runtimes: router.list().map((p) => p.info())
+            }
+          );
+          break;
+        }
+        case BridgeMessageType.AGENT_RUNTIME_STOP: {
+          await provider.stop();
+          const info = provider.info();
+          this.sendEnvelope(
+            BridgeMessageType.AGENT_RUNTIME_STATUS,
+            sessionId,
+            deviceId,
+            {
+              ...info,
+              runtimes: router.list().map((p) => p.info())
+            }
+          );
+          break;
+        }
+        case BridgeMessageType.AGENT_RUNTIME_RESTART: {
+          const payload = env.payload as unknown as AgentRuntimeStartPayload;
+          const info = await provider.restart(payload);
+          this.sendEnvelope(
+            BridgeMessageType.AGENT_RUNTIME_STATUS,
+            sessionId,
+            deviceId,
+            {
+              ...info,
+              runtimes: router.list().map((p) => p.info())
+            }
+          );
+          break;
+        }
+        case BridgeMessageType.AGENT_CONFIG_REQUEST: {
+          const config = await provider.getConfig();
+          this.sendEnvelope(BridgeMessageType.AGENT_CONFIG, sessionId, deviceId, {
+            runtimeId,
+            configJson: config.configJson,
+            configPath: config.configPath ?? null
+          });
+          break;
+        }
+        case BridgeMessageType.AGENT_PROVIDER_LIST_REQUEST: {
+          const providers: AgentProviderEntry[] = await provider.listProviders();
+          this.sendEnvelope(
+            BridgeMessageType.AGENT_PROVIDER_LIST,
+            sessionId,
+            deviceId,
+            { runtimeId, providers }
+          );
+          break;
+        }
+        case BridgeMessageType.AGENT_MODEL_LIST_REQUEST: {
+          const { models, defaultModel } = await provider.listModels();
+          this.sendEnvelope(
+            BridgeMessageType.AGENT_MODEL_LIST,
+            sessionId,
+            deviceId,
+            {
+              runtimeId,
+              models: models as AgentModelEntry[],
+              defaultModel: (defaultModel ?? null) as AgentModelRef | null
+            }
+          );
+          break;
+        }
+        case BridgeMessageType.AGENT_MCP_LIST_REQUEST: {
+          const servers: AgentMcpEntry[] = await provider.listMcp();
+          this.sendEnvelope(
+            BridgeMessageType.AGENT_MCP_LIST,
+            sessionId,
+            deviceId,
+            { runtimeId, servers }
+          );
+          break;
+        }
+        case BridgeMessageType.AGENT_SESSION_LIST_REQUEST: {
+          const sessions: AgentSessionSummary[] = await provider.listSessions();
+          this.sendEnvelope(
+            BridgeMessageType.AGENT_SESSION_LIST,
+            sessionId,
+            deviceId,
+            { runtimeId, sessions }
+          );
+          break;
+        }
+        case BridgeMessageType.AGENT_SESSION_CREATE: {
+          const payload = env.payload as unknown as AgentSessionCreatePayload;
+          const created = await provider.createSession(payload);
+          this.sendEnvelope(
+            BridgeMessageType.AGENT_SESSION_CREATED,
+            sessionId,
+            deviceId,
+            { runtimeId, session: created }
+          );
+          break;
+        }
+        case BridgeMessageType.AGENT_SESSION_DELETE: {
+          const payload = env.payload as unknown as AgentSessionDeletePayload;
+          await provider.deleteSession(payload.sessionId);
+          this.sendEnvelope(
+            BridgeMessageType.AGENT_SESSION_DELETED,
+            sessionId,
+            deviceId,
+            { runtimeId, sessionId: payload.sessionId }
+          );
+          break;
+        }
+        case BridgeMessageType.AGENT_SESSION_PROMPT: {
+          const payload = env.payload as unknown as AgentSessionPromptPayload;
+          await provider.prompt(payload);
+          break;
+        }
+        case BridgeMessageType.AGENT_SESSION_ABORT: {
+          const sid = env.payload['sessionId'];
+          if (typeof sid === 'string') await provider.abort(sid);
+          break;
+        }
+        case BridgeMessageType.AGENT_PERMISSION_REPLY: {
+          const payload = env.payload as unknown as AgentPermissionReplyPayload;
+          await provider.replyPermission(payload);
+          break;
+        }
+        case BridgeMessageType.AGENT_QUESTION_REPLY: {
+          const payload = env.payload as unknown as AgentQuestionReplyPayload;
+          await provider.replyQuestion(payload);
+          break;
+        }
+        default:
+          break;
+      }
+    } catch (err) {
+      logger.warn(SCOPE, `agent op ${env.type} failed: ${(err as Error).message}`);
+      this.sendAgentError(sessionId, deviceId, env, (err as Error).message);
+    }
+  }
+
+  private agentReplyType(type: string): string {
+    switch (type) {
+      case BridgeMessageType.AGENT_RUNTIME_STATUS_REQUEST:
+      case BridgeMessageType.AGENT_RUNTIME_START:
+      case BridgeMessageType.AGENT_RUNTIME_STOP:
+      case BridgeMessageType.AGENT_RUNTIME_RESTART:
+        return BridgeMessageType.AGENT_RUNTIME_STATUS;
+      case BridgeMessageType.AGENT_CONFIG_REQUEST:
+        return BridgeMessageType.AGENT_CONFIG;
+      case BridgeMessageType.AGENT_PROVIDER_LIST_REQUEST:
+        return BridgeMessageType.AGENT_PROVIDER_LIST;
+      case BridgeMessageType.AGENT_MODEL_LIST_REQUEST:
+        return BridgeMessageType.AGENT_MODEL_LIST;
+      case BridgeMessageType.AGENT_MCP_LIST_REQUEST:
+        return BridgeMessageType.AGENT_MCP_LIST;
+      case BridgeMessageType.AGENT_SESSION_LIST_REQUEST:
+        return BridgeMessageType.AGENT_SESSION_LIST;
+      case BridgeMessageType.AGENT_SESSION_CREATE:
+        return BridgeMessageType.AGENT_SESSION_CREATED;
+      case BridgeMessageType.AGENT_SESSION_DELETE:
+        return BridgeMessageType.AGENT_SESSION_DELETED;
+      default:
+        return BridgeMessageType.AGENT_EVENT;
+    }
+  }
+
+  private sendAgentEvent(event: AgentEventPayload): void {
+    const snap = this.sessions.snapshot;
+    const socket = this.activeSocket;
+    if (!socket || !snap.sessionId) return;
+    this.sendDirect(
+      socket,
+      BridgeMessageType.AGENT_EVENT,
+      snap.sessionId,
+      snap.deviceId ?? 'unknown_device',
+      event as unknown as Record<string, unknown>
+    );
+  }
+
+  private sendAgentRuntimeStatus(info: AgentRuntimeInfo): void {
+    const router = this.agentRouter;
+    this.send(BridgeMessageType.AGENT_RUNTIME_STATUS, {
+      ...info,
+      runtimes: router ? router.list().map((p) => p.info()) : undefined
+    });
+  }
+
+  private sendEnvelope(
+    type: string,
+    sessionId: string,
+    deviceId: string,
+    payload: Record<string, unknown>
+  ): void {
+    const socket = this.activeSocket;
+    if (!socket) return;
+    this.sendDirect(socket, type, sessionId, deviceId, payload);
+  }
+
+  private sendAgentError(
+    sessionId: string,
+    deviceId: string,
+    env: BridgeEnvelope,
+    message: string
+  ): void {
+    this.sendEnvelope(BridgeMessageType.ERROR, sessionId, deviceId, {
+      code: 'AGENT_OP_FAILED',
+      message,
+      requestId: env.id,
+      requestType: env.type
+    });
   }
 
   // ── Outgoing helpers ─────────────────────────────────────────────────────

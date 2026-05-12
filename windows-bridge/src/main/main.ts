@@ -17,6 +17,8 @@ import { TrustedDeviceStore } from '../permissions/trusted-device-store';
 import { PairingTokenStore } from '../permissions/pairing-token-store';
 import { WindowsBridgeWebSocketServer } from '../transport/websocket-server';
 import { logger } from '../shared/logger';
+import { AgentRouter } from '../agents/agent-router';
+import { OpencodeAgentProvider } from '../agents/opencode/opencode-agent-provider';
 
 // Acquire the single-instance lock BEFORE anything else. If a previous instance
 // is already running, quit immediately and surface the existing one. Without
@@ -66,6 +68,10 @@ async function bootstrap(): Promise<void> {
   helper.start();
   installRegistry(buildRegistry({ helper, policy }));
 
+  const agentRouter = new AgentRouter();
+  const opencodeProvider = new OpencodeAgentProvider();
+  agentRouter.register(opencodeProvider);
+
   const server = new WindowsBridgeWebSocketServer(
     {
       host: config.host,
@@ -77,7 +83,8 @@ async function bootstrap(): Promise<void> {
     policy,
     helper,
     trustedDevices,
-    pairingTokens
+    pairingTokens,
+    agentRouter
   );
   server.start();
   state.attachServer(server, {
@@ -100,6 +107,7 @@ async function bootstrap(): Promise<void> {
 
   app.on('before-quit', async () => {
     await helper.dispose();
+    await agentRouter.dispose();
     await server.stop();
   });
 }

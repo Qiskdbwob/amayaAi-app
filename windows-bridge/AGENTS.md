@@ -49,6 +49,7 @@ windows-bridge/
 - `src/transport/`: WebSocket server, pairing, and session management.
 - `src/native/`: JSON-RPC client and helper process integration.
 - `src/tools/`: screen, window, input, clipboard, shell, and file tool execution.
+- `src/agents/`: CLI coding-agent runtimes (opencode, claude-code, codex) behind a shared `AgentProvider` contract.
 - `src/permissions/`: approval policy, security policy, and trusted device logic.
 - `src/audit/`: JSONL audit event logging and readers.
 - `native-helper/`: C# Win32 helper executable and related services.
