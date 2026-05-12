@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { spawn, ChildProcessByStdio } from 'node:child_process';
+import { homedir } from 'node:os';
 import type { Readable } from 'node:stream';
 import { logger } from '../../shared/logger';
 import { resolveOpencodeBinary, type OpencodeBinary } from './opencode-binary';
@@ -39,8 +40,12 @@ export interface OpencodeServerOptions {
   startupTimeoutMs?: number;
   /** Force DEBUG log level when true. */
   debugLogs?: boolean;
-  /** Inject autoupdate=disable into OPENCODE_CONFIG_CONTENT. Default true. */
-  disableAutoupdate?: boolean;
+  /**
+   * Explicit cwd for the opencode child process. Defaults to the user's home
+   * directory so opencode reads the normal `~/.config/opencode/opencode.json`
+   * and doesn't attach to the bridge folder as if it were a project.
+   */
+  cwd?: string;
 }
 
 const DEFAULT_TIMEOUT = 20_000;
@@ -107,17 +112,25 @@ export class OpencodeServerManager extends EventEmitter {
       args.push('--log-level=DEBUG');
     }
 
-    const configJson = buildConfigJson(options);
-
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      OPENCODE_CONFIG_CONTENT: configJson
-    };
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    // Critical: OPENCODE_CONFIG_CONTENT **replaces** the entire user config when
+    // set. Only forward it when the caller supplied an explicit JSON blob, so a
+    // bare start preserves the user's ~/.config/opencode/opencode.json.
+    if (options.configJson && options.configJson.trim().length > 0) {
+      env.OPENCODE_CONFIG_CONTENT = options.configJson;
+    } else {
+      delete env.OPENCODE_CONFIG_CONTENT;
+    }
     if (options.configDir) env.OPENCODE_CONFIG_DIR = options.configDir;
     if (options.serverPassword) env.OPENCODE_SERVER_PASSWORD = options.serverPassword;
 
+    const spawnCwd = options.cwd && options.cwd.trim().length > 0
+      ? options.cwd
+      : safeHomeDir();
+
     const child = spawn(binary.path, args, {
       env,
+      cwd: spawnCwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true
     }) as ChildProcessByStdio<null, Readable, Readable>;
@@ -303,23 +316,12 @@ function resolveBinary(override?: string): OpencodeBinary | null {
   return resolveOpencodeBinary();
 }
 
-function buildConfigJson(options: OpencodeServerOptions): string {
-  const base = safeParseJson(options.configJson) ?? {};
-  if (options.disableAutoupdate !== false) {
-    (base as Record<string, unknown>).autoupdate = 'disable';
-  }
+function safeHomeDir(): string {
   try {
-    return JSON.stringify(base);
+    const h = homedir();
+    if (h && h.trim().length > 0) return h;
   } catch {
-    return '{}';
+    /* ignore */
   }
-}
-
-function safeParseJson(value: string | undefined): unknown {
-  if (!value) return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
+  return process.cwd();
 }

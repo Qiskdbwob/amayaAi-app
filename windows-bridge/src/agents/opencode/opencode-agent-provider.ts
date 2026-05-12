@@ -238,6 +238,19 @@ export class OpencodeAgentProvider extends AgentProvider {
       const mapped = mapOpencodeEvent(evt);
       if (mapped) this.emitAgentEvent(mapped);
     });
+    stream.on('retry', ({ attempt, delayMs, reason }) => {
+      logger.info(
+        SCOPE,
+        `event stream retry #${attempt} in ${delayMs}ms (${reason})`
+      );
+      this.emitAgentEvent({
+        runtimeId: this.runtimeId,
+        sessionId: null,
+        kind: AgentEventKind.SESSION_STATUS,
+        data: { status: 'degraded', retryAttempt: attempt, retryDelayMs: delayMs, reason },
+        timestamp: Date.now()
+      });
+    });
     stream.on('close', (reason) => {
       logger.info(SCOPE, `event stream closed: ${String(reason)}`);
       if (reason !== 'runtime_stop') {
