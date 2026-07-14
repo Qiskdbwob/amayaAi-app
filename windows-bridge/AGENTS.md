@@ -6,7 +6,7 @@
 
 ## Bridge Rules
 - Keep Electron main-process logic, WebSocket transport, session handling, permissions, audit, and tool routing in `src/`.
-- Keep generated outputs (`dist/`, `release/`, logs) untouched unless you are intentionally rebuilding or packaging.
+- Keep generated outputs (`dist/`, `release/`, `native-helper/obj/`, logs) untouched unless you are intentionally rebuilding or packaging.
 - Keep the native helper isolated in `native-helper/` and rebuild/copy it when helper-side behavior changes.
 - Keep the Windows bridge protocol aligned with the shared Android bridge contract in `app/src/main/java/com/amaya/intelligence/domain/bridge/`.
 - Do not move Android-specific logic into this workspace.
@@ -31,7 +31,7 @@ windows-bridge/
 ├─ package.json
 ├─ scripts/
 ├─ src/
-├─ native-helper/
+├─ native-helper/ (source only; `obj/` is ignored)
 ├─ config/
 ├─ dist/
 ├─ release/

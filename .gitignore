@@ -152,6 +152,7 @@ windows-bridge/*.blockmap
 windows-bridge/*.log
 windows-bridge/logs/
 windows-bridge/native-helper/*.json
+windows-bridge/native-helper/obj/
 
 # ==============================================
 # Local / Scratch Workspace Files
