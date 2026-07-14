@@ -6,25 +6,13 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -40,19 +28,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
@@ -77,7 +60,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-private const val CHAT_DRAWER_LOG_TAG = "ChatDrawerDebug"
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -135,6 +117,9 @@ fun ChatScreen(
 
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val drawerVisible = drawerState.currentValue == DrawerValue.Open ||
+        drawerState.targetValue == DrawerValue.Open
 
     var showModelSelector by remember { mutableStateOf(false) }
     var showSessionInfo by remember { mutableStateOf(false) }
@@ -358,23 +343,23 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(uiState.isStreaming, shouldAutoScroll) {
-        if (!uiState.isStreaming || !shouldAutoScroll) return@LaunchedEffect
+    LaunchedEffect(uiState.isStreaming, shouldAutoScroll, drawerVisible) {
+        if (!uiState.isStreaming || !shouldAutoScroll || drawerVisible) return@LaunchedEffect
         while (true) {
             performScrollToBottom(false)
             delay(16)
         }
     }
 
-    LaunchedEffect(displayMessages.size) {
-        if (shouldAutoScroll) {
+    LaunchedEffect(displayMessages.size, drawerVisible) {
+        if (shouldAutoScroll && !drawerVisible) {
             delay(100)
             performScrollToBottom(true)
         }
     }
 
-    LaunchedEffect(isRemoteMode, displayMessages.size) {
-        if (!isRemoteMode || displayMessages.isEmpty()) return@LaunchedEffect
+    LaunchedEffect(isRemoteMode, displayMessages.size, drawerVisible) {
+        if (!isRemoteMode || displayMessages.isEmpty() || drawerVisible) return@LaunchedEffect
 
         // Remote prompts can arrive outside the local send path, so no scroll event is emitted.
         // Keep the latest remote turn visible whenever the message list grows.
@@ -405,7 +390,6 @@ fun ChatScreen(
         } else doClearConversation()
     }
 
-    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val conversations by conversationsFlow.collectAsState()
     val selectedModelLabel = (selectedModelItem?.name ?: selectedModel).ifBlank { selectedAgentFallbackLabel }
     val activeConversationTitle = remember(conversations, uiState.conversationId) {
@@ -430,65 +414,46 @@ fun ChatScreen(
     val bottomDp = 80.dp + navBarHeight
     val bgColor = MaterialTheme.colorScheme.background
 
-    val configuration = LocalConfiguration.current
-    val density = LocalDensity.current
-    val chatShift = configuration.screenWidthDp.dp * 0.18f
-    val chatShiftPx = remember(density, chatShift) { with(density) { chatShift.toPx() } }
-    val drawer28dpPx = remember(density) { with(density) { (-28).dp.toPx() } }
-    val drawerTargetOpen = drawerState.targetValue == DrawerValue.Open
-    val drawerProgress by animateFloatAsState(
-        targetValue = if (drawerTargetOpen) 1f else 0f,
-        animationSpec = tween(durationMillis = 250),
-        label = "drawerProgress"
-    )
-    val drawerDragAnim = remember { Animatable(0f) }
-    var drawerDragPx by remember { mutableFloatStateOf(0f) }
-    var drawerDragging by remember { mutableStateOf(false) }
-    var drawerDragStartX by remember { mutableFloatStateOf(0f) }
-    var drawerDragStartY by remember { mutableFloatStateOf(0f) }
-    var drawerDragLastX by remember { mutableFloatStateOf(0f) }
-    var drawerDragLastY by remember { mutableFloatStateOf(0f) }
-    val displayedDrawerDragPx = if (drawerDragging) drawerDragPx else drawerDragAnim.value
-    var drawerWidthPx by remember { mutableFloatStateOf(with(density) { configuration.screenWidthDp.dp.toPx() }.coerceAtLeast(1f)) }
-    // Real-time calculation for smooth drag tracking - no caching
-    val effectiveDrawerProgress = (drawerProgress + (displayedDrawerDragPx / drawerWidthPx)).coerceIn(0f, 1f)
-
-    // Logging removed for performance - frame-by-frame snapshotFlow collection caused lag
-
-    suspend fun closeDrawerFromDragPosition(snapPx: Float) {
-        // Keep rendering from the exact finger release coordinate, then move the same
-        // drag offset fully off-screen before asking DrawerState to close. Calling
-        // drawerState.close() first can retarget drawerProgress from 1f and create
-        // a one-frame bounce back to open.
-        drawerDragAnim.snapTo(snapPx)
-        drawerDragging = false
-        drawerDragAnim.animateTo(
-            targetValue = -drawerWidthPx,
-            animationSpec = tween(durationMillis = 200)
-        )
-        drawerState.close()
-        // Do not reset the drag offset immediately. drawerProgress is still 1f for
-        // the next frame after DrawerState flips to Closed; resetting here is the
-        // bounce seen in the logs (effective progress jumps 0 -> 1 -> 0).
-        delay(350)
-        if (drawerState.currentValue == DrawerValue.Closed && drawerState.targetValue == DrawerValue.Closed) {
-            drawerDragAnim.snapTo(0f)
-            drawerDragPx = 0f
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        scrimColor = Color.Black.copy(alpha = 0.46f),
+        drawerContent = {
+            ModalDrawerSheet(
+                drawerState = drawerState,
+                drawerShape = RectangleShape,
+                drawerContainerColor = Color.Transparent,
+                drawerTonalElevation = 0.dp,
+                windowInsets = WindowInsets(0, 0, 0, 0)
+            ) {
+                ChatDrawerContent(
+                    drawerState = drawerState,
+                    activeConversationId = uiState.conversationId,
+                    isRemoteMode = isRemoteMode,
+                    sessionMode = uiState.sessionMode,
+                    workspacePath = uiState.workspacePath,
+                    isLoadingConversations = uiState.isLoadingConversations,
+                    connectionState = connectionState,
+                    conversations = conversations,
+                    onLoadConversation = doLoadConversation,
+                    onDeleteConversation = doDeleteConversation,
+                    onClearConversation = doClearConversation,
+                    onNavigateToSettings = onNavigateToSettings,
+                    onNavigateToWorkspace = onNavigateToWorkspace,
+                    onNavigateToRemoteSession = onNavigateToRemoteSession,
+                    onNavigateToOpencode = onNavigateToOpencode,
+                    onExit = onExit,
+                    hasMoreConversations = doHasMoreConversations,
+                    loadMoreConversations = doLoadMoreConversations,
+                    scope = scope,
+                    sessionDisconnectVisible = isRemoteMode &&
+                        (isBridgeMode && bridgeState.isConnected ||
+                            !isBridgeMode && onConfirmSessionDisconnect != null),
+                    onRequestSessionDisconnect = { showDisconnectDialog = true }
+                )
+            }
         }
-    }
-
-    Box(modifier = Modifier.fillMaxSize().background(bgColor)) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    translationX = chatShiftPx * effectiveDrawerProgress
-                    val scale = 1f - (0.035f * effectiveDrawerProgress)
-                    scaleX = scale
-                    scaleY = scale
-                }
-        ) {
-            val drawerOpen = drawerState.isOpen
+    ) {
+        Box(modifier = Modifier.fillMaxSize().background(bgColor)) {
             var showSkeletonOverride by remember { mutableStateOf(false) }
 
             LaunchedEffect(uiState.conversationId) {
@@ -510,7 +475,7 @@ fun ChatScreen(
                     showSkeletonOverride = showSkeletonOverride,
                     headerDp = headerDp,
                     bottomDp = bottomDp,
-                    drawerOpen = drawerOpen,
+                    drawerOpen = drawerVisible,
                     onInputTextChange = { inputText = it },
                     onSendMessage = doSendMessage,
                     onNavigateToWorkspace = onNavigateToWorkspace,
@@ -527,7 +492,7 @@ fun ChatScreen(
                     isRemoteMode = isRemoteMode,
                     headerDp = headerDp,
                     inputBarHeight = inputBarHeight,
-                    drawerOpen = drawerOpen,
+                    drawerOpen = drawerVisible,
                     onToolAccept = onToolAccept,
                     onToolDecline = onToolDecline,
                     onLocalhostLinkClick = { annotationItem ->
@@ -585,19 +550,7 @@ fun ChatScreen(
                 idleLabel = idleLabel,
                 onMenuClick = {
                     keyboardController?.hide()
-                    scope.launch {
-                        android.util.Log.d(
-                            CHAT_DRAWER_LOG_TAG,
-                            "menuClick open requested current=${drawerState.currentValue}, target=${drawerState.targetValue}"
-                        )
-                        drawerDragAnim.snapTo(0f)
-                        drawerDragPx = 0f
-                        drawerState.open()
-                        android.util.Log.d(
-                            CHAT_DRAWER_LOG_TAG,
-                            "menuClick open finished current=${drawerState.currentValue}, target=${drawerState.targetValue}"
-                        )
-                    }
+                    scope.launch { drawerState.open() }
                 },
                 onTitleClick = { showModelSelector = true },
                 onMoreClick = {
@@ -619,7 +572,7 @@ fun ChatScreen(
                 isRemoteMode = isRemoteMode,
                 uiState = uiState,
                 connectionState = connectionState,
-                drawerOpen = drawerOpen,
+                drawerOpen = drawerVisible,
                 bgColor = bgColor,
                 attachedFilePath = attachedFilePath,
                 attachedImageBase64 = attachedImageBase64,
@@ -643,93 +596,6 @@ fun ChatScreen(
                 onShowConversationModeSheet = { showConversationModeSheet = true },
                 onInputBarHeightChange = { inputBarHeight = it }
             )
-        }
-
-        if (effectiveDrawerProgress > 0.01f) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .zIndex(1f)
-                    .graphicsLayer {
-                        translationX = chatShiftPx * effectiveDrawerProgress
-                        val scale = 1f - (0.035f * effectiveDrawerProgress)
-                        scaleX = scale
-                        scaleY = scale
-                    }
-                    .clickable {
-                        scope.launch {
-                            drawerState.close()
-                        }
-                    }
-            )
-        }
-
-        // Only render and intercept gestures when drawer is open or animating
-        val drawerInteractive = drawerState.isOpen || drawerState.isAnimationRunning || effectiveDrawerProgress > 0.01f
-        if (drawerInteractive) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        drawerWidthPx = size.width.coerceAtLeast(1f)
-                        translationX = (-size.width * (1f - effectiveDrawerProgress)) +
-                            (drawer28dpPx * (1f - effectiveDrawerProgress))
-                    }
-                    .pointerInput(Unit) {
-                        detectHorizontalDragGestures(
-                            onDragStart = { offset ->
-                                drawerDragging = true
-                                drawerDragPx = drawerDragAnim.value
-                                drawerDragStartX = offset.x
-                                drawerDragStartY = offset.y
-                                drawerDragLastX = offset.x
-                                drawerDragLastY = offset.y
-                                scope.launch { drawerDragAnim.stop() }
-                            },
-                            onDragEnd = {
-                                val snapPx = drawerDragPx
-                                scope.launch { closeDrawerFromDragPosition(snapPx) }
-                            },
-                            onDragCancel = {
-                                val snapPx = drawerDragPx
-                                scope.launch { closeDrawerFromDragPosition(snapPx) }
-                            },
-                            onHorizontalDrag = { change, dragAmount ->
-                                change.consume()
-                                drawerDragLastX = change.position.x
-                                drawerDragLastY = change.position.y
-                                drawerDragPx = (drawerDragPx + dragAmount).coerceIn(-drawerWidthPx, 0f)
-                            }
-                        )
-                    }
-                    .zIndex(2f)
-            ) {
-            ChatDrawerContent(
-                drawerState = drawerState,
-                activeConversationId = uiState.conversationId,
-                isRemoteMode = isRemoteMode,
-                sessionMode = uiState.sessionMode,
-                workspacePath = uiState.workspacePath,
-                isLoadingConversations = uiState.isLoadingConversations,
-                connectionState = connectionState,
-                conversations = conversations,
-                onLoadConversation = doLoadConversation,
-                onDeleteConversation = doDeleteConversation,
-                onClearConversation = doClearConversation,
-                onNavigateToSettings = onNavigateToSettings,
-                onNavigateToWorkspace = onNavigateToWorkspace,
-                onNavigateToRemoteSession = onNavigateToRemoteSession,
-                onNavigateToOpencode = onNavigateToOpencode,
-                onExit = onExit,
-                hasMoreConversations = doHasMoreConversations,
-                loadMoreConversations = doLoadMoreConversations,
-                scope = scope,
-                sessionDisconnectVisible = isRemoteMode &&
-                    (isBridgeMode && bridgeState.isConnected ||
-                        !isBridgeMode && onConfirmSessionDisconnect != null),
-                onRequestSessionDisconnect = { showDisconnectDialog = true }
-            )
-        }
         }
     }
 

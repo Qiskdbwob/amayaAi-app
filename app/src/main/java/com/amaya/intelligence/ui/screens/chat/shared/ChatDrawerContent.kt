@@ -282,6 +282,12 @@ fun ChatDrawerContent(
     val searchFocusRequester = remember { FocusRequester() }
     val conversationListState = rememberLazyListState()
     var conversationToDelete by remember { mutableStateOf<ConversationEntity?>(null) }
+    val closeDrawerThen: ((() -> Unit) -> Unit) = { action ->
+        scope.launch {
+            drawerState.close()
+            action()
+        }
+    }
 
     LaunchedEffect(conversations.firstOrNull()?.id) {
         if (conversations.isNotEmpty() && conversationListState.firstVisibleItemIndex > 0) {
@@ -289,7 +295,7 @@ fun ChatDrawerContent(
         }
     }
 
-    LaunchedEffect(conversationListState.layoutInfo) {
+    LaunchedEffect(conversationListState) {
         snapshotFlow {
             val layoutInfo = conversationListState.layoutInfo
             val lastVisibleItem = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
@@ -340,10 +346,9 @@ fun ChatDrawerContent(
                     searchFocusRequester = searchFocusRequester,
                     conversations = filteredConversations,
                     onLoadConversation = { id ->
-                        onLoadConversation(id)
                         searchQuery = ""
                         isSearchExpanded = false
-                        scope.launch { drawerState.close() }
+                        closeDrawerThen { onLoadConversation(id) }
                     },
                     onCancel = {
                         searchQuery = ""
@@ -369,36 +374,15 @@ fun ChatDrawerContent(
                     conversations = filteredConversations,
                     activeConversationId = activeConversationId,
                     conversationListState = conversationListState,
-                    onClearConversation = {
-                        onClearConversation()
-                        scope.launch { drawerState.close() }
-                    },
-                    onNavigateToWorkspace = {
-                        onNavigateToWorkspace()
-                        scope.launch { drawerState.close() }
-                    },
-                    onNavigateToRemoteSession = {
-                        onNavigateToRemoteSession()
-                        scope.launch { drawerState.close() }
-                    },
+                    onClearConversation = { closeDrawerThen(onClearConversation) },
+                    onNavigateToWorkspace = { closeDrawerThen(onNavigateToWorkspace) },
+                    onNavigateToRemoteSession = { closeDrawerThen(onNavigateToRemoteSession) },
                     onNavigateToOpencode = onNavigateToOpencode?.let { callback ->
-                        {
-                            callback()
-                            scope.launch { drawerState.close() }
-                        }
+                        { closeDrawerThen(callback) }
                     },
-                    onNavigateToSettings = {
-                        onNavigateToSettings()
-                        scope.launch { drawerState.close() }
-                    },
-                    onExit = {
-                        scope.launch { drawerState.close() }
-                        onExit()
-                    },
-                    onLoadConversation = { id ->
-                        onLoadConversation(id)
-                        scope.launch { drawerState.close() }
-                    },
+                    onNavigateToSettings = { closeDrawerThen(onNavigateToSettings) },
+                    onExit = { closeDrawerThen(onExit) },
+                    onLoadConversation = { id -> closeDrawerThen { onLoadConversation(id) } },
                     onConversationLongClick = { conversationToDelete = it },
                     onSearchClick = { isSearchExpanded = true },
                     onCloseDrawer = { scope.launch { drawerState.close() } },
@@ -410,8 +394,7 @@ fun ChatDrawerContent(
                 if (sessionDisconnectVisible) {
                     androidx.compose.material3.SmallFloatingActionButton(
                         onClick = {
-                            scope.launch { drawerState.close() }
-                            onRequestSessionDisconnect()
+                            closeDrawerThen(onRequestSessionDisconnect)
                         },
                         containerColor = MaterialTheme.colorScheme.errorContainer,
                         contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -428,10 +411,7 @@ fun ChatDrawerContent(
                     }
                 }
                 ExtendedFloatingActionButton(
-                    onClick = {
-                        onClearConversation()
-                        scope.launch { drawerState.close() }
-                    },
+                    onClick = { closeDrawerThen(onClearConversation) },
                     containerColor = Color(0xFF0A84FF),
                     contentColor = Color.White,
                     modifier = Modifier
