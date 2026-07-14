@@ -1,6 +1,7 @@
 package com.amaya.intelligence.ui.components.shared
 
 import com.amaya.intelligence.domain.models.ConversationMode
+
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -16,8 +17,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
+import kotlin.math.roundToInt
 
 @Composable
 fun ChatInput(
@@ -39,12 +48,21 @@ fun ChatInput(
     onShowConversationModeSelector: () -> Unit = {},
     workspacePath: String? = null,
     onWorkspaceClick: () -> Unit = {},
+    modelLabel: String = "Select Agent",
+    onSelectModel: () -> Unit = {},
     onSendMessage: (String) -> Unit,
     onStopGeneration: () -> Unit
 ) {
     val isDark = isSystemInDarkTheme()
     val hasAttachment = attachedFilePath != null || attachedImageBase64 != null
-    var showAttachMenu by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val expansion = imeAnimationProgress()
+    val composerCornerRadius = lerp(28.dp, 24.dp, expansion)
+    val composerHorizontalPadding = lerp(8.dp, 12.dp, expansion)
+    val composerVerticalPadding = lerp(8.dp, 10.dp, expansion)
+    val composerOuterTopPadding = lerp(8.dp, 6.dp, expansion)
+    val composerOuterBottomPadding = lerp(10.dp, 8.dp, expansion)
 
     val wsName = remember(workspacePath) {
         workspacePath?.substringAfterLast("/").orEmpty()
@@ -61,7 +79,7 @@ fun ChatInput(
             .fillMaxWidth()
             .navigationBarsPadding()
             .padding(horizontal = 12.dp)
-            .padding(top = 8.dp, bottom = 10.dp),
+            .padding(top = composerOuterTopPadding, bottom = composerOuterBottomPadding),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         if (showConversationModeSelector) {
@@ -167,9 +185,23 @@ fun ChatInput(
             }
         }
 
-        // iOS-style single liquid composer capsule
+        val placeholderText = remember(hasWorkspace, wsName) {
+            if (hasWorkspace) "Ask anything on $wsName" else "Ask Me Anything"
+        }
+        val placeholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.46f)
+        val canSend = text.isNotBlank() || hasAttachment
+        val submitMessage = {
+            if (isStreaming) {
+                onStopGeneration()
+            } else if (canSend) {
+                val message = text.trim()
+                onTextChange("")
+                onSendMessage(message)
+            }
+        }
+
         Surface(
-            shape = RoundedCornerShape(999.dp),
+            shape = RoundedCornerShape(composerCornerRadius),
             color = pillColor,
             border = BorderStroke(
                 0.7.dp,
@@ -179,124 +211,274 @@ fun ChatInput(
             tonalElevation = 0.dp,
             shadowElevation = 0.dp
         ) {
-            Row(
+            ComposerLayout(
+                expansion = expansion,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box {
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (isStreaming) 0.05f else 0.08f))
-                            .clickable(enabled = !isStreaming) { showAttachMenu = true },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Default.Add,
-                            contentDescription = "Attach",
-                            modifier = Modifier.size(23.dp),
-                            tint = if (isStreaming) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
-                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = showAttachMenu,
-                        onDismissRequest = { showAttachMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Attach file") },
-                            onClick = {
-                                showAttachMenu = false
-                                onAttachFile()
-                            },
-                            leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Attach image") },
-                            onClick = {
-                                showAttachMenu = false
-                                onAttachImage()
-                            },
-                            leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) }
-                        )
-                    }
-                }
-
-                Spacer(Modifier.width(12.dp))
-
-                val placeholderText = remember(hasWorkspace, wsName) {
-                    if (hasWorkspace) "Ask anything on $wsName" else "Message"
-                }
-                val placeholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.46f)
-
-                BasicTextField(
-                    value = text,
-                    onValueChange = onTextChange,
-                    modifier = Modifier.weight(1f),
-                    maxLines = 5,
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(
-                        color = MaterialTheme.colorScheme.onSurface
+                    .padding(
+                        horizontal = composerHorizontalPadding,
+                        vertical = composerVerticalPadding
                     ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    decorationBox = { inner ->
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            if (text.isEmpty()) {
-                                Text(
-                                    text = placeholderText,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = placeholderColor,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                attachment = {
+                    ComposerAttachmentButton(
+                        isStreaming = isStreaming,
+                        onAttachFile = onAttachFile,
+                        onAttachImage = onAttachImage
+                    )
+                },
+                input = {
+                    Box(
+                        modifier = Modifier.heightIn(min = 40.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        BasicTextField(
+                            value = text,
+                            onValueChange = onTextChange,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(focusRequester),
+                            maxLines = 5,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                color = MaterialTheme.colorScheme.onSurface
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            decorationBox = { inner ->
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    if (text.isEmpty()) {
+                                        Text(
+                                            text = placeholderText,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = placeholderColor,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    inner()
+                                }
                             }
-                            inner()
+                        )
+                    }
+                },
+                model = {
+                    Surface(
+                        onClick = onSelectModel,
+                        enabled = expansion > 0.5f,
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color.Transparent,
+                        modifier = Modifier.height(40.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .widthIn(max = 150.dp)
+                                .padding(horizontal = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = modelLabel,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            Text(
+                                text = ">",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f)
+                            )
                         }
                     }
-                )
-
-                Spacer(Modifier.width(12.dp))
-
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (isStreaming) MaterialTheme.colorScheme.error.copy(alpha = 0.14f)
-                            else if (text.isNotBlank() || hasAttachment) Color(0xFF0A84FF)
-                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-                        )
-                        .clickable {
-                            if (isStreaming) {
-                                onStopGeneration()
-                            } else if (text.isNotBlank() || hasAttachment) {
-                                val msg = text.trim()
-                                onTextChange("")
-                                onSendMessage(msg)
-                            }
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (isStreaming) {
-                        Icon(
-                            Icons.Default.Stop,
-                            contentDescription = "Stop",
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.error
-                        )
-                    } else {
-                        Icon(
-                            Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Send",
-                            modifier = Modifier.size(16.dp),
-                            tint = if (text.isNotBlank() || hasAttachment) Color.White
-                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
-                        )
-                    }
+                },
+                send = {
+                    ComposerSendButton(
+                        isStreaming = isStreaming,
+                        canSend = canSend,
+                        onClick = submitMessage,
+                        onEmptyClick = {
+                            focusRequester.requestFocus()
+                            keyboardController?.show()
+                        }
+                    )
                 }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ComposerLayout(
+    expansion: Float,
+    modifier: Modifier = Modifier,
+    attachment: @Composable () -> Unit,
+    input: @Composable () -> Unit,
+    model: @Composable () -> Unit,
+    send: @Composable () -> Unit
+) {
+    val controlsProgress = expansion
+    val inputProgress = expansion
+    val modelProgress = expansion
+
+    Layout(
+        modifier = modifier,
+        content = {
+            attachment()
+            input()
+            Box(
+                modifier = Modifier.graphicsLayer {
+                    alpha = modelProgress
+                    scaleX = 0.96f + (0.04f * modelProgress)
+                    scaleY = 0.96f + (0.04f * modelProgress)
+                    transformOrigin = TransformOrigin(1f, 1f)
+                }
+            ) {
+                model()
             }
+            send()
+        }
+    ) { measurables, constraints ->
+        val gap = 8.dp.roundToPx()
+        val collapsedGap = 12.dp.roundToPx()
+        val looseConstraints = constraints.copy(minWidth = 0, minHeight = 0)
+        val attachmentPlaceable = measurables[0].measure(looseConstraints)
+        val sendPlaceable = measurables[3].measure(looseConstraints)
+        val modelPlaceable = measurables[2].measure(
+            looseConstraints.copy(
+                maxWidth = (constraints.maxWidth - attachmentPlaceable.width - sendPlaceable.width - gap * 2)
+                    .coerceAtLeast(0)
+            )
+        )
+        val collapsedLeftInset = attachmentPlaceable.width + collapsedGap
+        val collapsedRightInset = sendPlaceable.width + collapsedGap
+        val expandedLeftInset = 8.dp.roundToPx()
+        val inputLeftInset = (
+            collapsedLeftInset + ((expandedLeftInset - collapsedLeftInset) * inputProgress)
+        ).roundToInt()
+        val inputRightInset = (collapsedRightInset * (1f - inputProgress)).roundToInt()
+        val inputWidth = (constraints.maxWidth - inputLeftInset - inputRightInset).coerceAtLeast(0)
+        val inputPlaceable = measurables[1].measure(
+            constraints.copy(
+                minWidth = inputWidth,
+                maxWidth = inputWidth,
+                minHeight = 0
+            )
+        )
+        val topHeight = maxOf(inputPlaceable.height, attachmentPlaceable.height, sendPlaceable.height)
+        val controlsRowY = topHeight + gap
+        val controlsRowHeight = maxOf(
+            attachmentPlaceable.height,
+            modelPlaceable.height,
+            sendPlaceable.height
+        )
+        val expandedHeight = controlsRowY + controlsRowHeight
+        val layoutHeight = (
+            topHeight + ((expandedHeight - topHeight) * controlsProgress)
+        ).roundToInt().coerceIn(constraints.minHeight, constraints.maxHeight)
+        val attachmentStartY = (topHeight - attachmentPlaceable.height) / 2
+        val sendStartY = (topHeight - sendPlaceable.height) / 2
+        val attachmentY = (
+            attachmentStartY + ((controlsRowY - attachmentStartY) * controlsProgress)
+        ).roundToInt()
+        val sendY = (
+            sendStartY + ((controlsRowY - sendStartY) * controlsProgress)
+        ).roundToInt()
+        val inputY = (topHeight - inputPlaceable.height) / 2
+        val modelX = constraints.maxWidth - sendPlaceable.width - gap - modelPlaceable.width
+        val modelY = controlsRowY
+
+        layout(constraints.maxWidth, layoutHeight) {
+            attachmentPlaceable.placeRelative(0, attachmentY)
+            inputPlaceable.placeRelative(inputLeftInset, inputY)
+            modelPlaceable.placeRelative(modelX, modelY)
+            sendPlaceable.placeRelative(constraints.maxWidth - sendPlaceable.width, sendY)
+        }
+    }
+}
+
+@Composable
+private fun ComposerAttachmentButton(
+    isStreaming: Boolean,
+    onAttachFile: () -> Unit,
+    onAttachImage: () -> Unit
+) {
+    var showMenu by remember { mutableStateOf(false) }
+
+    Box {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (isStreaming) 0.05f else 0.08f))
+                .clickable(enabled = !isStreaming) { showMenu = true },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Default.Add,
+                contentDescription = "Attach",
+                modifier = Modifier.size(23.dp),
+                tint = if (isStreaming) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+            )
+        }
+        DropdownMenu(
+            expanded = showMenu,
+            onDismissRequest = { showMenu = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text("Attach file") },
+                onClick = {
+                    showMenu = false
+                    onAttachFile()
+                },
+                leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) }
+            )
+            DropdownMenuItem(
+                text = { Text("Attach image") },
+                onClick = {
+                    showMenu = false
+                    onAttachImage()
+                },
+                leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun ComposerSendButton(
+    isStreaming: Boolean,
+    canSend: Boolean,
+    onClick: () -> Unit,
+    onEmptyClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(CircleShape)
+            .background(
+                if (isStreaming) MaterialTheme.colorScheme.error.copy(alpha = 0.14f)
+                else if (canSend) Color(0xFF0A84FF)
+                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
+            )
+            .clickable {
+                if (isStreaming || canSend) onClick() else onEmptyClick()
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        if (isStreaming) {
+            Icon(
+                Icons.Default.Stop,
+                contentDescription = "Stop",
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.error
+            )
+        } else {
+            Icon(
+                Icons.AutoMirrored.Filled.Send,
+                contentDescription = "Send",
+                modifier = Modifier.size(16.dp),
+                tint = if (canSend) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+            )
         }
     }
 }

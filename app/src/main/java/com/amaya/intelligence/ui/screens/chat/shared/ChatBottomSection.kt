@@ -29,8 +29,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun ChatBottomSection(
     modifier: Modifier = Modifier,
-    inputText: String,
-    onInputTextChange: (String) -> Unit,
+    inputText: MutableState<String>,
     isRemoteMode: Boolean,
     uiState: ChatUiState,
     connectionState: ConnectionState,
@@ -52,6 +51,8 @@ fun ChatBottomSection(
     onNavigateToWorkspace: () -> Unit,
     showConversationModeSelector: Boolean,
     onShowConversationModeSheet: () -> Unit,
+    modelLabel: String,
+    onSelectModel: () -> Unit,
     onInputBarHeightChange: (Int) -> Unit
 ) {
     var attachedPath by remember { mutableStateOf(attachedFilePath) }
@@ -116,8 +117,8 @@ fun ChatBottomSection(
             }
         }
         ChatInput(
-            text = inputText,
-            onTextChange = onInputTextChange,
+            text = inputText.value,
+            onTextChange = { inputText.value = it },
             resetKey = uiState.conversationId,
             isStreaming = uiState.isStreaming,
             attachedFilePath = attachedPath,
@@ -139,6 +140,8 @@ fun ChatBottomSection(
             onShowConversationModeSelector = onShowConversationModeSheet,
             workspacePath = uiState.workspacePath,
             onWorkspaceClick = onNavigateToWorkspace,
+            modelLabel = modelLabel,
+            onSelectModel = onSelectModel,
             onSendMessage = { text ->
                 keyboardController?.hide()
                 val path = attachedPath

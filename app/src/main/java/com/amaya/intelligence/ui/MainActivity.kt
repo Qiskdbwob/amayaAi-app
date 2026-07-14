@@ -12,7 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.lifecycleScope
@@ -29,6 +29,7 @@ import com.amaya.intelligence.ui.activities.project.local.LocalProjectActivity
 import com.amaya.intelligence.ui.theme.AmayaTheme
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -69,15 +70,13 @@ class MainActivity : androidx.appcompat.app.AppCompatActivity() {
                     }
                     if (androidx.appcompat.app.AppCompatDelegate.getDefaultNightMode() != mode) {
                         androidx.appcompat.app.AppCompatDelegate.setDefaultNightMode(mode)
-                        recreate()
                     }
                 }
         }
 
         setContent {
-            val initialSettings = remember { aiSettingsManager.getSettings() }
-            val settings by aiSettingsManager.settingsFlow.collectAsState(initial = initialSettings)
             LaunchedEffect(Unit) {
+                val settings = aiSettingsManager.settingsFlow.first()
                 val fixedJson = aiSettingsManager.loadMcpConfigFromFixedPath()
                 if (!fixedJson.isNullOrBlank() && fixedJson != settings.mcpConfigJson) {
                     aiSettingsManager.setMcpConfigJson(fixedJson)
@@ -136,7 +135,6 @@ private fun AppContent(
 ) {
     val navController = rememberNavController()
     val viewModel: ChatViewModel = hiltViewModel()
-    val uiState by viewModel.uiState.collectAsState()
     val activeReminderCount by appViewModel.activeReminderCount.collectAsState()
 
     LaunchedEffect(Unit) {
@@ -162,7 +160,7 @@ private fun AppContent(
                 val context = androidx.compose.ui.platform.LocalContext.current
                 val config = com.amaya.intelligence.ui.screens.chat.shared.localChatScreenConfig(
                     onClearConversation = { viewModel.clearConversation() },
-                    onNavigateToSettings = { onNavigateToSettings(uiState.workspacePath) },
+                    onNavigateToSettings = { onNavigateToSettings(viewModel.uiState.value.workspacePath) },
                     onNavigateToRemoteSession = {
                         context.startActivity(android.content.Intent(context, com.amaya.intelligence.ui.activities.remote.RemoteSessionActivity::class.java))
                     }
@@ -171,7 +169,7 @@ private fun AppContent(
                     viewModel = viewModel,
                     activeReminderCount = activeReminderCount,
                     config = config,
-                    onNavigateToSettings = { onNavigateToSettings(uiState.workspacePath) },
+                    onNavigateToSettings = { onNavigateToSettings(viewModel.uiState.value.workspacePath) },
                     onNavigateToWorkspace = onNavigateToWorkspace,
                     onNavigateToRemoteSession = {
                         context.startActivity(android.content.Intent(context, com.amaya.intelligence.ui.activities.remote.RemoteSessionActivity::class.java))

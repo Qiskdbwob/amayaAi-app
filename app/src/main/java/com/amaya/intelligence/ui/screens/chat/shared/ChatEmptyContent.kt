@@ -24,7 +24,6 @@ fun ChatEmptyContent(
     isRemoteMode: Boolean,
     connectionState: ConnectionState,
     uiState: ChatUiState,
-    showSkeletonOverride: Boolean,
     headerDp: Dp,
     bottomDp: Dp,
     drawerOpen: Boolean,
@@ -72,8 +71,7 @@ fun ChatEmptyContent(
         contentAlignment = Alignment.Center
     ) {
         if (uiState.isLoading ||
-            (isRemoteMode && !isBridgeMode && connectionState == ConnectionState.CONNECTING) ||
-            showSkeletonOverride
+            (isRemoteMode && !isBridgeMode && connectionState == ConnectionState.CONNECTING)
         ) {
             ConversationSkeleton()
         } else {

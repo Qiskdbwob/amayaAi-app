@@ -49,7 +49,7 @@ fun ChatMessageList(
     isStreaming: Boolean = false,
     isRemoteMode: Boolean,
     headerDp: Dp,
-    inputBarHeight: Int,
+    inputBarHeight: State<Int>,
     drawerOpen: Boolean,
     onToolAccept: ((ToolExecution) -> Unit)?,
     onToolDecline: ((ToolExecution) -> Unit)?,
@@ -198,7 +198,7 @@ fun ChatMessageList(
             start = 18.dp,  // sejajar topbar kiri (☰)
             end = 18.dp,    // sejajar topbar kanan (⋮)
             top = headerDp + 8.dp,
-            bottom = with(density) { inputBarHeight.toDp() } + 16.dp
+            bottom = 16.dp
         ),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
@@ -253,6 +253,9 @@ fun ChatMessageList(
                 }
             }
         }
+        item(key = "composer-spacer", contentType = "spacer") {
+            Spacer(Modifier.height(with(density) { inputBarHeight.value.toDp() }))
+        }
     }
 
     // Scroll-to-bottom FAB
@@ -272,20 +275,36 @@ fun ChatMessageList(
         }
     }
 
+    ChatScrollToBottomButton(
+        visible = showFab,
+        inputBarHeight = inputBarHeight,
+        drawerOpen = drawerOpen,
+        onClick = onScrollToBottomClick
+    )
+}
+
+@Composable
+private fun ChatScrollToBottomButton(
+    visible: Boolean,
+    inputBarHeight: State<Int>,
+    drawerOpen: Boolean,
+    onClick: () -> Unit
+) {
+    val density = LocalDensity.current
     Box(
         modifier = Modifier
             .fillMaxSize()
             .then(if (!drawerOpen) Modifier.imePadding() else Modifier)
-            .padding(bottom = with(density) { inputBarHeight.toDp() } + 12.dp),
+            .padding(bottom = with(density) { inputBarHeight.value.toDp() } + 12.dp),
         contentAlignment = Alignment.BottomCenter
     ) {
         AnimatedVisibility(
-            visible = showFab,
+            visible = visible,
             enter = fadeIn() + scaleIn(),
             exit = fadeOut() + scaleOut()
         ) {
             SmallFloatingActionButton(
-                onClick = onScrollToBottomClick,
+                onClick = onClick,
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                 contentColor = MaterialTheme.colorScheme.onSurface,
                 elevation = FloatingActionButtonDefaults.elevation(

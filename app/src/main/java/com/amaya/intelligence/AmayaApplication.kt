@@ -35,7 +35,7 @@ class AmayaApplication : Application(), Configuration.Provider {
      * Also call this whenever the user changes the theme setting.
      */
     fun applyThemeFromSettings() {
-        val theme = aiSettingsManager.getSettings().theme
+        val theme = aiSettingsManager.getStartupTheme()
         val mode = when (theme) {
             "light"  -> AppCompatDelegate.MODE_NIGHT_NO
             "dark"   -> AppCompatDelegate.MODE_NIGHT_YES

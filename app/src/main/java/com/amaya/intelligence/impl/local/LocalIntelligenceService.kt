@@ -6,6 +6,7 @@ import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
 import com.amaya.intelligence.data.remote.api.ChatMessage
 import com.amaya.intelligence.data.remote.api.MessageRole
+import com.amaya.intelligence.data.remote.api.KnownModelCatalog
 import com.amaya.intelligence.data.local.dao.ConversationDao
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.data.repository.AiRepository
@@ -68,10 +69,7 @@ class LocalIntelligenceService @Inject constructor(
     private val pendingToolConfirmations = ConcurrentHashMap<String, CancellableContinuation<Boolean>>()
 
     init {
-        scope.launch {
-            modelCatalogRepository.seedBuiltInCatalogIfNeeded()
-            modelCatalogRepository.syncModelsDev()
-        }
+
 
         // Observe conversations from DB
         scope.launch {
@@ -79,9 +77,9 @@ class LocalIntelligenceService @Inject constructor(
                 _conversations.value = list
             }
         }
-        // Observe settings + live models.dev-backed catalog for agents/model selector.
+        // Chat only needs enabled models. Avoid materializing the full models.dev cache on startup.
         scope.launch {
-            combine(settingsManager.settingsFlow, modelCatalogRepository.observeCatalog()) { settings, catalog ->
+            settingsManager.settingsFlow.map { settings ->
                 providerConnectionRepository.mirrorLegacyAgents(settings.agentConfigs)
                 val subscriptionProviderIds = AmayaProviderRegistry.providers
                     .filter { it.isSubscription }
@@ -89,7 +87,7 @@ class LocalIntelligenceService @Inject constructor(
                     .toSet()
                 val runnableAgents = settings.agentConfigs.filter { it.providerId !in subscriptionProviderIds }
                 val configuredModelKeys = runnableAgents.map { it.providerId to it.modelId }.toSet()
-                val enabledCatalogModelKeys = settings.agentConfigs
+                val enabledModelKeys = settings.agentConfigs
                     .flatMap { config ->
                         val enabledModels = if (config.providerId in subscriptionProviderIds) {
                             config.enabledModelIds
@@ -100,28 +98,26 @@ class LocalIntelligenceService @Inject constructor(
                             .filter { it.isNotBlank() && it != config.providerId }
                             .map { config.providerId to it }
                     }
-                    .toSet()
-                val selectorItems = runnableAgents.map {
-                    AgentUiMapper.mapToSelectorItem(it)
-                } + catalog
-                    .filter { (it.providerId to it.modelId) in enabledCatalogModelKeys }
-                    .filter { (it.providerId to it.modelId) !in configuredModelKeys }
-                    .map { entry ->
+                    .distinct()
+                    .filter { it !in configuredModelKeys }
+                val selectorItems = runnableAgents.map(AgentUiMapper::mapToSelectorItem) +
+                    enabledModelKeys.map { (providerId, modelId) ->
+                        val model = KnownModelCatalog.infer(modelId, providerId)
                         AgentSelectorItem(
-                            id = "catalog|${entry.providerId}|${entry.modelId}",
-                            name = entry.displayName,
-                            modelId = entry.modelId,
-                            iconType = AgentMapper.getIconTypeForProvider(entry.providerId) ?: AgentMapper.getIconType(entry.modelId) ?: "default",
-                            providerId = entry.providerId,
-                            providerName = entry.metadata["providerName"] ?: AmayaProviderRegistry.displayName(entry.providerId),
-                            statusLabel = if (entry.providerId == "openai_codex_bridge" && entry.metadata["codexCompatibility"] == "may_require_access") "May need OpenAI access" else "Enabled model",
-                            capabilityLabels = entry.capabilities.map { it.label }.take(4),
-                            contextWindowLabel = entry.contextWindow?.let { formatTokenCount(it).uppercase() },
-                            sourceLabel = if (entry.source.name == "MODELS_DEV") "models.dev" else entry.source.name.lowercase(),
-                            contextWindowTokens = entry.contextWindow,
-                            maxOutputTokens = entry.maxOutputTokens,
-                            inputPricePerMillionTokens = entry.inputPricePerMillionTokens,
-                            outputPricePerMillionTokens = entry.outputPricePerMillionTokens
+                            id = "catalog|$providerId|$modelId",
+                            name = model.displayName,
+                            modelId = modelId,
+                            iconType = AgentMapper.getIconTypeForProvider(providerId) ?: AgentMapper.getIconType(modelId) ?: "default",
+                            providerId = providerId,
+                            providerName = model.providerName,
+                            statusLabel = "Enabled model",
+                            capabilityLabels = model.capabilities.map { it.label }.take(4),
+                            contextWindowLabel = model.contextWindow?.let { formatTokenCount(it).uppercase() },
+                            sourceLabel = model.sourceLabel,
+                            contextWindowTokens = model.contextWindow,
+                            maxOutputTokens = model.maxOutputTokens,
+                            inputPricePerMillionTokens = model.inputPricePerMillionTokens,
+                            outputPricePerMillionTokens = model.outputPricePerMillionTokens
                         )
                     }
                 val activeProviderId = settings.agentConfigs.firstOrNull { it.id == settings.activeAgentId }?.providerId.orEmpty()

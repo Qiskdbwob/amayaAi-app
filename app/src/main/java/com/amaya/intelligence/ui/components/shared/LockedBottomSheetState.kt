@@ -23,8 +23,11 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imeAnimationSource
+import androidx.compose.foundation.layout.imeAnimationTarget
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -62,6 +65,17 @@ fun Modifier.ignoreNestedScrollForBottomSheet() = this.nestedScroll(ConsumeAllNe
 fun isImeVisible(): Boolean {
     val density = LocalDensity.current
     return WindowInsets.ime.getBottom(density) > 0
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun imeAnimationProgress(): Float {
+    val density = LocalDensity.current
+    val current = WindowInsets.ime.getBottom(density)
+    val source = WindowInsets.imeAnimationSource.getBottom(density)
+    val target = WindowInsets.imeAnimationTarget.getBottom(density)
+    val expandedHeight = maxOf(current, source, target)
+    return if (expandedHeight == 0) 0f else current.toFloat() / expandedHeight
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

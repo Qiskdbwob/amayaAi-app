@@ -6,9 +6,7 @@ import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.animateScrollBy
@@ -30,12 +28,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.graphicsLayer
+
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
@@ -128,7 +126,7 @@ fun ChatScreen(
     var showDisconnectDialog by remember { mutableStateOf(false) }
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
-    var inputBarHeight by remember { mutableStateOf(0) }
+    val inputBarHeight = remember { mutableIntStateOf(0) }
     var attachedFilePath by remember(uiState.conversationId) { mutableStateOf<String?>(null) }
     var attachedImageBase64 by remember(uiState.conversationId) { mutableStateOf<String?>(null) }
     var attachedImageMimeType by remember(uiState.conversationId) { mutableStateOf<String?>(null) }
@@ -146,8 +144,7 @@ fun ChatScreen(
         }
     }
 
-    // Lifted input text state
-    var inputText by remember(uiState.conversationId) { mutableStateOf("") }
+    val inputText = remember(uiState.conversationId) { mutableStateOf("") }
 
     // Use server IP from extension if available, otherwise fallback to device local IP
     val serverIp = uiState.serverIp ?: localIp
@@ -260,8 +257,6 @@ fun ChatScreen(
         item.modelId == selectedModel && (activeProviderId.isBlank() || item.providerId == activeProviderId)
     } ?: activeAgent ?: uiState.agentConfigs.firstOrNull()
     val selectedAgentFallbackLabel = config?.selectedAgentFallbackLabel ?: "Select Agent"
-    val streamingLabel = config?.streamingLabel ?: "Streaming"
-    val idleLabel = config?.idleLabel ?: "Idle"
 
     val onToolAccept: ((ToolExecution) -> Unit)? = remember(viewModel) {
         { execution: ToolExecution -> viewModel.respondToToolInteraction(execution.toolCallId, true) }
@@ -395,16 +390,9 @@ fun ChatScreen(
     val activeConversationTitle = remember(conversations, uiState.conversationId) {
         conversations.firstOrNull { it.id.toString() == uiState.conversationId }?.title
     }
-    val topBarTitle = if (!activeConversationTitle.isNullOrBlank() && uiState.messages.isNotEmpty()) {
-        activeConversationTitle
-    } else {
-        selectedModelLabel
-    }
-    val topBarSubtitle = if (!activeConversationTitle.isNullOrBlank() && uiState.messages.isNotEmpty()) {
-        selectedModelLabel
-    } else {
-        ""
-    }
+    val topBarTitle = activeConversationTitle
+        ?.takeIf { uiState.messages.isNotEmpty() }
+        ?: "Amaya"
 
     // WindowInsets
     val statusBarInsets = WindowInsets.statusBars.asPaddingValues()
@@ -454,29 +442,17 @@ fun ChatScreen(
         }
     ) {
         Box(modifier = Modifier.fillMaxSize().background(bgColor)) {
-            var showSkeletonOverride by remember { mutableStateOf(false) }
-
-            LaunchedEffect(uiState.conversationId) {
-                if (isRemoteMode && uiState.conversationId != null) {
-                    showSkeletonOverride = true
-                    delay(1200)
-                    showSkeletonOverride = false
-                } else {
-                    showSkeletonOverride = false
-                }
-            }
-
             // Content area
             if (uiState.messages.isEmpty()) {
                 ChatEmptyContent(
                     isRemoteMode = isRemoteMode,
                     connectionState = connectionState,
                     uiState = uiState,
-                    showSkeletonOverride = showSkeletonOverride,
+
                     headerDp = headerDp,
                     bottomDp = bottomDp,
                     drawerOpen = drawerVisible,
-                    onInputTextChange = { inputText = it },
+                    onInputTextChange = { inputText.value = it },
                     onSendMessage = doSendMessage,
                     onNavigateToWorkspace = onNavigateToWorkspace,
                     workspaces = workspaces,
@@ -542,17 +518,12 @@ fun ChatScreen(
 
             ChatFloatingTopBar(
                 title = topBarTitle,
-                subtitle = topBarSubtitle,
                 isRemoteMode = isRemoteMode,
                 isBridgeMode = isBridgeMode,
-                isStreaming = uiState.isStreaming,
-                streamingLabel = streamingLabel,
-                idleLabel = idleLabel,
                 onMenuClick = {
                     keyboardController?.hide()
                     scope.launch { drawerState.open() }
                 },
-                onTitleClick = { showModelSelector = true },
                 onMoreClick = {
                     when {
                         isBridgeMode -> showBridgeSessionInfo = true
@@ -568,7 +539,6 @@ fun ChatScreen(
             ChatBottomSection(
                 modifier = Modifier.align(Alignment.BottomStart),
                 inputText = inputText,
-                onInputTextChange = { inputText = it },
                 isRemoteMode = isRemoteMode,
                 uiState = uiState,
                 connectionState = connectionState,
@@ -594,7 +564,12 @@ fun ChatScreen(
                 onNavigateToWorkspace = onNavigateToWorkspace,
                 showConversationModeSelector = config?.showConversationModeSelector ?: isRemoteMode,
                 onShowConversationModeSheet = { showConversationModeSheet = true },
-                onInputBarHeightChange = { inputBarHeight = it }
+                modelLabel = selectedModelLabel,
+                onSelectModel = {
+                    keyboardController?.hide()
+                    showModelSelector = true
+                },
+                onInputBarHeightChange = { inputBarHeight.intValue = it }
             )
         }
     }
@@ -714,14 +689,9 @@ fun ChatScreen(
 @Composable
 private fun ChatFloatingTopBar(
     title: String,
-    subtitle: String,
     isRemoteMode: Boolean,
     isBridgeMode: Boolean,
-    isStreaming: Boolean,
-    streamingLabel: String,
-    idleLabel: String,
     onMenuClick: () -> Unit,
-    onTitleClick: () -> Unit,
     onMoreClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -729,19 +699,7 @@ private fun ChatFloatingTopBar(
     val micaColor = if (isDark) Color(0xFF1D1F24).copy(alpha = 0.92f) else Color(0xFFF7F7FA).copy(alpha = 0.94f)
     val orbColor = if (isDark) Color(0xFF202228).copy(alpha = 0.92f) else Color(0xFFFAFAFC).copy(alpha = 0.96f)
     val borderColor = if (isDark) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.10f)
-    val effectiveSubtitle = subtitle
-    val secondaryText = MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.68f else 0.60f)
-    val isModelVisible = effectiveSubtitle.isNotBlank()
-    val modelAlpha by animateFloatAsState(
-        targetValue = if (isModelVisible) 1f else 0f,
-        animationSpec = tween(durationMillis = 280),
-        label = "modelAlpha"
-    )
-    val modelOffsetY by animateDpAsState(
-        targetValue = if (isModelVisible) 32.dp else 0.dp,
-        animationSpec = tween(durationMillis = 320),
-        label = "modelOffsetY"
-    )
+
 
     Box(
         modifier = modifier
@@ -758,96 +716,30 @@ private fun ChatFloatingTopBar(
             modifier = Modifier.align(Alignment.CenterStart)
         )
 
-        // Centered main pill with animated model pill below it
-        Box(
+        Surface(
+            shape = RoundedCornerShape(999.dp),
+            color = micaColor,
+            border = BorderStroke(0.7.dp, borderColor),
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
             modifier = Modifier
-                .fillMaxWidth()
-                .height(70.dp),
-            contentAlignment = Alignment.Center
+                .align(Alignment.Center)
+                .width(176.dp)
+                .height(44.dp)
         ) {
-            // Model pill - always rendered but animated in/out
-            Surface(
-                onClick = onTitleClick,
-                shape = RoundedCornerShape(
-                    topStart = 0.dp,
-                    topEnd = 0.dp,
-                    bottomStart = 999.dp,
-                    bottomEnd = 999.dp
-                ),
-                color = orbColor.copy(alpha = 0.90f),
-                border = BorderStroke(0.7.dp, borderColor),
-                shadowElevation = 0.dp,
-                tonalElevation = 0.dp,
+            Box(
                 modifier = Modifier
-                    .align(Alignment.Center)
-                    .offset(y = modelOffsetY)
-                    .width(116.dp)
-                    .height(22.dp)
-                    .graphicsLayer { alpha = modelAlpha }
+                    .fillMaxSize()
+                    .padding(horizontal = 14.dp),
+                contentAlignment = Alignment.Center
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 10.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        if (isRemoteMode) {
-                            Box(
-                                modifier = Modifier
-                                    .size(5.dp)
-                                    .clip(CircleShape)
-                                    .background(if (isStreaming) MaterialTheme.colorScheme.primary else secondaryText.copy(alpha = 0.7f))
-                            )
-                            Spacer(Modifier.width(4.dp))
-                        }
-                        Text(
-                            text = effectiveSubtitle,
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontSize = 11.sp,
-                                lineHeight = 14.sp
-                            ),
-                            color = secondaryText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            }
-
-            Surface(
-                onClick = onTitleClick,
-                shape = RoundedCornerShape(999.dp),
-                color = micaColor,
-                border = BorderStroke(0.7.dp, borderColor),
-                shadowElevation = 0.dp,
-                tonalElevation = 0.dp,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .width(176.dp)
-                    .height(44.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 14.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleSmall.copy(
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp,
-                            lineHeight = 18.sp
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
 

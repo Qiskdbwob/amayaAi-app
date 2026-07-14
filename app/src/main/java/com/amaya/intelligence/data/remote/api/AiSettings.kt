@@ -76,12 +76,17 @@ class AiSettingsManager @Inject constructor(
         // Per-agent encrypted API key storage: key = "agent_key_" + agentId
         private const val ENC_AGENT_KEY_PREFIX  = "agent_key_"
         private const val SECURE_PREFS_NAME     = "amaya_secure_prefs"
+        private const val STARTUP_PREFS_NAME    = "amaya_startup_prefs"
+        private const val STARTUP_THEME_KEY     = "theme"
 
         const val MCP_FIXED_PATH = "/storage/emulated/0/Amaya/mcp.json"
     }
 
     private val encryptedPrefs: SharedPreferences by lazy {
         createEncryptedPrefs()
+    }
+    private val startupPrefs: SharedPreferences by lazy {
+        context.getSharedPreferences(STARTUP_PREFS_NAME, Context.MODE_PRIVATE)
     }
 
     private fun createEncryptedPrefs(): SharedPreferences {
@@ -153,12 +158,18 @@ class AiSettingsManager @Inject constructor(
     init {
         // Warm the cache on a background thread — settingsFlow is guaranteed non-null here
         CoroutineScope(Dispatchers.IO).launch {
-            settingsFlow.collect { cachedSettings = it }
+            settingsFlow.collect {
+                cachedSettings = it
+                startupPrefs.edit().putString(STARTUP_THEME_KEY, it.theme).apply()
+            }
         }
     }
 
     fun getSettings(): AiSettings =
         cachedSettings ?: runBlocking { settingsFlow.first() }.also { cachedSettings = it }
+
+    fun getStartupTheme(): String =
+        startupPrefs.getString(STARTUP_THEME_KEY, "system") ?: "system"
 
     /** Retrieve encrypted API key for a specific agent config ID */
     fun getAgentApiKey(agentId: String): String =
@@ -215,6 +226,7 @@ class AiSettingsManager @Inject constructor(
     }
 
     suspend fun setTheme(theme: String) {
+        startupPrefs.edit().putString(STARTUP_THEME_KEY, theme).apply()
         context.dataStore.edit { prefs -> prefs[KEY_THEME] = theme }
     }
 
