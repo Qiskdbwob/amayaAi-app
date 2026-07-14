@@ -94,14 +94,12 @@ object UiStrings {
     
     object Dialogs {
         const val DELETE_CONVERSATION_TITLE = "Delete Conversation?"
-        const val DELETE_AGENT_TITLE = "Delete Agent?"
     }
     
     object Settings {
         const val CURRENT_WORKSPACE = "Current Workspace"
         const val NOT_SELECTED = "Not selected"
-        const val MANAGE_AGENTS = "Manage Agents"
-        const val MANAGE_AGENTS_SUBTITLE = "Add or edit API keys, base URLs, and models"
+        const val MANAGE_MODELS = "Manage Models"
         const val PERSONALITY_MEMORY = "Persona"
         const val PERSONALITY_MEMORY_SUBTITLE = "Style, tone, identity, and behavior"
         const val REMINDERS_JOBS = "Reminders & Jobs"

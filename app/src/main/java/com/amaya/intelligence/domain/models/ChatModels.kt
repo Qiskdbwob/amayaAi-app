@@ -1,6 +1,6 @@
 package com.amaya.intelligence.domain.models
 
-import com.amaya.intelligence.data.remote.api.AgentConfig
+
 import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.tools.TodoItem
 import java.util.UUID
@@ -13,15 +13,13 @@ data class ChatUiState(
     val isStreaming:      Boolean         = false,
     val error:            String?         = null,
     val selectedModel:    String          = "",
-    val availableModels:  List<ModelInfo> = emptyList(),
     val activeProjectId:  Long?           = null,
     val workspacePath:    String?         = null,
     val totalInputTokens:  Int            = 0,
     val totalOutputTokens: Int            = 0,
     val isLoadingConversations: Boolean   = false,
-    val agentConfigs:  List<AgentSelectorItem> = emptyList(),
-    val activeAgentId: String             = "",
-    val activeProviderId: String          = "",
+    val modelOptions:  List<ModelOption> = emptyList(),
+    val activeModelKey: String            = "",
     val conversationId: String?           = null,
     val conversationMode: ConversationMode = ConversationMode.PLANNING,
     val conversationModeId: String?        = null,
@@ -30,16 +28,7 @@ data class ChatUiState(
     val serverIp: String? = null
 )
 
-data class ModelInfo(
-    val id: String,
-    val label: String,
-    val isRecommended: Boolean = false,
-    val quota: Double = 0.0,
-    val quotaLabel: String? = null,
-    val resetTime: String? = null,
-    val tagTitle: String? = null,
-    val supportsImages: Boolean = false
-)
+
 
 enum class ConversationMode(val wireValue: String) {
     PLANNING("planning"),
@@ -122,27 +111,22 @@ enum class ToolStatus {
     ERROR
 }
 
-data class AgentSelectorItem(
+data class ModelOption(
     val id: String,
     val name: String,
     val modelId: String,
+    val connectionId: String = "",
+    val providerId: String = "",
+    val providerName: String = "",
     val tagTitle: String? = null,
-    val quotaStr: String? = null,
     val quotaLabel: String? = null,
     val resetTime: String? = null,
     val isRemote: Boolean = false,
-    val iconType: String = "default", // "openai", "grok", "groq", "kimi", "zai", "deepseek", "meta", "minimax", "mistral", "qwen", "gemini", "claude", "default"
-    val providerId: String = "",
-    val providerName: String = "",
-    val statusLabel: String? = null,
-    val capabilityLabels: List<String> = emptyList(),
-    val contextWindowLabel: String? = null,
-    val sourceLabel: String? = null,
-    val contextWindowTokens: Int? = null,
-    val maxOutputTokens: Int? = null,
-    val inputPricePerMillionTokens: Double? = null,
-    val outputPricePerMillionTokens: Double? = null
+    val iconType: String = "default",
+    val supportsImages: Boolean = false
 )
+
+
 
 // ── Workspace & Projects ──────────────────────────────────────────────────
 

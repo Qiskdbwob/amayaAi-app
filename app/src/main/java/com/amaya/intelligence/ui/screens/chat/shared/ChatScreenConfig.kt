@@ -47,7 +47,7 @@ data class ChatScreenConfig(
     val showScrollablePills: Boolean,
     val showStreamingIndicator: Boolean,
 
-    val selectedAgentFallbackLabel: String = "Select Agent",
+    val selectedModelFallbackLabel: String = "Select Model",
     val streamingLabel: String = "Streaming",
     val idleLabel: String = "Idle",
     
@@ -90,7 +90,7 @@ fun localChatScreenConfig(
     showSessionInfoButton = true,
     showScrollablePills = true,
     showStreamingIndicator = false,
-    selectedAgentFallbackLabel = "Select Agent",
+    selectedModelFallbackLabel = "Select Model",
     streamingLabel = "Streaming",
     idleLabel = "Idle",
     onToolAccept = null,
@@ -132,7 +132,7 @@ fun remoteChatScreenConfig(
     showSessionInfoButton = false,
     showScrollablePills = false,
     showStreamingIndicator = true,
-    selectedAgentFallbackLabel = "Select Agent",
+    selectedModelFallbackLabel = "Select Model",
     streamingLabel = "Streaming",
     idleLabel = "Idle",
     onToolAccept = onToolAccept,
@@ -171,7 +171,7 @@ fun windowsBridgeChatScreenConfig(
     onToolDecline = onToolDecline
 ).copy(
     showConversationModeSelector = false,
-    selectedAgentFallbackLabel = "Select Agent",
+    selectedModelFallbackLabel = "Select Model",
     streamingLabel = "Windows Bridge streaming",
     idleLabel = "Windows Bridge ready",
     welcomeContent = { onPromptClick, _, _, _, _ ->

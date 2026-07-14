@@ -21,7 +21,8 @@ class McpToolExecutor @Inject constructor(
         toolCallId: String? = null,
         onEvent: (suspend (Any) -> Unit)? = null,
         onConfirmationRequired: suspend (ConfirmationRequest) -> Boolean,
-        agentConfig: com.amaya.intelligence.data.remote.api.AgentConfig? = null
+        providerConnection: com.amaya.intelligence.data.remote.api.ProviderConnection? = null,
+        selectedModelId: String? = null
     ): ToolResult {
         // Reverse-map sanitized bridge tool names (e.g. "screen_capture" → "screen.capture").
         // The model receives sanitized names (dots replaced with underscores) because OpenAI
@@ -36,7 +37,7 @@ class McpToolExecutor @Inject constructor(
             windowsBridgeToolProvider.isBridgeTool(wireName) ->
                 windowsBridgeToolProvider.executeBridgeTool(wireName, arguments)
             else ->
-                toolExecutor.execute(wireName, arguments, workspacePath, toolCallId, onEvent, onConfirmationRequired, agentConfig)
+                toolExecutor.execute(wireName, arguments, workspacePath, toolCallId, onEvent, onConfirmationRequired, providerConnection, selectedModelId)
         }
     }
 }

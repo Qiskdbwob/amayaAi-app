@@ -59,7 +59,7 @@ val MIGRATION_5_6 = object : Migration(5, 6) {
 /**
  * Migration for Version 6 to 7.
  * Adds the provider/model catalog tables used by the new provider system while
- * preserving legacy AgentConfig DataStore settings for compatibility.
+ * preserving the existing DataStore settings for compatibility.
  */
 val MIGRATION_6_7 = object : Migration(6, 7) {
     override fun migrate(db: SupportSQLiteDatabase) {
@@ -191,6 +191,26 @@ val MIGRATION_7_8 = object : Migration(7, 8) {
             db.endTransaction()
         }
         LogMigration.d("Migration 7 -> 8 completed successfully")
+    }
+}
+
+val MIGRATION_8_9 = object : Migration(8, 9) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.beginTransaction()
+        try {
+            listOf(
+                "provider_connections",
+                "model_catalog",
+                "provider_model_availability",
+                "manual_model_overrides",
+                "model_aliases",
+                "model_routes",
+                "agent_profiles"
+            ).forEach { table -> db.execSQL("DROP TABLE IF EXISTS `$table`") }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 }
 

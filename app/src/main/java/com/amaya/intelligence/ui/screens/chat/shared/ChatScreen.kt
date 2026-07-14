@@ -106,7 +106,7 @@ fun ChatScreen(
     val doStopGeneration: () -> Unit = remember(viewModel) { { viewModel.stopGeneration() } }
     val doClearConversation: () -> Unit = remember(viewModel) { { viewModel.clearConversation() } }
     val doRespondToConfirmation: (Boolean) -> Unit = remember(viewModel) { { viewModel.respondToConfirmation(it) } }
-    val doSetSelectedAgent: (String) -> Unit = remember(viewModel) { { viewModel.setSelectedAgent(it) } }
+    val doSelectModel: (String) -> Unit = remember(viewModel) { { viewModel.selectModel(it) } }
     val doLoadConversation: (Long) -> Unit = remember(viewModel) { { viewModel.loadConversation(it) } }
     val doDeleteConversation: (Long) -> Unit = remember(viewModel) { { viewModel.deleteConversation(it) } }
     val doClearError: () -> Unit = remember(viewModel) { { viewModel.clearError() } }
@@ -249,14 +249,10 @@ fun ChatScreen(
         }
     }
 
-    val activeAgentId = uiState.activeAgentId
-    val activeProviderId = uiState.activeProviderId
-    val activeAgent = uiState.agentConfigs.find { it.id == activeAgentId }
-    val selectedModel = uiState.selectedModel.ifBlank { activeAgent?.modelId ?: "" }
-    val selectedModelItem = uiState.agentConfigs.firstOrNull { item ->
-        item.modelId == selectedModel && (activeProviderId.isBlank() || item.providerId == activeProviderId)
-    } ?: activeAgent ?: uiState.agentConfigs.firstOrNull()
-    val selectedAgentFallbackLabel = config?.selectedAgentFallbackLabel ?: "Select Agent"
+    val activeModelKey = uiState.activeModelKey
+    val selectedModelItem = uiState.modelOptions.firstOrNull { it.id == activeModelKey }
+    val selectedModel = uiState.selectedModel.ifBlank { selectedModelItem?.modelId.orEmpty() }
+    val selectedModelFallbackLabel = config?.selectedModelFallbackLabel ?: "Select Model"
 
     val onToolAccept: ((ToolExecution) -> Unit)? = remember(viewModel) {
         { execution: ToolExecution -> viewModel.respondToToolInteraction(execution.toolCallId, true) }
@@ -386,7 +382,7 @@ fun ChatScreen(
     }
 
     val conversations by conversationsFlow.collectAsState()
-    val selectedModelLabel = (selectedModelItem?.name ?: selectedModel).ifBlank { selectedAgentFallbackLabel }
+    val selectedModelLabel = (selectedModelItem?.name ?: selectedModel).ifBlank { selectedModelFallbackLabel }
     val activeConversationTitle = remember(conversations, uiState.conversationId) {
         conversations.firstOrNull { it.id.toString() == uiState.conversationId }?.title
     }
@@ -565,6 +561,9 @@ fun ChatScreen(
                 showConversationModeSelector = config?.showConversationModeSelector ?: isRemoteMode,
                 onShowConversationModeSheet = { showConversationModeSheet = true },
                 modelLabel = selectedModelLabel,
+                modelId = selectedModelItem?.modelId.orEmpty(),
+                modelProviderId = selectedModelItem?.providerId,
+                modelIconType = selectedModelItem?.iconType,
                 onSelectModel = {
                     keyboardController?.hide()
                     showModelSelector = true
@@ -603,13 +602,10 @@ fun ChatScreen(
 
     if (showModelSelector) {
         ModelSelectorSheet(
-            agentItems = uiState.agentConfigs,
-            activeAgentId = activeAgentId,
-            activeModel = selectedModel,
-            activeProviderId = activeProviderId.ifBlank { selectedModelItem?.providerId.orEmpty() },
-            isRemote = isRemoteMode,
+            modelOptions = uiState.modelOptions,
+            activeModelKey = activeModelKey,
             onSelect = { item ->
-                doSetSelectedAgent(item.id)
+                doSelectModel(item.id)
                 showModelSelector = false
             },
             onDismiss = { showModelSelector = false }
@@ -624,15 +620,9 @@ fun ChatScreen(
             onDismiss = { showSessionInfo = false },
             inputTokens = uiState.totalInputTokens,
             outputTokens = uiState.totalOutputTokens,
-            providerId = selectedModelItem?.providerId ?: activeAgent?.providerId,
+            providerId = selectedModelItem?.providerId,
             providerNameOverride = selectedModelItem?.providerName,
-            modelDisplayNameOverride = selectedModelItem?.name,
-            sourceLabelOverride = selectedModelItem?.sourceLabel,
-            contextWindowTokensOverride = selectedModelItem?.contextWindowTokens,
-            maxOutputTokensOverride = selectedModelItem?.maxOutputTokens,
-            capabilityLabelsOverride = selectedModelItem?.capabilityLabels.orEmpty(),
-            inputPriceOverride = selectedModelItem?.inputPricePerMillionTokens,
-            outputPriceOverride = selectedModelItem?.outputPricePerMillionTokens
+            modelDisplayNameOverride = selectedModelItem?.name
         )
     }
 

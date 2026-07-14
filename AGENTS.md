@@ -50,7 +50,7 @@ amaya/
 ## File Functions
 - `AGENTS.md`: repo-wide coordination and routing rules.
 - `amaya-remote-extension/AGENTS.md`: extension-specific rules for TypeScript, controllers, IDE abstraction, and tests.
-- `docs/`: browser toolcall notes and schema references for the Android browser runtime.
+- `docs/`: browser toolcall references plus the current provider/model settings contract in `models.md`.
 - `app/AGENTS.md`: Android-wide rules for Compose, Gradle, Hilt, persistence, runtime services, and browser UI/runtime work.
 - `app/src/main/java/com/amaya/intelligence/data/remote/AGENTS.md`: Android remote API, settings, and model mapping guidance.
 - `app/src/main/java/com/amaya/intelligence/data/local/AGENTS.md`: Android local storage and database guidance.
@@ -68,7 +68,7 @@ amaya/
 - `amaya-remote-extension/src/connectivity/`: WebSocket and transport wiring.
 - `amaya-remote-extension/test/`: raw captures, debug harnesses, and reverse-engineering scripts.
 - `app/src/main/java/com/amaya/intelligence/domain/`: shared models, interfaces, and app-level contracts.
-- `app/src/main/java/com/amaya/intelligence/data/remote/`: remote API clients, settings, and transport-facing models.
+- `app/src/main/java/com/amaya/intelligence/data/remote/`: remote API clients, provider presets/discovery, settings, and transport-facing models.
 - `app/src/main/java/com/amaya/intelligence/data/local/`: local entities, DAOs, Room database, and file-backed stores.
 - `app/schemas/`: exported Room schema snapshots and versioning notes.
 - `app/src/main/java/com/amaya/intelligence/data/repository/`: repositories and orchestration for AI, persona, memory, skills, session recall, and maintenance.
@@ -76,12 +76,15 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/domain/skills/`: reusable skill domain models and patch/usage helpers.
 - `app/src/main/java/com/amaya/intelligence/impl/ide/antigravity/`: Antigravity provider, protocol, client, and event mapping.
 - `app/src/main/java/com/amaya/intelligence/impl/ide/opencode/`: Opencode CLI agent client, models, and IntelligenceService driven by the Windows Bridge `agent.*` envelopes.
+- `app/src/main/java/com/amaya/intelligence/impl/common/mappers/ModelUiMapper.kt`: provider/runtime model mapping into shared chat options.
 - `app/src/main/java/com/amaya/intelligence/impl/local/`: local runtime, browser automation, service, and tool execution flow.
 - `app/src/main/java/com/amaya/intelligence/ui/activities/browser/`: fullscreen browser operator entry point.
+- `app/src/main/java/com/amaya/intelligence/ui/activities/models/`: Manage Models entry point for provider connections and chat-visible models.
 - `app/src/main/java/com/amaya/intelligence/ui/activities/opencode/`: activities for Opencode landing, chat, and settings screens.
 - `app/src/main/java/com/amaya/intelligence/ui/screens/browser/`: browser operator Compose screen and control dock.
 - `app/src/main/java/com/amaya/intelligence/ui/screens/opencode/`: Opencode landing and settings Compose screens.
 - `app/src/main/java/com/amaya/intelligence/ui/screens/chat/opencode/`: Opencode chat Compose wrapper reusing the shared ChatScreen.
+- `app/src/main/java/com/amaya/intelligence/ui/components/shared/ModelIcon.kt`: shared model/provider leading-icon resolver and renderer.
 - `app/src/main/java/com/amaya/intelligence/ui/components/shared/BrowserToolCallCard.kt`: browser parent tool renderer in chat.
 - `app/src/main/java/com/amaya/intelligence/tools/BrowserUseToolset.kt`: parent browser tool wrapper and legacy aliases.
 - `app/src/main/java/com/amaya/intelligence/tools/MemoryManageTool.kt`: saved-memory list/search/update/remove tool.

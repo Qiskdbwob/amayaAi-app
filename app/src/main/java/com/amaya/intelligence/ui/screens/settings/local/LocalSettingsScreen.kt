@@ -36,7 +36,7 @@ fun LocalSettingsScreen(
     currentWorkspace: String?,
     onNavigateToWorkspace: () -> Unit,
     aiSettingsManager: AiSettingsManager,
-    onNavigateToAgents: () -> Unit,
+    onNavigateToModels: () -> Unit,
     onNavigateToReminders: () -> Unit,
     onNavigateToMcp: () -> Unit,
     onNavigateToPersona: () -> Unit,
@@ -84,11 +84,16 @@ fun LocalSettingsScreen(
                 IosSettingsSection("AI") {
                     IosSettingsRow(
                         icon = Icons.Default.SmartToy,
-                        title = UiStrings.Settings.MANAGE_AGENTS,
-                        subtitle = "Models & providers",
+                        title = UiStrings.Settings.MANAGE_MODELS,
+                        subtitle = if (settings.connections.isEmpty()) {
+                            "No providers configured"
+                        } else {
+                            val modelCount = settings.connections.sumOf { it.visibleModels.size }
+                            "${settings.connections.size} ${if (settings.connections.size == 1) "provider" else "providers"} · $modelCount ${if (modelCount == 1) "model" else "models"}"
+                        },
                         isFirst = true,
                         isLast = false,
-                        onClick = onNavigateToAgents
+                        onClick = onNavigateToModels
                     )
                     IosSettingsDivider()
                     IosSettingsRow(

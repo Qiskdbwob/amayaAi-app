@@ -189,8 +189,8 @@ class AntigravityIntelligenceService @Inject constructor(
         // Antigravity might not support deletion via client yet, or needs mapping
     }
 
-    override fun setSelectedAgent(agentId: String) {
-        client.selectModel(agentId)
+    override fun selectModel(modelKey: String) {
+        client.selectModel(modelKey)
     }
 
     override fun getProjectFiles(path: String) {

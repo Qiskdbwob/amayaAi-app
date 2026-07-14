@@ -48,7 +48,10 @@ fun ChatInput(
     onShowConversationModeSelector: () -> Unit = {},
     workspacePath: String? = null,
     onWorkspaceClick: () -> Unit = {},
-    modelLabel: String = "Select Agent",
+    modelLabel: String = "Select Model",
+    modelId: String = "",
+    modelProviderId: String? = null,
+    modelIconType: String? = null,
     onSelectModel: () -> Unit = {},
     onSendMessage: (String) -> Unit,
     onStopGeneration: () -> Unit
@@ -274,6 +277,13 @@ fun ChatInput(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
+                            ModelLeadingIcon(
+                                modelId = modelId,
+                                providerId = modelProviderId,
+                                iconType = modelIconType,
+                                modifier = Modifier.size(17.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                             Text(
                                 text = modelLabel,
                                 style = MaterialTheme.typography.labelMedium,

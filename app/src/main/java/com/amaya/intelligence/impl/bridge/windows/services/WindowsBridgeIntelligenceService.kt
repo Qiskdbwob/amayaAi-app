@@ -4,18 +4,17 @@ import com.amaya.intelligence.data.local.dao.ConversationDao
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.data.local.entity.ConversationScope
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
-import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
+
 import com.amaya.intelligence.data.remote.api.ChatMessage
 import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.data.repository.AgentEvent
 import com.amaya.intelligence.data.repository.AgentRuntimeTarget
 import com.amaya.intelligence.data.repository.AiRepository
-import com.amaya.intelligence.data.repository.ModelCatalogRepository
-import com.amaya.intelligence.data.repository.ProviderConnectionRepository
+
 import com.amaya.intelligence.di.ApplicationScope
 import com.amaya.intelligence.domain.ai.IntelligenceService
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
-import com.amaya.intelligence.domain.models.AgentSelectorItem
+
 import com.amaya.intelligence.domain.models.ChatUiState
 import com.amaya.intelligence.domain.models.ConnectionState
 import com.amaya.intelligence.domain.models.MessageStep
@@ -24,8 +23,8 @@ import com.amaya.intelligence.domain.models.ToolStatus
 import com.amaya.intelligence.domain.models.UiMessage
 import com.amaya.intelligence.impl.bridge.windows.WindowsBridgeConnectionState
 import com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeController
-import com.amaya.intelligence.impl.common.mappers.AgentMapper
-import com.amaya.intelligence.impl.common.mappers.AgentUiMapper
+
+import com.amaya.intelligence.impl.common.mappers.ModelUiMapper
 import com.amaya.intelligence.impl.common.mappers.ToolUiMapper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -50,8 +49,6 @@ class WindowsBridgeIntelligenceService @Inject constructor(
     private val aiRepository: AiRepository,
     private val conversationDao: ConversationDao,
     private val settingsManager: AiSettingsManager,
-    private val modelCatalogRepository: ModelCatalogRepository,
-    private val providerConnectionRepository: ProviderConnectionRepository,
     private val bridgeController: WindowsBridgeController,
     @ApplicationScope private val scope: CoroutineScope
 ) : IntelligenceService {
@@ -77,57 +74,17 @@ class WindowsBridgeIntelligenceService @Inject constructor(
                 .collect { _conversations.value = it }
         }
         scope.launch {
-            combine(settingsManager.settingsFlow, modelCatalogRepository.observeCatalog()) { settings, catalog ->
-                providerConnectionRepository.mirrorLegacyAgents(settings.agentConfigs)
-                val subscriptionProviderIds = AmayaProviderRegistry.providers
-                    .filter { it.isSubscription }
-                    .map { it.id }
-                    .toSet()
-                val runnableAgents = settings.agentConfigs.filter { it.providerId !in subscriptionProviderIds }
-                val configuredModelKeys = runnableAgents.map { it.providerId to it.modelId }.toSet()
-                val enabledCatalogModelKeys = settings.agentConfigs
-                    .flatMap { config ->
-                        val enabledModels = if (config.providerId in subscriptionProviderIds) {
-                            config.enabledModelIds
-                        } else {
-                            config.enabledModelIds.ifEmpty { listOf(config.modelId) }
-                        }
-                        enabledModels
-                            .filter { it.isNotBlank() && it != config.providerId }
-                            .map { config.providerId to it }
+            settingsManager.settingsFlow.collect { settings ->
+                val options = settings.connections.flatMap { connection ->
+                    connection.visibleModels.map { model ->
+                        ModelUiMapper.mapConnectionModel(connection, model)
                     }
-                    .toSet()
-                val selectorItems = runnableAgents.map { AgentUiMapper.mapToSelectorItem(it) } + catalog
-                    .filter { (it.providerId to it.modelId) in enabledCatalogModelKeys }
-                    .filter { (it.providerId to it.modelId) !in configuredModelKeys }
-                    .map { entry ->
-                        AgentSelectorItem(
-                            id = "catalog|${entry.providerId}|${entry.modelId}",
-                            name = entry.displayName,
-                            modelId = entry.modelId,
-                            iconType = AgentMapper.getIconTypeForProvider(entry.providerId)
-                                ?: AgentMapper.getIconType(entry.modelId) ?: "default",
-                            providerId = entry.providerId,
-                            providerName = entry.metadata["providerName"] ?: AmayaProviderRegistry.displayName(entry.providerId),
-                            statusLabel = "Enabled model",
-                            capabilityLabels = entry.capabilities.map { it.label }.take(4),
-                            contextWindowLabel = entry.contextWindow?.let { formatTokenCount(it).uppercase() },
-                            sourceLabel = if (entry.source.name == "MODELS_DEV") "models.dev" else entry.source.name.lowercase(),
-                            contextWindowTokens = entry.contextWindow,
-                            maxOutputTokens = entry.maxOutputTokens,
-                            inputPricePerMillionTokens = entry.inputPricePerMillionTokens,
-                            outputPricePerMillionTokens = entry.outputPricePerMillionTokens
-                        )
-                    }
-                val activeProviderId = settings.agentConfigs.firstOrNull { it.id == settings.activeAgentId }?.providerId.orEmpty()
-                Triple(settings, selectorItems, activeProviderId)
-            }.collect { (settings, selectorItems, activeProviderId) ->
+                }
                 _uiState.update {
                     it.copy(
-                        agentConfigs = selectorItems,
-                        activeAgentId = settings.activeAgentId,
-                        activeProviderId = activeProviderId,
-                        selectedModel = settings.activeModel,
+                        modelOptions = options,
+                        activeModelKey = settings.activeSelection?.key.orEmpty(),
+                        selectedModel = settings.activeSelection?.modelId.orEmpty(),
                         sessionMode = IntelligenceSessionManager.SessionMode.WINDOWS_BRIDGE
                     )
                 }
@@ -167,7 +124,10 @@ class WindowsBridgeIntelligenceService @Inject constructor(
                     message = content,
                     conversationHistory = history.dropLast(1),
                     conversationId = conversationIdForTurn,
-                    activeAgentId = _uiState.value.activeAgentId,
+                    connectionId = _uiState.value.activeModelKey
+                        .takeIf { it.startsWith("model|") }
+                        ?.split('|', limit = 3)
+                        ?.getOrNull(1),
                     selectedModel = _uiState.value.selectedModel,
                     runtimeTarget = AgentRuntimeTarget.WINDOWS_BRIDGE,
                     onConfirmation = { false }
@@ -257,29 +217,16 @@ class WindowsBridgeIntelligenceService @Inject constructor(
         }
     }
 
-    override fun setSelectedAgent(agentId: String) {
+    override fun selectModel(modelKey: String) {
         scope.launch {
-            val settings = settingsManager.getSettings()
-            if (agentId.startsWith("catalog|")) {
-                val parts = agentId.split('|', limit = 3)
-                val providerId = parts.getOrNull(1).orEmpty()
-                val modelId = parts.getOrNull(2).orEmpty()
-                if (modelId.isBlank()) return@launch
-                val matchingAgent = settings.agentConfigs.firstOrNull { it.enabled && it.providerId == providerId }
-                    ?: settings.agentConfigs.firstOrNull { it.providerId == providerId }
-                _uiState.update { it.copy(selectedModel = modelId) }
-                if (matchingAgent != null) {
-                    settingsManager.setActiveAgent(matchingAgent.id, modelId)
-                } else {
-                    settingsManager.setActiveModel(modelId)
-                }
-                return@launch
-            }
-            val agent = settings.agentConfigs.find { it.id == agentId }
-            agent?.let {
-                _uiState.update { state -> state.copy(selectedModel = it.modelId) }
-                settingsManager.setActiveAgent(it.id, it.modelId)
-            }
+            val parts = modelKey.split('|', limit = 3)
+            if (parts.size != 3 || parts[0] != "model") return@launch
+            settingsManager.setActiveModel(
+                com.amaya.intelligence.data.remote.api.ActiveModelSelection(
+                    connectionId = parts[1],
+                    modelId = parts[2]
+                )
+            )
         }
     }
 

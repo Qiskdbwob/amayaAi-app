@@ -6,9 +6,7 @@ import com.amaya.intelligence.data.local.dao.ConversationDao
 import com.amaya.intelligence.data.local.dao.CronJobDao
 import com.amaya.intelligence.data.local.dao.FileDao
 import com.amaya.intelligence.data.local.dao.FileMetadataDao
-import com.amaya.intelligence.data.local.dao.ModelCatalogDao
-import com.amaya.intelligence.data.local.dao.ProviderConnectionDao
-import com.amaya.intelligence.data.local.dao.AgentProfileDao
+
 import com.amaya.intelligence.data.local.dao.ProjectDao
 import dagger.Module
 import dagger.Provides
@@ -62,21 +60,4 @@ object DatabaseModule {
         return database.cronJobDao()
     }
 
-    @Provides
-    @Singleton
-    fun provideProviderConnectionDao(database: AppDatabase): ProviderConnectionDao {
-        return database.providerConnectionDao()
-    }
-
-    @Provides
-    @Singleton
-    fun provideModelCatalogDao(database: AppDatabase): ModelCatalogDao {
-        return database.modelCatalogDao()
-    }
-
-    @Provides
-    @Singleton
-    fun provideAgentProfileDao(database: AppDatabase): AgentProfileDao {
-        return database.agentProfileDao()
-    }
 }

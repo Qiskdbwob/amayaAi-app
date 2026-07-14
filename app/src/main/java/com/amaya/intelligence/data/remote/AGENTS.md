@@ -31,7 +31,9 @@ data/remote/
 - `repository/`: repository implementations that coordinate remote state and persistence.
 
 ## Key Source Code
-- `api/AiSettings.kt`: agent profile, credential, and settings persistence.
+- `api/AiSettings.kt`: provider connections, active model selection, credential access, and settings persistence.
+- `api/ProviderRegistry.kt`: stable provider presets and adapter mapping; no model catalog or inferred metadata.
+- `api/ProviderModelService.kt`: provider-owned model discovery, GitHub catalog mapping, and provider URL validation.
 - `api/GeminiProvider.kt`: Gemini request/response models and streaming parsing.
 - `api/OpenAiProvider.kt`: OpenAI request/response models and tool-call parsing.
 - `api/AnthropicProvider.kt`: Anthropic request/response models and streaming parsing.

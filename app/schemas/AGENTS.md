@@ -148,14 +148,19 @@ Contoh:
 
 ---
 
-## 🔼 V9 (Cleanup / remove column)
+## ✅ V9 (Provider/model catalog cleanup)
 
-SQLite:
-❌ tidak bisa drop column
+Migration `8 → 9` drops the unused provider/model catalog tables:
 
-👉 Solusi:
+* `provider_connections`
+* `model_catalog`
+* `provider_model_availability`
+* `manual_model_overrides`
+* `model_aliases`
+* `model_routes`
+* `agent_profiles`
 
-* recreate table tanpa column lama
+Provider/model settings now use DataStore plus encrypted credential storage.
 
 ---
 

@@ -343,6 +343,17 @@
             android:name="com.amaya.intelligence.impl.ide.opencode.OpencodeSessionForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <activity
+            android:name=".ui.activities.models.ManageModelsActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya" />
+
+        <activity
+            android:name=".ui.activities.models.ProviderDetailActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.Amaya" />
     </application>
 
 </manifest>

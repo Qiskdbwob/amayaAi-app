@@ -1,8 +1,8 @@
 package com.amaya.intelligence.impl.ide.antigravity.services.event
 
 import com.amaya.intelligence.domain.models.*
-import com.amaya.intelligence.data.remote.api.AgentConfig
-import com.amaya.intelligence.impl.common.mappers.AgentUiMapper
+
+import com.amaya.intelligence.impl.common.mappers.ModelUiMapper
 import com.amaya.intelligence.impl.ide.antigravity.client.*
 import com.amaya.intelligence.impl.ide.antigravity.client.RemoteWorkspace as ClientRemoteWorkspace
 import com.amaya.intelligence.impl.ide.antigravity.services.streaming.StreamingStateManager
@@ -44,7 +44,7 @@ class WorkspaceEventHandler(
     fun handleModelSelected(event: RemoteEvent.ModelSelected) {
         onUiStateUpdate { state -> state.copy(
             selectedModel = event.modelId,
-            activeAgentId = event.modelId
+            activeModelKey = event.modelId
         )}
     }
     
@@ -130,38 +130,21 @@ class WorkspaceEventHandler(
     }
     
     fun handleModelsList(event: RemoteEvent.ModelsList) {
-        val models = event.models.map { m ->
-            val quotaLabel = m.quotaLabel ?: formatQuotaLabel(m.quota)
-            ModelInfo(
+
+        val selectorItems = event.models.map { m ->
+            ModelUiMapper.mapRemoteModel(
                 id = m.id,
-                label = m.label,
-                isRecommended = m.isRecommended,
-                quota = m.quota,
-                quotaLabel = quotaLabel,
-                resetTime = m.resetTime,
+                name = m.label,
+                modelId = m.id,
                 tagTitle = m.tagTitle,
+                quotaLabel = m.quotaLabel ?: formatQuotaLabel(m.quota),
+                resetTime = m.resetTime,
                 supportsImages = m.supportsImages
             )
         }
-        val selectorItems = event.models.map { m ->
-            val quotaLabel = m.quotaLabel ?: formatQuotaLabel(m.quota)
-            AgentUiMapper.mapToSelectorItem(
-                AgentConfig(
-                    id = m.id,
-                    name = m.label.ifBlank { m.id },
-                    modelId = m.id
-                ),
-                isRemote = true,
-                tagTitle = m.tagTitle,
-                quotaStr = m.quota.toString(),
-                quotaLabel = quotaLabel,
-                resetTime = m.resetTime
-            )
-        }
         onUiStateUpdate { state -> state.copy(
-            availableModels = models,
-            agentConfigs = selectorItems,
-            activeAgentId = event.selectedModelId,
+            modelOptions = selectorItems,
+            activeModelKey = event.selectedModelId,
             selectedModel = event.selectedModelId
         )}
     }

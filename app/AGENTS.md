@@ -43,6 +43,7 @@ app/
 		│	├─ com/amaya/intelligence/impl/local/browser/
 		│	├─ com/amaya/intelligence/tools/
 		│	├─ com/amaya/intelligence/ui/activities/bridge/
+		│	├─ com/amaya/intelligence/ui/activities/models/
 		│	├─ com/amaya/intelligence/ui/activities/browser/
 		│	├─ com/amaya/intelligence/ui/components/shared/
 		│	├─ com/amaya/intelligence/ui/screens/chat/bridge/
@@ -56,7 +57,7 @@ app/
 - `build.gradle.kts`: Android module build config, dependencies, and test settings.
 - `schemas/`: exported Room schema snapshots.
 - `src/main/AndroidManifest.xml`: app components, services, receivers, and permissions.
-- `src/main/java/com/amaya/intelligence/data/remote/`: remote APIs, settings, and provider models.
+- `src/main/java/com/amaya/intelligence/data/remote/`: remote APIs, provider presets/model discovery, settings, and provider models.
 - `src/main/java/com/amaya/intelligence/data/local/`: local storage and database layer, including Room and file-backed stores.
 - `src/main/java/com/amaya/intelligence/domain/bridge/AGENTS.md`: shared bridge contract rules.
 - `src/main/java/com/amaya/intelligence/impl/bridge/windows/AGENTS.md`: Android Windows bridge runtime rules.
@@ -69,7 +70,7 @@ app/
 - `src/main/java/com/amaya/intelligence/ui/`: Compose UI screens, activities, and theme.
 - `src/main/java/com/amaya/intelligence/ui/screens/chat/bridge/`: bridge chat screen wiring and chat-specific bridge UI entry points.
 - `src/main/java/com/amaya/intelligence/ui/screens/browser/`: browser operator screen and control dock.
-- `src/main/java/com/amaya/intelligence/ui/components/shared/`: reusable shared UI components, including browser tool cards.
+- `src/main/java/com/amaya/intelligence/ui/components/shared/`: reusable shared UI components, including browser tool cards and `ModelIcon.kt` model/provider leading icons.
 - `src/main/java/com/amaya/intelligence/utils/`: temporary runtime utilities such as local stream profiling.
 
 ## Key Source Code
@@ -80,9 +81,10 @@ app/
 - `src/main/java/com/amaya/intelligence/data/repository/`: repository layer that orchestrates AI, personas, files, conversations, memory, skills, pending proposals, context recall, and maintenance.
 - `src/main/java/com/amaya/intelligence/data/local/db/`: Room database, entities, and DAOs.
 - `src/main/java/com/amaya/intelligence/data/local/files/`: file-backed stores for local session recall and reusable skill documents.
-- `src/main/java/com/amaya/intelligence/impl/common/`: mappers and shared implementation utilities.
+- `src/main/java/com/amaya/intelligence/impl/common/`: shared implementation utilities, including provider/model-to-UI mapping in `mappers/ModelUiMapper.kt`.
 - `src/main/java/com/amaya/intelligence/impl/bridge/windows/`: Android bridge client, controller, event handling, tool mapping, and session sync.
 - `src/main/java/com/amaya/intelligence/impl/ide/antigravity/`: remote IDE provider, protocol, event handling, and streaming client.
 - `src/main/java/com/amaya/intelligence/impl/local/`: local AI service, browser runtime, and local runtime integrations.
 - `src/main/java/com/amaya/intelligence/tools/`: file, shell, memory, todo, reminder, subagent, and browser tools.
-- `src/main/java/com/amaya/intelligence/ui/`: chat, settings, browser, bridge, and remote/local UI entry points.
+- `src/main/java/com/amaya/intelligence/ui/`: chat, settings, browser, bridge, Manage Models, and remote/local UI entry points.
+- `src/main/java/com/amaya/intelligence/ui/screens/models/`: provider connection inventory, model visibility, setup, credential replacement, and active model selection UI.

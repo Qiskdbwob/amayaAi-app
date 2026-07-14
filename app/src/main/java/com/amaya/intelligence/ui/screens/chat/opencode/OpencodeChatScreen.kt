@@ -104,7 +104,7 @@ fun OpencodeChatScreen(
         // that lives inside the chat input bar. Turning it on here lets the
         // shared ChatInput surface the pill + bottom sheet.
         showConversationModeSelector = true,
-        selectedAgentFallbackLabel = "Select Opencode Model",
+        selectedModelFallbackLabel = "Select Opencode Model",
         streamingLabel = "Opencode streaming",
         idleLabel = "Opencode ready"
     )

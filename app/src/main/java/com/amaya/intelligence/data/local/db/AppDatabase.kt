@@ -12,6 +12,7 @@ import com.amaya.intelligence.data.local.entity.*
 import com.amaya.intelligence.data.local.db.migrations.MIGRATION_5_6
 import com.amaya.intelligence.data.local.db.migrations.MIGRATION_6_7
 import com.amaya.intelligence.data.local.db.migrations.MIGRATION_7_8
+import com.amaya.intelligence.data.local.db.migrations.MIGRATION_8_9
 
 @TypeConverters(CronJobTypeConverters::class)
 @Database(
@@ -21,14 +22,7 @@ import com.amaya.intelligence.data.local.db.migrations.MIGRATION_7_8
         FileFtsEntity::class,
         FileMetadataEntity::class,
         ConversationEntity::class,
-        CronJobEntity::class,
-        ProviderConnectionEntity::class,
-        ModelCatalogEntity::class,
-        ProviderModelAvailabilityEntity::class,
-        ManualModelOverrideEntity::class,
-        ModelAliasEntity::class,
-        ModelRouteEntity::class,
-        AgentProfileEntity::class
+        CronJobEntity::class
     ],
     version = AppDatabase.DATABASE_VERSION,
     exportSchema = true
@@ -40,12 +34,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun fileMetadataDao(): FileMetadataDao
     abstract fun conversationDao(): ConversationDao
     abstract fun cronJobDao(): CronJobDao
-    abstract fun providerConnectionDao(): ProviderConnectionDao
-    abstract fun modelCatalogDao(): ModelCatalogDao
-    abstract fun agentProfileDao(): AgentProfileDao
 
     companion object {
-        const val DATABASE_VERSION = 8
+        const val DATABASE_VERSION = 9
         private const val DATABASE_NAME = "Amaya_db"
         private const val TAG = "AppDatabase"
 
@@ -76,7 +67,7 @@ abstract class AppDatabase : RoomDatabase() {
                         Log.d(TAG, "Database opened: version ${db.version}")
                     }
                 })
-                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 .build()
         }
     }

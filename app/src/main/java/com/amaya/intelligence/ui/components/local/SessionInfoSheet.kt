@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Login
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -21,7 +23,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import com.amaya.intelligence.data.remote.api.KnownModelCatalog
+
 import com.amaya.intelligence.ui.components.shared.ContextWindowUtils
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import com.amaya.intelligence.ui.components.shared.rememberLockedModalBottomSheetState
@@ -38,22 +40,8 @@ fun SessionInfoSheet(
     outputTokens: Int = 0,
     providerId: String? = null,
     providerNameOverride: String? = null,
-    modelDisplayNameOverride: String? = null,
-    sourceLabelOverride: String? = null,
-    contextWindowTokensOverride: Int? = null,
-    maxOutputTokensOverride: Int? = null,
-    capabilityLabelsOverride: List<String> = emptyList(),
-    inputPriceOverride: Double? = null,
-    outputPriceOverride: Double? = null
+    modelDisplayNameOverride: String? = null
 ) {
-    val effectiveModel = KnownModelCatalog.infer(activeModel, providerId)
-    val contextTokens = contextWindowTokensOverride ?: effectiveModel.contextWindow
-    val contextWindow = contextTokens?.let {
-        ContextWindowUtils.ContextWindowInfo(it, ContextWindowUtils.formatTokenCount(it).uppercase(), sourceLabelOverride ?: effectiveModel.sourceLabel)
-    } ?: ContextWindowUtils.getContextWindowInfo(activeModel)
-    val remainingTokens = contextWindow.tokens?.let { (it - totalTokens).coerceAtLeast(0) }
-    val usagePercent = contextWindow.tokens?.takeIf { it > 0 }?.let { totalTokens.toFloat() / it.toFloat() } ?: 0f
-
     val scope = rememberCoroutineScope()
     val sheetState = rememberLockedModalBottomSheetState()
     ModalBottomSheet(
@@ -83,22 +71,17 @@ fun SessionInfoSheet(
                 SessionInfoRow(
                     icon = Icons.Default.Error,
                     label = "Tokens used",
-                    value = if (totalTokens > 0) ContextWindowUtils.formatTokenCount(totalTokens) else "0",
-                    valueColor = when {
-                        usagePercent >= 0.90f -> MaterialTheme.colorScheme.error
-                        usagePercent >= 0.70f -> Color(0xFFFF9800)
-                        else                  -> MaterialTheme.colorScheme.onSurface
-                    }
+                    value = if (totalTokens > 0) ContextWindowUtils.formatTokenCount(totalTokens) else "0"
                 )
 
                 if (inputTokens > 0 || outputTokens > 0) {
                     SessionInfoRow(
-                        icon = Icons.Default.Login,
+                        icon = Icons.AutoMirrored.Filled.Login,
                         label = "Input tokens",
                         value = ContextWindowUtils.formatTokenCount(inputTokens)
                     )
                     SessionInfoRow(
-                        icon = Icons.Default.Logout,
+                        icon = Icons.AutoMirrored.Filled.Logout,
                         label = "Output tokens",
                         value = ContextWindowUtils.formatTokenCount(outputTokens)
                     )
@@ -107,46 +90,16 @@ fun SessionInfoSheet(
                 SessionInfoRow(
                     icon = Icons.Default.AccountTree,
                     label = "Provider",
-                    value = providerNameOverride ?: effectiveModel.providerName
+                    value = providerNameOverride ?: providerId ?: "Unknown"
                 )
 
                 SessionInfoRow(
                     icon = Icons.Default.Psychology,
                     label = "Model",
-                    value = modelDisplayNameOverride ?: effectiveModel.displayName
+                    value = modelDisplayNameOverride ?: activeModel
                 )
 
-                SessionInfoRow(
-                    icon = Icons.Default.DataUsage,
-                    label = "Context window",
-                    value = contextWindow.label
-                )
 
-                SessionInfoRow(
-                    icon = Icons.Default.HourglassEmpty,
-                    label = "Approx. remaining",
-                    value = remainingTokens?.let { ContextWindowUtils.formatTokenCount(it) } ?: "-"
-                )
-
-                (maxOutputTokensOverride ?: effectiveModel.maxOutputTokens)?.let { maxOutput ->
-                    SessionInfoRow(
-                        icon = Icons.Default.Output,
-                        label = "Max output",
-                        value = ContextWindowUtils.formatTokenCount(maxOutput)
-                    )
-                }
-
-                val priceText = buildList {
-                    (inputPriceOverride ?: effectiveModel.inputPricePerMillionTokens)?.let { add("in $$it/M") }
-                    (outputPriceOverride ?: effectiveModel.outputPricePerMillionTokens)?.let { add("out $$it/M") }
-                }.joinToString(" · ")
-                if (priceText.isNotBlank()) {
-                    SessionInfoRow(
-                        icon = Icons.Default.Paid,
-                        label = "Pricing",
-                        value = priceText
-                    )
-                }
 
                 SessionInfoRow(
                     icon = Icons.Default.Alarm,

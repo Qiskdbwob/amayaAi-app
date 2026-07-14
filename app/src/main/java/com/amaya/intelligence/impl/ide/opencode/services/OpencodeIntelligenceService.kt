@@ -8,7 +8,7 @@ import com.amaya.intelligence.di.ApplicationScope
 import com.amaya.intelligence.domain.ai.IntelligenceService
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.domain.bridge.AgentModes
-import com.amaya.intelligence.domain.models.AgentSelectorItem
+import com.amaya.intelligence.domain.models.ModelOption
 import com.amaya.intelligence.domain.models.ChatUiState
 import com.amaya.intelligence.domain.models.ConnectionState
 import com.amaya.intelligence.domain.models.MessageStep
@@ -19,7 +19,7 @@ import com.amaya.intelligence.domain.models.ToolStatus
 import com.amaya.intelligence.domain.models.UiMessage
 import com.amaya.intelligence.impl.bridge.windows.WindowsBridgeConnectionState
 import com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeController
-import com.amaya.intelligence.impl.common.mappers.AgentMapper
+
 import com.amaya.intelligence.impl.ide.opencode.OpencodeClient
 import com.amaya.intelligence.impl.ide.opencode.OpencodeMessagePartUpdate
 import com.amaya.intelligence.impl.ide.opencode.OpencodeModelSummary
@@ -239,20 +239,19 @@ class OpencodeIntelligenceService @Inject constructor(
         }
     }
 
-    override fun setSelectedAgent(agentId: String) {
-        val parts = agentId.split('|', limit = 3)
+    override fun selectModel(modelKey: String) {
+        val parts = modelKey.split('|', limit = 3)
         if (parts.size == 3 && parts[0] == "opencode") {
             val providerId = parts[1]
             val modelId = parts[2]
             _uiState.update {
                 it.copy(
-                    activeAgentId = agentId,
-                    selectedModel = modelId,
-                    activeProviderId = providerId
+                    activeModelKey = modelKey,
+                    selectedModel = modelId
                 )
             }
         } else {
-            _uiState.update { it.copy(activeAgentId = agentId, selectedModel = agentId) }
+            _uiState.update { it.copy(activeModelKey = modelKey, selectedModel = modelKey) }
         }
     }
 
@@ -283,7 +282,8 @@ class OpencodeIntelligenceService @Inject constructor(
     private fun scheduleSend(content: String) {
         val existing = activeSessionId
         val currentMode = _mode.value
-        val providerId = _uiState.value.activeProviderId.ifBlank { null }
+        val activeOption = _uiState.value.modelOptions.firstOrNull { it.id == _uiState.value.activeModelKey }
+        val providerId = activeOption?.providerId?.ifBlank { null }
         val modelId = _uiState.value.selectedModel.ifBlank { null }
         if (existing != null) {
             opencodeClient.sendPrompt(
@@ -314,7 +314,10 @@ class OpencodeIntelligenceService @Inject constructor(
                         sessionId = event.session.sessionId,
                         text = content,
                         agent = _mode.value,
-                        providerId = _uiState.value.activeProviderId.ifBlank { null },
+                        providerId = _uiState.value.modelOptions
+                            .firstOrNull { it.id == _uiState.value.activeModelKey }
+                            ?.providerId
+                            ?.ifBlank { null },
                         modelId = _uiState.value.selectedModel.ifBlank { null }
                     )
                 }
@@ -747,7 +750,7 @@ class OpencodeIntelligenceService @Inject constructor(
         WindowsBridgeConnectionState.ERROR -> ConnectionState.DISCONNECTED
     }
 
-    // ── Models → AgentSelectorItem ─────────────────────────────────────────
+    // ── Models → ModelOption ───────────────────────────────────────────────
 
     private fun handleModelList(
         models: List<OpencodeModelSummary>,
@@ -755,27 +758,19 @@ class OpencodeIntelligenceService @Inject constructor(
         defaultModelId: String?
     ) {
         val items = models.map { model ->
-            AgentSelectorItem(
+            ModelOption(
                 id = "opencode|${model.providerId}|${model.modelId}",
                 name = model.displayName.ifBlank { model.modelId },
                 modelId = model.modelId,
-                iconType = AgentMapper.getIconTypeForProvider(model.providerId)
-                    ?: AgentMapper.getIconType(model.modelId)
-                    ?: "default",
+                iconType = model.providerId.ifBlank { "default" },
                 providerId = model.providerId,
                 providerName = model.providerId.replaceFirstChar { it.uppercase() },
-                statusLabel = "Opencode",
-                contextWindowTokens = model.contextWindowTokens,
-                maxOutputTokens = model.maxOutputTokens,
-                capabilityLabels = buildList {
-                    if (model.supportsImages) add("vision")
-                }.take(4),
-                contextWindowLabel = model.contextWindowTokens?.let { formatTokenCount(it) },
-                sourceLabel = "opencode",
-                isRemote = true
+                isRemote = true,
+                supportsImages = model.supportsImages
             )
         }
-        val currentProvider = _uiState.value.activeProviderId.ifBlank { null }
+        val currentOption = _uiState.value.modelOptions.firstOrNull { it.id == _uiState.value.activeModelKey }
+        val currentProvider = currentOption?.providerId?.ifBlank { null }
         val currentModel = _uiState.value.selectedModel.ifBlank { null }
         val effectiveProvider = currentProvider ?: defaultProviderId
         val effectiveModel = currentModel ?: defaultModelId
@@ -786,9 +781,8 @@ class OpencodeIntelligenceService @Inject constructor(
         }
         _uiState.update {
             it.copy(
-                agentConfigs = items,
-                activeAgentId = effectiveId ?: it.activeAgentId,
-                activeProviderId = effectiveProvider ?: it.activeProviderId,
+                modelOptions = items,
+                activeModelKey = effectiveId ?: it.activeModelKey,
                 selectedModel = effectiveModel ?: it.selectedModel
             )
         }

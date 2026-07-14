@@ -1,6 +1,6 @@
 package com.amaya.intelligence.data.repository
 
-import com.amaya.intelligence.data.remote.api.AgentConfig
+import com.amaya.intelligence.data.remote.api.ProviderConnection
 import com.amaya.intelligence.data.remote.api.AiProvider
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
@@ -11,7 +11,7 @@ import com.amaya.intelligence.data.remote.api.ChatResponse
 import com.amaya.intelligence.data.remote.api.GeminiProvider
 import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.data.remote.api.OpenAiProvider
-import com.amaya.intelligence.data.remote.api.ProviderType
+import com.amaya.intelligence.data.remote.api.ProviderAdapter
 import com.amaya.intelligence.domain.memory.MemoryAction
 import com.amaya.intelligence.domain.memory.MemoryClassifier
 import com.amaya.intelligence.domain.memory.MemoryProposal
@@ -119,7 +119,7 @@ class SelfImprovementPipeline @Inject constructor(
         if (userText.isBlank() && assistantText.isBlank()) return@runCatching null
         if (isTrivialGreeting(userText.lowercase()) && assistantText.isBlank()) return@runCatching null
 
-        val (provider, agentConfig, model) = resolveReflectionAgent() ?: return@runCatching null
+        val (provider, connection, model) = resolveReflectionModel() ?: return@runCatching null
         val prompt = buildReflectionPrompt(userText, assistantText)
         val output = StringBuilder()
         provider.chat(
@@ -128,10 +128,10 @@ class SelfImprovementPipeline @Inject constructor(
                 messages = listOf(ChatMessage(role = MessageRole.USER, content = prompt)),
                 systemPrompt = DAILY_REFLECTION_SYSTEM_PROMPT,
                 tools = emptyList(),
-                maxTokens = agentConfig.maxTokens.coerceIn(512, 2_048),
+                maxTokens = 2_048,
                 temperature = 0.2f,
                 stream = false,
-                agentId = agentConfig.id
+                connectionId = connection.id
             )
         ).collect { response ->
             when (response) {
@@ -143,24 +143,20 @@ class SelfImprovementPipeline @Inject constructor(
         parseDailyReflection(output.toString(), userText)
     }.onFailure { errorLog("SelfImprovementPipeline", "AI daily reflection failed", it) }.getOrNull()
 
-    private suspend fun resolveReflectionAgent(): Triple<AiProvider, AgentConfig, String>? {
+    private suspend fun resolveReflectionModel(): Triple<AiProvider, ProviderConnection, String>? {
         val settings = settingsManager.getSettings()
-        val agentConfig = settings.agentConfigs.find { it.id == settings.activeAgentId && it.enabled }
-            ?: settings.agentConfigs.firstOrNull { it.enabled }
+        val selection = settings.activeSelection ?: return null
+        val connection = settings.connections.firstOrNull { it.id == selection.connectionId }
             ?: return null
-        val provider = when (
-            AmayaProviderRegistry.legacyProviderType(agentConfig.providerId).takeIf { agentConfig.providerId.isNotBlank() }
-                ?: runCatching { ProviderType.valueOf(agentConfig.providerType) }.getOrDefault(ProviderType.OPENAI)
-        ) {
-            ProviderType.ANTHROPIC -> anthropicProvider
-            ProviderType.OPENAI,
-            ProviderType.CUSTOM_OPENAI_COMPATIBLE -> openAiProvider
-            ProviderType.GEMINI -> geminiProvider
+        val provider = when (AmayaProviderRegistry.require(connection.providerId).adapter) {
+            ProviderAdapter.ANTHROPIC -> anthropicProvider
+            ProviderAdapter.GEMINI -> geminiProvider
+            ProviderAdapter.OPENAI_COMPATIBLE, ProviderAdapter.CODEX -> openAiProvider
         }
-        if (!provider.isConfigured()) return null
-        val model = agentConfig.modelId.ifBlank { settings.activeModel.ifBlank { provider.supportedModels.firstOrNull().orEmpty() } }
+
+        val model = selection.modelId
         if (model.isBlank()) return null
-        return Triple(provider, agentConfig, model)
+        return Triple(provider, connection, model)
     }
 
     private fun buildReflectionPrompt(

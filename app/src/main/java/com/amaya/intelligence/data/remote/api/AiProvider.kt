@@ -15,10 +15,6 @@ interface AiProvider {
      */
     val name: String
     
-    /**
-     * List of supported models for this provider.
-     */
-    val supportedModels: List<String>
     
     /**
      * Send a chat request and receive streaming responses.
@@ -28,10 +24,7 @@ interface AiProvider {
      */
     suspend fun chat(request: ChatRequest): Flow<ChatResponse>
     
-    /**
-     * Check if the provider is properly configured (API key set, etc.)
-     */
-    fun isConfigured(): Boolean
+
 }
 
 /**
@@ -45,9 +38,7 @@ data class ChatRequest(
     val maxTokens: Int = 8192,
     val temperature: Float = 0.7f,
     val stream: Boolean = true,
-    // FIX: Pass resolved agentId explicitly so providers look up the correct API key,
-    // not settings.activeAgentId which may be stale when multiple agents exist.
-    val agentId: String = "",
+    val connectionId: String = "",
     /** Stable conversation/session id for providers that support prompt caching or session headers. */
     val sessionId: String = ""
 )

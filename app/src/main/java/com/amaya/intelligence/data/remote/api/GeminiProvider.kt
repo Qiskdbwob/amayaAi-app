@@ -33,7 +33,6 @@ class GeminiProvider @Inject constructor(
     private val httpClient: OkHttpClient,
     private val moshi: Moshi,
     private val settingsProvider: () -> AiSettings,
-    // FIX 2.2: Inject settingsManager to look up per-agent API key via getAgentApiKey(agentId)
     private val settingsManager: AiSettingsManager
 ) : AiProvider {
     
@@ -43,24 +42,15 @@ class GeminiProvider @Inject constructor(
     
     override val name = "Google Gemini"
     
-    // Models are configured per-agent by the user; no hardcoded list needed
-    override val supportedModels = emptyList<String>()
-    
-    override fun isConfigured(): Boolean {
-        // FIX 2.2: Check agent key via per-agent storage, not legacy geminiApiKey field
-        val settings = settingsProvider()
-        val agentKey = settingsManager.getAgentApiKey(settings.activeAgentId)
-        return agentKey.isNotBlank()
-    }
-    
     override suspend fun chat(request: ChatRequest): Flow<ChatResponse> = callbackFlow {
         val settings = settingsProvider()
-        // FIX: Use agentId from request (resolved by AiRepository) — not settings.activeAgentId
-        val agentId = request.agentId.ifBlank { settings.activeAgentId }
-        val apiKey = settingsManager.getAgentApiKey(agentId)
+        val connectionId = request.connectionId.ifBlank {
+            settings.activeSelection?.connectionId.orEmpty()
+        }
+        val apiKey = settingsManager.getConnectionApiKey(connectionId)
         
         if (apiKey.isBlank()) {
-            trySend(ChatResponse.Error("Gemini API key not configured for active agent", "AUTH_ERROR"))
+            trySend(ChatResponse.Error("Gemini API key is missing for the selected provider", "AUTH_ERROR"))
             close()
             return@callbackFlow
         }
@@ -70,11 +60,12 @@ class GeminiProvider @Inject constructor(
         val jsonBody = moshi.adapter(GeminiRequest::class.java).toJson(geminiRequest)
         
         val endpoint = if (request.stream) "streamGenerateContent" else "generateContent"
-        val url = "$BASE_URL/models/${request.model}:$endpoint?key=$apiKey"
+        val url = "$BASE_URL/models/${request.model}:$endpoint"
         
         val httpRequest = Request.Builder()
             .url(url)
             .addHeader("Content-Type", "application/json")
+            .addHeader("x-goog-api-key", apiKey)
             .post(jsonBody.toRequestBody("application/json".toMediaType()))
             .build()
         

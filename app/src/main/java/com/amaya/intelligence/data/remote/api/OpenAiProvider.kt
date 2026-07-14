@@ -25,21 +25,16 @@ import javax.inject.Singleton
 /**
  * OpenAI-compatible AI provider.
  * 
- * This provider works with:
- * - OpenAI API (api.openai.com)
- * - Local models via Ollama, LM Studio, etc.
- * - Any OpenAI-compatible endpoint
- * 
- * The base URL is configurable to allow switching between providers.
+ * Handles OpenAI and OpenAI-compatible chat endpoints.
  */
 @Singleton
 class OpenAiProvider @Inject constructor(
     private val httpClient: OkHttpClient,
     private val moshi: Moshi,
     private val settingsProvider: () -> AiSettings,
-    // FIX 2.2 (OpenAI): Inject settingsManager to look up per-agent API key and baseUrl
     private val settingsManager: AiSettingsManager,
-    private val codexAuthManager: CodexAuthManager
+    private val codexAuthManager: CodexAuthManager,
+    private val providerModelService: ProviderModelService
 ) : AiProvider {
     
     companion object {
@@ -48,33 +43,20 @@ class OpenAiProvider @Inject constructor(
     
     override val name = "OpenAI Compatible"
     
-    // Models are configured per-agent by the user; no hardcoded list needed
-    override val supportedModels = emptyList<String>()
-    
-    override fun isConfigured(): Boolean {
-        // FIX 2.2: Check agent key via per-agent storage, not legacy openaiApiKey field
-        val settings = settingsProvider()
-        val agentKey = settingsManager.getAgentApiKey(settings.activeAgentId)
-        val agentConfig = settings.agentConfigs.find { it.id == settings.activeAgentId }
-        if (agentConfig?.providerId == "openai_codex_bridge") {
-            return codexAuthManager.isAuthenticated()
-        }
-        return agentKey.isNotBlank() || agentConfig?.baseUrl?.isNotBlank() == true
-    }
-    
     override suspend fun chat(request: ChatRequest): Flow<ChatResponse> = callbackFlow {
         val settings = settingsProvider()
-        // FIX: Use agentId from request (resolved by AiRepository) — not settings.activeAgentId
-        val agentId = request.agentId.ifBlank { settings.activeAgentId }
-        val agentConfig = settings.agentConfigs.find { it.id == agentId }
-        val isCodexSubscription = agentConfig?.providerId == "openai_codex_bridge"
+        val connectionId = request.connectionId.ifBlank {
+            settings.activeSelection?.connectionId.orEmpty()
+        }
+        val connection = settings.connections.find { it.id == connectionId }
+        val isCodexSubscription = connection?.providerId == "openai_codex_bridge"
         val apiKey = if (isCodexSubscription) {
             codexAuthManager.refreshTokenIfNeeded().orEmpty()
         } else {
-            settingsManager.getAgentApiKey(agentId)
+            settingsManager.getConnectionApiKey(connectionId)
         }
         if (isCodexSubscription && apiKey.isBlank()) {
-            trySend(ChatResponse.Error("OpenAI subscription is not signed in. Open AI Agents → OpenAI and sign in first.", retryable = false))
+            trySend(ChatResponse.Error("OpenAI subscription is not signed in. Open Settings → Manage Models → OpenAI and sign in.", retryable = false))
             close()
             return@callbackFlow
         }
@@ -85,7 +67,7 @@ class OpenAiProvider @Inject constructor(
                 close()
                 return@callbackFlow
             }
-            val promptCacheKey = request.sessionId.ifBlank { "amaya-${agentId.ifBlank { request.model }}" }
+            val promptCacheKey = request.sessionId.ifBlank { "amaya-${connectionId.ifBlank { request.model }}" }
             val codexBody = buildCodexResponsesRequest(request, promptCacheKey).toString()
             val codexUrl = "https://chatgpt.com/backend-api/codex/responses"
             val codexCall = httpClient.newCall(
@@ -147,12 +129,13 @@ class OpenAiProvider @Inject constructor(
             }
             return@callbackFlow
         }
-        // FIX URL scheme: normalize baseUrl — auto-add http:// if user omitted scheme (e.g. "192.168.1.1:1234")
-        val rawUrl = agentConfig?.baseUrl?.ifBlank { DEFAULT_BASE_URL } ?: DEFAULT_BASE_URL
-        val baseUrl = when {
-            rawUrl.startsWith("http://") || rawUrl.startsWith("https://") -> rawUrl
-            else -> "http://$rawUrl"
-        }.trimEnd('/')
+        val baseUrl = connection?.let {
+            providerModelService.validateConnectionUrl(it.providerId, it.baseUrl).getOrNull()
+        } ?: run {
+                trySend(ChatResponse.Error("Provider URL is invalid. Reconnect it in Settings → Manage Models.", retryable = false))
+                close()
+                return@callbackFlow
+            }
         
         // Build request body
         val openaiRequest = buildOpenAiRequest(request)
@@ -481,10 +464,6 @@ class OpenAiProvider @Inject constructor(
             body.put("tools", tools)
         }
 
-        if (request.model.contains("gpt-5", ignoreCase = true)) {
-            body.put("reasoning", JSONObject().put("effort", "medium").put("summary", "auto"))
-        }
-
         return body
     }
 
@@ -604,17 +583,9 @@ class OpenAiProvider @Inject constructor(
                 ?: obj.optJSONObject("response")?.optJSONObject("error")?.optString("message")
         }.getOrNull()?.takeIf { it.isNotBlank() }
         val message = parsedMessage ?: fallback ?: raw.ifBlank { "Unknown OpenAI error" }
-        val lower = message.lowercase()
         val modelHint = model?.takeIf { it.isNotBlank() }?.let { " Selected model: $it." }.orEmpty()
-        val compatibilityHint = " Try an OpenAI subscription model such as gpt-5.5 or gpt-5.4."
         val prefix = code?.let { "OpenAI API error $it: " } ?: "OpenAI API error: "
-        return when {
-            "model" in lower && ("not found" in lower || "unsupported" in lower || "does not exist" in lower || "invalid" in lower) ->
-                "$prefix$message$modelHint$compatibilityHint"
-            "usage_limit" in lower || "rate limit" in lower ->
-                "$prefix$message"
-            else -> "$prefix$message"
-        }
+        return "$prefix$message$modelHint"
     }
 
     private fun buildOpenAiRequest(request: ChatRequest): OpenAiRequest {

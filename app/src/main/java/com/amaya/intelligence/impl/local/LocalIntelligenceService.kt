@@ -3,19 +3,17 @@ package com.amaya.intelligence.impl.local
 import com.amaya.intelligence.domain.ai.IntelligenceService
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
-import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
+
 import com.amaya.intelligence.data.remote.api.ChatMessage
 import com.amaya.intelligence.data.remote.api.MessageRole
-import com.amaya.intelligence.data.remote.api.KnownModelCatalog
+
 import com.amaya.intelligence.data.local.dao.ConversationDao
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.data.repository.AiRepository
 import com.amaya.intelligence.data.repository.AgentEvent
-import com.amaya.intelligence.data.repository.ModelCatalogRepository
-import com.amaya.intelligence.data.repository.ProviderConnectionRepository
+
 import com.amaya.intelligence.domain.models.*
-import com.amaya.intelligence.impl.common.mappers.AgentMapper
-import com.amaya.intelligence.impl.common.mappers.AgentUiMapper
+import com.amaya.intelligence.impl.common.mappers.ModelUiMapper
 import com.amaya.intelligence.impl.local.browser.BrowserSessionManager
 import com.amaya.intelligence.impl.local.tools.LocalToolMapper
 import com.amaya.intelligence.di.ApplicationScope
@@ -43,8 +41,6 @@ class LocalIntelligenceService @Inject constructor(
     private val conversationDao: ConversationDao,
     private val settingsManager: AiSettingsManager,
     private val browserSessionManager: BrowserSessionManager,
-    private val modelCatalogRepository: ModelCatalogRepository,
-    private val providerConnectionRepository: ProviderConnectionRepository,
     @ApplicationScope private val scope: CoroutineScope
 ) : IntelligenceService {
 
@@ -77,58 +73,20 @@ class LocalIntelligenceService @Inject constructor(
                 _conversations.value = list
             }
         }
-        // Chat only needs enabled models. Avoid materializing the full models.dev cache on startup.
         scope.launch {
-            settingsManager.settingsFlow.map { settings ->
-                providerConnectionRepository.mirrorLegacyAgents(settings.agentConfigs)
-                val subscriptionProviderIds = AmayaProviderRegistry.providers
-                    .filter { it.isSubscription }
-                    .map { it.id }
-                    .toSet()
-                val runnableAgents = settings.agentConfigs.filter { it.providerId !in subscriptionProviderIds }
-                val configuredModelKeys = runnableAgents.map { it.providerId to it.modelId }.toSet()
-                val enabledModelKeys = settings.agentConfigs
-                    .flatMap { config ->
-                        val enabledModels = if (config.providerId in subscriptionProviderIds) {
-                            config.enabledModelIds
-                        } else {
-                            config.enabledModelIds.ifEmpty { listOf(config.modelId) }
-                        }
-                        enabledModels
-                            .filter { it.isNotBlank() && it != config.providerId }
-                            .map { config.providerId to it }
+            settingsManager.settingsFlow.collect { settings ->
+                val options = settings.connections.flatMap { connection ->
+                    connection.visibleModels.map { model ->
+                        ModelUiMapper.mapConnectionModel(connection, model)
                     }
-                    .distinct()
-                    .filter { it !in configuredModelKeys }
-                val selectorItems = runnableAgents.map(AgentUiMapper::mapToSelectorItem) +
-                    enabledModelKeys.map { (providerId, modelId) ->
-                        val model = KnownModelCatalog.infer(modelId, providerId)
-                        AgentSelectorItem(
-                            id = "catalog|$providerId|$modelId",
-                            name = model.displayName,
-                            modelId = modelId,
-                            iconType = AgentMapper.getIconTypeForProvider(providerId) ?: AgentMapper.getIconType(modelId) ?: "default",
-                            providerId = providerId,
-                            providerName = model.providerName,
-                            statusLabel = "Enabled model",
-                            capabilityLabels = model.capabilities.map { it.label }.take(4),
-                            contextWindowLabel = model.contextWindow?.let { formatTokenCount(it).uppercase() },
-                            sourceLabel = model.sourceLabel,
-                            contextWindowTokens = model.contextWindow,
-                            maxOutputTokens = model.maxOutputTokens,
-                            inputPricePerMillionTokens = model.inputPricePerMillionTokens,
-                            outputPricePerMillionTokens = model.outputPricePerMillionTokens
-                        )
-                    }
-                val activeProviderId = settings.agentConfigs.firstOrNull { it.id == settings.activeAgentId }?.providerId.orEmpty()
-                Triple(settings, selectorItems, activeProviderId)
-            }.collect { (settings, selectorItems, activeProviderId) ->
-                _uiState.update { it.copy(
-                    agentConfigs = selectorItems,
-                    activeAgentId = settings.activeAgentId,
-                    activeProviderId = activeProviderId,
-                    selectedModel = settings.activeModel
-                )}
+                }
+                _uiState.update {
+                    it.copy(
+                        modelOptions = options,
+                        activeModelKey = settings.activeSelection?.key.orEmpty(),
+                        selectedModel = settings.activeSelection?.modelId.orEmpty()
+                    )
+                }
             }
         }
     }
@@ -143,7 +101,7 @@ class LocalIntelligenceService @Inject constructor(
         LocalStreamPerfLog.startTurn(
             messageChars = content.length,
             historyMessages = currentState.messages.size,
-            model = currentState.selectedModel.ifBlank { currentState.activeAgentId }
+            model = currentState.selectedModel.ifBlank { currentState.activeModelKey }
         )
         val userMsg = UiMessage(
             role = MessageRole.USER,
@@ -175,7 +133,10 @@ class LocalIntelligenceService @Inject constructor(
                     message = content,
                     conversationHistory = history.dropLast(1), // Exclude the one we just added
                     workspacePath = currentState.workspacePath,
-                    activeAgentId = currentState.activeAgentId,
+                    connectionId = currentState.activeModelKey
+                        .takeIf { it.startsWith("model|") }
+                        ?.split('|', limit = 3)
+                        ?.getOrNull(1),
                     conversationId = conversationIdForTurn,
                     selectedModel = currentState.selectedModel,
                     onConfirmation = { request -> awaitInlineToolConfirmation(request) }
@@ -376,16 +337,15 @@ class LocalIntelligenceService @Inject constructor(
 
     private fun currentAssistantMetadata(): Map<String, String> {
         val state = _uiState.value
-        val agent = state.agentConfigs.firstOrNull { it.id == state.activeAgentId }
-            ?: state.agentConfigs.firstOrNull()
+        val model = state.modelOptions.firstOrNull { it.id == state.activeModelKey }
 
         return buildMap {
             put("source", "local")
-            agent?.name?.takeIf { it.isNotBlank() }?.let { put("agent_name", it) }
+            model?.name?.takeIf { it.isNotBlank() }?.let { put("agent_name", it) }
             state.selectedModel.takeIf { it.isNotBlank() }?.let { put("model_id", it) }
-                ?: agent?.modelId?.takeIf { it.isNotBlank() }?.let { put("model_id", it) }
+                ?: model?.modelId?.takeIf { it.isNotBlank() }?.let { put("model_id", it) }
             if (!containsKey("agent_name")) {
-                agent?.id?.takeIf { it.isNotBlank() }?.let { put("agent_name", it) }
+                model?.id?.takeIf { it.isNotBlank() }?.let { put("agent_name", it) }
             }
         }
     }
@@ -475,37 +435,16 @@ class LocalIntelligenceService @Inject constructor(
         }
     }
 
-    override fun setSelectedAgent(agentId: String) {
+    override fun selectModel(modelKey: String) {
         scope.launch {
-            val settings = settingsManager.getSettings()
-            if (agentId.startsWith("catalog|")) {
-                val parts = agentId.split('|', limit = 3)
-                val providerId = parts.getOrNull(1).orEmpty()
-                val modelId = parts.getOrNull(2).orEmpty()
-                if (modelId.isBlank()) return@launch
-                val matchingAgent = settings.agentConfigs.firstOrNull { it.enabled && it.providerId == providerId }
-                    ?: settings.agentConfigs.firstOrNull { it.providerId == providerId }
-                // Immediately update selectedModel in UI state so sendMessage/title-gen use the right model.
-                _uiState.update { it.copy(selectedModel = modelId) }
-                if (matchingAgent != null) {
-                    val providerIsSubscription = AmayaProviderRegistry.find(providerId)?.isSubscription == true
-                    if (providerIsSubscription && !matchingAgent.enabled) {
-                        settingsManager.saveAgentConfig(
-                            matchingAgent.copy(enabled = true),
-                            settingsManager.getAgentApiKey(matchingAgent.id)
-                        )
-                    }
-                    settingsManager.setActiveAgent(matchingAgent.id, modelId)
-                } else {
-                    settingsManager.setActiveModel(modelId)
-                }
-                return@launch
-            }
-            val agent = settings.agentConfigs.find { it.id == agentId }
-            agent?.let {
-                _uiState.update { state -> state.copy(selectedModel = it.modelId) }
-                settingsManager.setActiveAgent(it.id, it.modelId)
-            }
+            val parts = modelKey.split('|', limit = 3)
+            if (parts.size != 3 || parts[0] != "model") return@launch
+            settingsManager.setActiveModel(
+                com.amaya.intelligence.data.remote.api.ActiveModelSelection(
+                    connectionId = parts[1],
+                    modelId = parts[2]
+                )
+            )
         }
     }
 
@@ -529,9 +468,7 @@ class LocalIntelligenceService @Inject constructor(
         // Local project files logic if needed
     }
 
-    override fun refreshModels() {
-        scope.launch { modelCatalogRepository.syncModelsDev() }
-    }
+    override fun refreshModels() = Unit
 
     override fun respondToToolInteraction(executionId: String, confirmed: Boolean) {
         val continuation = pendingToolConfirmations.remove(executionId) ?: return
@@ -653,17 +590,14 @@ class LocalIntelligenceService @Inject constructor(
         scope.launch {
             try {
                 val settings = settingsManager.getSettings()
-                val agentId = _uiState.value.activeAgentId ?: settings.activeAgentId
-                val agentConfig = settings.agentConfigs.find { it.id == agentId && it.enabled }
-                    ?: settings.agentConfigs.firstOrNull { it.enabled }
+                val selection = settings.activeSelection ?: return@launch
+                val connection = settings.connections.firstOrNull { it.id == selection.connectionId }
                     ?: return@launch
-                val selectedModel = _uiState.value.selectedModel.ifBlank { agentConfig.modelId }
-                // Reasoning models don't support non-streaming title generation — keep existing 5-word fallback.
-                if (agentConfig.reasoning || isReasoningModel(selectedModel)) return@launch
+                val selectedModel = _uiState.value.selectedModel.ifBlank { selection.modelId }
                 val title = aiRepository.generateTitle(
                     userMessage = userMessage,
-                    agentConfig = agentConfig,
-                    selectedModel = _uiState.value.selectedModel
+                    providerConnection = connection,
+                    selectedModel = selectedModel
                 )
                 conversationDao.updateTitle(conversationId, title)
             } catch (_: Exception) {
@@ -672,13 +606,6 @@ class LocalIntelligenceService @Inject constructor(
         }
     }
 
-    private fun isReasoningModel(modelId: String): Boolean {
-        val lower = modelId.lowercase()
-        return lower.contains("reason") || lower.contains("thinking") ||
-            lower.startsWith("o3") || lower.startsWith("o4") ||
-            lower.startsWith("o1") || lower.contains("-reasoner") ||
-            lower.contains("deepseek-r1")
-    }
 
     private suspend fun persistCurrentConversation(): Long? = conversationSaveMutex.withLock {
         val messages = _uiState.value.messages

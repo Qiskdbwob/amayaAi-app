@@ -96,8 +96,8 @@ class ChatViewModel @Inject constructor(
         intelligenceService.respondToToolInteraction(id, confirmed)
     }
     
-    fun selectModel(modelId: String) {
-        intelligenceService.setSelectedAgent(modelId)
+    fun selectModel(modelKey: String) {
+        intelligenceService.selectModel(modelKey)
     }
     
     fun clearConversation() {
@@ -125,9 +125,7 @@ class ChatViewModel @Inject constructor(
         intelligenceService.setWorkspace(path)
     }
 
-    fun setSelectedAgent(agentId: String) {
-        intelligenceService.setSelectedAgent(agentId)
-    }
+
 
     fun clearError() {
         intelligenceService.clearError()

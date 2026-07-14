@@ -35,7 +35,6 @@ object AiModule {
             httpClient = httpClient,
             moshi = moshi,
             settingsProvider = { settingsManager.getSettings() },
-            // FIX 2.2: Pass settingsManager for per-agent API key lookup
             settingsManager = settingsManager
         )
     }
@@ -46,15 +45,16 @@ object AiModule {
         httpClient: OkHttpClient,
         moshi: Moshi,
         settingsManager: AiSettingsManager,
-        codexAuthManager: CodexAuthManager
+        codexAuthManager: CodexAuthManager,
+        providerModelService: ProviderModelService
     ): OpenAiProvider {
         return OpenAiProvider(
             httpClient = httpClient,
             moshi = moshi,
             settingsProvider = { settingsManager.getSettings() },
-            // FIX 2.2: Pass settingsManager for per-agent API key and baseUrl lookup
             settingsManager = settingsManager,
-            codexAuthManager = codexAuthManager
+            codexAuthManager = codexAuthManager,
+            providerModelService = providerModelService
         )
     }
     
@@ -69,7 +69,6 @@ object AiModule {
             httpClient = httpClient,
             moshi = moshi,
             settingsProvider = { settingsManager.getSettings() },
-            // FIX 2.2: Pass settingsManager for per-agent API key lookup
             settingsManager = settingsManager
         )
     }

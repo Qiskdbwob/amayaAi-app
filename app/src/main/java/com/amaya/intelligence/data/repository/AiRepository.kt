@@ -61,6 +61,11 @@ class AiRepository @Inject constructor(
     // FIX 5.11: Inject application-scoped coroutine scope — no more manual SupervisorJob leak
     @ApplicationScope private val repoScope: CoroutineScope
 ) {
+    private companion object {
+        const val DEFAULT_MAX_OUTPUT_TOKENS = 8_192
+        const val MAX_TOOL_ITERATIONS = 10
+    }
+
     // FIX 5.11: Removed manual repoJob/repoScope and close() — lifecycle managed by Hilt ApplicationScope
 
     init {
@@ -82,25 +87,13 @@ class AiRepository @Inject constructor(
         }
     }
     
-    // FIX 1.4: Removed getProviders() — dead code, no ViewModel/UI calls it (pre-agent era).
-    // FIX 1.5/2.1: Removed getActiveProvider() — it read stale activeProvider DataStore field.
-    //   Provider is now resolved from AgentConfig.providerType inline in chat().
 
-    /**
-     * Resolve the AiProvider from an AgentConfig, falling back to DataStore activeProvider.
-     */
-    private fun resolveProvider(agentConfig: AgentConfig): AiProvider {
-        val type = AmayaProviderRegistry.legacyProviderType(agentConfig.providerId)
-            .takeIf { agentConfig.providerId.isNotBlank() }
-            ?: runCatching { ProviderType.valueOf(agentConfig.providerType) }
-                .getOrElse { ProviderType.OPENAI }
-        return when (type) {
-            ProviderType.ANTHROPIC -> anthropicProvider
-            ProviderType.OPENAI,
-            ProviderType.CUSTOM_OPENAI_COMPATIBLE -> openAiProvider
-            ProviderType.GEMINI    -> geminiProvider
+    private fun resolveProvider(connection: ProviderConnection): AiProvider =
+        when (AmayaProviderRegistry.require(connection.providerId).adapter) {
+            ProviderAdapter.ANTHROPIC -> anthropicProvider
+            ProviderAdapter.GEMINI -> geminiProvider
+            ProviderAdapter.OPENAI_COMPATIBLE, ProviderAdapter.CODEX -> openAiProvider
         }
-    }
     
     /**
      * Send a message and receive streaming responses.
@@ -128,7 +121,7 @@ class AiRepository @Inject constructor(
         projectId: Long? = null,
         workspacePath: String? = null,
         conversationId: Long? = null,
-        activeAgentId: String? = null,
+        connectionId: String? = null,
         selectedModel: String? = null,
         runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL,
         onConfirmation: suspend (ConfirmationRequest) -> Boolean = { false }
@@ -136,37 +129,26 @@ class AiRepository @Inject constructor(
         
         val settings = settingsManager.getSettings()
 
-        // Resolve agent config — use activeAgentId from UI (most up-to-date)
-        val agentId = activeAgentId ?: settings.activeAgentId
-        // Only use enabled agents — if selected agent is disabled, find first enabled one
-        val agentConfig = settings.agentConfigs.find { it.id == agentId && it.enabled }
-            ?: settings.agentConfigs.firstOrNull { it.enabled }
+        val activeSelection = settings.activeSelection
+        val resolvedConnectionId = connectionId ?: activeSelection?.connectionId
+        val connection = settings.connections.firstOrNull { it.id == resolvedConnectionId }
 
-        // Block chat if no enabled agent exists
-        if (agentConfig == null) {
-            send(AgentEvent.Error("No AI agent configured. Please add and enable an agent in Settings → Agents.", retryable = false))
+        if (connection == null) {
+            send(AgentEvent.Error("No model selected. Open Settings → Manage Models and select a model.", retryable = false))
             send(AgentEvent.Done)
             return@channelFlow
         }
 
-        // Block chat if model ID is blank
-        if (agentConfig.modelId.isBlank() && selectedModel.isNullOrBlank()) {
-            send(AgentEvent.Error("No model ID configured for agent \"${agentConfig.name}\". Please edit the agent in Settings → Agents and add a Model ID.", retryable = false))
+        val model = selectedModel?.takeIf { it.isNotBlank() }
+            ?: activeSelection?.takeIf { it.connectionId == connection.id }?.modelId
+            ?: ""
+        if (model.isBlank() || connection.visibleModels.none { it.id == model }) {
+            send(AgentEvent.Error("The selected model is unavailable. Open Settings → Manage Models and select another model.", retryable = false))
             send(AgentEvent.Done)
             return@channelFlow
         }
-
-        // FIX 2.1: Resolve provider from agentConfig (guaranteed non-null here)
-        val provider = resolveProvider(agentConfig)
-        // Priority: selectedModel from UI (always up-to-date) > agentConfig.modelId > activeModel in DataStore
-        // Never fall through to agentConfig if selectedModel is explicitly set from UI
-        val model = when {
-            !selectedModel.isNullOrBlank()        -> selectedModel
-            !agentConfig?.modelId.isNullOrBlank() -> agentConfig!!.modelId
-            settings.activeModel.isNotBlank()     -> settings.activeModel
-            else                                  -> provider.supportedModels.firstOrNull() ?: ""
-        }
-        debugLog("AiRepository") { "chat() resolved model=$model (from UI: $selectedModel, agent: ${agentConfig?.modelId}, datastore: ${settings.activeModel})" }
+        val provider = resolveProvider(connection)
+        debugLog("AiRepository") { "chat() resolved connection=${connection.id}, model=$model" }
         
         val sessionId = conversationId?.toString() ?: "session_${UUID.randomUUID()}"
         val completedUserMessages = mutableListOf(message)
@@ -192,7 +174,7 @@ class AiRepository @Inject constructor(
             conversationHistory = conversationHistory,
             workspacePath = workspacePath,
             conversationId = conversationId,
-            maxOutputTokens = agentConfig.maxTokens
+            maxOutputTokens = DEFAULT_MAX_OUTPUT_TOKENS
         )
         val managedContext = if (runtimeTarget == AgentRuntimeTarget.WINDOWS_BRIDGE) {
             contextManager.buildWindowsBridgeContext(contextRequest)
@@ -201,9 +183,7 @@ class AiRepository @Inject constructor(
         }
         val systemPrompt = managedContext.systemPrompt
         
-        // Build tool definitions. New provider capability override: when tool calling is
-        // disabled for the selected agent, keep the model loop text-only.
-        val tools = if (agentConfig.toolCalling) buildToolDefinitions(runtimeTarget) else emptyList()
+        val tools = buildToolDefinitions(runtimeTarget)
         val allowedToolNames = tools.map { it.name }.toSet()
         
         // Start conversation loop
@@ -211,7 +191,7 @@ class AiRepository @Inject constructor(
         
         var continueLoop = true
         var iterations = 0
-        val maxIterations = agentConfig.maxIterations.coerceIn(1, 50) // Prevent infinite loops
+        val maxIterations = MAX_TOOL_ITERATIONS
         val browserTaskId = "browser_task_turn_${UUID.randomUUID().toString().take(8)}"
         var browserTaskStarted = false
         var lastBrowserErrorSignature: String? = null
@@ -230,10 +210,9 @@ class AiRepository @Inject constructor(
                 messages     = messages,
                 systemPrompt = systemPrompt,
                 tools        = tools,
-                maxTokens    = agentConfig.maxTokens,
+                maxTokens    = DEFAULT_MAX_OUTPUT_TOKENS,
                 stream       = true,
-                // Pass resolved agentId so providers use the correct API key
-                agentId      = agentConfig.id,
+                connectionId = connection.id,
                 sessionId    = sessionId
             )
             
@@ -276,7 +255,7 @@ class AiRepository @Inject constructor(
             // If no native tool calls received, try to parse tool calls from text response.
             // This handles models that don't support native function calling (e.g. StepFun)
             // and instead emit <tool_call> XML or JSON blocks in their text output.
-            if (agentConfig.toolCalling && !hasToolCalls && textBuffer.isNotEmpty()) {
+            if (!hasToolCalls && textBuffer.isNotEmpty()) {
                 val parsed = parseToolCallsFromText(textBuffer.toString(), allowedToolNames)
                 if (parsed.isNotEmpty()) {
                     hasToolCalls = true
@@ -346,9 +325,8 @@ class AiRepository @Inject constructor(
                             // unlike flow{}'s emit() which panics on concurrent coroutine access.
                             onEvent = { event -> if (event is AgentEvent) channel.send(event) },
                             onConfirmationRequired = onConfirmation,
-                            // Pass resolved agentConfig so SubagentRunner uses the SAME provider/model
-                            // as the main chat loop — not a stale DataStore snapshot.
-                            agentConfig = agentConfig
+                            providerConnection = connection,
+                            selectedModelId = model
                         )
                     }
                     
@@ -632,15 +610,14 @@ class AiRepository @Inject constructor(
      */
     suspend fun generateTitle(
         userMessage: String,
-        agentConfig: AgentConfig,
+        providerConnection: ProviderConnection,
         selectedModel: String?
     ): String {
         return try {
-            val provider = resolveProvider(agentConfig)
+            val provider = resolveProvider(providerConnection)
             val model = when {
                 !selectedModel.isNullOrBlank() -> selectedModel
-                agentConfig.modelId.isNotBlank() -> agentConfig.modelId
-                else -> provider.supportedModels.firstOrNull() ?: return "New Chat"
+                else -> return "New Chat"
             }
 
             val request = ChatRequest(
@@ -661,7 +638,7 @@ $userMessage"""
                 tools = emptyList(),
                 maxTokens = 50,
                 stream = false,
-                agentId = agentConfig.id
+                connectionId = providerConnection.id
             )
 
             val result = StringBuilder()

@@ -82,7 +82,8 @@ class ToolExecutor @Inject constructor(
         toolCallId: String? = null,
         onEvent: (suspend (Any) -> Unit)? = null,
         onConfirmationRequired: suspend (ConfirmationRequest) -> Boolean = { false },
-        agentConfig: com.amaya.intelligence.data.remote.api.AgentConfig? = null
+        providerConnection: com.amaya.intelligence.data.remote.api.ProviderConnection? = null,
+        selectedModelId: String? = null
     ): ToolResult {
         val tool = tools[toolName]
             ?: return ToolResult.Error(
@@ -112,9 +113,8 @@ class ToolExecutor @Inject constructor(
             if (toolName == "invoke_subagents") {
                 if (onEvent != null) put("__eventEmitter", onEvent)
                 if (toolCallId != null) put("__toolCallId", toolCallId)
-                // Pass resolved agentConfig so SubagentRunner uses the SAME provider/model
-                // as the main chat — not a stale DataStore snapshot.
-                if (agentConfig != null) put("__agentConfig", agentConfig)
+                if (providerConnection != null) put("__providerConnection", providerConnection)
+                if (selectedModelId != null) put("__selectedModelId", selectedModelId)
             }
         }
         

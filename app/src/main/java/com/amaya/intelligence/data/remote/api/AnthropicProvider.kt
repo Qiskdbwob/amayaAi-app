@@ -34,7 +34,6 @@ class AnthropicProvider @Inject constructor(
     private val httpClient: OkHttpClient,
     private val moshi: Moshi,
     private val settingsProvider: () -> AiSettings,
-    // FIX 2.2: Inject settingsManager to look up per-agent API key via getAgentApiKey(agentId)
     private val settingsManager: AiSettingsManager
 ) : AiProvider {
     
@@ -45,24 +44,14 @@ class AnthropicProvider @Inject constructor(
     
     override val name = "Anthropic (Claude)"
     
-    // Models are configured per-agent by the user; no hardcoded list needed
-    override val supportedModels = emptyList<String>()
-    
-    override fun isConfigured(): Boolean {
-        // FIX 2.2: Check agent key via per-agent storage, not legacy anthropicApiKey field
-        val settings = settingsProvider()
-        val agentKey = settingsManager.getAgentApiKey(settings.activeAgentId)
-        return agentKey.isNotBlank()
-    }
-    
     override suspend fun chat(request: ChatRequest): Flow<ChatResponse> = callbackFlow {
-        // FIX: Use agentId from request (resolved by AiRepository) — not settings.activeAgentId
-        // which may be stale if the user switched agents after the last DataStore write.
-        val agentId = request.agentId.ifBlank { settingsProvider().activeAgentId }
-        val apiKey = settingsManager.getAgentApiKey(agentId)
+        val connectionId = request.connectionId.ifBlank {
+            settingsProvider().activeSelection?.connectionId.orEmpty()
+        }
+        val apiKey = settingsManager.getConnectionApiKey(connectionId)
         
         if (apiKey.isBlank()) {
-            trySend(ChatResponse.Error("Anthropic API key not configured for active agent", "AUTH_ERROR"))
+            trySend(ChatResponse.Error("Anthropic API key is missing for the selected provider", "AUTH_ERROR"))
             close()
             return@callbackFlow
         }

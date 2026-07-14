@@ -1,6 +1,6 @@
 package com.amaya.intelligence.tools
 
-import com.amaya.intelligence.data.remote.api.AgentConfig
+import com.amaya.intelligence.data.remote.api.ProviderConnection
 import com.amaya.intelligence.data.remote.api.AiProvider
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
@@ -11,7 +11,7 @@ import com.amaya.intelligence.data.remote.api.ChatResponse
 import com.amaya.intelligence.data.remote.api.GeminiProvider
 import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.data.remote.api.OpenAiProvider
-import com.amaya.intelligence.data.remote.api.ProviderType
+
 import com.amaya.intelligence.data.remote.api.ToolCallMessage
 import com.amaya.intelligence.data.remote.api.ToolResultMessage
 import kotlinx.coroutines.async
@@ -75,19 +75,20 @@ class InvokeSubagentsTool @Inject constructor(
                     )
                 }
             }
-            // FIX 1.6/3.6: Read emitter, parentId, agentConfig from per-call arguments map
-            // (injected by ToolExecutor) instead of mutable singleton fields.
+            // Read per-call context injected by ToolExecutor.
             @Suppress("UNCHECKED_CAST")
             val emitter = arguments["__eventEmitter"] as? (suspend (Any) -> Unit)
             val parentId = arguments["__toolCallId"] as? String ?: "subagents_${System.currentTimeMillis()}"
-            val agentConfig = arguments["__agentConfig"] as? com.amaya.intelligence.data.remote.api.AgentConfig
+            val providerConnection = arguments["__providerConnection"] as? ProviderConnection
+            val selectedModelId = arguments["__selectedModelId"] as? String
 
             val subagents = rawList.mapIndexed { idx, map ->
                 SubagentTask(
                     index       = idx,
                     taskName    = map["task_name"] as? String ?: "Subagent ${idx + 1}",
                     task        = map["task"] as String,  // safe: already validated non-null above
-                    agentConfig = agentConfig             // pass resolved config to SubagentRunner
+                    providerConnection = providerConnection,
+                    selectedModelId = selectedModelId
                 )
             }
 
@@ -149,7 +150,8 @@ data class SubagentTask(
     val taskName: String,
     val task: String,
     val workspacePath: String? = null,  // FIX 2.11: workspace for tool execution context
-    val agentConfig: com.amaya.intelligence.data.remote.api.AgentConfig? = null  // resolved by main chat loop
+    val providerConnection: ProviderConnection? = null,
+    val selectedModelId: String? = null
 )
 
 data class SubagentResult(
@@ -211,29 +213,26 @@ class SubagentRunner @Inject constructor(
     private suspend fun runInternal(task: SubagentTask, isRetry: Boolean): SubagentResult {
         val toolExecutor = toolExecutorProvider.get()
 
-        // FIX: Use agentConfig injected via task.agentConfig (passed from AiRepository through
-        // ToolExecutor.__agentConfig) — this is the SAME config already resolved by the main
-        // chat loop, so subagents always use the same provider/model/apiKey as the parent.
-        // Fall back to DataStore only if no agentConfig was passed (e.g. called from subagent tools).
-        val activeAgent: AgentConfig? = task.agentConfig ?: run {
-            val settings = settingsManager.getSettings()
-            settings.agentConfigs.find { it.id == settings.activeAgentId && it.enabled }
-                ?: settings.agentConfigs.firstOrNull { it.enabled }
-        }
-        val providerType = activeAgent?.let {
-            AmayaProviderRegistry.legacyProviderType(it.providerId).takeIf { _ -> it.providerId.isNotBlank() }
-                ?: runCatching { ProviderType.valueOf(it.providerType) }.getOrNull()
-        } ?: ProviderType.OPENAI
+        val settings = settingsManager.getSettings()
+        val activeConnection = task.providerConnection ?: settings.activeSelection?.let { selection ->
+            settings.connections.firstOrNull { it.id == selection.connectionId }
+        } ?: error("No model selected. Open Settings → Manage Models and select a model.")
+        val adapter = AmayaProviderRegistry.require(activeConnection.providerId).adapter
 
-        val provider: AiProvider = when (providerType) {
-            ProviderType.ANTHROPIC -> anthropicProvider
-            ProviderType.OPENAI,
-            ProviderType.CUSTOM_OPENAI_COMPATIBLE -> openAiProvider
-            ProviderType.GEMINI    -> geminiProvider
+        val provider: AiProvider = when (adapter) {
+            com.amaya.intelligence.data.remote.api.ProviderAdapter.ANTHROPIC -> anthropicProvider
+            com.amaya.intelligence.data.remote.api.ProviderAdapter.GEMINI -> geminiProvider
+            com.amaya.intelligence.data.remote.api.ProviderAdapter.OPENAI_COMPATIBLE,
+            com.amaya.intelligence.data.remote.api.ProviderAdapter.CODEX -> openAiProvider
         }
-        val model: String = activeAgent?.modelId?.ifBlank { null }
-            ?: provider.supportedModels.firstOrNull()
-            ?: ""
+        val model = task.selectedModelId?.takeIf { it.isNotBlank() }
+            ?: settings.activeSelection
+                ?.takeIf { it.connectionId == activeConnection.id }
+                ?.modelId
+            ?: error("No model selected for ${activeConnection.name}")
+        require(activeConnection.visibleModels.any { it.id == model }) {
+            "The selected model is not shown for ${activeConnection.name}"
+        }
 
         val systemPrompt = """
             You are a subagent — a focused AI assistant with a single task to complete.
@@ -243,15 +242,9 @@ class SubagentRunner @Inject constructor(
             ${if (isRetry) "NOTE: This is a retry after a rate limit error." else ""}
         """.trimIndent()
 
-        // FIX 4.3: Use shared toAiToolDefinition() extension — removes duplicate mapping from AiRepository.
-        // Respect the selected agent's capability override: text-only agents must not receive tools.
-        val tools = if (activeAgent?.toolCalling == false) {
-            emptyList()
-        } else {
-            toolExecutor.getToolDefinitions()
-                .filter { it.name != "invoke_subagents" } // no nested subagents
-                .map { it.toAiToolDefinition(truncateDesc = true) }
-        }
+        val tools = toolExecutor.getToolDefinitions()
+            .filter { it.name != "invoke_subagents" }
+            .map { it.toAiToolDefinition(truncateDesc = true) }
 
         val messages = mutableListOf(
             ChatMessage(role = MessageRole.USER, content = task.task)
@@ -271,9 +264,7 @@ class SubagentRunner @Inject constructor(
                 systemPrompt = systemPrompt,
                 tools        = tools,
                 stream       = true,
-                // Pass agentId so provider uses the correct baseUrl and apiKey
-                // (same agent as the main chat loop, not stale DataStore activeAgentId)
-                agentId      = activeAgent?.id ?: ""
+                connectionId = activeConnection.id
             )
 
             var textBuffer  = StringBuilder()

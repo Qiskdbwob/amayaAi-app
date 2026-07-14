@@ -33,7 +33,7 @@ data/local/
 
 ## File Functions
 - `AGENTS.md`: rules for local persistence and storage.
-- `entity/`: Room entities for projects, files, metadata, conversations, and cron jobs.
+- `entity/`: Room entities for projects, files, metadata, conversations, and cron jobs. Provider/model settings live in DataStore, not Room.
 - `dao/`: Room DAO interfaces for data access.
 - `db/AppDatabase.kt`: Room database definition and wiring.
 - `db/migrations/`: Database migration scripts.

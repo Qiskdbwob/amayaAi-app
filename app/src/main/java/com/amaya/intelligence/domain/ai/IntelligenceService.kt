@@ -1,7 +1,7 @@
 package com.amaya.intelligence.domain.ai
 
 import com.amaya.intelligence.domain.models.*
-import com.amaya.intelligence.data.remote.api.AgentConfig
+
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -31,7 +31,7 @@ interface IntelligenceService {
     val workspaces: StateFlow<List<RemoteWorkspace>> get() = MutableStateFlow(emptyList())
     fun getProjectFiles(path: String) {}
 
-    fun setSelectedAgent(agentId: String)
+    fun selectModel(modelKey: String)
     fun setWorkspace(path: String?) {}
     fun clearError() {}
     fun loadMoreConversations() {}

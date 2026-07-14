@@ -118,7 +118,7 @@ object IntelligenceModule {
             override fun loadConversation(id: String) = active.loadConversation(id)
             override fun deleteConversation(id: String) = active.deleteConversation(id)
             override fun getProjectFiles(path: String) = active.getProjectFiles(path)
-            override fun setSelectedAgent(agentId: String) = active.setSelectedAgent(agentId)
+            override fun selectModel(modelKey: String) = active.selectModel(modelKey)
             override fun setWorkspace(path: String?) = active.setWorkspace(path)
             override fun clearError() = active.clearError()
             override fun loadMoreConversations() = active.loadMoreConversations()

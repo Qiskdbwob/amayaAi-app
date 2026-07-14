@@ -3,14 +3,15 @@ package com.amaya.intelligence.data.remote.api
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -20,41 +21,29 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.security.GeneralSecurityException
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
-// FIX 1.3: Removed unused import androidx.security.crypto.MasterKeys (replaced by MasterKey)
-
-/**
- * A single agent / API profile the user has configured.
- * name    – display label (e.g. "OpenRouter Free", "My GPT-4o")
- * baseUrl – API base URL  (e.g. "https://openrouter.ai/api/v1")
- * modelId – model id       (e.g. "openai/gpt-4o-mini")
- * API key is stored encrypted separately, keyed by [id].
- */
-data class AgentConfig(
-    val id:           String  = java.util.UUID.randomUUID().toString(),
-    val name:         String  = "",
-    /** Legacy runtime provider type used by the current chat adapters. Filled when the user picks a provider. */
-    val providerType: String  = "",
-    /** New provider registry id. Filled when the user picks a provider. */
-    val providerId:   String  = "",
-    val baseUrl:      String  = "",
-    val modelId:      String  = "",
-    val enabled:      Boolean = true,
-    val maxTokens:    Int     = 8192,
-    val maxIterations:Int     = 10,
-    val toolCalling:  Boolean = true,
-    val vision:       Boolean = true,
-    val reasoning:    Boolean = false,
-    val structuredOutput: Boolean = false,
-    val embeddings:   Boolean = false,
-    val jsonMode:     Boolean = true,
-    val streaming:    Boolean = true,
-    /** Catalog model IDs the user enabled for this provider in Manage Models. Empty keeps only [modelId]. */
-    val enabledModelIds: List<String> = emptyList()
+data class ConfiguredModel(
+    val id: String,
+    val displayName: String = id
 )
+
+data class ProviderConnection(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String = "",
+    val providerId: String = "",
+    val baseUrl: String = "",
+    val visibleModels: List<ConfiguredModel> = emptyList()
+)
+
+data class ActiveModelSelection(
+    val connectionId: String,
+    val modelId: String
+) {
+    val key: String get() = "model|$connectionId|$modelId"
+}
 
 private val Context.dataStore by preferencesDataStore(name = "ai_settings")
 
@@ -62,101 +51,81 @@ private val Context.dataStore by preferencesDataStore(name = "ai_settings")
 class AiSettingsManager @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
-
     companion object {
-        // KEY_ACTIVE_PROVIDER: legacy key kept in DataStore for backwards compat (not read by new code)
-        private val KEY_ACTIVE_MODEL      = stringPreferencesKey("active_model")
-        private val KEY_THEME             = stringPreferencesKey("theme")
-        private val KEY_AGENT_CONFIGS     = stringPreferencesKey("agent_configs")
-        private val KEY_ACTIVE_AGENT_ID   = stringPreferencesKey("active_agent_id")
-        private val KEY_MCP_CONFIG_JSON   = stringPreferencesKey("mcp_config_json")
-        private val KEY_LAST_WORKSPACE    = stringPreferencesKey("last_workspace_path")
-        private val KEY_ONBOARDING_COMPLETED = androidx.datastore.preferences.core.booleanPreferencesKey("onboarding_completed")
+        private val KEY_CONNECTIONS = stringPreferencesKey("provider_connections_v2")
+        private val KEY_ACTIVE_SELECTION = stringPreferencesKey("active_model_selection_v2")
+        private val KEY_THEME = stringPreferencesKey("theme")
+        private val KEY_MCP_CONFIG_JSON = stringPreferencesKey("mcp_config_json")
+        private val KEY_LAST_WORKSPACE = stringPreferencesKey("last_workspace_path")
+        private val KEY_ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
 
-        // Per-agent encrypted API key storage: key = "agent_key_" + agentId
-        private const val ENC_AGENT_KEY_PREFIX  = "agent_key_"
-        private const val SECURE_PREFS_NAME     = "amaya_secure_prefs"
-        private const val STARTUP_PREFS_NAME    = "amaya_startup_prefs"
-        private const val STARTUP_THEME_KEY     = "theme"
+        private val LEGACY_AGENT_CONFIGS = stringPreferencesKey("agent_configs")
+        private val LEGACY_ACTIVE_AGENT_ID = stringPreferencesKey("active_agent_id")
+        private val LEGACY_ACTIVE_MODEL = stringPreferencesKey("active_model")
+
+        private const val ENC_CONNECTION_KEY_PREFIX = "agent_key_"
+        private const val SECURE_PREFS_NAME = "amaya_secure_prefs"
+        private const val STARTUP_PREFS_NAME = "amaya_startup_prefs"
+        private const val STARTUP_THEME_KEY = "theme"
 
         const val MCP_FIXED_PATH = "/storage/emulated/0/Amaya/mcp.json"
     }
 
-    private val encryptedPrefs: SharedPreferences by lazy {
-        createEncryptedPrefs()
-    }
-    private val startupPrefs: SharedPreferences by lazy {
+    private val encryptedPrefs: SharedPreferences by lazy { createEncryptedPrefs() }
+    private val startupPrefs by lazy {
         context.getSharedPreferences(STARTUP_PREFS_NAME, Context.MODE_PRIVATE)
     }
 
     private fun createEncryptedPrefs(): SharedPreferences {
         return runCatching {
-            createEncryptedPrefsInternal()
-        }.getOrElse { firstFailure ->
-            clearCorruptedEncryptedPrefs(firstFailure)
-            runCatching {
-                createEncryptedPrefsInternal()
-            }.getOrElse { secondFailure ->
-                Log.e("AiSettingsManager", "Secure credential storage unavailable after recovery attempt", secondFailure)
-                throw IllegalStateException("Secure credential storage is unavailable", secondFailure)
-            }
+            val masterKey = MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            EncryptedSharedPreferences.create(
+                context,
+                SECURE_PREFS_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        }.getOrElse { failure ->
+            Log.e("AiSettingsManager", "Secure credential storage unavailable", failure)
+            throw IllegalStateException(
+                "Secure credential storage is unavailable. Reinstall the app only if credential recovery is impossible.",
+                failure
+            )
         }
     }
 
-    private fun createEncryptedPrefsInternal(): SharedPreferences {
-        // FIX 5.8: Use non-deprecated MasterKey.Builder API (MasterKeys was deprecated in security-crypto 1.1.0-alpha)
-        val masterKey = MasterKey.Builder(context)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        return EncryptedSharedPreferences.create(
-            context,
-            SECURE_PREFS_NAME,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-    }
-
-    private fun clearCorruptedEncryptedPrefs(cause: Throwable) {
-        Log.w("AiSettingsManager", "Encrypted prefs corrupted or unreadable, clearing and recreating", cause)
-        runCatching { context.deleteSharedPreferences(SECURE_PREFS_NAME) }
-        runCatching {
-            val sharedPrefsDir = File(context.applicationInfo.dataDir, "shared_prefs")
-            if (sharedPrefsDir.exists()) {
-                sharedPrefsDir.listFiles()?.forEach { file ->
-                    if (file.name.contains(SECURE_PREFS_NAME) || file.name.contains("androidx_security_crypto")) {
-                        runCatching { file.delete() }
-                    }
-                }
-            }
-        }
-        runCatching {
-            val fallbackFile = File(context.applicationInfo.dataDir, "shared_prefs/$SECURE_PREFS_NAME.xml")
-            if (fallbackFile.exists()) fallbackFile.delete()
-        }
-    }
-
-    // FIX 3.1: Cache the last emitted settings so getSettings() rarely needs runBlocking.
-    // IMPORTANT: settingsFlow must be declared BEFORE init{} so it is non-null when the
-    // coroutine starts. Kotlin initializes properties top-to-bottom, so declaration order matters.
     val settingsFlow: Flow<AiSettings> = context.dataStore.data.map { prefs ->
-        val configs = parseAgentConfigs(prefs[KEY_AGENT_CONFIGS] ?: "[]")
+        val connections = parseConnections(
+            prefs[KEY_CONNECTIONS] ?: prefs[LEGACY_AGENT_CONFIGS].orEmpty()
+        )
+        val activeSelection = parseActiveSelection(prefs[KEY_ACTIVE_SELECTION])
+            ?: legacyActiveSelection(
+                connections = connections,
+                connectionId = prefs[LEGACY_ACTIVE_AGENT_ID].orEmpty(),
+                modelId = prefs[LEGACY_ACTIVE_MODEL].orEmpty()
+            )
         AiSettings(
-            activeModel       = prefs[KEY_ACTIVE_MODEL] ?: "",
-            theme             = prefs[KEY_THEME] ?: "system",
-            agentConfigs      = configs,
-            activeAgentId     = prefs[KEY_ACTIVE_AGENT_ID] ?: "",
-            mcpConfigJson     = prefs[KEY_MCP_CONFIG_JSON] ?: "",
+            theme = prefs[KEY_THEME] ?: "system",
+            connections = connections,
+            activeSelection = activeSelection?.takeIf { selection ->
+                connections.any { connection ->
+                    connection.id == selection.connectionId &&
+                        connection.visibleModels.any { it.id == selection.modelId }
+                }
+            },
+            mcpConfigJson = prefs[KEY_MCP_CONFIG_JSON].orEmpty(),
             lastWorkspacePath = prefs[KEY_LAST_WORKSPACE]?.ifBlank { null },
             onboardingCompleted = prefs[KEY_ONBOARDING_COMPLETED] ?: false
         )
     }
 
-    // FIX 3.1: Cache declared AFTER settingsFlow so it is non-null when init{} coroutine starts.
-    @Volatile private var cachedSettings: AiSettings? = null
+    @Volatile
+    private var cachedSettings: AiSettings? = null
 
     init {
-        // Warm the cache on a background thread — settingsFlow is guaranteed non-null here
         CoroutineScope(Dispatchers.IO).launch {
             settingsFlow.collect {
                 cachedSettings = it
@@ -171,63 +140,149 @@ class AiSettingsManager @Inject constructor(
     fun getStartupTheme(): String =
         startupPrefs.getString(STARTUP_THEME_KEY, "system") ?: "system"
 
-    /** Retrieve encrypted API key for a specific agent config ID */
-    fun getAgentApiKey(agentId: String): String =
-        encryptedPrefs.getString("$ENC_AGENT_KEY_PREFIX$agentId", "") ?: ""
 
-    /** Expose encrypted prefs for subscription token storage (Codex, GitHub Copilot, etc.). */
-    fun getEncryptedPrefsForProviderAuth(providerId: String): android.content.SharedPreferences = encryptedPrefs
 
-    /** Backwards-compatible alias for the existing OpenAI/Codex flow. */
-    fun getEncryptedPrefsForCodex(): android.content.SharedPreferences = getEncryptedPrefsForProviderAuth("openai_codex_bridge")
+    fun getConnectionApiKey(connectionId: String): String =
+        encryptedPrefs.getString("$ENC_CONNECTION_KEY_PREFIX$connectionId", "").orEmpty()
 
-    // ── Write ────────────────────────────────────────────────────────
+    fun hasConnectionApiKey(connectionId: String): Boolean =
+        getConnectionApiKey(connectionId).isNotBlank()
 
-    /** Add or update an agent config and store its API key encrypted */
-    suspend fun saveAgentConfig(config: AgentConfig, apiKey: String) {
-        encryptedPrefs.edit().putString("$ENC_AGENT_KEY_PREFIX${config.id}", apiKey).apply()
-        context.dataStore.edit { prefs ->
-            val list = parseAgentConfigs(prefs[KEY_AGENT_CONFIGS] ?: "[]").toMutableList()
-            val normalized = config.normalizeEnabledModelIds()
-            val idx = list.indexOfFirst { it.id == normalized.id }
-            if (idx >= 0) list[idx] = normalized else list.add(normalized)
-            prefs[KEY_AGENT_CONFIGS] = serializeAgentConfigs(list)
+    fun getEncryptedPrefsForCodex(): SharedPreferences = encryptedPrefs
+
+    suspend fun saveConnection(connection: ProviderConnection, apiKey: String? = null) {
+        require(connection.id.isNotBlank()) { "Connection ID is required" }
+        require(AmayaProviderRegistry.find(connection.providerId) != null) { "Unsupported provider: ${connection.providerId}" }
+        require(connection.name.isNotBlank()) { "Connection name is required" }
+        val normalized = connection.copy(
+            name = connection.name.trim(),
+            baseUrl = connection.baseUrl.trim().trimEnd('/'),
+            visibleModels = connection.visibleModels
+                .map { it.copy(id = it.id.trim(), displayName = it.displayName.trim()) }
+                .filter { it.id.isNotBlank() }
+                .distinctBy { it.id }
+                .map { it.copy(displayName = it.displayName.ifBlank { it.id }) }
+        )
+        val credentialKey = "$ENC_CONNECTION_KEY_PREFIX${connection.id}"
+        val previousCredential = if (apiKey != null) encryptedPrefs.getString(credentialKey, null) else null
+        if (apiKey != null && !encryptedPrefs.edit().putString(credentialKey, apiKey.trim()).commit()) {
+            error("Could not save the provider credential securely")
         }
-    }
-
-    /** Delete an agent config */
-    suspend fun deleteAgentConfig(agentId: String) {
-        encryptedPrefs.edit().remove("$ENC_AGENT_KEY_PREFIX$agentId").apply()
-        context.dataStore.edit { prefs ->
-            val list = parseAgentConfigs(prefs[KEY_AGENT_CONFIGS] ?: "[]").toMutableList()
-            list.removeAll { it.id == agentId }
-            prefs[KEY_AGENT_CONFIGS] = serializeAgentConfigs(list)
-            if ((prefs[KEY_ACTIVE_AGENT_ID] ?: "") == agentId) {
-                prefs[KEY_ACTIVE_AGENT_ID] = list.firstOrNull()?.id ?: ""
-                prefs[KEY_ACTIVE_MODEL]    = list.firstOrNull()?.modelId ?: ""
+        runCatching {
+            context.dataStore.edit { prefs ->
+                val list = parseConnections(
+                    prefs[KEY_CONNECTIONS] ?: prefs[LEGACY_AGENT_CONFIGS].orEmpty()
+                ).toMutableList()
+                val index = list.indexOfFirst { it.id == normalized.id }
+                if (index >= 0) list[index] = normalized else list.add(normalized)
+                prefs[KEY_CONNECTIONS] = serializeConnections(list)
+                val active = parseActiveSelection(prefs[KEY_ACTIVE_SELECTION])
+                    ?: legacyActiveSelection(
+                        connections = list,
+                        connectionId = prefs[LEGACY_ACTIVE_AGENT_ID].orEmpty(),
+                        modelId = prefs[LEGACY_ACTIVE_MODEL].orEmpty()
+                    )
+                if (active != null) prefs[KEY_ACTIVE_SELECTION] = serializeActiveSelection(active)
+                prefs.remove(LEGACY_AGENT_CONFIGS)
+                prefs.remove(LEGACY_ACTIVE_AGENT_ID)
+                prefs.remove(LEGACY_ACTIVE_MODEL)
             }
-        }
+        }.onFailure {
+            if (apiKey != null) {
+                val rollback = encryptedPrefs.edit()
+                if (previousCredential == null) rollback.remove(credentialKey)
+                else rollback.putString(credentialKey, previousCredential)
+                rollback.commit()
+            }
+        }.getOrThrow()
     }
 
-    /** Select which agent config is active; also updates the active model */
-    suspend fun setActiveAgent(agentId: String, modelId: String) {
+    suspend fun replaceConnectionApiKey(connectionId: String, apiKey: String) {
+        val editor = encryptedPrefs.edit()
+        if (apiKey.isBlank()) editor.remove("$ENC_CONNECTION_KEY_PREFIX$connectionId")
+        else editor.putString("$ENC_CONNECTION_KEY_PREFIX$connectionId", apiKey.trim())
+        if (!editor.commit()) error("Could not replace the provider credential securely")
+    }
+
+    suspend fun deleteConnection(connectionId: String) {
         context.dataStore.edit { prefs ->
-            prefs[KEY_ACTIVE_AGENT_ID] = agentId
-            prefs[KEY_ACTIVE_MODEL]    = modelId
+            val remaining = parseConnections(
+                prefs[KEY_CONNECTIONS] ?: prefs[LEGACY_AGENT_CONFIGS].orEmpty()
+            ).filterNot { it.id == connectionId }
+            prefs[KEY_CONNECTIONS] = serializeConnections(remaining)
+            val active = parseActiveSelection(prefs[KEY_ACTIVE_SELECTION])
+                ?: legacyActiveSelection(
+                    connections = remaining,
+                    connectionId = prefs[LEGACY_ACTIVE_AGENT_ID].orEmpty(),
+                    modelId = prefs[LEGACY_ACTIVE_MODEL].orEmpty()
+                )
+            if (active?.connectionId == connectionId) {
+                prefs.remove(KEY_ACTIVE_SELECTION)
+            } else if (active != null) {
+                prefs[KEY_ACTIVE_SELECTION] = serializeActiveSelection(active)
+            }
+            prefs.remove(LEGACY_AGENT_CONFIGS)
+            prefs.remove(LEGACY_ACTIVE_AGENT_ID)
+            prefs.remove(LEGACY_ACTIVE_MODEL)
+        }
+        if (!encryptedPrefs.edit().remove("$ENC_CONNECTION_KEY_PREFIX$connectionId").commit()) {
+            Log.w("AiSettingsManager", "Connection deleted, but its credential could not be removed")
         }
     }
 
-    // FIX 1.1: Removed setAnthropicApiKey() and setGeminiApiKey() — dead wrappers around setApiKey().
-    // FIX 1.2: Removed setActiveProvider() and setBaseUrl() — dead code from pre-agent-config era.
-    //          Provider is now resolved from AgentConfig.providerType, not from activeProvider DataStore key.
+    suspend fun setActiveModel(selection: ActiveModelSelection?) {
+        context.dataStore.edit { prefs ->
+            if (selection == null) {
+                prefs.remove(KEY_ACTIVE_SELECTION)
+            } else {
+                val connections = parseConnections(
+                    prefs[KEY_CONNECTIONS] ?: prefs[LEGACY_AGENT_CONFIGS].orEmpty()
+                )
+                require(connections.any { connection ->
+                    connection.id == selection.connectionId &&
+                        connection.visibleModels.any { it.id == selection.modelId }
+                }) { "Selected model is not visible for this provider connection" }
+                prefs[KEY_ACTIVE_SELECTION] = serializeActiveSelection(selection)
+            }
+            prefs.remove(LEGACY_ACTIVE_AGENT_ID)
+            prefs.remove(LEGACY_ACTIVE_MODEL)
+        }
+    }
 
-    suspend fun setActiveModel(model: String) {
-        context.dataStore.edit { prefs -> prefs[KEY_ACTIVE_MODEL] = model }
+    suspend fun setVisibleModels(connectionId: String, models: List<ConfiguredModel>) {
+        val normalizedModels = models
+            .map { model -> model.copy(id = model.id.trim(), displayName = model.displayName.trim()) }
+            .filter { it.id.isNotBlank() }
+            .distinctBy { it.id }
+            .map { model -> model.copy(displayName = model.displayName.ifBlank { model.id }) }
+        context.dataStore.edit { prefs ->
+            val connections = parseConnections(
+                prefs[KEY_CONNECTIONS] ?: prefs[LEGACY_AGENT_CONFIGS].orEmpty()
+            ).toMutableList()
+            val index = connections.indexOfFirst { it.id == connectionId }
+            require(index >= 0) { "Provider connection not found" }
+            val active = parseActiveSelection(prefs[KEY_ACTIVE_SELECTION])
+                ?: legacyActiveSelection(
+                    connections = connections,
+                    connectionId = prefs[LEGACY_ACTIVE_AGENT_ID].orEmpty(),
+                    modelId = prefs[LEGACY_ACTIVE_MODEL].orEmpty()
+                )
+            connections[index] = connections[index].copy(visibleModels = normalizedModels)
+            prefs[KEY_CONNECTIONS] = serializeConnections(connections)
+            prefs.remove(LEGACY_AGENT_CONFIGS)
+            if (active?.connectionId == connectionId && normalizedModels.none { it.id == active.modelId }) {
+                prefs.remove(KEY_ACTIVE_SELECTION)
+            } else if (active != null) {
+                prefs[KEY_ACTIVE_SELECTION] = serializeActiveSelection(active)
+            }
+            prefs.remove(LEGACY_ACTIVE_AGENT_ID)
+            prefs.remove(LEGACY_ACTIVE_MODEL)
+        }
     }
 
     suspend fun setTheme(theme: String) {
         startupPrefs.edit().putString(STARTUP_THEME_KEY, theme).apply()
-        context.dataStore.edit { prefs -> prefs[KEY_THEME] = theme }
+        context.dataStore.edit { it[KEY_THEME] = theme }
     }
 
     suspend fun setLastWorkspacePath(path: String?) {
@@ -238,127 +293,140 @@ class AiSettingsManager @Inject constructor(
     }
 
     suspend fun setOnboardingCompleted(completed: Boolean) {
-        context.dataStore.edit { prefs -> prefs[KEY_ONBOARDING_COMPLETED] = completed }
+        context.dataStore.edit { it[KEY_ONBOARDING_COMPLETED] = completed }
     }
 
     suspend fun setMcpConfigJson(json: String) {
-        context.dataStore.edit { prefs -> prefs[KEY_MCP_CONFIG_JSON] = json }
+        context.dataStore.edit { it[KEY_MCP_CONFIG_JSON] = json }
         writeMcpConfigToFixedPath(json)
     }
 
-    suspend fun loadMcpConfigFromFixedPath(): String? {
-        return withContext(Dispatchers.IO) {
-            val file = File(MCP_FIXED_PATH)
-            if (!file.exists()) return@withContext null
-            return@withContext runCatching { file.readText() }.getOrNull()
+    suspend fun loadMcpConfigFromFixedPath(): String? = withContext(Dispatchers.IO) {
+        File(MCP_FIXED_PATH).takeIf { it.exists() }?.let { runCatching { it.readText() }.getOrNull() }
+    }
+
+    suspend fun writeMcpConfigToFixedPath(json: String) = withContext(Dispatchers.IO) {
+        File(MCP_FIXED_PATH).apply {
+            parentFile?.mkdirs()
+            writeText(json)
         }
     }
 
-    suspend fun writeMcpConfigToFixedPath(json: String) {
-        withContext(Dispatchers.IO) {
-            val file = File(MCP_FIXED_PATH)
-            file.parentFile?.mkdirs()
-            file.writeText(json)
-        }
-    }
-
-    // ── JSON helpers ─────────────────────────────────────────────────
-
-    private fun parseAgentConfigs(json: String): List<AgentConfig> = try {
-        val arr = JSONArray(json)
-        (0 until arr.length()).map { i ->
-            arr.getJSONObject(i).let { obj ->
-                AgentConfig(
-                    id           = obj.optString("id", java.util.UUID.randomUUID().toString()),
-                    name         = obj.optString("name", ""),
-                    providerType = obj.optString("providerType", ""),
-                    providerId   = obj.optString("providerId", "").ifBlank {
-                        inferProviderId(obj.optString("providerType", ""), obj.optString("baseUrl", ""), obj.optString("modelId", ""))
-                    },
-                    baseUrl      = obj.optString("baseUrl", ""),
-                    modelId      = obj.optString("modelId", ""),
-                    enabled      = obj.optBoolean("enabled", true),
-                    maxTokens    = obj.optInt("maxTokens", 8192),
-                    maxIterations= obj.optInt("maxIterations", 10),
-                    toolCalling  = obj.optBoolean("toolCalling", true),
-                    vision       = obj.optBoolean("vision", true),
-                    reasoning    = obj.optBoolean("reasoning", false),
-                    structuredOutput = obj.optBoolean("structuredOutput", false),
-                    embeddings   = obj.optBoolean("embeddings", false),
-                    jsonMode     = obj.optBoolean("jsonMode", true),
-                    streaming    = obj.optBoolean("streaming", true),
-                    enabledModelIds = obj.optJSONArray("enabledModelIds")?.let { arr ->
-                        (0 until arr.length()).mapNotNull { idx -> arr.optString(idx).takeIf { it.isNotBlank() } }
-                    }.orEmpty()
-                ).normalizeEnabledModelIds()
+    private fun parseConnections(json: String): List<ProviderConnection> = runCatching {
+        val array = JSONArray(json.ifBlank { "[]" })
+        (0 until array.length()).mapNotNull { index ->
+            val item = array.optJSONObject(index) ?: return@mapNotNull null
+            val id = item.optString("id").ifBlank { UUID.randomUUID().toString() }
+            val providerId = item.optString("providerId").ifBlank {
+                inferLegacyProviderId(
+                    providerType = item.optString("providerType"),
+                    baseUrl = item.optString("baseUrl"),
+                    modelId = item.optString("modelId")
+                )
             }
+            if (providerId.isBlank() || AmayaProviderRegistry.find(providerId) == null) {
+                return@mapNotNull null
+            }
+            val legacyModelId = item.optString("modelId")
+            val modelArray = item.optJSONArray("visibleModels")
+            val configuredModels = if (modelArray != null) {
+                (0 until modelArray.length()).mapNotNull { modelIndex ->
+                    when (val value = modelArray.opt(modelIndex)) {
+                        is JSONObject -> value.optString("id").takeIf { it.isNotBlank() }?.let {
+                            ConfiguredModel(it, value.optString("displayName", it))
+                        }
+                        is String -> value.takeIf { it.isNotBlank() }?.let(::ConfiguredModel)
+                        else -> null
+                    }
+                }
+            } else {
+                buildList {
+                    legacyModelId.takeIf { it.isNotBlank() }?.let { add(ConfiguredModel(it)) }
+                    item.optJSONArray("enabledModelIds")?.let { legacy ->
+                        repeat(legacy.length()) { modelIndex ->
+                            legacy.optString(modelIndex).takeIf { it.isNotBlank() }?.let { add(ConfiguredModel(it)) }
+                        }
+                    }
+                }
+            }
+            ProviderConnection(
+                id = id,
+                name = item.optString("name").ifBlank { AmayaProviderRegistry.displayName(providerId) },
+                providerId = providerId,
+                baseUrl = item.optString("baseUrl"),
+                visibleModels = configuredModels.distinctBy { it.id }
+            )
         }
-    } catch (_: Exception) { emptyList() }
+    }.getOrElse {
+        Log.e("AiSettingsManager", "Could not parse provider connections", it)
+        emptyList()
+    }
 
-    private fun serializeAgentConfigs(configs: List<AgentConfig>): String =
-        JSONArray().also { arr ->
-            configs.forEach { c ->
-                arr.put(JSONObject().apply {
-                    put("id",           c.id)
-                    put("name",         c.name)
-                    put("providerType", c.providerType)
-                    put("providerId",   c.providerId)
-                    put("baseUrl",      c.baseUrl)
-                    put("modelId",      c.modelId)
-                    put("enabled",      c.enabled)
-                    put("maxTokens",    c.maxTokens)
-                    put("maxIterations",c.maxIterations)
-                    put("toolCalling",  c.toolCalling)
-                    put("vision",       c.vision)
-                    put("reasoning",    c.reasoning)
-                    put("structuredOutput", c.structuredOutput)
-                    put("embeddings",   c.embeddings)
-                    put("jsonMode",     c.jsonMode)
-                    put("streaming",    c.streaming)
-                    put("enabledModelIds", JSONArray(c.enabledModelIds.distinct()))
+    private fun serializeConnections(connections: List<ProviderConnection>): String =
+        JSONArray().also { array ->
+            connections.forEach { connection ->
+                array.put(JSONObject().apply {
+                    put("id", connection.id)
+                    put("name", connection.name)
+                    put("providerId", connection.providerId)
+                    put("baseUrl", connection.baseUrl)
+                    put("visibleModels", JSONArray().also { models ->
+                        connection.visibleModels.forEach { model ->
+                            models.put(JSONObject().put("id", model.id).put("displayName", model.displayName))
+                        }
+                    })
                 })
             }
         }.toString()
 
-    private fun inferProviderId(providerType: String, baseUrl: String, modelId: String): String {
+    private fun serializeActiveSelection(selection: ActiveModelSelection): String = JSONObject()
+        .put("connectionId", selection.connectionId)
+        .put("modelId", selection.modelId)
+        .toString()
+
+    private fun parseActiveSelection(json: String?): ActiveModelSelection? = runCatching {
+        if (json.isNullOrBlank()) return@runCatching null
+        JSONObject(json).let { item ->
+            val connectionId = item.optString("connectionId")
+            val modelId = item.optString("modelId")
+            if (connectionId.isBlank() || modelId.isBlank()) null
+            else ActiveModelSelection(connectionId, modelId)
+        }
+    }.getOrNull()
+
+    private fun legacyActiveSelection(
+        connections: List<ProviderConnection>,
+        connectionId: String,
+        modelId: String
+    ): ActiveModelSelection? {
+        if (connectionId.isBlank() || modelId.isBlank()) return null
+        return connections.firstOrNull { it.id == connectionId }
+            ?.takeIf { connection -> connection.visibleModels.any { it.id == modelId } }
+            ?.let { ActiveModelSelection(it.id, modelId) }
+    }
+
+    private fun inferLegacyProviderId(providerType: String, baseUrl: String, modelId: String): String {
         val value = "${providerType.lowercase()} ${baseUrl.lowercase()} ${modelId.lowercase()}"
         return when {
             value.contains("anthropic") || value.contains("claude") -> "anthropic"
             value.contains("gemini") || value.contains("google") -> "google_gemini_api"
-            value.contains("copilot") -> "github_copilot"
             value.contains("openrouter") -> "openrouter"
             value.contains("groq") -> "groq"
             value.contains("deepseek") -> "deepseek"
             value.contains("x.ai") || value.contains("grok") -> "xai"
             value.contains("github") -> "github_models"
             value.contains("vercel") -> "vercel_ai_gateway"
-            value.contains("ollama") -> "ollama"
-            value.contains("lmstudio") || value.contains("lm-studio") || value.contains("localhost:1234") -> "lm_studio"
             baseUrl.isNotBlank() -> "custom_openai_compatible"
-            else -> ""
+            else -> "openai"
         }
     }
 }
 
-private fun AgentConfig.normalizeEnabledModelIds(): AgentConfig {
-    val normalizedEnabled = enabledModelIds.filter { it.isNotBlank() }.distinct()
-    return if (AmayaProviderRegistry.find(providerId)?.isSubscription == true) {
-        copy(modelId = "", enabledModelIds = normalizedEnabled)
-    } else {
-        copy(enabledModelIds = normalizedEnabled)
-    }
-}
-
 data class AiSettings(
-    // activeModel: fallback model ID if no agent config found (rarely used)
-    val activeModel:       String            = "",
-    val theme:             String            = "system",
-    val agentConfigs:      List<AgentConfig> = emptyList(),
-    val activeAgentId:     String            = "",
-    val mcpConfigJson:     String            = "",
-    /** Last workspace path the user opened — persisted across app restarts. */
-    val lastWorkspacePath: String?           = null,
-    val onboardingCompleted: Boolean          = false
+    val theme: String = "system",
+    val connections: List<ProviderConnection> = emptyList(),
+    val activeSelection: ActiveModelSelection? = null,
+    val mcpConfigJson: String = "",
+    val lastWorkspacePath: String? = null,
+    val onboardingCompleted: Boolean = false
 )
-
-enum class ProviderType { ANTHROPIC, OPENAI, GEMINI, CUSTOM_OPENAI_COMPATIBLE }

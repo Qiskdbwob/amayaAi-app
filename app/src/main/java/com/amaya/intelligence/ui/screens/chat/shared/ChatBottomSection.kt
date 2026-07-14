@@ -52,6 +52,9 @@ fun ChatBottomSection(
     showConversationModeSelector: Boolean,
     onShowConversationModeSheet: () -> Unit,
     modelLabel: String,
+    modelId: String,
+    modelProviderId: String?,
+    modelIconType: String?,
     onSelectModel: () -> Unit,
     onInputBarHeightChange: (Int) -> Unit
 ) {
@@ -141,6 +144,9 @@ fun ChatBottomSection(
             workspacePath = uiState.workspacePath,
             onWorkspaceClick = onNavigateToWorkspace,
             modelLabel = modelLabel,
+            modelId = modelId,
+            modelProviderId = modelProviderId,
+            modelIconType = modelIconType,
             onSelectModel = onSelectModel,
             onSendMessage = { text ->
                 keyboardController?.hide()

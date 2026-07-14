@@ -9,7 +9,7 @@ import com.amaya.intelligence.ui.screens.settings.local.LocalSettingsScreen
 import com.amaya.intelligence.ui.theme.AmayaTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
-import com.amaya.intelligence.ui.activities.agent.local.LocalAgentActivity
+import com.amaya.intelligence.ui.activities.models.ManageModelsActivity
 import com.amaya.intelligence.ui.activities.mcp.local.LocalMcpActivity
 import com.amaya.intelligence.ui.activities.cronjob.local.LocalCronJobActivity
 import com.amaya.intelligence.ui.activities.project.local.LocalProjectActivity
@@ -27,21 +27,10 @@ class LocalSettingsActivity : AppCompatActivity() {
     lateinit var aiSettingsManager: AiSettingsManager
 
     private var currentWorkspace: String? = null
-    private var navigateToWorkspace: Boolean = false
-    private var navigateToPersona: Boolean = false
-    private var navigateToAgents: Boolean = false
-    private var navigateToReminders: Boolean = false
-    private var navigateToMcp: Boolean = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         currentWorkspace = intent.getStringExtra("current_workspace")
-        navigateToWorkspace = intent.getBooleanExtra("navigate_to_workspace", false)
-        navigateToPersona = intent.getBooleanExtra("navigate_to_persona", false)
-        navigateToAgents = intent.getBooleanExtra("navigate_to_agents", false)
-        navigateToReminders = intent.getBooleanExtra("navigate_to_reminders", false)
-        navigateToMcp = intent.getBooleanExtra("navigate_to_mcp", false)
-        
         enableEdgeToEdge()
     }
 
@@ -71,8 +60,8 @@ class LocalSettingsActivity : AppCompatActivity() {
                         LocalProjectActivity.startForResult(this)
                     },
                     aiSettingsManager = aiSettingsManager,
-                    onNavigateToAgents = {
-                        LocalAgentActivity.start(this)
+                    onNavigateToModels = {
+                        ManageModelsActivity.start(this)
                     },
                     onNavigateToReminders = {
                         LocalCronJobActivity.start(this)
