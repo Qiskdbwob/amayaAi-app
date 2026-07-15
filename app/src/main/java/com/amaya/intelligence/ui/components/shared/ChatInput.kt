@@ -26,6 +26,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
+import androidx.compose.ui.zIndex
 import kotlin.math.roundToInt
 
 @Composable
@@ -189,7 +190,7 @@ fun ChatInput(
         }
 
         val placeholderText = remember(hasWorkspace, wsName) {
-            if (hasWorkspace) "Ask anything on $wsName" else "Ask Me Anything"
+            if (hasWorkspace) "Ask anything on $wsName" else "Ask anything"
         }
         val placeholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.46f)
         val canSend = text.isNotBlank() || hasAttachment
@@ -203,115 +204,180 @@ fun ChatInput(
             }
         }
 
-        Surface(
-            shape = RoundedCornerShape(composerCornerRadius),
-            color = pillColor,
-            border = BorderStroke(
-                0.7.dp,
-                MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.15f else 0.10f)
-            ),
-            modifier = Modifier.fillMaxWidth(),
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp
-        ) {
-            ComposerLayout(
-                expansion = expansion,
+
+        // Card + Input — precisely stacked to hide border gap
+        val cardHeight = 36.dp
+        val overlap = 1.dp
+        Box(modifier = Modifier.fillMaxWidth()) {
+            // Workspace card — narrower, bottom corners flat
+            Surface(
+                shape = RoundedCornerShape(
+                    topStart = 16.dp,
+                    topEnd = 16.dp,
+                    bottomStart = 0.dp,
+                    bottomEnd = 0.dp
+                ),
+                color = pillColor,
+                border = BorderStroke(
+                    0.7.dp,
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.15f else 0.10f)
+                ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(
-                        horizontal = composerHorizontalPadding,
-                        vertical = composerVerticalPadding
-                    ),
-                attachment = {
-                    ComposerAttachmentButton(
-                        isStreaming = isStreaming,
-                        onAttachFile = onAttachFile,
-                        onAttachImage = onAttachImage
-                    )
-                },
-                input = {
-                    Box(
-                        modifier = Modifier.heightIn(min = 40.dp),
-                        contentAlignment = Alignment.CenterStart
+                    .padding(horizontal = 20.dp)
+                    .height(cardHeight)
+                    .align(Alignment.TopCenter)
+                    .zIndex(0f),
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        onClick = onWorkspaceClick,
+                        color = Color.Transparent,
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        BasicTextField(
-                            value = text,
-                            onValueChange = onTextChange,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .focusRequester(focusRequester),
-                            maxLines = 5,
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(
-                                color = MaterialTheme.colorScheme.onSurface
-                            ),
-                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                            decorationBox = { inner ->
-                                Box(modifier = Modifier.fillMaxWidth()) {
-                                    if (text.isEmpty()) {
-                                        Text(
-                                            text = placeholderText,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = placeholderColor,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Folder,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (hasWorkspace) wsName else "No Project",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Main input — full width, placed precisely to overlap 1dp and hide the seam
+            Surface(
+                shape = RoundedCornerShape(composerCornerRadius),
+                color = pillColor,
+                border = BorderStroke(
+                    0.7.dp,
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.15f else 0.10f)
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = cardHeight - overlap)
+                    .zIndex(1f),
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp
+            ) {
+                ComposerLayout(
+                    expansion = expansion,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            horizontal = composerHorizontalPadding,
+                            vertical = composerVerticalPadding
+                        ),
+                    attachment = {
+                        ComposerAttachmentButton(
+                            expansion = expansion,
+                            isStreaming = isStreaming,
+                            onAttachFile = onAttachFile,
+                            onAttachImage = onAttachImage
+                        )
+                    },
+                    input = {
+                        Box(
+                            modifier = Modifier.heightIn(min = 40.dp),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            BasicTextField(
+                                value = text,
+                                onValueChange = onTextChange,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .focusRequester(focusRequester),
+                                maxLines = 5,
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                    color = MaterialTheme.colorScheme.onSurface
+                                ),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                decorationBox = { inner ->
+                                    Box(modifier = Modifier.fillMaxWidth()) {
+                                        if (text.isEmpty()) {
+                                            Text(
+                                                text = placeholderText,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = placeholderColor,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        inner()
                                     }
-                                    inner()
                                 }
+                            )
+                        }
+                    },
+                    model = {
+                        val modelHeight = androidx.compose.ui.unit.lerp(40.dp, 32.dp, expansion)
+                        val iconSize = androidx.compose.ui.unit.lerp(18.dp, 14.dp, expansion)
+                        Surface(
+                            onClick = onSelectModel,
+                            enabled = expansion > 0.5f,
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
+                            modifier = Modifier.height(modelHeight)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .widthIn(max = 240.dp)
+                                    .padding(horizontal = 14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                ModelLeadingIcon(
+                                    modelId = modelId,
+                                    providerId = modelProviderId,
+                                    iconType = modelIconType,
+                                    modifier = Modifier.size(iconSize),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = modelLabel,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                            }
+                        }
+                    },
+                    send = {
+                        ComposerSendButton(
+                            expansion = expansion,
+                            isStreaming = isStreaming,
+                            canSend = canSend,
+                            onClick = submitMessage,
+                            onEmptyClick = {
+                                focusRequester.requestFocus()
+                                keyboardController?.show()
                             }
                         )
                     }
-                },
-                model = {
-                    Surface(
-                        onClick = onSelectModel,
-                        enabled = expansion > 0.5f,
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color.Transparent,
-                        modifier = Modifier.height(40.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .widthIn(max = 150.dp)
-                                .padding(horizontal = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            ModelLeadingIcon(
-                                modelId = modelId,
-                                providerId = modelProviderId,
-                                iconType = modelIconType,
-                                modifier = Modifier.size(17.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = modelLabel,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            Text(
-                                text = ">",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f)
-                            )
-                        }
-                    }
-                },
-                send = {
-                    ComposerSendButton(
-                        isStreaming = isStreaming,
-                        canSend = canSend,
-                        onClick = submitMessage,
-                        onEmptyClick = {
-                            focusRequester.requestFocus()
-                            keyboardController?.show()
-                        }
-                    )
-                }
-            )
+                )
+            }
         }
     }
 }
@@ -394,7 +460,7 @@ private fun ComposerLayout(
         ).roundToInt()
         val inputY = (topHeight - inputPlaceable.height) / 2
         val modelX = constraints.maxWidth - sendPlaceable.width - gap - modelPlaceable.width
-        val modelY = controlsRowY
+        val modelY = controlsRowY + (controlsRowHeight - modelPlaceable.height) / 2
 
         layout(constraints.maxWidth, layoutHeight) {
             attachmentPlaceable.placeRelative(0, attachmentY)
@@ -407,16 +473,19 @@ private fun ComposerLayout(
 
 @Composable
 private fun ComposerAttachmentButton(
+    expansion: Float,
     isStreaming: Boolean,
     onAttachFile: () -> Unit,
     onAttachImage: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val buttonSize = androidx.compose.ui.unit.lerp(40.dp, 32.dp, expansion)
+    val iconSize = androidx.compose.ui.unit.lerp(23.dp, 18.dp, expansion)
 
     Box {
         Box(
             modifier = Modifier
-                .size(40.dp)
+                .size(buttonSize)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (isStreaming) 0.05f else 0.08f))
                 .clickable(enabled = !isStreaming) { showMenu = true },
@@ -425,7 +494,7 @@ private fun ComposerAttachmentButton(
             Icon(
                 Icons.Default.Add,
                 contentDescription = "Attach",
-                modifier = Modifier.size(23.dp),
+                modifier = Modifier.size(iconSize),
                 tint = if (isStreaming) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
             )
@@ -456,14 +525,19 @@ private fun ComposerAttachmentButton(
 
 @Composable
 private fun ComposerSendButton(
+    expansion: Float,
     isStreaming: Boolean,
     canSend: Boolean,
     onClick: () -> Unit,
     onEmptyClick: () -> Unit
 ) {
+    val buttonSize = androidx.compose.ui.unit.lerp(40.dp, 32.dp, expansion)
+    val iconSize = androidx.compose.ui.unit.lerp(18.dp, 14.dp, expansion)
+    val stopIconSize = androidx.compose.ui.unit.lerp(16.dp, 12.dp, expansion)
+
     Box(
         modifier = Modifier
-            .size(40.dp)
+            .size(buttonSize)
             .clip(CircleShape)
             .background(
                 if (isStreaming) MaterialTheme.colorScheme.error.copy(alpha = 0.14f)
@@ -479,15 +553,17 @@ private fun ComposerSendButton(
             Icon(
                 Icons.Default.Stop,
                 contentDescription = "Stop",
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(stopIconSize),
                 tint = MaterialTheme.colorScheme.error
             )
         } else {
             Icon(
                 Icons.AutoMirrored.Filled.Send,
                 contentDescription = "Send",
-                modifier = Modifier.size(16.dp),
-                tint = if (canSend) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                modifier = Modifier
+                    .size(iconSize)
+                    .offset(x = 1.dp), // optical alignment
+                tint = if (canSend) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
             )
         }
     }

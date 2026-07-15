@@ -69,64 +69,6 @@ fun WelcomeScreen(
             color = MaterialTheme.colorScheme.onSurface,
             fontWeight = FontWeight.SemiBold
         )
-
-        if (showWorkspaceChip) {
-            Spacer(Modifier.height(24.dp))
-
-            if (currentWorkspace != null) {
-                val folderName = currentWorkspace.substringAfterLast("/").substringAfterLast("\\")
-                Surface(
-                    onClick = onWorkspaceClick,
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.Folder,
-                            null,
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            folderName,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        )
-                    }
-                }
-            } else {
-                Surface(
-                    onClick = onNewProjectClick,
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.AccountTree,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            "Select Workspace\u2026",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                }
-            }
-        }
     }
 }
 

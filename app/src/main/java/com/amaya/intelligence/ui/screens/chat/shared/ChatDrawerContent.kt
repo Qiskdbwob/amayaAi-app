@@ -433,6 +433,15 @@ fun ChatDrawerContent(
                     )
                 }
             }
+            
+            // Right outline
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .width(0.7.dp)
+                    .background(colors.border)
+            )
         }
     }
 
