@@ -50,16 +50,20 @@ fun DiffViewerScreen(
             TopAppBar(
                 title = { Text("Changes", fontWeight = FontWeight.SemiBold) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                    }
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = Icons.AutoMirrored.Filled.ArrowBack,
+                        onClick = onBack,
+                        contentDescription = "Back",
+                        modifier = Modifier.padding(start = 12.dp)
+                    )
                 },
                 actions = {
-                    IconButton(onClick = {
-                        clipboardManager.setText(AnnotatedString(diff))
-                    }) {
-                        Icon(Icons.Default.ContentCopy, "Copy", modifier = Modifier.size(20.dp))
-                    }
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = Icons.Default.ContentCopy,
+                        onClick = { clipboardManager.setText(AnnotatedString(diff)) },
+                        contentDescription = "Copy",
+                        modifier = Modifier.padding(end = 12.dp)
+                    )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )

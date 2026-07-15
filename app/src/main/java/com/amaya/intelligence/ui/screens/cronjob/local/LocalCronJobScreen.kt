@@ -130,22 +130,12 @@ fun LocalCronJobScreen(
                     SettingsBackButton(onClick = onNavigateBack)
                 },
                 actions = {
-                    Box(
-                        modifier = Modifier
-                            .padding(end = 8.dp)
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(colors.iconBackground)
-                            .clickable { openAddFlow() },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Default.AddAlarm,
-                            "Add Reminder",
-                            modifier = Modifier.size(20.dp),
-                            tint = colors.iconTint
-                        )
-                    }
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = Icons.Default.AddAlarm,
+                        onClick = { openAddFlow() },
+                        contentDescription = "Add Reminder",
+                        modifier = Modifier.padding(end = 12.dp)
+                    )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent,

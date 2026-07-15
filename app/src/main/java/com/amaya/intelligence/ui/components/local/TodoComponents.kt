@@ -23,8 +23,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
-import com.amaya.intelligence.ui.components.shared.rememberLockedModalBottomSheetState
-import com.amaya.intelligence.ui.components.shared.ignoreNestedScrollForBottomSheet
+
+
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import com.amaya.intelligence.tools.TodoItem
 import com.amaya.intelligence.tools.TodoStatus
@@ -120,103 +120,24 @@ fun TodoSheet(
         label = "todo_sheet_shimmer_x"
     )
 
-    val scope = rememberCoroutineScope()
-    val sheetState = rememberLockedModalBottomSheetState()
-    ModalBottomSheet(
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState       = sheetState,
-        properties = com.amaya.intelligence.ui.components.shared.lockedModalBottomSheetProperties(),
-        containerColor   = MaterialTheme.colorScheme.surface,
-        dragHandle       = null,
-        shape = com.amaya.intelligence.ui.components.shared.responsiveBottomSheetShape(sheetState)
+        title = "Task Plan",
+        actions = {
+            Text(
+                "${items.count { it.status == TodoStatus.COMPLETED }} of ${items.size} completed",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     ) {
-        val gradients = LocalAmayaGradients.current
-        val done = items.count { it.status == TodoStatus.COMPLETED }
-        val total = items.size
-
-        Box(
-            modifier = Modifier.fillMaxWidth().weight(1f, fill = false)
-        ) {
-            // Bottom Layer: Scrolling Content
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .ignoreNestedScrollForBottomSheet()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 48.dp)
-            ) {
-                Spacer(Modifier.height(90.dp)) // Reserve space for the header overlay
-                
-                items.forEach { item ->
-                    TodoItemRow(item = item, shimmerProgress = shimmerProgress)
-                    if (item != items.last()) {
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.15f),
-                            modifier = Modifier.padding(start = 44.dp)
-                        )
-                    }
-                }
-            }
-
-            // Top Layer: Blurred Header Overlay
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter)
-                    .background(gradients.modalTopScrim)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .width(32.dp).height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = com.amaya.intelligence.ui.components.shared.responsiveDragHandleAlpha(sheetState)))
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp)
-                        .padding(bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "Task Plan",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            "$done of $total completed",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                                    .compositeOver(MaterialTheme.colorScheme.background)
-                            )
-                            .clickable {
-                                scope.launch { sheetState.hide() }.invokeOnCompletion {
-                                    if (!sheetState.isVisible) onDismiss()
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Close, "Dismiss", modifier = Modifier.size(20.dp))
-                    }
-                }
+        items.forEach { item ->
+            TodoItemRow(item = item, shimmerProgress = shimmerProgress)
+            if (item != items.last()) {
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.15f),
+                    modifier = Modifier.padding(start = 44.dp)
+                )
             }
         }
     }

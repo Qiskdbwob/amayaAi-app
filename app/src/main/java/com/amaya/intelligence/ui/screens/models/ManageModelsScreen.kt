@@ -1,7 +1,7 @@
 package com.amaya.intelligence.ui.screens.models
 
 import android.content.Context
-import androidx.activity.compose.BackHandler
+
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,9 +34,7 @@ import com.amaya.intelligence.data.remote.api.*
 import com.amaya.intelligence.domain.models.ModelOption
 import com.amaya.intelligence.ui.components.shared.ModelLeadingIcon
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
-import com.amaya.intelligence.ui.components.shared.lockedModalBottomSheetProperties
-import com.amaya.intelligence.ui.components.shared.rememberLockedModalBottomSheetState
-import com.amaya.intelligence.ui.components.shared.responsiveBottomSheetShape
+
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import com.amaya.intelligence.ui.viewmodels.models.ManageModelsViewModel
 
@@ -58,10 +56,7 @@ fun ManageModelsScreen(
 
     var sheet by remember { mutableStateOf<ModelsSheet?>(null) }
     var setupProvider by remember { mutableStateOf<ProviderConfig?>(null) }
-    
-    BackHandler(enabled = sheet != null) {
-        sheet = null
-    }
+
 
     Scaffold(containerColor = Color.Transparent) { _ ->
         Box(Modifier.fillMaxSize().background(colors.groupedBackground)) {
@@ -95,12 +90,12 @@ fun ManageModelsScreen(
                     SettingsBackButton(onClick = onNavigateBack)
                 },
                 actions = {
-                    IconButton(
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = Icons.Default.Add,
                         onClick = { sheet = ModelsSheet.PROVIDERS },
-                        modifier = Modifier.size(48.dp)
-                    ) {
-                        Icon(Icons.Default.Add, "Add provider", tint = colors.primaryText)
-                    }
+                        contentDescription = "Add provider",
+                        modifier = Modifier.padding(end = 12.dp)
+                    )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent,
@@ -243,10 +238,12 @@ private fun ConnectionsOverview(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ProviderPickerSheet(onDismiss: () -> Unit, onSelect: (ProviderConfig) -> Unit) {
-    val state = rememberLockedModalBottomSheetState()
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state, properties = lockedModalBottomSheetProperties(), shape = responsiveBottomSheetShape(state), dragHandle = null) {
-        SheetHeader("Select Provider", onDismiss = onDismiss)
-        LazyColumn(contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp), modifier = Modifier.fillMaxWidth().heightIn(max = 640.dp)) {
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
+        onDismissRequest = onDismiss,
+        title = "Select Provider",
+        scrollable = false
+    ) {
+        LazyColumn(contentPadding = com.amaya.intelligence.ui.components.shared.StandardModalSheetDefaults.ContentPadding, modifier = Modifier.fillMaxWidth().heightIn(max = com.amaya.intelligence.ui.components.shared.StandardModalSheetDefaults.MaxHeight)) {
             ProviderCategory.entries.forEach { category ->
                 val categoryProviders = AmayaProviderRegistry.providers.filter { it.category == category }
                 if (categoryProviders.isNotEmpty()) {
@@ -254,7 +251,7 @@ private fun ProviderPickerSheet(onDismiss: () -> Unit, onSelect: (ProviderConfig
                         Text(providerCategoryLabel(category), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 8.dp, top = 16.dp, bottom = 6.dp))
                     }
                     items(categoryProviders) { provider ->
-                        Surface(onClick = { onSelect(provider) }, shape = RoundedCornerShape(16.dp), color = Color.Transparent) {
+                        Surface(onClick = { dismiss { onSelect(provider) } }, shape = RoundedCornerShape(16.dp), color = Color.Transparent) {
                             Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Icon(if (provider.isSubscription) Icons.Default.AccountCircle else Icons.Default.Api, null)
                                 Spacer(Modifier.width(14.dp))
@@ -289,84 +286,82 @@ private fun ProviderSetupSheet(
     onBack: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val state = rememberLockedModalBottomSheetState()
     var name by remember(provider.id) { mutableStateOf(provider.displayName) }
     var baseUrl by remember(provider.id) { mutableStateOf("") }
     var apiKey by remember(provider.id) { mutableStateOf("") }
     var showKey by remember(provider.id) { mutableStateOf(false) }
-    ModalBottomSheet(
+
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = state,
-        properties = lockedModalBottomSheetProperties(),
-        shape = responsiveBottomSheetShape(state),
-        dragHandle = null
+        title = provider.displayName,
+        actions = {
+            com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                icon = Icons.AutoMirrored.Filled.ArrowBack,
+                onClick = { dismiss(onBack) },
+                contentDescription = "Back"
+            )
+        }
     ) {
-        SheetHeader(provider.displayName, onBack = onBack, onDismiss = onDismiss)
-        Column(
-            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 24.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            if (provider.isSubscription) {
-                Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-                    Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(if (codexAuthenticated) Icons.Default.CheckCircle else Icons.Default.AccountCircle, null)
-                        Spacer(Modifier.width(12.dp))
-                        Column {
-                            Text(if (codexAuthenticated) "Connected" else "Not Connected", fontWeight = FontWeight.SemiBold)
-                            Text(codexAccount ?: subscriptionStateLabel(codexState), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+        if (provider.isSubscription) {
+            Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(if (codexAuthenticated) Icons.Default.CheckCircle else Icons.Default.AccountCircle, null)
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text(if (codexAuthenticated) "Connected" else "Not Connected", fontWeight = FontWeight.SemiBold)
+                        Text(codexAccount ?: subscriptionStateLabel(codexState), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                operation.error?.let { InlineError(it) }
-                when {
-                    codexAuthenticated -> Button(onClick = onSaveSubscription, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Continue") }
-                    codexState is CodexAuthState.Starting || codexState is CodexAuthState.WaitingForBrowser || codexState is CodexAuthState.ExchangingToken -> {
-                        Button(onClick = onCancelSignIn, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Cancel Sign In") }
-                    }
-                    else -> Button(onClick = onSignIn, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Sign In With OpenAI") }
+            }
+            operation.error?.let { InlineError(it) }
+            when {
+                codexAuthenticated -> Button(onClick = onSaveSubscription, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Continue") }
+                codexState is CodexAuthState.Starting || codexState is CodexAuthState.WaitingForBrowser || codexState is CodexAuthState.ExchangingToken -> {
+                    Button(onClick = onCancelSignIn, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Cancel Sign In") }
                 }
+                else -> Button(onClick = onSignIn, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Sign In With OpenAI") }
+            }
+        } else {
+            OutlinedTextField(name, { name = it }, label = { Text("Connection Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            if (provider.isCustom) {
+                OutlinedTextField(baseUrl, { baseUrl = it }, label = { Text("Base URL") }, placeholder = { Text("https://example.com/v1") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             } else {
-                OutlinedTextField(name, { name = it }, label = { Text("Connection Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                Text("Requests use ${provider.defaultBaseUrl}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            OutlinedTextField(
+                apiKey,
+                { apiKey = it },
+                label = { Text(if (provider.credentialRequired) "API Key" else "API Key (Optional)") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                trailingIcon = {
+                    IconButton(onClick = { showKey = !showKey }) {
+                        Icon(if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, if (showKey) "Hide API key" else "Show API key")
+                    }
+                }
+            )
+            operation.error?.let {
+                InlineError(it)
                 if (provider.isCustom) {
-                    OutlinedTextField(baseUrl, { baseUrl = it }, label = { Text("Base URL") }, placeholder = { Text("https://example.com/v1") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                } else {
-                    Text("Requests use ${provider.defaultBaseUrl}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        "If this endpoint does not expose a model list, save it now, then add model IDs manually.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedButton(
+                        onClick = { onSaveWithoutModelList(name, baseUrl, apiKey) },
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+                        enabled = !operation.loading && baseUrl.isNotBlank()
+                    ) { Text("Save Without Model List") }
                 }
-                OutlinedTextField(
-                    apiKey,
-                    { apiKey = it },
-                    label = { Text(if (provider.credentialRequired) "API Key" else "API Key (Optional)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        IconButton(onClick = { showKey = !showKey }) {
-                            Icon(if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, if (showKey) "Hide API key" else "Show API key")
-                        }
-                    }
-                )
-                operation.error?.let {
-                    InlineError(it)
-                    if (provider.isCustom) {
-                        Text(
-                            "If this endpoint does not expose a model list, save it now, then add model IDs manually.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        OutlinedButton(
-                            onClick = { onSaveWithoutModelList(name, baseUrl, apiKey) },
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
-                            enabled = !operation.loading && baseUrl.isNotBlank()
-                        ) { Text("Save Without Model List") }
-                    }
-                }
-                Button(
-                    onClick = { onConnect(name, baseUrl, apiKey) },
-                    modifier = Modifier.fillMaxWidth().height(54.dp),
-                    enabled = !operation.loading && (!provider.credentialRequired || apiKey.isNotBlank()) && (!provider.isCustom || baseUrl.isNotBlank())
-                ) {
-                    if (operation.loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Connect")
-                }
+            }
+            Button(
+                onClick = { onConnect(name, baseUrl, apiKey) },
+                modifier = Modifier.fillMaxWidth().height(54.dp),
+                enabled = !operation.loading && (!provider.credentialRequired || apiKey.isNotBlank()) && (!provider.isCustom || baseUrl.isNotBlank())
+            ) {
+                if (operation.loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) else Text("Connect")
             }
         }
     }
@@ -375,7 +370,6 @@ private fun ProviderSetupSheet(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SelectModelSheet(settings: AiSettings, onSelect: (ModelOption) -> Unit, onDismiss: () -> Unit) {
-    val state = rememberLockedModalBottomSheetState()
     val colors = rememberModelSettingsColors()
     var showSearch by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
@@ -394,9 +388,20 @@ private fun SelectModelSheet(settings: AiSettings, onSelect: (ModelOption) -> Un
                 it.providerName.lowercase().contains(value)
         }
     }
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state, properties = lockedModalBottomSheetProperties(), shape = responsiveBottomSheetShape(state), dragHandle = null) {
-        SheetHeader("Select Model", onDismiss = onDismiss, onSearchToggle = { showSearch = !showSearch })
-        LazyColumn(contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp), modifier = Modifier.fillMaxWidth().heightIn(max = 640.dp)) {
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
+        onDismissRequest = onDismiss,
+        title = "Select Model",
+        scrollable = false,
+        actions = {
+            com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                icon = Icons.Default.Search,
+                onClick = { showSearch = !showSearch },
+                contentDescription = "Search"
+            )
+        }
+    ) {
+        val closeWithSelection: (ModelOption) -> Unit = { option -> dismiss { onSelect(option) } }
+        LazyColumn(contentPadding = com.amaya.intelligence.ui.components.shared.StandardModalSheetDefaults.ContentPadding, modifier = Modifier.fillMaxWidth().heightIn(max = com.amaya.intelligence.ui.components.shared.StandardModalSheetDefaults.MaxHeight)) {
             if (showSearch) {
                 item {
                     OutlinedTextField(
@@ -431,7 +436,7 @@ private fun SelectModelSheet(settings: AiSettings, onSelect: (ModelOption) -> Un
                                 Column {
                                     connectionModels.forEachIndexed { index, option ->
                                         val isActive = option.id == settings.activeSelection?.key
-                                        Surface(onClick = { onSelect(option) }, color = if (isActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else Color.Transparent) {
+                                        Surface(onClick = { closeWithSelection(option) }, color = if (isActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else Color.Transparent) {
                                             Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                                                 Box(
                                                     modifier = Modifier
@@ -478,29 +483,7 @@ private fun SelectModelSheet(settings: AiSettings, onSelect: (ModelOption) -> Un
     }
 }
 
-@Composable
-private fun SheetHeader(title: String, onBack: (() -> Unit)? = null, onDismiss: () -> Unit, onSearchToggle: (() -> Unit)? = null) {
-    Column(Modifier.fillMaxWidth().background(LocalAmayaGradients.current.modalTopScrim)) {
-        Box(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 18.dp), contentAlignment = Alignment.Center) {
-            Box(Modifier.width(32.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)))
-        }
-        Box(Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 18.dp), contentAlignment = Alignment.Center) {
-            if (onBack != null) {
-                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f), modifier = Modifier.align(Alignment.CenterStart)) {
-                    Box(modifier = Modifier.size(36.dp).clickable { onBack() }, contentAlignment = Alignment.Center) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                }
-            } else if (onSearchToggle != null) {
-                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f), modifier = Modifier.align(Alignment.CenterStart)) {
-                    Box(modifier = Modifier.size(36.dp).clickable { onSearchToggle() }, contentAlignment = Alignment.Center) { Icon(Icons.Default.Search, "Search", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                }
-            }
-            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f), modifier = Modifier.align(Alignment.CenterEnd)) {
-                Box(modifier = Modifier.size(36.dp).clickable { onDismiss() }, contentAlignment = Alignment.Center) { Icon(Icons.Default.Close, "Dismiss", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-            }
-        }
-    }
-}
+
 
 private fun providerCategoryLabel(category: ProviderCategory): String = when (category) {
     ProviderCategory.SUBSCRIPTION -> "SUBSCRIPTION"

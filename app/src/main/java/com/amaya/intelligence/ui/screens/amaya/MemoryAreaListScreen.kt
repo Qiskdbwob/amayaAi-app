@@ -99,8 +99,6 @@ fun MemoryAreaListScreen(
 ) {
     val colors = iosMemoryAreaColors()
     val gradients = LocalAmayaGradients.current
-    val scope = rememberCoroutineScope()
-    val sheetState = rememberModalBottomSheetState()
     var showAddSheet by remember { mutableStateOf(false) }
 
     val records = when (area) {
@@ -171,27 +169,20 @@ fun MemoryAreaListScreen(
                 )
             },
             navigationIcon = {
-                IconButton(onClick = onNavigateBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                }
+                com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    onClick = onNavigateBack,
+                    contentDescription = "Back",
+                    modifier = Modifier.padding(start = 12.dp)
+                )
             },
             actions = {
-                Box(
-                    modifier = Modifier
-                        .padding(end = 8.dp)
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(colors.iconBackground)
-                        .clickable { showAddSheet = true },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Default.Add,
-                        "Add",
-                        modifier = Modifier.size(20.dp),
-                        tint = colors.iconTint
-                    )
-                }
+                com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                    icon = Icons.Default.Add,
+                    onClick = { showAddSheet = true },
+                    contentDescription = "Add Memory",
+                    modifier = Modifier.padding(end = 12.dp)
+                )
             },
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = Color.Transparent,
@@ -206,13 +197,7 @@ fun MemoryAreaListScreen(
         AddMemorySheet(
             area = area,
             onDismiss = { showAddSheet = false },
-            onAdd = { text ->
-                onAdd(text)
-                scope.launch {
-                    sheetState.hide()
-                    showAddSheet = false
-                }
-            }
+            onAdd = onAdd
         )
     }
 }
@@ -225,55 +210,37 @@ private fun AddMemorySheet(
     onAdd: (String) -> Unit
 ) {
     val colors = iosMemoryAreaColors()
-    val sheetState = rememberModalBottomSheetState()
     var text by remember { mutableStateOf("") }
 
-    ModalBottomSheet(
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = colors.groupSurface,
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
-        dragHandle = null
+        title = "Add ${area.title}"
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(24.dp)
-                .padding(bottom = 40.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+        val cancel = { dismiss() }
+        val save = { dismiss { onAdd(text) } }
+
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text(area.inputLabel()) },
+            minLines = if (area == MemoryArea.DAILY) 3 else 2,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.primaryText)
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
         ) {
-            Text(
-                "Add ${area.title}",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = colors.primaryText
-            )
-
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text(area.inputLabel()) },
-                minLines = if (area == MemoryArea.DAILY) 3 else 2,
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.primaryText)
-            )
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
+            Button(onClick = cancel) {
+                Text("Cancel")
+            }
+            Spacer(Modifier.width(12.dp))
+            Button(
+                onClick = save,
+                enabled = text.isNotBlank()
             ) {
-                Button(
-                    onClick = onDismiss,
-                    enabled = false
-                ) {
-                    Text("Cancel")
-                }
-                Spacer(Modifier.width(12.dp))
-                Button(
-                    onClick = { onAdd(text) },
-                    enabled = text.isNotBlank()
-                ) {
-                    Text("Save")
-                }
+                Text("Save")
             }
         }
     }

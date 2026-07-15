@@ -29,7 +29,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.graphics.compositeOver
-import com.amaya.intelligence.ui.components.shared.ignoreNestedScrollForBottomSheet
+
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -143,7 +143,6 @@ fun LocalhostLinkBottomSheet(
     onCopyLink: ((String) -> Unit)? = null,
     onOpenLink: ((String) -> Unit)? = null
 ) {
-    val sheetState = rememberLockedModalBottomSheetState()
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
@@ -151,131 +150,49 @@ fun LocalhostLinkBottomSheet(
     var copySuccess by remember { mutableStateOf(false) }
     var copyError by remember { mutableStateOf<String?>(null) }
 
-    ModalBottomSheet(
+    StandardModalBottomSheet(
         onDismissRequest = {
             copyError = null
             onDismiss()
         },
-        sheetState = sheetState,
-        properties = com.amaya.intelligence.ui.components.shared.lockedModalBottomSheetProperties(),
-        containerColor = MaterialTheme.colorScheme.surface,
-        dragHandle = null,
-        shape = com.amaya.intelligence.ui.components.shared.responsiveBottomSheetShape(sheetState)
+        title = "Localhost Redirect"
     ) {
-        val gradients = LocalAmayaGradients.current
-        val scrollState = rememberScrollState()
+        LocalhostWarningSection(linkInfo = linkInfo, localIp = localIp)
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .animateContentSize()
-                .weight(1f, fill = false)
-        ) {
-            // Bottom Layer: Scrolling Content
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .ignoreNestedScrollForBottomSheet()
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
-            ) {
-                Spacer(Modifier.height(90.dp)) // Reserve space for the header
+        LocalhostUrlDisplay(url = linkInfo.fullUrl)
 
-                LocalhostWarningSection(linkInfo = linkInfo, localIp = localIp)
-
-                LocalhostUrlDisplay(url = linkInfo.fullUrl)
-
-                LocalhostActionButtons(
-                    url = linkInfo.fullUrl,
-                    onCopy = { url ->
-                        try {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            val clip = ClipData.newPlainText("Localhost URL", url)
-                            clipboard.setPrimaryClip(clip)
-                            copySuccess = true
-                            copyError = null
-                            onCopyLink?.invoke(url)
-                            scope.launch {
-                                kotlinx.coroutines.delay(2000)
-                                copySuccess = false
-                            }
-                        } catch (e: Exception) {
-                            copyError = "Failed to copy: ${e.message}"
-                            copySuccess = false
-                        }
-                    },
-                    onOpen = { url ->
-                        try {
-                            scope.launch {
-                                sheetState.hide()
-                            }.invokeOnCompletion {
-                                if (!sheetState.isVisible) {
-                                    uriHandler.openUri(url)
-                                    onOpenLink?.invoke(url)
-                                    onDismiss()
-                                }
-                            }
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "No browser found to open link", Toast.LENGTH_SHORT).show()
-                        }
-                    },
-                    copySuccess = copySuccess,
-                    copyError = copyError
-                )
-            }
-
-            // Top Layer: Blurred Header Overlay
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter)
-                    .background(gradients.modalTopScrim)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .width(32.dp).height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = com.amaya.intelligence.ui.components.shared.responsiveDragHandleAlpha(sheetState)))
-                    )
+        LocalhostActionButtons(
+            url = linkInfo.fullUrl,
+            onCopy = { url ->
+                try {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val clip = ClipData.newPlainText("Localhost URL", url)
+                    clipboard.setPrimaryClip(clip)
+                    copySuccess = true
+                    copyError = null
+                    onCopyLink?.invoke(url)
+                    scope.launch {
+                        kotlinx.coroutines.delay(2000)
+                        copySuccess = false
+                    }
+                } catch (e: Exception) {
+                    copyError = "Failed to copy: ${e.message}"
+                    copySuccess = false
                 }
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Localhost Redirect",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                                    .compositeOver(MaterialTheme.colorScheme.background)
-                            )
-                            .clickable {
-                                scope.launch { sheetState.hide() }.invokeOnCompletion {
-                                    if (!sheetState.isVisible) onDismiss()
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Close, "Dismiss", modifier = Modifier.size(20.dp))
+            },
+            onOpen = { url ->
+                dismiss {
+                    try {
+                        uriHandler.openUri(url)
+                        onOpenLink?.invoke(url)
+                    } catch (_: Exception) {
+                        Toast.makeText(context, "No browser found to open link", Toast.LENGTH_SHORT).show()
                     }
                 }
-            }
-        }
+            },
+            copySuccess = copySuccess,
+            copyError = copyError
+        )
     }
 }
 

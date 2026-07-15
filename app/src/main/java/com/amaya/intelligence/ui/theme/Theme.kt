@@ -193,6 +193,8 @@ val LocalAmayaGradients = staticCompositionLocalOf<AmayaGradients> {
 fun amayaGradients(darkTheme: Boolean): AmayaGradients {
     val bgColor = if (darkTheme) DarkBackground else LightBackground
     
+    val surfaceColor = if (darkTheme) DarkSurface else LightSurface
+    
     // 8 Premium Gradient Pairs for Icons
     val palettes = listOf(
         Brush.linearGradient(listOf(Color(0xFF007AFF), Color(0xFF00C7FF))), // Blue
@@ -222,16 +224,16 @@ fun amayaGradients(darkTheme: Boolean): AmayaGradients {
             1.0f to Color.Transparent
         ),
         modalTopScrim = Brush.verticalGradient(
-            0.0f to bgColor.copy(alpha = 1.00f),
-            0.15f to bgColor.copy(alpha = 0.98f),
-            0.30f to bgColor.copy(alpha = 0.96f),
-            0.45f to bgColor.copy(alpha = 0.93f),
-            0.60f to bgColor.copy(alpha = 0.85f),
-            0.70f to bgColor.copy(alpha = 0.75f),
-            0.80f to bgColor.copy(alpha = 0.60f),
-            0.88f to bgColor.copy(alpha = 0.45f),
-            0.94f to bgColor.copy(alpha = 0.25f),
-            0.98f to bgColor.copy(alpha = 0.10f),
+            0.0f to surfaceColor.copy(alpha = 1.00f),
+            0.15f to surfaceColor.copy(alpha = 0.98f),
+            0.30f to surfaceColor.copy(alpha = 0.96f),
+            0.45f to surfaceColor.copy(alpha = 0.93f),
+            0.60f to surfaceColor.copy(alpha = 0.85f),
+            0.70f to surfaceColor.copy(alpha = 0.75f),
+            0.80f to surfaceColor.copy(alpha = 0.60f),
+            0.88f to surfaceColor.copy(alpha = 0.45f),
+            0.94f to surfaceColor.copy(alpha = 0.25f),
+            0.98f to surfaceColor.copy(alpha = 0.10f),
             1.0f to Color.Transparent
         ),
         bottomScrim = Brush.verticalGradient(

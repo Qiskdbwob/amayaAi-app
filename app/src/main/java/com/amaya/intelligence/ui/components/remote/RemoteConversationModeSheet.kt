@@ -23,8 +23,8 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import com.amaya.intelligence.domain.models.ConversationMode
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
-import com.amaya.intelligence.ui.components.shared.rememberLockedModalBottomSheetState
-import com.amaya.intelligence.ui.components.shared.ignoreNestedScrollForBottomSheet
+
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,111 +33,21 @@ fun RemoteConversationModeSheet(
     onSelect: (ConversationMode) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberLockedModalBottomSheetState()
-    val scope = rememberCoroutineScope()
-
-    ModalBottomSheet(
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        properties = com.amaya.intelligence.ui.components.shared.lockedModalBottomSheetProperties(),
-        containerColor = MaterialTheme.colorScheme.surface,
-        dragHandle = null,
-        shape = com.amaya.intelligence.ui.components.shared.responsiveBottomSheetShape(sheetState)
+        title = "Conversation Mode"
     ) {
-        val gradients = LocalAmayaGradients.current
-        val scrollState = rememberScrollState()
+        RemoteModeItem(
+            mode = ConversationMode.PLANNING,
+            isSelected = currentMode == ConversationMode.PLANNING,
+            onClick = { dismiss { onSelect(ConversationMode.PLANNING) } }
+        )
 
-        Box(modifier = Modifier.fillMaxWidth().weight(1f, fill = false)) {
-            // Bottom Layer: Scrolling Content
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .ignoreNestedScrollForBottomSheet()
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 32.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Spacer(Modifier.height(90.dp))
-
-                RemoteModeItem(
-                    mode = ConversationMode.PLANNING,
-                    isSelected = currentMode == ConversationMode.PLANNING,
-                    onClick = {
-                        scope.launch {
-                            sheetState.hide()
-                        }.invokeOnCompletion {
-                            if (!sheetState.isVisible) {
-                                onSelect(ConversationMode.PLANNING)
-                            }
-                        }
-                    }
-                )
-
-                RemoteModeItem(
-                    mode = ConversationMode.FAST,
-                    isSelected = currentMode == ConversationMode.FAST,
-                    onClick = {
-                        scope.launch {
-                            sheetState.hide()
-                        }.invokeOnCompletion {
-                            if (!sheetState.isVisible) {
-                                onSelect(ConversationMode.FAST)
-                            }
-                        }
-                    }
-                )
-            }
-
-            // Top Layer: Blurred Header Overlay
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter)
-                    .background(gradients.modalTopScrim)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .width(32.dp).height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = com.amaya.intelligence.ui.components.shared.responsiveDragHandleAlpha(sheetState)))
-                    )
-                }
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "Conversation Mode",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                                    .compositeOver(MaterialTheme.colorScheme.background)
-                            )
-                            .clickable {
-                                scope.launch { sheetState.hide() }.invokeOnCompletion {
-                                    if (!sheetState.isVisible) onDismiss()
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Close, "Dismiss", modifier = Modifier.size(20.dp))
-                    }
-                }
-            }
-        }
+        RemoteModeItem(
+            mode = ConversationMode.FAST,
+            isSelected = currentMode == ConversationMode.FAST,
+            onClick = { dismiss { onSelect(ConversationMode.FAST) } }
+        )
     }
 }
 

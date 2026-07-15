@@ -104,93 +104,17 @@ fun PermissionRequirementSheet(
     onDismiss: () -> Unit
 ) {
     val spec = permissionType.toSpec()
-    val sheetState = rememberLockedModalBottomSheetState()
-    val scope = rememberCoroutineScope()
-    val gradients = LocalAmayaGradients.current
-    val maxSheetHeight = (0.98f * LocalConfiguration.current.screenHeightDp).dp
-
-    fun closeSheet(afterClose: (() -> Unit)? = null) {
-        scope.launch { sheetState.hide() }.invokeOnCompletion {
-            if (!sheetState.isVisible) afterClose?.invoke()
-        }
-    }
-
-    ModalBottomSheet(
-        onDismissRequest = { closeSheet(onDismiss) },
-        sheetState = sheetState,
-        properties = lockedModalBottomSheetProperties(),
-        containerColor = MaterialTheme.colorScheme.surface,
-        dragHandle = null,
-        shape = responsiveBottomSheetShape(sheetState)
+    StandardModalBottomSheet(
+        onDismissRequest = onDismiss,
+        title = spec.title
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = maxSheetHeight)
-                .navigationBarsPadding()
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .ignoreNestedScrollForBottomSheet()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 28.dp)
-            ) {
-                Spacer(Modifier.height(92.dp))
-                PermissionSheetBody(
-                    spec = spec,
-                    granted = false,
-                    onPrimary = { closeSheet(onGrant) },
-                    onSecondary = { closeSheet(onDismiss) },
-                    primaryLabel = spec.actionLabel,
-                    secondaryLabel = "Maybe later"
-                )
-            }
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter)
-                    .background(gradients.modalTopScrim)
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .width(32.dp)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = responsiveDragHandleAlpha(sheetState)))
-                    )
-                }
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = spec.title,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                                    .compositeOver(MaterialTheme.colorScheme.background)
-                            )
-                            .clickable { closeSheet(onDismiss) },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Close, "Dismiss", modifier = Modifier.size(20.dp))
-                    }
-                }
-            }
-        }
+        PermissionSheetBody(
+            spec = spec,
+            granted = false,
+            onPrimary = { dismiss(onGrant) },
+            onSecondary = { dismiss() },
+            primaryLabel = spec.actionLabel,
+            secondaryLabel = "Maybe later"
+        )
     }
 }

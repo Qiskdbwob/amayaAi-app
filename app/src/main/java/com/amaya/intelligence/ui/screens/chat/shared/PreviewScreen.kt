@@ -52,22 +52,29 @@ fun PreviewScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                    }
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = Icons.AutoMirrored.Filled.ArrowBack,
+                        onClick = onNavigateBack,
+                        contentDescription = "Back",
+                        modifier = Modifier.padding(start = 12.dp)
+                    )
                 },
                 actions = {
                     // Refresh button
-                    IconButton(onClick = { webView?.reload() }) {
-                        Icon(Icons.Default.Refresh, "Refresh")
-                    }
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = Icons.Default.Refresh,
+                        onClick = { webView?.reload() },
+                        contentDescription = "Refresh",
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
                     
                     // Open in browser
-                    IconButton(onClick = { 
-                        // Could launch in external browser
-                    }) {
-                        Icon(Icons.Default.OpenInBrowser, "Open in browser")
-                    }
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = Icons.Default.OpenInBrowser,
+                        onClick = { /* Could launch in external browser */ },
+                        contentDescription = "Open in browser",
+                        modifier = Modifier.padding(end = 12.dp)
+                    )
                 },
                 colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface,

@@ -33,8 +33,6 @@ fun ModelSelectorSheet(
     onSelect: (ModelOption) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberLockedModalBottomSheetState()
-    val scope = rememberCoroutineScope()
     val colors = rememberModelSettingsColors()
     var showSearch by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
@@ -50,24 +48,24 @@ fun ModelSelectorSheet(
         filtered.groupBy { it.providerName.ifBlank { "Models" } }
     }
 
-    fun close() {
-        scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() }
-    }
-
-    ModalBottomSheet(
-        onDismissRequest = ::close,
-        sheetState = sheetState,
-        properties = lockedModalBottomSheetProperties(),
-        containerColor = MaterialTheme.colorScheme.surface,
-        shape = responsiveBottomSheetShape(sheetState),
-        dragHandle = null
+    StandardModalBottomSheet(
+        onDismissRequest = onDismiss,
+        title = "Select Model",
+        scrollable = false,
+        actions = {
+            com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                icon = Icons.Default.Search,
+                onClick = { showSearch = !showSearch },
+                contentDescription = "Search"
+            )
+        }
     ) {
-        Box(Modifier.fillMaxWidth().heightIn(max = 720.dp)) {
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth().ignoreNestedScrollForBottomSheet(),
-                contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 96.dp, bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
+        val closeWithSelection: (ModelOption) -> Unit = { option -> dismiss { onSelect(option) } }
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = StandardModalSheetDefaults.ContentPadding,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
                 if (showSearch) {
                     item {
                         OutlinedTextField(
@@ -114,11 +112,7 @@ fun ModelSelectorSheet(
                                     options.forEachIndexed { index, option ->
                                         val isActive = option.id == activeModelKey
                                         Surface(
-                                            onClick = {
-                                                scope.launch { sheetState.hide() }.invokeOnCompletion {
-                                                    if (!sheetState.isVisible) onSelect(option)
-                                                }
-                                            },
+                                            onClick = { closeWithSelection(option) },
                                             color = if (isActive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f) else androidx.compose.ui.graphics.Color.Transparent
                                         ) {
                                             Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -161,31 +155,6 @@ fun ModelSelectorSheet(
                         }
                     }
                 }
-            }
-            Box(
-                Modifier.fillMaxWidth().align(Alignment.TopCenter).background(LocalAmayaGradients.current.modalTopScrim).padding(horizontal = 24.dp, vertical = 18.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                    modifier = Modifier.align(Alignment.CenterStart)
-                ) {
-                    Box(modifier = Modifier.size(36.dp).clickable { showSearch = !showSearch }, contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Search, "Search", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-                Text("Select Model", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                    modifier = Modifier.align(Alignment.CenterEnd)
-                ) {
-                    Box(modifier = Modifier.size(36.dp).clickable(onClick = ::close), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Close, "Dismiss", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
         }
     }
 }

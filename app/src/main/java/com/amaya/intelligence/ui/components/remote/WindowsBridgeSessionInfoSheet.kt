@@ -26,11 +26,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.amaya.intelligence.ui.components.shared.ignoreNestedScrollForBottomSheet
-import com.amaya.intelligence.ui.components.shared.lockedModalBottomSheetProperties
-import com.amaya.intelligence.ui.components.shared.rememberLockedModalBottomSheetState
-import com.amaya.intelligence.ui.components.shared.responsiveBottomSheetShape
-import com.amaya.intelligence.ui.components.shared.responsiveDragHandleAlpha
+
+
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import kotlinx.coroutines.launch
 
@@ -52,245 +49,164 @@ fun WindowsBridgeSessionInfoSheet(
     onDisconnect: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberLockedModalBottomSheetState()
-    val scope = rememberCoroutineScope()
-
-    ModalBottomSheet(
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        properties = lockedModalBottomSheetProperties(),
-        containerColor = MaterialTheme.colorScheme.surface,
-        dragHandle = null,
-        shape = responsiveBottomSheetShape(sheetState)
+        title = "Windows Bridge"
     ) {
-        val gradients = LocalAmayaGradients.current
-        Box(modifier = Modifier.fillMaxWidth().weight(1f, fill = false)) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .ignoreNestedScrollForBottomSheet()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 40.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+        // Agent control toggle
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh
+        ) {
+            Row(
+                modifier = Modifier.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Spacer(Modifier.height(90.dp))
+                Icon(
+                    if (state.isAgentControlEnabled) Icons.Default.Mouse else Icons.Default.Visibility,
+                    null,
+                    modifier = Modifier.size(20.dp),
+                    tint = if (state.isAgentControlEnabled)
+                        Color(0xFFF39C12)
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Agent mode",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        if (state.isAgentControlEnabled)
+                            "Mouse, keyboard, and window focus enabled"
+                        else "View only — input tools hidden",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = state.isAgentControlEnabled,
+                    onCheckedChange = { onToggleAgentControl() }
+                )
+            }
+        }
 
-                // Agent control toggle
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            if (state.isAgentControlEnabled) Icons.Default.Mouse else Icons.Default.Visibility,
-                            null,
-                            modifier = Modifier.size(20.dp),
-                            tint = if (state.isAgentControlEnabled)
-                                Color(0xFFF39C12)
-                            else MaterialTheme.colorScheme.onSurfaceVariant
+        // Info rows
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                InfoRow(Icons.Default.Dns, "Server", state.serverLabel)
+                InfoRow(Icons.Default.Tag, "Session", state.sessionId?.let(::shortSessionId) ?: "—")
+                InfoRow(
+                    Icons.Default.DesktopWindows,
+                    "Mode",
+                    if (state.isAgentControlEnabled) "Agent Control" else "View Only"
+                )
+            }
+        }
+
+        // Capture preview + controls
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Screenshot, null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        "Remote screen",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    val capture = state.screenCapture
+                    if (capture?.imageBase64 != null) {
+                        TextButton(onClick = onClearCapture, contentPadding = PaddingValues(horizontal = 8.dp)) {
+                            Text("Clear", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+
+                val capture = state.screenCapture
+                when {
+                    capture?.isLoading == true -> {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().height(180.dp),
+                            contentAlignment = Alignment.Center
+                        ) { CircularProgressIndicator(modifier = Modifier.size(28.dp)) }
+                    }
+                    capture?.error != null -> {
+                        Text(
+                            capture.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
                         )
-                        Spacer(Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                "Agent mode",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold
+                    }
+                    capture?.imageBase64 != null -> {
+                        val bitmap = remember(capture.imageBase64) {
+                            try {
+                                val bytes = Base64.decode(capture.imageBase64, Base64.DEFAULT)
+                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                            } catch (_: Exception) { null }
+                        }
+                        if (bitmap != null) {
+                            Image(
+                                bitmap = bitmap,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
                             )
                             Text(
-                                if (state.isAgentControlEnabled)
-                                    "Mouse, keyboard, and window focus enabled"
-                                else "View only — input tools hidden",
-                                style = MaterialTheme.typography.bodySmall,
+                                "${capture.width}×${capture.height} ${capture.format}",
+                                style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Switch(
-                            checked = state.isAgentControlEnabled,
-                            onCheckedChange = { onToggleAgentControl() }
+                    }
+                    else -> {
+                        Text(
+                            "Preview the current Windows screen.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
 
-                // Info rows
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh
+                OutlinedButton(
+                    onClick = onCapture,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    enabled = state.isConnected && capture?.isLoading != true
                 ) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        InfoRow(Icons.Default.Dns, "Server", state.serverLabel)
-                        InfoRow(Icons.Default.Tag, "Session", state.sessionId?.let(::shortSessionId) ?: "—")
-                        InfoRow(
-                            Icons.Default.DesktopWindows,
-                            "Mode",
-                            if (state.isAgentControlEnabled) "Agent Control" else "View Only"
-                        )
-                    }
-                }
-
-                // Capture preview + controls
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh
-                ) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Screenshot, null,
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Spacer(Modifier.width(10.dp))
-                            Text(
-                                "Remote screen",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.weight(1f)
-                            )
-                            val capture = state.screenCapture
-                            if (capture?.imageBase64 != null) {
-                                TextButton(onClick = onClearCapture, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                                    Text("Clear", style = MaterialTheme.typography.labelMedium)
-                                }
-                            }
-                        }
-
-                        val capture = state.screenCapture
-                        when {
-                            capture?.isLoading == true -> {
-                                Box(
-                                    modifier = Modifier.fillMaxWidth().height(180.dp),
-                                    contentAlignment = Alignment.Center
-                                ) { CircularProgressIndicator(modifier = Modifier.size(28.dp)) }
-                            }
-                            capture?.error != null -> {
-                                Text(
-                                    capture.error,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-                            capture?.imageBase64 != null -> {
-                                val bitmap = remember(capture.imageBase64) {
-                                    try {
-                                        val bytes = Base64.decode(capture.imageBase64, Base64.DEFAULT)
-                                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-                                    } catch (_: Exception) { null }
-                                }
-                                if (bitmap != null) {
-                                    Image(
-                                        bitmap = bitmap,
-                                        contentDescription = null,
-                                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
-                                    )
-                                    Text(
-                                        "${capture.width}×${capture.height} ${capture.format}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                            else -> {
-                                Text(
-                                    "Preview the current Windows screen.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-
-                        OutlinedButton(
-                            onClick = onCapture,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(12.dp),
-                            enabled = state.isConnected && capture?.isLoading != true
-                        ) {
-                            Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("Capture screen")
-                        }
-                    }
-                }
-
-                // Disconnect action (primary destructive action for this sheet)
-                Button(
-                    onClick = {
-                        scope.launch { sheetState.hide() }.invokeOnCompletion {
-                            if (!sheetState.isVisible) {
-                                onDisconnect()
-                                onDismiss()
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                        contentColor = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                ) {
-                    Icon(Icons.Default.LinkOff, null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.PhotoCamera, null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text(
-                        "Disconnect",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Text("Capture screen")
                 }
             }
+        }
 
-            // Header
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter)
-                    .background(gradients.modalTopScrim)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .width(32.dp).height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                                    .copy(alpha = responsiveDragHandleAlpha(sheetState))
-                            )
-                    )
-                }
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "Windows Bridge",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                                    .compositeOver(MaterialTheme.colorScheme.background)
-                            )
-                            .clickable {
-                                scope.launch { sheetState.hide() }.invokeOnCompletion {
-                                    if (!sheetState.isVisible) onDismiss()
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Close, "Dismiss", modifier = Modifier.size(20.dp))
-                    }
-                }
-            }
+        // Disconnect action (primary destructive action for this sheet)
+        Button(
+            onClick = { dismiss(onDisconnect) },
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer
+            )
+        ) {
+            Icon(Icons.Default.LinkOff, null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "Disconnect",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
         }
     }
 }

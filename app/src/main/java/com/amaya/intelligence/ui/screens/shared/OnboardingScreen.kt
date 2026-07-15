@@ -30,7 +30,7 @@ import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.ui.components.shared.PermissionSheetBody
 import com.amaya.intelligence.ui.components.shared.PermissionSheetSpec
 import com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet
-import com.amaya.intelligence.ui.components.shared.rememberLockedModalBottomSheetState
+
 
 private val onboardingSpecs = listOf(
     PermissionSheetSpec(
@@ -95,7 +95,6 @@ fun OnboardingScreen(
     onRequestBatteryOptimization: () -> Unit,
     onFinish: () -> Unit
 ) {
-    val sheetState = rememberLockedModalBottomSheetState()
     val totalSteps = onboardingSpecs.size + 1
     var currentStep by remember { mutableIntStateOf(0) }
     val isFinalStep = currentStep == totalSteps - 1
@@ -109,9 +108,6 @@ fun OnboardingScreen(
         else -> false
     }
 
-    LaunchedEffect(Unit) {
-        sheetState.show()
-    }
 
     LaunchedEffect(hasStoragePermission) {
         if (hasStoragePermission && currentStep == 0) {
@@ -140,15 +136,13 @@ fun OnboardingScreen(
     }
 
     StandardModalBottomSheet(
-        sheetState = sheetState,
         onDismissRequest = {},
-        onCloseRequested = null,
         title = if (isFinalStep) "Start using Amaya" else currentSpec?.title ?: "Permission Request",
-        icon = currentSpec?.icon ?: Icons.Default.FolderOpen,
-        subtitle = if (isFinalStep) "Everything is ready." else currentSpec?.subtitle ?: "Grant each permission once.",
         showCloseButton = false,
         dismissible = false
     ) {
+        val subtitle = if (isFinalStep) "Everything is ready." else currentSpec?.subtitle ?: "Grant each permission once."
+        Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 16.dp))
         Column(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(14.dp)

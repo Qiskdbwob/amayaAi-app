@@ -80,9 +80,12 @@ fun ComingSoonScreen(
             TopAppBar(
                 title = { Text(title, fontWeight = FontWeight.SemiBold) },
                 navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = Icons.AutoMirrored.Filled.ArrowBack,
+                        onClick = onNavigateBack,
+                        contentDescription = "Back",
+                        modifier = Modifier.padding(start = 12.dp)
+                    )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent,

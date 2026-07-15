@@ -21,28 +21,10 @@ import androidx.compose.ui.unit.dp
 
 @Composable
 fun SettingsBackButton(onClick: () -> Unit) {
-    val isDark = isSystemInDarkTheme()
-    val baseColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-    val backgroundColor = MaterialTheme.colorScheme.background
-    
-    val solidColor = remember(baseColor, backgroundColor) {
-        baseColor.compositeOver(backgroundColor)
-    }
-
-    Box(
-        modifier = Modifier
-            .padding(start = 8.dp)
-            .size(36.dp)
-            .clip(CircleShape)
-            .background(solidColor)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            Icons.AutoMirrored.Filled.ArrowBack,
-            contentDescription = "Back",
-            modifier = Modifier.size(20.dp),
-            tint = MaterialTheme.colorScheme.onSurface
-        )
-    }
+    AmayaTopBarButton(
+        icon = Icons.AutoMirrored.Filled.ArrowBack,
+        onClick = onClick,
+        contentDescription = "Back",
+        modifier = Modifier.padding(start = 8.dp)
+    )
 }

@@ -2,19 +2,24 @@ package com.amaya.intelligence.ui.components.shared
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,7 +35,6 @@ import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.SheetState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,9 +42,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
+
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -55,134 +63,145 @@ data class PermissionSheetSpec(
     val actionLabel: String
 )
 
+object StandardModalSheetDefaults {
+    val MaxHeight: Dp = 720.dp
+    val ContentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 24.dp)
+    val HeaderHorizontalPadding: Dp = 24.dp
+    val HeaderTopPadding: Dp = 14.dp
+    val HeaderBottomPadding: Dp = 20.dp
+    val DragHandleTopPadding: Dp = 14.dp
+    val DragHandleBottomPadding: Dp = 8.dp
+    val DragHandleWidth: Dp = 32.dp
+    val DragHandleHeight: Dp = 4.dp
+    val DragDismissVelocityThreshold: Dp = 125.dp
+    const val DragDismissFraction: Float = 0.2f
+}
+
+class StandardModalSheetScope internal constructor(
+    columnScope: ColumnScope,
+    private val state: StandardModalSheetState
+) : ColumnScope by columnScope {
+    fun dismiss(afterDismiss: (() -> Unit)? = null) = state.dismiss(afterDismiss)
+}
+
+class StandardModalHeaderScope internal constructor(
+    rowScope: androidx.compose.foundation.layout.RowScope,
+    private val state: StandardModalSheetState
+) : androidx.compose.foundation.layout.RowScope by rowScope {
+    fun dismiss(afterDismiss: (() -> Unit)? = null) = state.dismiss(afterDismiss)
+}
+
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun StandardModalBottomSheet(
-    sheetState: SheetState,
     onDismissRequest: () -> Unit,
-    onCloseRequested: (() -> Unit)? = onDismissRequest,
     title: String,
-    icon: ImageVector,
-    subtitle: String? = null,
+    containerColor: Color = MaterialTheme.colorScheme.surface,
     showCloseButton: Boolean = true,
     dismissible: Boolean = true,
-    body: @Composable ColumnScope.() -> Unit
+    scrollable: Boolean = true,
+    actions: @Composable StandardModalHeaderScope.() -> Unit = {},
+    content: @Composable StandardModalSheetScope.() -> Unit
 ) {
+    val state = rememberStandardModalSheetState(onDismissRequest, dismissible)
+    val dragState = rememberDraggableState { delta -> state.dragBy(delta) }
+    val dragModifier = Modifier.draggable(
+        state = dragState,
+        orientation = Orientation.Vertical,
+        enabled = dismissible,
+        onDragStopped = { velocity -> state.settleDrag(velocity) }
+    )
+
     ModalBottomSheet(
-        onDismissRequest = onDismissRequest,
-        sheetState = sheetState,
-        properties = ModalBottomSheetProperties(shouldDismissOnBackPress = dismissible),
-        containerColor = MaterialTheme.colorScheme.surface,
-        dragHandle = null,
-        shape = responsiveBottomSheetShape(sheetState)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-        ) {
-            Column(
+        onDismissRequest = state::finishDismiss,
+        modifier = Modifier
+            .onSizeChanged { state.updateSheetHeight(it.height) }
+            .graphicsLayer { translationY = state.dragOffset },
+        sheetState = state.sheetState,
+        properties = standardModalBottomSheetProperties(dismissible),
+        containerColor = containerColor,
+        dragHandle = {
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(top = 10.dp, bottom = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                    .then(dragModifier)
+                    .padding(
+                        top = StandardModalSheetDefaults.DragHandleTopPadding,
+                        bottom = StandardModalSheetDefaults.DragHandleBottomPadding
+                    ),
+                contentAlignment = Alignment.Center
             ) {
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState())
-                        .padding(top = 2.dp),
-                    contentAlignment = Alignment.Center
+                        .width(StandardModalSheetDefaults.DragHandleWidth)
+                        .height(StandardModalSheetDefaults.DragHandleHeight)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                )
+            }
+        },
+        shape = responsiveBottomSheetShape(state.sheetState)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = StandardModalSheetDefaults.MaxHeight)
+                .navigationBarsPadding()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(dragModifier)
+                    .background(com.amaya.intelligence.ui.theme.LocalAmayaGradients.current.modalTopScrim)
+                    .padding(horizontal = StandardModalSheetDefaults.HeaderHorizontalPadding)
+                    .padding(
+                        top = StandardModalSheetDefaults.HeaderTopPadding,
+                        bottom = StandardModalSheetDefaults.HeaderBottomPadding
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(
+                    modifier = Modifier.align(Alignment.CenterStart),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .width(32.dp)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = responsiveDragHandleAlpha(sheetState)))
+                    StandardModalHeaderScope(this, state).actions()
+                }
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                if (showCloseButton) {
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = Icons.Default.Close,
+                        onClick = state::dismiss,
+                        contentDescription = "Dismiss",
+                        modifier = Modifier.align(Alignment.CenterEnd)
                     )
                 }
+            }
 
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
-                    shape = RoundedCornerShape(28.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                icon,
-                                contentDescription = null,
-                                modifier = Modifier.size(22.dp),
-                                tint = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-
-                        Spacer(Modifier.width(12.dp))
-
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            subtitle?.let {
-                                Text(
-                                    text = it,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-
-                        if (showCloseButton) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .clip(CircleShape)
-                                        .clickable { onCloseRequested?.invoke() },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        Icons.Default.Close,
-                                        contentDescription = "Dismiss",
-                                        modifier = Modifier.size(18.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
-                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-
+            if (scrollable) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .ignoreNestedScrollForBottomSheet(),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                        .weight(1f, fill = false)
+                        .blockBottomSheetBodyDrag()
+                        .verticalScroll(rememberScrollState())
+                        .padding(StandardModalSheetDefaults.ContentPadding),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    body()
-
-                    Spacer(Modifier.height(4.dp))
+                    StandardModalSheetScope(this, state).content()
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .blockBottomSheetBodyDrag()
+                ) {
+                    StandardModalSheetScope(this, state).content()
                 }
             }
         }

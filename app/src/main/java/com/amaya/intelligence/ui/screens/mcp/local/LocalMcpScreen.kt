@@ -138,22 +138,12 @@ fun LocalMcpScreen(
                     SettingsBackButton(onClick = onNavigateBack)
                 },
                 actions = {
-                    Box(
-                        modifier = Modifier
-                            .padding(end = 8.dp)
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(colors.iconBackground)
-                            .clickable { openEditor() },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Default.Add, 
-                            "Add Server",
-                            modifier = Modifier.size(20.dp),
-                            tint = colors.iconTint
-                        )
-                    }
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = Icons.Default.Add,
+                        onClick = { openEditor() },
+                        contentDescription = "Edit MCP Config",
+                        modifier = Modifier.padding(end = 12.dp)
+                    )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent,

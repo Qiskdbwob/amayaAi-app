@@ -258,21 +258,12 @@ fun LocalProjectBrowserScreen(
                     SettingsBackButton(onClick = onDismiss)
                 },
                 actions = {
-                    Box(
-                        modifier = Modifier
-                            .padding(end = 8.dp)
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(colors.iconBackground),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            if (showHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                            contentDescription = "Toggle hidden files",
-                            modifier = Modifier.size(20.dp),
-                            tint = colors.iconTint
-                        )
-                    }
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = if (showHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        onClick = { showHidden = !showHidden },
+                        contentDescription = "Toggle hidden files",
+                        modifier = Modifier.padding(end = 12.dp)
+                    )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent,

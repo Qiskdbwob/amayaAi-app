@@ -19,9 +19,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.font.FontWeight
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
-import com.amaya.intelligence.ui.components.shared.rememberLockedModalBottomSheetState
+
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
-import com.amaya.intelligence.ui.components.shared.ignoreNestedScrollForBottomSheet
+
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -32,20 +32,7 @@ fun McpEditSheet(
     onSave: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val scope = rememberCoroutineScope()
-    val sheetState = rememberLockedModalBottomSheetState()
-    val scrollState = rememberScrollState()
-    
-    val dismissAction = {
-        scope.launch {
-            sheetState.hide()
-        }.invokeOnCompletion {
-            if (!sheetState.isVisible) {
-                onDismiss()
-            }
-        }
-        Unit
-    }
+
 
     var rawJson by remember {
         mutableStateOf(
@@ -66,119 +53,43 @@ fun McpEditSheet(
     }
     val isValid = rawJsonError == null
 
-    ModalBottomSheet(
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        properties = com.amaya.intelligence.ui.components.shared.lockedModalBottomSheetProperties(),
-        containerColor = MaterialTheme.colorScheme.surface,
-        dragHandle = null,
-        shape = com.amaya.intelligence.ui.components.shared.responsiveBottomSheetShape(sheetState)
+        title = "MCP Configuration"
     ) {
-        val gradients = LocalAmayaGradients.current
-        Box(
-            modifier = modifier
-                .fillMaxWidth()
-                .weight(1f, fill = false)
-        ) {
-            // Bottom Layer: Scrolling Content
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .ignoreNestedScrollForBottomSheet()
-                    .verticalScroll(scrollState)
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 40.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Spacer(Modifier.height(90.dp)) // Reserve space for the header
-                OutlinedTextField(
-                    value = rawJson,
-                    onValueChange = { rawJson = it },
-                    placeholder = {
-                        Text(
-                            "{\n  \"mcpServers\": {\n    \"my-server\": {\n      \"serverUrl\": \"https://mcp.example.com/mcp\",\n      \"headers\": {},\n      \"enabled\": true\n    }\n  }\n}",
-                            fontFamily = FontFamily.Monospace
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 10,
-                    maxLines = 24,
-                    shape = RoundedCornerShape(12.dp),
-                    isError = rawJsonError != null,
-                    supportingText = rawJsonError?.let { { Text(it) } },
-                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
-                )
-
-                Button(
-                    onClick = {
-                        scope.launch {
-                            sheetState.hide()
-                        }.invokeOnCompletion {
-                            if (!sheetState.isVisible) {
-                                onSave(rawJson.trim())
-                            }
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    enabled = isValid
-                ) {
-                    Icon(Icons.Default.Save, null, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        "Save Config",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-            }
-
-            // Top Layer: Blurred Header Overlay
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter)
-                    .background(gradients.modalTopScrim)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .width(32.dp).height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = com.amaya.intelligence.ui.components.shared.responsiveDragHandleAlpha(sheetState)))
-                    )
-                }
-                Box(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 24.dp),
-                contentAlignment = Alignment.Center
-            ) {
+        OutlinedTextField(
+            value = rawJson,
+            onValueChange = { rawJson = it },
+            placeholder = {
                 Text(
-                    "MCP Configuration",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
+                    "{\n  \"mcpServers\": {\n    \"my-server\": {\n      \"serverUrl\": \"https://mcp.example.com/mcp\",\n      \"headers\": {},\n      \"enabled\": true\n    }\n  }\n}",
+                    fontFamily = FontFamily.Monospace
                 )
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(
-                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                                .compositeOver(MaterialTheme.colorScheme.background)
-                        )
-                        .clickable(onClick = dismissAction),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Close, "Dismiss", modifier = Modifier.size(20.dp))
-                }
-            }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 10,
+            maxLines = 24,
+            shape = RoundedCornerShape(12.dp),
+            isError = rawJsonError != null,
+            supportingText = rawJsonError?.let { { Text(it) } },
+            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+        )
+
+        Button(
+            onClick = { dismiss { onSave(rawJson.trim()) } },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            shape = RoundedCornerShape(16.dp),
+            enabled = isValid
+        ) {
+            Icon(Icons.Default.Save, null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "Save Config",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
         }
     }
-}
 }

@@ -26,7 +26,7 @@ import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
-import com.amaya.intelligence.ui.components.shared.ignoreNestedScrollForBottomSheet
+
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -282,25 +282,14 @@ fun RemoteSessionScreen(
                 },
                 actions = {
                     if (isConnected) {
-                        Box(
-                            modifier = Modifier
-                                .padding(end = 8.dp)
-                                .height(36.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.error.copy(alpha = 0.1f))
-                                .clickable { client.disconnect() }
-                                .padding(horizontal = 12.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.LinkOff, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
-                                Spacer(Modifier.width(6.dp))
-                                Text(UiStrings.Connection.DISCONNECT, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
-                            }
-                        }
+                        com.amaya.intelligence.ui.components.shared.AmayaTopBarTextButton(
+                            text = UiStrings.Connection.DISCONNECT,
+                            icon = Icons.Default.LinkOff,
+                            onClick = { client.disconnect() },
+                            textColor = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(end = 12.dp)
+                        )
                     } else {
-                        // Empty box to maintain symmetry/spacing if needed, 
-                        // but usually there's no right-side button in disconnected state now
                         Spacer(Modifier.width(48.dp))
                     }
                 },
@@ -683,160 +672,72 @@ private fun ConnectionSetupSheet(
     onDismiss: () -> Unit
 ) {
     var showScanner by remember { mutableStateOf(false) }
-    val maxSheetHeight = androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp * 0.75f
-    val sheetState = rememberModalBottomSheetState(
-        skipPartiallyExpanded = true
-    )
-    val scope = rememberCoroutineScope()
-
-    ModalBottomSheet(
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        properties = com.amaya.intelligence.ui.components.shared.lockedModalBottomSheetProperties(),
-        containerColor = MaterialTheme.colorScheme.surface,
-        dragHandle = null,
-        shape = com.amaya.intelligence.ui.components.shared.responsiveBottomSheetShape(sheetState)
+        title = UiStrings.Connection.CONNECTION_SETUP
     ) {
-        val gradients = LocalAmayaGradients.current
-        Box(
+        if (showScanner) {
+            QrScannerOverlay(
+                onScan = { data ->
+                    val uri = android.net.Uri.parse(data)
+                    uri.getQueryParameter("ip")?.let { onIpChange(it) }
+                    uri.getQueryParameter("port")?.let { onPortChange(it) }
+                    showScanner = false
+                },
+                onClose = { showScanner = false }
+            )
+        }
+
+        OutlinedTextField(
+            value = ipAddress,
+            onValueChange = onIpChange,
+            label = { Text(UiStrings.Connection.IP_ADDRESS) },
+            placeholder = { Text("Enter IP address") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            leadingIcon = { Icon(Icons.Default.Wifi, null, modifier = Modifier.size(18.dp)) },
+            trailingIcon = {
+                IconButton(onClick = { showScanner = true }) {
+                    Icon(Icons.Default.QrCodeScanner, null, modifier = Modifier.size(18.dp))
+                }
+            },
+            enabled = !isConnecting
+        )
+
+        OutlinedTextField(
+            value = port,
+            onValueChange = onPortChange,
+            label = { Text(UiStrings.Connection.PORT) },
+            placeholder = { Text("Enter port") },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            leadingIcon = { Icon(Icons.Default.Adjust, null, modifier = Modifier.size(18.dp)) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            enabled = !isConnecting
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        Button(
+            onClick = { dismiss(onConnect) },
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = maxSheetHeight)
-                .weight(1f, fill = false)
+                .height(56.dp),
+            shape = RoundedCornerShape(16.dp),
+            enabled = ipAddress.isNotBlank() && port.toIntOrNull() != null && !isConnecting
         ) {
-            // Bottom Layer: Scrolling Content
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .ignoreNestedScrollForBottomSheet()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 40.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Spacer(Modifier.height(90.dp)) // Reduced spacer for tighter layout
-                if (showScanner) {
-                    QrScannerOverlay(
-                        onScan = { data ->
-                            val uri = android.net.Uri.parse(data)
-                            uri.getQueryParameter("ip")?.let { onIpChange(it) }
-                            uri.getQueryParameter("port")?.let { onPortChange(it) }
-                            showScanner = false
-                        },
-                        onClose = { showScanner = false }
-                    )
-                }
-
-                OutlinedTextField(
-                    value = ipAddress,
-                    onValueChange = onIpChange,
-                    label = { Text(UiStrings.Connection.IP_ADDRESS) },
-                    placeholder = { Text("Enter IP address") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    leadingIcon = { Icon(Icons.Default.Wifi, null, modifier = Modifier.size(18.dp)) },
-                    trailingIcon = {
-                        IconButton(onClick = { showScanner = true }) {
-                            Icon(Icons.Default.QrCodeScanner, null, modifier = Modifier.size(18.dp))
-                        }
-                    },
-                    enabled = !isConnecting
+            if (isConnecting) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(24.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    strokeWidth = 2.dp
                 )
-
-                OutlinedTextField(
-                    value = port,
-                    onValueChange = onPortChange,
-                    label = { Text(UiStrings.Connection.PORT) },
-                    placeholder = { Text("Enter port") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    leadingIcon = { Icon(Icons.Default.Adjust, null, modifier = Modifier.size(18.dp)) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    enabled = !isConnecting
+            } else {
+                Text(
+                    UiStrings.Connection.CONNECT,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
                 )
-
-                Spacer(Modifier.height(8.dp))
-
-                Button(
-                    onClick = {
-                        scope.launch {
-                            sheetState.hide()
-                        }.invokeOnCompletion {
-                            if (!sheetState.isVisible) {
-                                onConnect()
-                            }
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    enabled = ipAddress.isNotBlank() && port.toIntOrNull() != null && !isConnecting
-                ) {
-                    if (isConnecting) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Text(
-                            UiStrings.Connection.CONNECT,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-
-            // Top Layer: Blurred Header Overlay
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter)
-                    .background(gradients.modalTopScrim)
-                    .verticalScroll(rememberScrollState())
-                    .heightIn(min = 110.dp) // Ensure substantial drag surface area
-            ) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .width(32.dp).height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = com.amaya.intelligence.ui.components.shared.responsiveDragHandleAlpha(sheetState)))
-                    )
-                }
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 24.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        UiStrings.Connection.CONNECTION_SETUP,
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.CenterEnd)
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-                                    .compositeOver(MaterialTheme.colorScheme.background)
-                            )
-                            .clickable {
-                                scope.launch { sheetState.hide() }.invokeOnCompletion {
-                                    if (!sheetState.isVisible) onDismiss()
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Close, "Dismiss", modifier = Modifier.size(20.dp))
-                    }
-                }
             }
         }
     }

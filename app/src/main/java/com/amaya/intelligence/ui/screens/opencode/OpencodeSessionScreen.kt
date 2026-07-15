@@ -203,9 +203,12 @@ fun OpencodeSessionScreen(
                 title = { Text("Opencode", style = MaterialTheme.typography.titleLarge) },
                 navigationIcon = { SettingsBackButton(onClick = onBack) },
                 actions = {
-                    IconButton(onClick = viewModel::refreshAll) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
-                    }
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = Icons.Default.Refresh,
+                        onClick = viewModel::refreshAll,
+                        contentDescription = "Refresh",
+                        modifier = Modifier.padding(end = 12.dp)
+                    )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent,
