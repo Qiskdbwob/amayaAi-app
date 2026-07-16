@@ -6,7 +6,7 @@ import com.squareup.moshi.JsonClass
  * Base result type for all tool executions.
  */
 sealed class ToolResult {
-    
+
     /**
      * Tool executed successfully.
      */
@@ -14,7 +14,7 @@ sealed class ToolResult {
         val output: String,
         val metadata: Map<String, Any> = emptyMap()
     ) : ToolResult()
-    
+
     /**
      * Tool execution failed.
      */
@@ -23,7 +23,7 @@ sealed class ToolResult {
         val errorType: ErrorType = ErrorType.EXECUTION_ERROR,
         val recoverable: Boolean = false
     ) : ToolResult()
-    
+
     /**
      * Tool requires user confirmation before proceeding.
      */
@@ -44,7 +44,23 @@ enum class ErrorType {
 }
 
 enum class ToolVisibility {
-    MODEL
+    MODEL,
+    INTERNAL
+}
+
+/** Host-owned execution data. Model arguments never enter this object. */
+data class ToolExecutionContext(
+    val toolCallId: String? = null,
+    val workspacePath: String? = null,
+    val onEvent: (suspend (Any) -> Unit)? = null,
+    val providerConnection: com.amaya.intelligence.data.remote.api.ProviderConnection? = null,
+    val selectedModelId: String? = null,
+    val confirmed: Boolean = false
+)
+
+/** Implement only when a tool needs host-owned execution context. */
+interface ContextAwareTool {
+    suspend fun execute(arguments: Map<String, Any?>, context: ToolExecutionContext): ToolResult
 }
 
 /**
@@ -67,6 +83,6 @@ interface Tool {
     val name: String
     val description: String
     val visibility: ToolVisibility get() = ToolVisibility.MODEL
-    
+
     suspend fun execute(arguments: Map<String, Any?>): ToolResult
 }

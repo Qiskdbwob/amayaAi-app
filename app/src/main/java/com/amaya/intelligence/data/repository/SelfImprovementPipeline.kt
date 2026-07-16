@@ -136,6 +136,7 @@ class SelfImprovementPipeline @Inject constructor(
         ).collect { response ->
             when (response) {
                 is ChatResponse.TextDelta -> output.append(response.text)
+                is ChatResponse.Incomplete -> throw IllegalStateException(response.reason)
                 is ChatResponse.Error -> throw IllegalStateException(response.message)
                 else -> Unit
             }
@@ -151,7 +152,7 @@ class SelfImprovementPipeline @Inject constructor(
         val provider = when (AmayaProviderRegistry.require(connection.providerId).adapter) {
             ProviderAdapter.ANTHROPIC -> anthropicProvider
             ProviderAdapter.GEMINI -> geminiProvider
-            ProviderAdapter.OPENAI_COMPATIBLE, ProviderAdapter.CODEX -> openAiProvider
+            ProviderAdapter.OPENAI_RESPONSES, ProviderAdapter.OPENAI_COMPATIBLE, ProviderAdapter.CODEX -> openAiProvider
         }
 
         val model = selection.modelId

@@ -143,8 +143,8 @@ fun BrowserOperatorScreen(
     Scaffold(
         contentWindowInsets = WindowInsets(0.dp),
         containerColor = Color(0xFF0B0B10)
-    ) { _ ->
-        Box(Modifier.fillMaxSize()) {
+    ) { innerPadding ->
+        Box(Modifier.fillMaxSize().padding(innerPadding)) {
             // WebView with status bar safe area (like Chrome).
             AndroidView(
                 factory = {
@@ -703,7 +703,6 @@ private fun browserLogIcon(log: BrowserToolLog) = when (log.toolName.lowercase()
     "click_element", "click", "tap" -> Icons.Default.PlayArrow
     "type_text", "type", "search" -> Icons.Default.PlayArrow
     "scroll_page", "scroll", "swipe" -> Icons.Default.PlayArrow
-    "evaluate_script" -> Icons.Default.Check
     else -> when (log.status.lowercase()) {
         "error", "cancelled" -> Icons.Default.Stop
         "paused", "waiting" -> Icons.Default.Pause
@@ -800,7 +799,6 @@ private fun browserActionLabel(name: String): String {
         "search" -> "Search page"
         "find_element" -> "Find element"
         "wait_for_element" -> "Wait for element"
-        "evaluate_script" -> "Evaluate script"
         "get_screenshot" -> "Capture screenshot"
         "go_back" -> "Go back"
         "go_forward" -> "Go forward"

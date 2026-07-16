@@ -39,7 +39,7 @@ fun ChatInput(
     attachedImageBase64: String? = null,
     attachedImageName: String? = null,
     onAttachFile: () -> Unit = {},
-    onAttachImage: () -> Unit = {},
+    onAttachImage: (() -> Unit)? = null,
     onClearAttachment: () -> Unit = {},
     onClearImageAttachment: () -> Unit = {},
     conversationMode: ConversationMode = ConversationMode.PLANNING,
@@ -476,7 +476,7 @@ private fun ComposerAttachmentButton(
     expansion: Float,
     isStreaming: Boolean,
     onAttachFile: () -> Unit,
-    onAttachImage: () -> Unit
+    onAttachImage: (() -> Unit)?
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val buttonSize = androidx.compose.ui.unit.lerp(40.dp, 32.dp, expansion)
@@ -511,14 +511,16 @@ private fun ComposerAttachmentButton(
                 },
                 leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) }
             )
-            DropdownMenuItem(
-                text = { Text("Attach image") },
-                onClick = {
-                    showMenu = false
-                    onAttachImage()
-                },
-                leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) }
-            )
+            if (onAttachImage != null) {
+                DropdownMenuItem(
+                    text = { Text("Attach image") },
+                    onClick = {
+                        showMenu = false
+                        onAttachImage()
+                    },
+                    leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) }
+                )
+            }
         }
     }
 }

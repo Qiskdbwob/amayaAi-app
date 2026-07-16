@@ -218,7 +218,7 @@ class CodexAuthManager @Inject constructor(
                 .build()
 
             val response = httpClient.newCall(request).execute()
-            val body = response.body?.string() ?: throw Exception("Empty token response")
+            val body = response.body?.readUtf8Limited(MAX_ERROR_BODY_BYTES) ?: throw Exception("Empty token response")
 
             if (!response.isSuccessful) {
                 _authState.value = CodexAuthState.Error("Token exchange failed: ${response.code}")
@@ -264,7 +264,7 @@ class CodexAuthManager @Inject constructor(
                 .build()
 
             val response = httpClient.newCall(request).execute()
-            val body = response.body?.string() ?: return@withContext accessToken
+            val body = response.body?.readUtf8Limited(MAX_ERROR_BODY_BYTES) ?: return@withContext accessToken
 
             if (response.isSuccessful) {
                 val json = JSONObject(body)

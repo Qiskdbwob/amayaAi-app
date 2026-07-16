@@ -36,7 +36,7 @@ import javax.inject.Singleton
 @Singleton
 class InvokeSubagentsTool @Inject constructor(
     private val subagentRunner: SubagentRunner
-) : Tool {
+) : Tool, ContextAwareTool {
 
     override val name = "invoke_subagents"
     override val description =
@@ -47,12 +47,13 @@ class InvokeSubagentsTool @Inject constructor(
         "Subagents do NOT see conversation history — provide ALL context in the task description. " +
         "Maximum 4 subagents per call. Returns a combined summary from all subagents."
 
-    // FIX 1.6/3.6: Mutable singleton state removed. eventEmitter and currentToolCallId are now
-    // passed per-call through the arguments map by ToolExecutor (keyed "__eventEmitter" and
-    // "__toolCallId"). This eliminates the race condition where two concurrent chat sessions
-    // would overwrite each other's emitter reference on this singleton.
+    // Per-call emitter, call ID, provider, and workspace live in ToolExecutionContext.
+    // The singleton keeps no mutable execution state.
 
-    override suspend fun execute(arguments: Map<String, Any?>): ToolResult {
+    override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
+        execute(arguments, ToolExecutionContext())
+
+    override suspend fun execute(arguments: Map<String, Any?>, context: ToolExecutionContext): ToolResult {
         return try {
             @Suppress("UNCHECKED_CAST")
             val subagentsRaw = arguments["subagents"] as? List<Map<String, Any?>>
@@ -75,18 +76,17 @@ class InvokeSubagentsTool @Inject constructor(
                     )
                 }
             }
-            // Read per-call context injected by ToolExecutor.
-            @Suppress("UNCHECKED_CAST")
-            val emitter = arguments["__eventEmitter"] as? (suspend (Any) -> Unit)
-            val parentId = arguments["__toolCallId"] as? String ?: "subagents_${System.currentTimeMillis()}"
-            val providerConnection = arguments["__providerConnection"] as? ProviderConnection
-            val selectedModelId = arguments["__selectedModelId"] as? String
+            val emitter = context.onEvent
+            val parentId = context.toolCallId ?: "subagents_${System.currentTimeMillis()}"
+            val providerConnection = context.providerConnection
+            val selectedModelId = context.selectedModelId
 
             val subagents = rawList.mapIndexed { idx, map ->
                 SubagentTask(
                     index       = idx,
                     taskName    = map["task_name"] as? String ?: "Subagent ${idx + 1}",
                     task        = map["task"] as String,  // safe: already validated non-null above
+                    workspacePath = context.workspacePath,
                     providerConnection = providerConnection,
                     selectedModelId = selectedModelId
                 )
@@ -139,6 +139,8 @@ class InvokeSubagentsTool @Inject constructor(
             }
 
             ToolResult.Success(output)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             ToolResult.Error("Subagent execution failed: ${e.message}", ErrorType.EXECUTION_ERROR)
         }
@@ -196,12 +198,16 @@ class SubagentRunner @Inject constructor(
             delay(waitMs)
             try {
                 runInternal(task, isRetry = true)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (e2: Exception) {
                 SubagentResult(
                     taskName = task.taskName,
                     summary  = "[RATE LIMITED] Subagent failed after retry: ${e2.message}"
                 )
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             SubagentResult(
                 taskName = task.taskName,
@@ -222,6 +228,7 @@ class SubagentRunner @Inject constructor(
         val provider: AiProvider = when (adapter) {
             com.amaya.intelligence.data.remote.api.ProviderAdapter.ANTHROPIC -> anthropicProvider
             com.amaya.intelligence.data.remote.api.ProviderAdapter.GEMINI -> geminiProvider
+            com.amaya.intelligence.data.remote.api.ProviderAdapter.OPENAI_RESPONSES,
             com.amaya.intelligence.data.remote.api.ProviderAdapter.OPENAI_COMPATIBLE,
             com.amaya.intelligence.data.remote.api.ProviderAdapter.CODEX -> openAiProvider
         }
@@ -243,7 +250,7 @@ class SubagentRunner @Inject constructor(
         """.trimIndent()
 
         val tools = toolExecutor.getToolDefinitions()
-            .filter { it.name != "invoke_subagents" }
+            .filter { it.name != "invoke_subagents" && it.name != "browser" }
             .map { it.toAiToolDefinition(truncateDesc = true) }
 
         val messages = mutableListOf(
@@ -269,6 +276,7 @@ class SubagentRunner @Inject constructor(
 
             var textBuffer  = StringBuilder()
             val toolCalls   = mutableListOf<ToolCallMessage>()
+            val responseItems = mutableListOf<String>()
             var hasToolCall = false
 
             provider.chat(request).collect { response ->
@@ -285,7 +293,12 @@ class SubagentRunner @Inject constructor(
                             )
                         )
                     }
+                    is ChatResponse.ResponseItem -> responseItems.add(response.json)
                     is ChatResponse.Done  -> { /* no-op */ }
+                    is ChatResponse.Incomplete -> {
+                        resultBuffer.appendLine("[ERROR] ${response.reason}")
+                        continueLoop = false
+                    }
                     is ChatResponse.Error -> {
                         val msg = response.message
                         // Detect rate limit — throw so caller can retry
@@ -311,7 +324,8 @@ class SubagentRunner @Inject constructor(
                     ChatMessage(
                         role      = MessageRole.ASSISTANT,
                         content   = textBuffer.toString().takeIf { it.isNotEmpty() },
-                        toolCalls = toolCalls
+                        toolCalls = toolCalls,
+                        responseItems = responseItems
                     )
                 )
 
@@ -321,7 +335,8 @@ class SubagentRunner @Inject constructor(
                         arguments     = toolCall.arguments,
                         // FIX 2.11: Pass workspacePath so run_shell inside subagents
                         // gets the correct working directory (git, gradle, etc.)
-                        workspacePath = task.workspacePath
+                        workspacePath = task.workspacePath,
+                        toolCallId = toolCall.id
                     )
                     val resultContent = when (result) {
                         is ToolResult.Success              -> result.output

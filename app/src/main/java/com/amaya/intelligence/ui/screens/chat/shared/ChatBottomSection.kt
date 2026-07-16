@@ -45,6 +45,7 @@ fun ChatBottomSection(
     scope: CoroutineScope,
     onClearError: () -> Unit,
     onSendMessage: (String) -> Unit,
+    supportsImages: Boolean = true,
     onSendMessageWithImage: (String, String, String, String) -> Unit = { _, _, _, _ -> },
     onClearImageAttachment: () -> Unit = {},
     onStopGeneration: () -> Unit,
@@ -128,7 +129,7 @@ fun ChatBottomSection(
             attachedImageBase64 = currentImageBase64,
             attachedImageName = currentImageName,
             onAttachFile = { filePicker.launch("*/*") },
-            onAttachImage = { imagePicker?.launch("image/*") },
+            onAttachImage = if (supportsImages) ({ imagePicker?.launch("image/*") }) else null,
             onClearAttachment = { attachedPath = null },
             onClearImageAttachment = {
                 currentImageBase64 = null

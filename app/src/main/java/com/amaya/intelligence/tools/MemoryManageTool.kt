@@ -17,17 +17,20 @@ import javax.inject.Singleton
 @Singleton
 class MemoryManageTool @Inject constructor(
     private val memoryRepository: MemoryRepository
-) : Tool {
+) : Tool, ContextAwareTool {
     override val name = "memory_manage"
     override val description = "List, search, remove, or update saved memory by id. Use when the user asks what Amaya remembers, asks to remove/update a specific saved memory, or needs precise memory cleanup. For list/search, include title: a concise 3-5 word header explaining why memory is being opened, e.g. 'Review saved preferences' or 'Find memory to remove'. Never use for secrets."
 
-    override suspend fun execute(arguments: Map<String, Any?>): ToolResult = withContext(Dispatchers.IO) {
+    override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
+        execute(arguments, ToolExecutionContext())
+
+    override suspend fun execute(arguments: Map<String, Any?>, context: ToolExecutionContext): ToolResult = withContext(Dispatchers.IO) {
         val action = (arguments["action"] as? String)?.lowercase()
             ?: return@withContext ToolResult.Error("Missing required: action", ErrorType.VALIDATION_ERROR)
         when (action) {
             "list", "search" -> listOrSearch(arguments)
-            "remove", "delete" -> remove(arguments)
-            "update", "replace" -> update(arguments)
+            "remove", "delete" -> remove(arguments, context.confirmed)
+            "update", "replace" -> update(arguments, context.confirmed)
             else -> ToolResult.Error("Unsupported action: $action", ErrorType.VALIDATION_ERROR)
         }
     }
@@ -47,11 +50,10 @@ class MemoryManageTool @Inject constructor(
         )
     }
 
-    private suspend fun remove(arguments: Map<String, Any?>): ToolResult {
+    private suspend fun remove(arguments: Map<String, Any?>, confirmed: Boolean): ToolResult {
         val id = arguments["id"] as? String
             ?: return ToolResult.Error("Missing required: id", ErrorType.VALIDATION_ERROR)
         val record = memoryRepository.listMemoryRecords(limit = 100).firstOrNull { it.id == id }
-        val confirmed = arguments["__confirmed"] as? Boolean == true
         if (!confirmed) {
             val preview = record?.content.orEmpty()
             return ToolResult.RequiresConfirmation(
@@ -65,13 +67,12 @@ class MemoryManageTool @Inject constructor(
         )
     }
 
-    private suspend fun update(arguments: Map<String, Any?>): ToolResult {
+    private suspend fun update(arguments: Map<String, Any?>, confirmed: Boolean): ToolResult {
         val id = arguments["id"] as? String
             ?: return ToolResult.Error("Missing required: id", ErrorType.VALIDATION_ERROR)
         val content = arguments["content"] as? String
             ?: return ToolResult.Error("Missing required: content", ErrorType.VALIDATION_ERROR)
         val record = memoryRepository.listMemoryRecords(limit = 100).firstOrNull { it.id == id }
-        val confirmed = arguments["__confirmed"] as? Boolean == true
         if (!confirmed) {
             val preview = record?.content.orEmpty()
             return ToolResult.RequiresConfirmation(

@@ -577,7 +577,6 @@ private fun browserToolIcon(tool: String): ToolInfoIcon {
         "type", "type_text", "clear_input" -> ToolInfoIcon.EDIT
         "scroll", "scroll_page", "swipe" -> ToolInfoIcon.MOUSE
         "search", "find_element", "wait_for_element" -> ToolInfoIcon.SEARCH
-        "evaluate_script" -> ToolInfoIcon.COMMAND
         "get_screenshot", "screenshot" -> ToolInfoIcon.IMAGE
         else -> ToolInfoIcon.BROWSER
     }
@@ -784,7 +783,6 @@ private fun browserToolDisplayName(tool: String): String {
         "search" -> "Search page"
         "find_element" -> "Find element"
         "wait_for_element" -> "Wait for element"
-        "evaluate_script" -> "Evaluate script"
         "get_screenshot", "screenshot" -> "Capture screenshot"
         "go_back" -> "Go back"
         "go_forward" -> "Go forward"

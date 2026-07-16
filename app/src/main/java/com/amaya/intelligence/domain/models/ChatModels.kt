@@ -45,13 +45,13 @@ enum class ConversationMode(val wireValue: String) {
 
 sealed class MessageStep {
     abstract val id: String
-    
+
     data class Text(
         override val id: String = UUID.randomUUID().toString(),
         val content: String,
         val formattedContent: String? = null
     ): MessageStep()
-    
+
     data class ToolCall(
         override val id: String = UUID.randomUUID().toString(),
         val execution: ToolExecution
@@ -74,7 +74,10 @@ data class UiMessage(
     val steps: List<MessageStep> = emptyList(),
     val todoItems: List<TodoItem> = emptyList(),
     val metadata: Map<String, String> = emptyMap(),
-    val attachments: List<MessageAttachment> = emptyList()
+    val attachments: List<MessageAttachment> = emptyList(),
+    val responseItems: List<String> = emptyList(),
+    /** Ordered provider/tool history. UI fields remain a projection of these items. */
+    val canonicalHistory: List<String> = emptyList()
 )
 
 data class MessageAttachment(

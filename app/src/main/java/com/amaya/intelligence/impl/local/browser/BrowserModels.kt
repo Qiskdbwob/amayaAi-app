@@ -41,7 +41,17 @@ data class BrowserSafetyPrompt(
     val reason: String,
     val selector: String? = null,
     val fieldLabel: String? = null,
-    val toolName: String? = null
+    val toolName: String? = null,
+    val origin: String? = null,
+    val actionFingerprint: String? = null
+)
+
+internal data class BrowserApprovalGrant(
+    val toolName: String,
+    val selector: String?,
+    val origin: String,
+    val actionFingerprint: String,
+    val expiresAt: Long
 )
 
 data class BrowserUiState(

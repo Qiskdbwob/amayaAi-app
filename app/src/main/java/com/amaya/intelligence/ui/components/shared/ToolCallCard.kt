@@ -28,8 +28,6 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
 
 // ── ToolCallCard ─────────────────────────────────────────────────────────────
 
@@ -201,8 +199,7 @@ internal fun ToolCardContent(
 
     val isThinkingCard = execution.isSyntheticThinkingCard()
     var expanded by remember(execution.toolCallId) { mutableStateOf(false) }
-    var approvalDismissed by remember(execution.toolCallId) { mutableStateOf(false) }
-    val approvalScope = rememberCoroutineScope()
+    var approvalSubmitted by remember(execution.toolCallId, execution.metadata["approvalState"]) { mutableStateOf(false) }
     val isDark = isSystemInDarkTheme()
     val isTerminalApprovalCandidate = execution.metadata["isTerminal"].equals("true", ignoreCase = true)
         || execution.isShellTool()
@@ -230,7 +227,7 @@ internal fun ToolCardContent(
         (execution.status == ToolStatus.RUNNING || expanded)
 
     val uiMeta = execution.uiMetadata
-    
+
     val bgColor = when (execution.status) {
         ToolStatus.ERROR   -> if (isDark) iosRed.copy(alpha = 0.10f)  else iosRed.copy(alpha = 0.06f)
         ToolStatus.SUCCESS -> MaterialTheme.colorScheme.surfaceContainerLow
@@ -281,20 +278,20 @@ internal fun ToolCardContent(
     )
     val normalizedResult = execution.result?.trim()?.lowercase() ?: ""
     val isGenericResult = normalizedResult in genericResultStrings || normalizedResult.contains("success")
-    
+
     val hasInjectedPreview = execution.hasCanonicalFileDiff()
 
     val isTerminal = execution.isShellTool()
 
-    val shouldShowResult = !isThinkingCard && (execution.result != null && execution.result.isNotBlank() && 
-        !isTaskBoundary && 
+    val shouldShowResult = !isThinkingCard && (execution.result != null && execution.result.isNotBlank() &&
+        !isTaskBoundary &&
         execution.uiMetadata?.actionIcon != ToolInfoIcon.MESSAGE &&
         (isWebSearch || !isGenericResult || hasInjectedPreview || isTerminal))
 
     val thinkingVisible = isThinkingCard && !execution.result.isNullOrBlank() && (execution.status == ToolStatus.RUNNING || expanded)
     val hasResultDetails = expanded && !isSubagent && !isThinkingCard && (execution.result != null || execution.arguments.isNotEmpty())
     val hasSubagentResultDetails = expanded && isSubagent && execution.children.isEmpty() && execution.result != null
-    val approvalSectionVisible = showApprovalActions && !approvalDismissed
+    val approvalSectionVisible = showApprovalActions && !approvalSubmitted
     val headerText = resolveToolCallHeaderText(execution, uiMeta, showApprovalActions, approvalPending)
 
     Surface(
@@ -421,14 +418,12 @@ internal fun ToolCardContent(
                     ) {
                         OutlinedButton(
                             onClick = {
-                                if (approvalSectionVisible) {
-                                    approvalDismissed = true
-                                    approvalScope.launch {
-                                        delay(120)
-                                        onDecline?.invoke()
-                                    }
+                                if (!approvalSubmitted && approvalSectionVisible) {
+                                    approvalSubmitted = true
+                                    onDecline?.invoke()
                                 }
                             },
+                            enabled = !approvalSubmitted,
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -437,14 +432,12 @@ internal fun ToolCardContent(
                         }
                         Button(
                             onClick = {
-                                if (approvalSectionVisible) {
-                                    approvalDismissed = true
-                                    approvalScope.launch {
-                                        delay(120)
-                                        onAccept?.invoke()
-                                    }
+                                if (!approvalSubmitted && approvalSectionVisible) {
+                                    approvalSubmitted = true
+                                    onAccept?.invoke()
                                 }
                             },
+                            enabled = !approvalSubmitted,
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))

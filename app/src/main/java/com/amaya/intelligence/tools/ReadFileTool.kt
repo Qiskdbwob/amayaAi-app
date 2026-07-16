@@ -26,31 +26,47 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 class ReadFileTool @Inject constructor(
     @ApplicationContext private val context: Context,
     private val commandValidator: CommandValidator
-) : Tool {
-    
+) : Tool, ContextAwareTool {
+
     companion object {
         const val DEFAULT_MAX_SIZE = 1024 * 1024L  // 1MB
         const val ABSOLUTE_MAX_SIZE = 10 * 1024 * 1024L  // 10MB
         const val BINARY_CHECK_SIZE = 8000
-        
+        const val MAX_EXPANDED_DOCUMENT_BYTES = 20L * 1024 * 1024
+
         // Document formats supported (PDF disabled - dependency not available)
         val DOCUMENT_EXTENSIONS = setOf(
             "docx", "xlsx", "pptx", "odt", "ods", "odp", "rtf"
         )
     }
-    
+
     override val name = "read_file"
 
     override val description = "Read text files and document formats (DOCX, XLSX, PPTX, ODT, ODS, RTF). Pass 'path' for single file or 'paths' array for batch. Use 'info_only' for metadata only. Documents are automatically extracted to plain text. Note: PDF support currently unavailable."
 
     override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
-        withContext(Dispatchers.IO) {
+        execute(arguments, ToolExecutionContext())
+
+    override suspend fun execute(
+        arguments: Map<String, Any?>,
+        executionContext: ToolExecutionContext
+    ): ToolResult = withContext(Dispatchers.IO) {
 
         // ── Batch mode: paths[] ──────────────────────────────────────────
-        @Suppress("UNCHECKED_CAST")
-        val pathsList = (arguments["paths"] as? List<*>)?.mapNotNull { it?.toString() }
+        val rawPaths = arguments["paths"] as? List<*>
+        val pathsList = rawPaths?.mapNotNull { (it as? String)?.takeIf(String::isNotBlank) }
+        if (rawPaths != null && pathsList?.size != rawPaths.size) {
+            return@withContext ToolResult.Error(
+                "Every paths item must be a non-blank string",
+                ErrorType.VALIDATION_ERROR
+            )
+        }
         if (pathsList != null) {
-            return@withContext executeBatch(pathsList, arguments)
+            if (pathsList.isEmpty()) return@withContext ToolResult.Error(
+                "Missing required argument: path or paths",
+                ErrorType.VALIDATION_ERROR
+            )
+            return@withContext executeBatch(pathsList, arguments, executionContext.confirmed)
         }
 
         val pathStr = arguments["path"] as? String
@@ -62,38 +78,37 @@ class ReadFileTool @Inject constructor(
         // ── Info-only mode ───────────────────────────────────────────────
         val infoOnly = arguments["info_only"] as? Boolean ?: false
         if (infoOnly) {
-            return@withContext executeInfo(pathStr)
+            return@withContext executeInfo(pathStr, executionContext.confirmed)
         }
-        
+
         // Validate path access
         when (val validation = commandValidator.validatePath(pathStr, isWrite = false)) {
             is ValidationResult.Denied -> return@withContext ToolResult.Error(
                 validation.reason,
                 ErrorType.SECURITY_VIOLATION
             )
-            is ValidationResult.RequiresConfirmation -> return@withContext ToolResult.RequiresConfirmation(
-                validation.reason,
-                "Path: $pathStr"
-            )
+            is ValidationResult.RequiresConfirmation -> if (!executionContext.confirmed) {
+                return@withContext ToolResult.RequiresConfirmation(validation.reason, "Path: $pathStr")
+            }
             is ValidationResult.Allowed -> { /* proceed */ }
         }
-        
+
         val file = File(pathStr)
-        
+
         if (!file.exists()) {
             return@withContext ToolResult.Error(
                 "File does not exist: $pathStr",
                 ErrorType.NOT_FOUND
             )
         }
-        
+
         if (!file.isFile) {
             return@withContext ToolResult.Error(
                 "Path is not a regular file: $pathStr",
                 ErrorType.VALIDATION_ERROR
             )
         }
-        
+
         // Parse optional arguments
         val maxSize = (arguments["max_size"] as? Number)?.toLong()
             ?.coerceIn(1, ABSOLUTE_MAX_SIZE)
@@ -101,10 +116,10 @@ class ReadFileTool @Inject constructor(
         val startLine = (arguments["start_line"] as? Number)?.toInt()?.coerceAtLeast(1)
         val endLine = (arguments["end_line"] as? Number)?.toInt()
         val encoding = arguments["encoding"] as? String ?: "UTF-8"
-        
+
         try {
             val fileSize = file.length()
-            
+
             // Size check
             if (fileSize > maxSize) {
                 return@withContext ToolResult.Error(
@@ -114,13 +129,13 @@ class ReadFileTool @Inject constructor(
                     recoverable = true
                 )
             }
-            
+
             // Check if this is a document format
             val ext = file.extension.lowercase()
             if (ext in DOCUMENT_EXTENSIONS) {
                 return@withContext extractDocument(file, startLine, endLine)
             }
-            
+
             // Binary check for non-document files
             if (isBinaryFile(file)) {
                 return@withContext ToolResult.Error(
@@ -128,28 +143,28 @@ class ReadFileTool @Inject constructor(
                     ErrorType.VALIDATION_ERROR
                 )
             }
-            
+
             // Read file with specified encoding
             val charset = runCatching { Charset.forName(encoding) }.getOrElse { Charsets.UTF_8 }
             val content = file.readText(charset)
             val allLines = content.lines()
             val totalLines = allLines.size
-            
+
             // Smart line limiting
             val maxDisplayLines = 200
-            
+
             // Handle line range if specified
             val (output, displayedRange) = if (startLine != null || endLine != null) {
                 val start = (startLine ?: 1) - 1
                 val end = (endLine ?: totalLines).coerceAtMost(totalLines)
-                
+
                 if (start >= totalLines) {
                     return@withContext ToolResult.Error(
                         "start_line ($startLine) exceeds file length ($totalLines lines)",
                         ErrorType.VALIDATION_ERROR
                     )
                 }
-                
+
                 val rangeLines = allLines.subList(start, end)
                 Pair(rangeLines.joinToString("\n"), "Lines ${start + 1}-$end of $totalLines")
             } else {
@@ -165,7 +180,7 @@ class ReadFileTool @Inject constructor(
                     Pair(content, "All $totalLines lines")
                 }
             }
-            
+
             ToolResult.Success(
                 output = output,
                 metadata = mapOf(
@@ -176,7 +191,7 @@ class ReadFileTool @Inject constructor(
                     "encoding" to charset.name()
                 )
             )
-            
+
         } catch (e: SecurityException) {
             ToolResult.Error(
                 "Permission denied: ${e.message}",
@@ -189,14 +204,14 @@ class ReadFileTool @Inject constructor(
             )
         }
     }
-    
+
     private fun isBinaryFile(file: File): Boolean {
         FileInputStream(file).use { input ->
             val buffer = ByteArray(BINARY_CHECK_SIZE)
             val read = input.read(buffer)
-            
+
             if (read == -1) return false
-            
+
             for (i in 0 until read) {
                 if (buffer[i] == 0.toByte()) {
                     return true
@@ -205,7 +220,7 @@ class ReadFileTool @Inject constructor(
         }
         return false
     }
-    
+
     private fun formatSize(bytes: Long): String {
         return when {
             bytes < 1024 -> "$bytes B"
@@ -215,7 +230,11 @@ class ReadFileTool @Inject constructor(
     }
 
     // ── Batch mode ───────────────────────────────────────────────────────────
-    private suspend fun executeBatch(paths: List<String>, arguments: Map<String, Any?>): ToolResult =
+    private suspend fun executeBatch(
+        paths: List<String>,
+        arguments: Map<String, Any?>,
+        confirmed: Boolean
+    ): ToolResult =
         withContext(Dispatchers.IO) {
             if (paths.size > 10) {
                 return@withContext ToolResult.Error("Too many files: ${paths.size} (max: 10)", ErrorType.SIZE_LIMIT)
@@ -234,15 +253,18 @@ class ReadFileTool @Inject constructor(
                             appendLine()
                             return@forEachIndexed
                         }
-                        is ValidationResult.RequiresConfirmation -> {
-                            appendLine("SKIPPED: Requires confirmation — ${v.reason}")
-                            appendLine()
-                            return@forEachIndexed
+                        is ValidationResult.RequiresConfirmation -> if (!confirmed) {
+                            return@withContext ToolResult.RequiresConfirmation(v.reason, "Path: $path")
                         }
                         is ValidationResult.Allowed -> { /* proceed */ }
                     }
                     if (!file.exists()) { appendLine("ERROR: File not found"); appendLine(); return@forEachIndexed }
                     if (!file.isFile)   { appendLine("ERROR: Not a file");      appendLine(); return@forEachIndexed }
+                    if (file.length() > ABSOLUTE_MAX_SIZE) {
+                        appendLine("ERROR: File too large: ${formatSize(file.length())} (max: ${formatSize(ABSOLUTE_MAX_SIZE)})")
+                        appendLine()
+                        return@forEachIndexed
+                    }
                     try {
                         // Check if document format
                         val ext = file.extension.lowercase()
@@ -288,10 +310,12 @@ class ReadFileTool @Inject constructor(
         }
 
     // ── Info-only mode ───────────────────────────────────────────────────────
-    private suspend fun executeInfo(pathStr: String): ToolResult = withContext(Dispatchers.IO) {
+    private suspend fun executeInfo(pathStr: String, confirmed: Boolean): ToolResult = withContext(Dispatchers.IO) {
         when (val v = commandValidator.validatePath(pathStr, isWrite = false)) {
             is ValidationResult.Denied -> return@withContext ToolResult.Error(v.reason, ErrorType.SECURITY_VIOLATION)
-            is ValidationResult.RequiresConfirmation -> return@withContext ToolResult.RequiresConfirmation(v.reason, pathStr)
+            is ValidationResult.RequiresConfirmation -> if (!confirmed) {
+                return@withContext ToolResult.RequiresConfirmation(v.reason, pathStr)
+            }
             is ValidationResult.Allowed -> {}
         }
         val file = java.io.File(pathStr)
@@ -330,24 +354,24 @@ class ReadFileTool @Inject constructor(
                     ErrorType.VALIDATION_ERROR
                 )
             }
-            
+
             val allLines = extractedText.lines()
             val totalLines = allLines.size
             val wordCount = extractedText.split(Regex("\\s+")).filter { it.isNotBlank() }.size
-            
+
             // Apply line range if specified
             val maxDisplayLines = 200
             val (output, displayedRange) = if (startLine != null || endLine != null) {
                 val start = (startLine ?: 1) - 1
                 val end = (endLine ?: totalLines).coerceAtMost(totalLines)
-                
+
                 if (start >= totalLines) {
                     return@withContext ToolResult.Error(
                         "start_line ($startLine) exceeds document length ($totalLines lines)",
                         ErrorType.VALIDATION_ERROR
                     )
                 }
-                
+
                 val rangeLines = allLines.subList(start, end)
                 Pair(rangeLines.joinToString("\n"), "Lines ${start + 1}-$end of $totalLines")
             } else {
@@ -370,7 +394,7 @@ class ReadFileTool @Inject constructor(
                     Pair(output, "All $totalLines lines")
                 }
             }
-            
+
             ToolResult.Success(
                 output = output,
                 metadata = mapOf(
@@ -382,7 +406,7 @@ class ReadFileTool @Inject constructor(
                     "displayed" to displayedRange
                 )
             )
-            
+
         } catch (e: Exception) {
             ToolResult.Error(
                 "Failed to extract document: ${e.message}",
@@ -390,7 +414,7 @@ class ReadFileTool @Inject constructor(
             )
         }
     }
-    
+
     // ── PDF Extraction ──────────────────────────────────────────────────────────
     // Disabled - PDFBox-Android dependency not available in public repos
     // private fun extractPdf(file: File): String {
@@ -400,19 +424,20 @@ class ReadFileTool @Inject constructor(
     //         stripper.getText(document)
     //     }
     // }
-    
+
     // ── DOCX Extraction ─────────────────────────────────────────────────────────
     private fun extractDocx(file: File): String = extractFromZipXml(
         file = file,
         targetPath = "word/document.xml",
         textTag = "w:t"
     )
-    
+
     // ── XLSX Extraction ─────────────────────────────────────────────────────────
     private fun extractXlsx(file: File): String {
         val sharedStrings = mutableListOf<String>()
         val sheetTexts = mutableListOf<String>()
-        
+        val budget = ByteReadBudget(MAX_EXPANDED_DOCUMENT_BYTES)
+
         ZipInputStream(file.inputStream()).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
@@ -421,8 +446,8 @@ class ReadFileTool @Inject constructor(
                         // Extract shared strings
                         val factory = XmlPullParserFactory.newInstance()
                         val parser = factory.newPullParser()
-                        parser.setInput(zip.reader())
-                        
+                        parser.setInput(budget.wrap(zip).reader())
+
                         var eventType = parser.eventType
                         val textBuilder = StringBuilder()
                         while (eventType != XmlPullParser.END_DOCUMENT) {
@@ -442,8 +467,8 @@ class ReadFileTool @Inject constructor(
                         // Extract sheet content
                         val factory = XmlPullParserFactory.newInstance()
                         val parser = factory.newPullParser()
-                        parser.setInput(zip.reader())
-                        
+                        parser.setInput(budget.wrap(zip).reader())
+
                         val sheetText = StringBuilder()
                         var eventType = parser.eventType
                         while (eventType != XmlPullParser.END_DOCUMENT) {
@@ -468,42 +493,43 @@ class ReadFileTool @Inject constructor(
                 entry = zip.nextEntry
             }
         }
-        
-        return sheetTexts.mapIndexed { idx, text -> 
+
+        return sheetTexts.mapIndexed { idx, text ->
             "=== Sheet ${idx + 1} ===\n$text"
         }.joinToString("\n\n")
     }
-    
+
     // ── PPTX Extraction ─────────────────────────────────────────────────────────
     private fun extractPptx(file: File): String {
         // Read all slide entry bytes first (can't parse while ZipInputStream is open for other entries)
         val slideEntries = mutableListOf<Pair<String, ByteArray>>()
-        
+        val budget = ByteReadBudget(MAX_EXPANDED_DOCUMENT_BYTES)
+
         ZipInputStream(file.inputStream()).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
                 // Match slide files only, skip _rels and slideLayouts
                 if (entry.name.matches(Regex("ppt/slides/slide[0-9]+\\.xml"))) {
-                    slideEntries.add(entry.name to zip.readBytes())
+                    slideEntries.add(entry.name to budget.readBytes(zip))
                 }
                 entry = zip.nextEntry
             }
         }
-        
+
         // Sort slides by number to ensure correct order
         slideEntries.sortBy { (name, _) ->
             name.replace("ppt/slides/slide", "").replace(".xml", "").toIntOrNull() ?: 0
         }
-        
+
         val slides = slideEntries.mapIndexedNotNull { _, (_, bytes) ->
             val slideText = StringBuilder()
-            
+
             // Parse XML bytes — use non-namespace-aware mode for simpler tag name matching
             val factory = XmlPullParserFactory.newInstance()
             factory.isNamespaceAware = false
             val parser = factory.newPullParser()
             parser.setInput(bytes.inputStream(), "UTF-8")
-            
+
             var eventType = parser.eventType
             while (eventType != XmlPullParser.END_DOCUMENT) {
                 if (eventType == XmlPullParser.START_TAG) {
@@ -532,10 +558,10 @@ class ReadFileTool @Inject constructor(
                 }
                 eventType = parser.next()
             }
-            
+
             slideText.toString().trim().takeIf { it.isNotEmpty() }
         }
-        
+
         return if (slides.isEmpty()) {
             "No text content found in presentation"
         } else {
@@ -544,28 +570,28 @@ class ReadFileTool @Inject constructor(
             }.joinToString("\n\n")
         }
     }
-    
+
     // ── ODT Extraction ──────────────────────────────────────────────────────────
     private fun extractOdt(file: File): String = extractFromZipXml(
         file = file,
         targetPath = "content.xml",
         textTag = "text:p"
     )
-    
+
     // ── ODS Extraction ──────────────────────────────────────────────────────────
     private fun extractOds(file: File): String = extractFromZipXml(
         file = file,
         targetPath = "content.xml",
         textTag = "text:p"
     )
-    
+
     // ── ODP Extraction ──────────────────────────────────────────────────────────
     private fun extractOdp(file: File): String = extractFromZipXml(
         file = file,
         targetPath = "content.xml",
         textTag = "text:p"
     )
-    
+
     // ── RTF Extraction ──────────────────────────────────────────────────────────
     private fun extractRtf(file: File): String {
         val content = file.readText()
@@ -577,19 +603,20 @@ class ReadFileTool @Inject constructor(
             .replace(Regex("""\s+"""), " ") // Normalize whitespace
             .trim()
     }
-    
+
     // ── Helper: Extract from ZIP+XML ────────────────────────────────────────────
     private fun extractFromZipXml(file: File, targetPath: String, textTag: String): String {
         val textBuilder = StringBuilder()
-        
+        val budget = ByteReadBudget(MAX_EXPANDED_DOCUMENT_BYTES)
+
         ZipInputStream(file.inputStream()).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
                 if (entry.name == targetPath) {
                     val factory = XmlPullParserFactory.newInstance()
                     val parser = factory.newPullParser()
-                    parser.setInput(zip.reader())
-                    
+                    parser.setInput(budget.wrap(zip).reader())
+
                     var eventType = parser.eventType
                     while (eventType != XmlPullParser.END_DOCUMENT) {
                         if (eventType == XmlPullParser.START_TAG && parser.name == textTag) {
@@ -605,7 +632,7 @@ class ReadFileTool @Inject constructor(
                 entry = zip.nextEntry
             }
         }
-        
+
         return textBuilder.toString().trim()
     }
 }

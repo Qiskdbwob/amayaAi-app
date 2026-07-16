@@ -11,6 +11,11 @@ class SafetyGuard @Inject constructor() {
         "cvc", "cvv", "expiry", "payment", "billing", "address", "phone", "ssn",
         "nik", "ktp", "passport", "private", "secret", "token"
     )
+    private val irreversibleTerms = listOf(
+        "buy", "purchase", "checkout", "pay", "place order", "confirm order",
+        "delete", "remove", "publish", "post", "send", "submit", "transfer",
+        "book", "reserve", "unsubscribe", "close account"
+    )
 
     fun isSensitiveField(element: BrowserElementSummary?): Boolean {
         if (element == null) return false
@@ -29,15 +34,37 @@ class SafetyGuard @Inject constructor() {
         return sensitiveTerms.any { it in haystack }
     }
 
-    fun buildPrompt(toolName: String, element: BrowserElementSummary?): BrowserSafetyPrompt {
+    fun requiresApproval(toolName: String, element: BrowserElementSummary?): Boolean {
+        if (isSensitiveField(element)) return true
+        if (toolName !in setOf("click_element", "press_key", "type_text")) return false
+        val text = element?.let {
+            listOf(it.text, it.label, it.placeholder, it.name, it.id, it.selector, it.href)
+                .joinToString(" ").lowercase()
+        }.orEmpty()
+        return irreversibleTerms.any { it in text }
+    }
+
+    fun buildPrompt(
+        toolName: String,
+        element: BrowserElementSummary?,
+        origin: String? = null,
+        actionFingerprint: String? = null
+    ): BrowserSafetyPrompt {
         val label = element?.let { item ->
             item.label.ifBlank { item.placeholder }.ifBlank { item.name }.ifBlank { item.selector }
         }
+        val sensitive = isSensitiveField(element)
         return BrowserSafetyPrompt(
-            reason = "Sensitive input detected. Amaya will not read or fill login, OTP, payment, or private data without permission.",
+            reason = if (sensitive) {
+                "Sensitive input detected. Amaya will not read or fill login, OTP, payment, or private data without permission."
+            } else {
+                "This browser action may submit, publish, purchase, delete, or otherwise make an external change. User approval is required."
+            },
             selector = element?.selector,
             fieldLabel = label,
-            toolName = toolName
+            toolName = toolName,
+            origin = origin,
+            actionFingerprint = actionFingerprint
         )
     }
 }

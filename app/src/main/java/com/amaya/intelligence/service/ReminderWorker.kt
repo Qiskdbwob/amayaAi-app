@@ -129,6 +129,7 @@ class ReminderWorker @AssistedInject constructor(
             ).collect { event ->
                 when (event) {
                     is AgentEvent.TextDelta -> aiReply.append(event.text)
+                    is AgentEvent.Incomplete -> errorLog(TAG, "doWork: AI incomplete: ${event.reason}")
                     is AgentEvent.Error     -> errorLog(TAG, "doWork: AI error: ${event.message}")
                     else                    -> Unit
                 }

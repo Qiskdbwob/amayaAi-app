@@ -1,29 +1,30 @@
 ﻿package com.amaya.intelligence.data.remote.api
 
 import kotlinx.coroutines.flow.Flow
+import org.json.JSONObject
 
 /**
  * Unified interface for AI providers.
- * 
+ *
  * All AI providers (Anthropic, OpenAI, Gemini) implement this interface
  * to allow seamless switching between providers.
  */
 interface AiProvider {
-    
+
     /**
      * Provider name for display and logging.
      */
     val name: String
-    
-    
+
+
     /**
      * Send a chat request and receive streaming responses.
-     * 
+     *
      * @param request The chat request with messages, tools, and settings
      * @return Flow of chat responses (text deltas, tool calls, or done signals)
      */
     suspend fun chat(request: ChatRequest): Flow<ChatResponse>
-    
+
 
 }
 
@@ -36,7 +37,7 @@ data class ChatRequest(
     val systemPrompt: String? = null,
     val tools: List<AiToolDefinition> = emptyList(),
     val maxTokens: Int = 8192,
-    val temperature: Float = 0.7f,
+    val temperature: Float? = null,
     val stream: Boolean = true,
     val connectionId: String = "",
     /** Stable conversation/session id for providers that support prompt caching or session headers. */
@@ -49,9 +50,18 @@ data class ChatRequest(
 data class ChatMessage(
     val role: MessageRole,
     val content: String? = null,
+    val images: List<ChatImage> = emptyList(),
     val toolCallId: String? = null,
     val toolCalls: List<ToolCallMessage>? = null,
-    val toolResult: ToolResultMessage? = null
+    val toolResult: ToolResultMessage? = null,
+    /** Opaque Responses API output items preserved for stateless continuation. */
+    val responseItems: List<String> = emptyList()
+)
+
+data class ChatImage(
+    val base64: String,
+    val mediaType: String,
+    val fileName: String = ""
 )
 
 enum class MessageRole {
@@ -109,12 +119,12 @@ internal fun ToolResultMessage.bridgeVisionPrompt(): String =
  * Streaming response from an AI provider.
  */
 sealed class ChatResponse {
-    
+
     /**
      * A text chunk from the assistant's response.
      */
     data class TextDelta(val text: String) : ChatResponse()
-    
+
     /**
      * The assistant wants to call a tool.
      */
@@ -122,9 +132,12 @@ sealed class ChatResponse {
         val id: String,
         val name: String,
         val arguments: Map<String, Any?>,
-        val metadata: Map<String, String> = emptyMap() // For provider-specific data like thoughtSignature
+        val metadata: Map<String, String> = emptyMap()
     ) : ChatResponse()
-    
+
+    /** Complete typed output item from Responses API, retained across tool iterations. */
+    data class ResponseItem(val json: String) : ChatResponse()
+
     /**
      * The response is complete.
      */
@@ -132,10 +145,13 @@ sealed class ChatResponse {
         val usage: TokenUsage? = null,
         val finishReason: String? = null
     ) : ChatResponse()
-    
-    /**
-     * An error occurred.
-     */
+
+    data class Incomplete(
+        val reason: String,
+        val retryable: Boolean = true
+    ) : ChatResponse()
+
+    /** An error occurred. */
     data class Error(
         val message: String,
         val code: String? = null,
@@ -159,32 +175,50 @@ data class TokenUsage(
 data class AiToolDefinition(
     val name: String,
     val description: String,
-    val parameters: AiToolParameters
-)
+    val parameters: AiToolParameters,
+    /** Full JSON Schema for dynamic tools such as MCP; avoids lossy flattening. */
+    val rawParametersJson: String? = null,
+    val strict: Boolean = false
+) {
+    fun schemaJson(): String = rawParametersJson ?: JSONObject()
+        .put("type", parameters.type)
+        .put("properties", JSONObject(parameters.properties.mapValues { (_, property) ->
+            mutableMapOf<String, Any?>(
+                "type" to property.type,
+                "description" to property.description
+            ).apply {
+                property.enum?.let { put("enum", it) }
+                property.items?.let { put("items", mapOf("type" to it.type)) }
+            }
+        }))
+        .put("required", org.json.JSONArray(parameters.required))
+        .put("additionalProperties", parameters.additionalProperties)
+        .toString()
+}
 
 data class AiToolParameters(
     val type: String = "object",
     val properties: Map<String, AiToolProperty>,
-    val required: List<String> = emptyList()
+    val required: List<String> = emptyList(),
+    val additionalProperties: Boolean = false
 )
 
 data class AiToolProperty(
     val type: String,
     val description: String,
     val enum: List<String>? = null,
-    val default: Any? = null,
-    val items: AiToolPropertyItems? = null  // For array types
+    val items: AiToolPropertyItems? = null
 )
 
 data class AiToolPropertyItems(
     val type: String = "string"
 )
 
-// FIX 4.1: Shared parseJsonArgs extension — eliminates duplication across AnthropicProvider,
-// OpenAiProvider (and Gemini inline logic). Single source of truth for JSON arg parsing.
-fun com.squareup.moshi.Moshi.parseJsonArgs(json: String): Map<String, Any?> = try {
+fun com.squareup.moshi.Moshi.parseJsonArgs(json: String): Result<Map<String, Any?>> = runCatching {
+    require(json.isNotBlank()) { "Tool arguments are empty" }
     val type = com.squareup.moshi.Types.newParameterizedType(
         Map::class.java, String::class.java, Any::class.java
     )
-    adapter<Map<String, Any?>>(type).fromJson(json) ?: emptyMap()
-} catch (_: Exception) { emptyMap() }
+    adapter<Map<String, Any?>>(type).fromJson(json)
+        ?: error("Tool arguments must be a JSON object")
+}

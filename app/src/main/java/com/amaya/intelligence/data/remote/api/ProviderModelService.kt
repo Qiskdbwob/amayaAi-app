@@ -27,13 +27,15 @@ class ProviderModelService @Inject constructor(
             val baseUrl = resolveBaseUrl(provider, baseUrlOverride)
             val request = when {
                 provider.id == "github_models" -> githubModelsRequest(apiKey)
-                provider.adapter == ProviderAdapter.OPENAI_COMPATIBLE -> openAiModelsRequest(baseUrl, apiKey)
+                provider.adapter in setOf(ProviderAdapter.OPENAI_RESPONSES, ProviderAdapter.OPENAI_COMPATIBLE) -> openAiModelsRequest(baseUrl, apiKey)
                 provider.adapter == ProviderAdapter.ANTHROPIC -> anthropicModelsRequest(baseUrl, apiKey)
                 provider.adapter == ProviderAdapter.GEMINI -> geminiModelsRequest(baseUrl, apiKey)
                 else -> error("Subscription models must come from the authenticated runtime")
             }
             httpClient.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
+                val body = response.body?.readUtf8Limited(
+                    if (response.isSuccessful) MAX_REMOTE_BODY_BYTES else MAX_ERROR_BODY_BYTES
+                ).orEmpty()
                 if (!response.isSuccessful) {
                     error(providerError(provider, response.code, body, response.message))
                 }
@@ -133,8 +135,25 @@ class ProviderModelService @Inject constructor(
             val displayName = item.optString("display_name").ifBlank {
                 item.optString("displayName").ifBlank { item.optString("name").ifBlank { id } }
             }
-            ConfiguredModel(id = id, displayName = displayName)
+            val contextWindow = firstPositiveInt(item, "context_window", "contextWindow", "context_length", "inputTokenLimit")
+            val maxOutput = firstPositiveInt(item, "max_output_tokens", "maxOutputTokens", "outputTokenLimit")
+            val capabilities = item.optJSONArray("capabilities")?.let { array ->
+                (0 until array.length()).map { array.optString(it).lowercase() }
+            }.orEmpty()
+            ConfiguredModel(
+                id = id,
+                displayName = displayName,
+                contextWindowTokens = contextWindow,
+                maxOutputTokens = maxOutput,
+                supportsTools = capabilities.isEmpty() || capabilities.any { "tool" in it || "function" in it },
+                supportsImages = capabilities.any { "image" in it || "vision" in it || "multimodal" in it }
+            )
         }.distinctBy { it.id }.sortedBy { it.displayName.lowercase() }
+    }
+
+    private fun firstPositiveInt(item: JSONObject, vararg keys: String): Int? {
+        keys.forEach { key -> item.optInt(key).takeIf { it > 0 }?.let { return it } }
+        return null
     }
 
     private fun isPrivateHost(host: String): Boolean {

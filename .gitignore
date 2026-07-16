@@ -237,3 +237,6 @@ amaya-remote-*.vsix
 app/nul
 nul
 windows-bridge/config/trusted-devices.json
+
+# Local audit/spec/plan scratchpad (deep-audit output, not tracked)
+docs/local/

@@ -35,7 +35,10 @@ data/remote/
 - `api/ProviderRegistry.kt`: stable provider presets and adapter mapping; no model catalog or inferred metadata.
 - `api/ProviderModelService.kt`: provider-owned model discovery, GitHub catalog mapping, and provider URL validation.
 - `api/GeminiProvider.kt`: Gemini request/response models and streaming parsing.
-- `api/OpenAiProvider.kt`: OpenAI request/response models and tool-call parsing.
+- `api/OpenAiProvider.kt`: OpenAI Responses, compatible Chat Completions, and subscription transport.
+- `api/OpenAiRequestCodec.kt`: testable OpenAI request-shape helpers.
+- `api/OpenAiStreamProtocol.kt`: terminal-state and indexed tool-call stream guards.
+- `api/ResponseBodyLimits.kt`: bounded remote response-body reads.
 - `api/AnthropicProvider.kt`: Anthropic request/response models and streaming parsing.
 - `api/McpModels.kt`: MCP-related model definitions and payload mapping.
 - `api/AiProvider.kt`: common remote provider contracts.

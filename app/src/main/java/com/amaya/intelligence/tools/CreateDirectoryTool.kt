@@ -14,41 +14,45 @@ import javax.inject.Singleton
 @Singleton
 class CreateDirectoryTool @Inject constructor(
     private val commandValidator: CommandValidator
-) : Tool {
-    
+) : Tool, ContextAwareTool {
+
     override val name = "create_directory"
-    
+
     override val description = """
         Create a directory (and any necessary parent directories).
-        
+
         Arguments:
         - path (string, required): Absolute path of directory to create
     """.trimIndent()
-    
-    override suspend fun execute(arguments: Map<String, Any?>): ToolResult = 
-        withContext(Dispatchers.IO) {
-            
+
+    override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
+        execute(arguments, ToolExecutionContext())
+
+    override suspend fun execute(
+        arguments: Map<String, Any?>,
+        executionContext: ToolExecutionContext
+    ): ToolResult = withContext(Dispatchers.IO) {
+
         val pathStr = arguments["path"] as? String
             ?: return@withContext ToolResult.Error(
                 "Missing required argument: path",
                 ErrorType.VALIDATION_ERROR
             )
-        
+
         // Validate path access
         when (val validation = commandValidator.validatePath(pathStr, isWrite = true)) {
             is ValidationResult.Denied -> return@withContext ToolResult.Error(
                 validation.reason,
                 ErrorType.SECURITY_VIOLATION
             )
-            is ValidationResult.RequiresConfirmation -> return@withContext ToolResult.RequiresConfirmation(
-                validation.reason,
-                "Path: $pathStr"
-            )
+            is ValidationResult.RequiresConfirmation -> if (!executionContext.confirmed) {
+                return@withContext ToolResult.RequiresConfirmation(validation.reason, "Path: $pathStr")
+            }
             is ValidationResult.Allowed -> { /* proceed */ }
         }
-        
+
         val file = File(pathStr)
-        
+
         try {
             if (file.exists()) {
                 if (file.isDirectory) {
@@ -63,10 +67,10 @@ class CreateDirectoryTool @Inject constructor(
                     )
                 }
             }
-            
+
             // Create directory and all parent directories
             val created = file.mkdirs()
-            
+
             if (created) {
                 ToolResult.Success(
                     output = "Created directory: $pathStr",
@@ -78,7 +82,7 @@ class CreateDirectoryTool @Inject constructor(
                     ErrorType.EXECUTION_ERROR
                 )
             }
-            
+
         } catch (e: SecurityException) {
             ToolResult.Error(
                 "Permission denied: ${e.message}",

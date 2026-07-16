@@ -21,9 +21,9 @@ import javax.inject.Singleton
 
 /**
  * Anthropic (Claude) AI provider.
- * 
+ *
  * API Documentation: https://docs.anthropic.com/en/api/messages
- * 
+ *
  * KEY FEATURES:
  * - Native tool use support via tool_use content blocks
  * - Streaming via Server-Sent Events
@@ -36,30 +36,35 @@ class AnthropicProvider @Inject constructor(
     private val settingsProvider: () -> AiSettings,
     private val settingsManager: AiSettingsManager
 ) : AiProvider {
-    
+
     companion object {
         const val BASE_URL = "https://api.anthropic.com/v1"
         const val API_VERSION = "2023-06-01"
     }
-    
+
     override val name = "Anthropic (Claude)"
-    
+
     override suspend fun chat(request: ChatRequest): Flow<ChatResponse> = callbackFlow {
+        fun sendResponse(response: ChatResponse): Boolean {
+            val result = trySend(response)
+            if (result.isFailure) close(IllegalStateException("Anthropic stream event buffer overflow"))
+            return result.isSuccess
+        }
         val connectionId = request.connectionId.ifBlank {
             settingsProvider().activeSelection?.connectionId.orEmpty()
         }
         val apiKey = settingsManager.getConnectionApiKey(connectionId)
-        
+
         if (apiKey.isBlank()) {
-            trySend(ChatResponse.Error("Anthropic API key is missing for the selected provider", "AUTH_ERROR"))
+            sendResponse(ChatResponse.Error("Anthropic API key is missing for the selected provider", "AUTH_ERROR"))
             close()
             return@callbackFlow
         }
-        
+
         // Build request body
         val anthropicRequest = buildAnthropicRequest(request)
         val jsonBody = moshi.adapter(AnthropicRequest::class.java).toJson(anthropicRequest)
-        
+
         val httpRequest = Request.Builder()
             .url("$BASE_URL/messages")
             .addHeader("x-api-key", apiKey)
@@ -67,140 +72,159 @@ class AnthropicProvider @Inject constructor(
             .addHeader("content-type", "application/json")
             .post(jsonBody.toRequestBody("application/json".toMediaType()))
             .build()
-        
+
         if (request.stream) {
             // Streaming request
             val eventSourceFactory = EventSources.createFactory(httpClient)
-            
+
             val listener = object : EventSourceListener() {
                 private val toolCallBuilders = mutableMapOf<Int, ToolCallBuilder>()
-                private var currentToolIndex = -1
-                
+                private var terminal = false
+                private var latestUsage: TokenUsage? = null
+                private var stopReason: String? = null
+
                 override fun onEvent(
                     eventSource: EventSource,
                     id: String?,
                     type: String?,
                     data: String
                 ) {
-                    if (data == "[DONE]") {
-                        trySend(ChatResponse.Done())
-                        close()
-                        return
-                    }
-                    
+                    if (data == "[DONE]") return
+
                     try {
                         val event = moshi.adapter(AnthropicStreamEvent::class.java)
-                            .fromJson(data) ?: return
-                        
+                            .fromJson(data) ?: error("Empty Anthropic stream event")
+
                         when (event.type) {
                             "content_block_start" -> {
                                 event.contentBlock?.let { block ->
                                     if (block.type == "tool_use") {
-                                        currentToolIndex = event.index ?: 0
-                                        toolCallBuilders[currentToolIndex] = ToolCallBuilder(
+                                        val index = event.index ?: error("Tool block missing index")
+                                        toolCallBuilders[index] = ToolCallBuilder(
                                             id = block.id ?: "",
                                             name = block.name ?: ""
                                         )
                                     }
                                 }
                             }
-                            
+
                             "content_block_delta" -> {
                                 event.delta?.let { delta ->
                                     when (delta.type) {
                                         "text_delta" -> {
                                             delta.text?.let { text ->
-                                                trySend(ChatResponse.TextDelta(text))
+                                                sendResponse(ChatResponse.TextDelta(text))
                                             }
                                         }
                                         "input_json_delta" -> {
-                                            delta.partialJson?.let { json ->
-                                                toolCallBuilders[currentToolIndex]?.appendJson(json)
-                                            }
+                                            val index = event.index ?: error("Tool delta missing index")
+                                            val builder = toolCallBuilders[index] ?: error("Tool delta has no matching block")
+                                            delta.partialJson?.let(builder::appendJson)
                                         }
                                     }
                                 }
                             }
-                            
+
                             "content_block_stop" -> {
                                 toolCallBuilders[event.index]?.let { builder ->
-                                    val args = parseJsonArgs(builder.jsonBuilder.toString())
-                                    trySend(ChatResponse.ToolCall(
-                                        id = builder.id,
-                                        name = builder.name,
-                                        arguments = args
-                                    ))
+                                    parseJsonArgs(builder.jsonBuilder.toString()).fold(
+                                        onSuccess = { args ->
+                                            sendResponse(ChatResponse.ToolCall(builder.id, builder.name, args))
+                                        },
+                                        onFailure = { error ->
+                                            terminal = true
+                                            sendResponse(ChatResponse.Error("Invalid tool arguments: ${error.message}"))
+                                            close()
+                                        }
+                                    )
                                 }
                             }
-                            
+
                             "message_stop" -> {
-                                trySend(ChatResponse.Done())
+                                terminal = true
+                                if (stopReason in setOf("end_turn", "stop_sequence", "tool_use")) {
+                                    sendResponse(ChatResponse.Done(usage = latestUsage, finishReason = stopReason))
+                                } else {
+                                    sendResponse(ChatResponse.Incomplete(
+                                        "Anthropic stopped with stop_reason=${stopReason ?: "missing"}",
+                                        retryable = false
+                                    ))
+                                }
                                 close()
                             }
-                            
+
                             "message_delta" -> {
-                                // FIX 3.2: message_delta carries output_tokens usage — emit Done with usage
-                                // so AiRepository can track token consumption in streaming mode.
+                                event.delta?.stopReason?.let { stopReason = it }
                                 event.usage?.let { usage ->
-                                    trySend(ChatResponse.Done(
-                                        usage = TokenUsage(usage.inputTokens, usage.outputTokens)
-                                    ))
+                                    latestUsage = TokenUsage(usage.inputTokens, usage.outputTokens)
                                 }
                             }
-                            
+
                             "error" -> {
-                                event.error?.let { error ->
-                                    trySend(ChatResponse.Error(
-                                        error.message ?: "Unknown error",
-                                        error.type
-                                    ))
-                                }
+                                terminal = true
+                                val error = event.error
+                                sendResponse(ChatResponse.Error(
+                                    error?.message ?: "Unknown Anthropic stream error",
+                                    error?.type
+                                ))
+                                eventSource.cancel()
+                                close()
                             }
                         }
                     } catch (e: Exception) {
-                        trySend(ChatResponse.Error("Failed to parse event: ${e.message}"))
+                        terminal = true
+                        sendResponse(ChatResponse.Error("Failed to parse event: ${e.message}"))
+                        close()
                     }
                 }
-                
+
                 override fun onFailure(eventSource: EventSource, t: Throwable?, response: okhttp3.Response?) {
+                    if (terminal) {
+                        close()
+                        return
+                    }
                     val message = t?.message ?: response?.message ?: "Unknown error"
-                    trySend(ChatResponse.Error(message, retryable = true))
+                    terminal = true
+                    sendResponse(ChatResponse.Error(message, retryable = true))
                     close()
                 }
-                
+
                 override fun onClosed(eventSource: EventSource) {
+                    if (!terminal) sendResponse(ChatResponse.Incomplete("Anthropic stream ended before message_stop"))
                     close()
                 }
             }
-            
+
             val eventSource = eventSourceFactory.newEventSource(httpRequest, listener)
-            
+
             awaitClose {
                 eventSource.cancel()
             }
         } else {
             // Non-streaming request
             try {
-                val response = httpClient.newCall(httpRequest).execute()
-                val body = response.body?.string()
-                
+                val response = httpClient.newCall(httpRequest).awaitResponse()
+                val body = response.body?.readUtf8Limited(
+                    if (response.isSuccessful) MAX_REMOTE_BODY_BYTES else MAX_ERROR_BODY_BYTES
+                )
+
                 if (!response.isSuccessful) {
-                    trySend(ChatResponse.Error("API error: ${response.code} - $body"))
+                    sendResponse(ChatResponse.Error("API error: ${response.code} - $body"))
                     close()
                     return@callbackFlow
                 }
-                
+
                 val anthropicResponse = moshi.adapter(AnthropicResponse::class.java)
                     .fromJson(body ?: "")
-                
+
                 // Process content blocks
                 anthropicResponse?.content?.forEach { block ->
                     when (block.type) {
                         "text" -> {
-                            trySend(ChatResponse.TextDelta(block.text ?: ""))
+                            sendResponse(ChatResponse.TextDelta(block.text ?: ""))
                         }
                         "tool_use" -> {
-                            trySend(ChatResponse.ToolCall(
+                            sendResponse(ChatResponse.ToolCall(
                                 id = block.id ?: "",
                                 name = block.name ?: "",
                                 arguments = block.input ?: emptyMap()
@@ -208,27 +232,46 @@ class AnthropicProvider @Inject constructor(
                         }
                     }
                 }
-                
-                trySend(ChatResponse.Done(
-                    usage = anthropicResponse?.usage?.let {
-                        TokenUsage(it.inputTokens, it.outputTokens)
-                    }
-                ))
-                
+
+                val stopReason = anthropicResponse?.stopReason
+                if (stopReason in setOf("end_turn", "stop_sequence", "tool_use")) {
+                    sendResponse(ChatResponse.Done(
+                        usage = anthropicResponse?.usage?.let {
+                            TokenUsage(it.inputTokens, it.outputTokens)
+                        },
+                        finishReason = stopReason
+                    ))
+                } else {
+                    sendResponse(ChatResponse.Incomplete(
+                        "Anthropic stopped with stop_reason=${stopReason ?: "missing"}",
+                        retryable = false
+                    ))
+                }
+
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
-                trySend(ChatResponse.Error("Request failed: ${e.message}"))
+                sendResponse(ChatResponse.Error("Request failed: ${e.message}"))
             }
-            
+
             close()
         }
     }.flowOn(Dispatchers.IO)
-    
+
     private fun buildAnthropicRequest(request: ChatRequest): AnthropicRequest {
         val messages = request.messages.mapNotNull { msg ->
             when (msg.role) {
                 MessageRole.USER -> AnthropicMessage(
                     role = "user",
-                    content = listOf(AnthropicContentBlock(type = "text", text = msg.content))
+                    content = buildList {
+                        msg.content?.let { add(AnthropicContentBlock(type = "text", text = it)) }
+                        msg.images.forEach { image ->
+                            add(AnthropicContentBlock(
+                                type = "image",
+                                source = AnthropicImageSource(mediaType = image.mediaType, data = image.base64)
+                            ))
+                        }
+                    }
                 )
                 MessageRole.ASSISTANT -> {
                     val content = mutableListOf<AnthropicContentBlock>()
@@ -273,25 +316,17 @@ class AnthropicProvider @Inject constructor(
                 MessageRole.SYSTEM -> null // Handled separately
             }
         }
-        
+
         val tools = request.tools.map { tool ->
             AnthropicTool(
                 name = tool.name,
                 description = tool.description,
-                inputSchema = AnthropicInputSchema(
-                    type = "object",
-                    properties = tool.parameters.properties.mapValues { (_, prop) ->
-                        AnthropicProperty(
-                            type = prop.type,
-                            description = prop.description,
-                            enum = prop.enum
-                        )
-                    },
-                    required = tool.parameters.required
-                )
+                inputSchema = moshi.adapter(Map::class.java)
+                    .fromJson(tool.schemaJson())
+                    ?: emptyMap<String, Any?>()
             )
         }
-        
+
         return AnthropicRequest(
             model = request.model,
             messages = messages,
@@ -301,10 +336,9 @@ class AnthropicProvider @Inject constructor(
             stream = request.stream
         )
     }
-    
-    // FIX 4.1: Replaced with shared extension moshi.parseJsonArgs() from AiProvider.kt
-    private fun parseJsonArgs(json: String): Map<String, Any?> = moshi.parseJsonArgs(json)
-    
+
+    private fun parseJsonArgs(json: String): Result<Map<String, Any?>> = moshi.parseJsonArgs(json)
+
     private class ToolCallBuilder(val id: String, val name: String) {
         val jsonBuilder = StringBuilder()
         fun appendJson(json: String) { jsonBuilder.append(json) }
@@ -355,21 +389,7 @@ data class AnthropicImageSource(
 data class AnthropicTool(
     val name: String,
     val description: String,
-    @Json(name = "input_schema") val inputSchema: AnthropicInputSchema
-)
-
-@JsonClass(generateAdapter = true)
-data class AnthropicInputSchema(
-    val type: String = "object",
-    val properties: Map<String, AnthropicProperty>,
-    val required: List<String> = emptyList()
-)
-
-@JsonClass(generateAdapter = true)
-data class AnthropicProperty(
-    val type: String,
-    val description: String,
-    val enum: List<String>? = null
+    @Json(name = "input_schema") val inputSchema: Map<*, *>
 )
 
 @JsonClass(generateAdapter = true)
@@ -378,7 +398,8 @@ data class AnthropicResponse(
     val type: String,
     val role: String,
     val content: List<AnthropicContentBlock>,
-    val usage: AnthropicUsage?
+    val usage: AnthropicUsage?,
+    @Json(name = "stop_reason") val stopReason: String? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -401,7 +422,8 @@ data class AnthropicStreamEvent(
 data class AnthropicDelta(
     val type: String? = null,
     val text: String? = null,
-    @Json(name = "partial_json") val partialJson: String? = null
+    @Json(name = "partial_json") val partialJson: String? = null,
+    @Json(name = "stop_reason") val stopReason: String? = null
 )
 
 @JsonClass(generateAdapter = true)

@@ -27,7 +27,11 @@ import javax.inject.Singleton
 
 data class ConfiguredModel(
     val id: String,
-    val displayName: String = id
+    val displayName: String = id,
+    val contextWindowTokens: Int? = null,
+    val maxOutputTokens: Int? = null,
+    val supportsTools: Boolean = true,
+    val supportsImages: Boolean = true
 )
 
 data class ProviderConnection(
@@ -333,7 +337,14 @@ class AiSettingsManager @Inject constructor(
                 (0 until modelArray.length()).mapNotNull { modelIndex ->
                     when (val value = modelArray.opt(modelIndex)) {
                         is JSONObject -> value.optString("id").takeIf { it.isNotBlank() }?.let {
-                            ConfiguredModel(it, value.optString("displayName", it))
+                            ConfiguredModel(
+                                id = it,
+                                displayName = value.optString("displayName", it),
+                                contextWindowTokens = value.optInt("contextWindowTokens").takeIf { n -> n > 0 },
+                                maxOutputTokens = value.optInt("maxOutputTokens").takeIf { n -> n > 0 },
+                                supportsTools = value.optBoolean("supportsTools", true),
+                                supportsImages = value.optBoolean("supportsImages", true)
+                            )
                         }
                         is String -> value.takeIf { it.isNotBlank() }?.let(::ConfiguredModel)
                         else -> null
@@ -372,7 +383,13 @@ class AiSettingsManager @Inject constructor(
                     put("baseUrl", connection.baseUrl)
                     put("visibleModels", JSONArray().also { models ->
                         connection.visibleModels.forEach { model ->
-                            models.put(JSONObject().put("id", model.id).put("displayName", model.displayName))
+                            models.put(JSONObject()
+                                .put("id", model.id)
+                                .put("displayName", model.displayName)
+                                .put("contextWindowTokens", model.contextWindowTokens ?: JSONObject.NULL)
+                                .put("maxOutputTokens", model.maxOutputTokens ?: JSONObject.NULL)
+                                .put("supportsTools", model.supportsTools)
+                                .put("supportsImages", model.supportsImages))
                         }
                     })
                 })

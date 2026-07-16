@@ -29,6 +29,7 @@ impl/local/
 ## File Functions
 - `AGENTS.md`: rules for local runtime and services.
 - `LocalIntelligenceService.kt`: local AI orchestration and persistence-backed chat flow.
+- `ToolConfirmationRegistry.kt`: turn-bound, idempotent inline tool approval state.
 - `browser/`: WebView controller, session manager, DOM inspection, and browser safety handling.
 - `tools/`: local tool mapping, browser tool wrapping, and execution helpers.
 - `providers/`: local provider adapters and implementation-specific helpers.

@@ -36,7 +36,7 @@ android {
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        
+
         // Room schema export for migrations
         ksp {
             arg("room.schemaLocation", "$projectDir/schemas")
@@ -85,7 +85,7 @@ android {
         compose = true
         buildConfig = true
     }
-    
+
     packaging {
         jniLibs {
             useLegacyPackaging = true
@@ -185,6 +185,7 @@ dependencies {
 
     // Testing
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     testImplementation("org.jetbrains.kotlin:kotlin-test:2.0.0")
     androidTestImplementation(libs.androidx.junit)

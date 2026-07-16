@@ -24,7 +24,7 @@ import javax.inject.Singleton
 
 /**
  * OpenAI-compatible AI provider.
- * 
+ *
  * Handles OpenAI and OpenAI-compatible chat endpoints.
  */
 @Singleton
@@ -36,14 +36,21 @@ class OpenAiProvider @Inject constructor(
     private val codexAuthManager: CodexAuthManager,
     private val providerModelService: ProviderModelService
 ) : AiProvider {
-    
+
     companion object {
         const val DEFAULT_BASE_URL = "https://api.openai.com/v1"
+        private const val MULTIPART_PREFIX = "\u0000amaya-multipart:"
     }
-    
+
     override val name = "OpenAI Compatible"
-    
+
     override suspend fun chat(request: ChatRequest): Flow<ChatResponse> = callbackFlow {
+        fun sendResponse(response: ChatResponse): Boolean {
+            val result = trySend(response)
+            if (result.isFailure) close(IllegalStateException("OpenAI stream event buffer overflow"))
+            return result.isSuccess
+        }
+
         val settings = settingsProvider()
         val connectionId = request.connectionId.ifBlank {
             settings.activeSelection?.connectionId.orEmpty()
@@ -56,14 +63,77 @@ class OpenAiProvider @Inject constructor(
             settingsManager.getConnectionApiKey(connectionId)
         }
         if (isCodexSubscription && apiKey.isBlank()) {
-            trySend(ChatResponse.Error("OpenAI subscription is not signed in. Open Settings → Manage Models → OpenAI and sign in.", retryable = false))
+            sendResponse(ChatResponse.Error("OpenAI subscription is not signed in. Open Settings → Manage Models → OpenAI and sign in.", retryable = false))
             close()
+            return@callbackFlow
+        }
+        val protocol = connection?.providerId
+            ?.let(AmayaProviderRegistry::require)
+            ?.adapter
+        if (protocol == ProviderAdapter.OPENAI_RESPONSES) {
+            val baseUrl = providerModelService.validateConnectionUrl(connection.providerId, connection.baseUrl)
+                .getOrElse {
+                    sendResponse(ChatResponse.Error("Provider URL is invalid", retryable = false))
+                    close()
+                    return@callbackFlow
+                }
+            val body = buildResponsesRequest(request).toString()
+            val officialCall = httpClient.newCall(
+                Request.Builder()
+                    .url("$baseUrl/responses")
+                    .addHeader("Content-Type", "application/json")
+                    .addHeader("Accept", if (request.stream) "text/event-stream" else "application/json")
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .post(body.toRequestBody("application/json".toMediaType()))
+                    .build()
+            )
+            val officialJob = launch(Dispatchers.IO) {
+                try {
+                    officialCall.awaitResponse().use { response ->
+                        if (!response.isSuccessful) {
+                            val errorBody = response.body?.readUtf8Limited(MAX_ERROR_BODY_BYTES)
+                            sendResponse(ChatResponse.Error(
+                                message = friendlyCodexError(response.code, errorBody, request.model, response.message),
+                                code = response.code.toString(),
+                                retryable = response.code == 429 || response.code >= 500
+                            ))
+                            close()
+                            return@use
+                        }
+                        val state = CodexStreamState()
+                        if (request.stream) {
+                            consumeResponsesSse(response, state) { event ->
+                                if (!sendResponse(event)) {
+                                    officialCall.cancel()
+                                    close(IllegalStateException("OpenAI stream consumer is too slow"))
+                                }
+                            }
+                            if (!state.completed && !officialCall.isCanceled()) {
+                                sendResponse(ChatResponse.Error("OpenAI stream ended before a terminal event", retryable = true))
+                            }
+                        } else {
+                            val json = JSONObject(response.body?.readUtf8Limited(MAX_REMOTE_BODY_BYTES).orEmpty())
+                            emitResponsesObject(json, state) { sendResponse(it) }
+                        }
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (!officialCall.isCanceled()) sendResponse(ChatResponse.Error("OpenAI request failed: ${e.message}", retryable = true))
+                } finally {
+                    close()
+                }
+            }
+            awaitClose {
+                officialCall.cancel()
+                officialJob.cancel()
+            }
             return@callbackFlow
         }
         if (isCodexSubscription) {
             val accountId = codexAuthManager.getChatGptAccountId()
             if (accountId.isNullOrBlank()) {
-                trySend(ChatResponse.Error("OpenAI account ID was not found in the token. Sign out and sign in again.", retryable = false))
+                sendResponse(ChatResponse.Error("OpenAI account ID was not found in the token. Sign out and sign in again.", retryable = false))
                 close()
                 return@callbackFlow
             }
@@ -86,11 +156,11 @@ class OpenAiProvider @Inject constructor(
             )
             val codexJob = launch(Dispatchers.IO) {
                 try {
-                    val response = codexCall.execute()
+                    val response = codexCall.awaitResponse()
                     if (!response.isSuccessful) {
-                        val body = response.body?.string()
+                        val body = response.body?.readUtf8Limited(MAX_ERROR_BODY_BYTES)
                         android.util.Log.e("OpenAiProvider", "Codex endpoint failed code=${response.code} url=$codexUrl")
-                        trySend(ChatResponse.Error(friendlyCodexError(response.code, body, request.model, response.message), retryable = response.code != 401))
+                        sendResponse(ChatResponse.Error(friendlyCodexError(response.code, body, request.model, response.message), retryable = response.code != 401))
                         close()
                         return@launch
                     }
@@ -103,7 +173,7 @@ class OpenAiProvider @Inject constructor(
                                     val data = dataLines.joinToString("\n").trim()
                                     dataLines.clear()
                                     if (data.isNotBlank()) {
-                                        processCodexSseData(data, state, onResponse = { trySend(it) }, onComplete = { close() })
+                                        processCodexSseData(data, state, onResponse = { sendResponse(it) }, onComplete = { close() })
                                     }
                                 }
                                 line.startsWith("data:") -> dataLines.add(line.removePrefix("data:").trim())
@@ -111,14 +181,16 @@ class OpenAiProvider @Inject constructor(
                         }
                     }
                     val tail = dataLines.joinToString("\n").trim()
-                    if (tail.isNotBlank()) processCodexSseData(tail, state, onResponse = { trySend(it) }, onComplete = { close() })
-                    if (!state.completed) {
-                        trySend(ChatResponse.Done())
+                    if (tail.isNotBlank()) processCodexSseData(tail, state, onResponse = { sendResponse(it) }, onComplete = { close() })
+                    if (!state.completed && !codexCall.isCanceled()) {
+                        sendResponse(ChatResponse.Incomplete("OpenAI stream ended before a terminal event"))
                         close()
                     }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
                 } catch (e: Exception) {
                     if (!codexCall.isCanceled()) {
-                        trySend(ChatResponse.Error("OpenAI request failed: ${e.message}", retryable = true))
+                        sendResponse(ChatResponse.Error("OpenAI request failed: ${e.message}", retryable = true))
                     }
                     close()
                 }
@@ -132,40 +204,74 @@ class OpenAiProvider @Inject constructor(
         val baseUrl = connection?.let {
             providerModelService.validateConnectionUrl(it.providerId, it.baseUrl).getOrNull()
         } ?: run {
-                trySend(ChatResponse.Error("Provider URL is invalid. Reconnect it in Settings → Manage Models.", retryable = false))
+                sendResponse(ChatResponse.Error("Provider URL is invalid. Reconnect it in Settings → Manage Models.", retryable = false))
                 close()
                 return@callbackFlow
             }
-        
+
         // Build request body
         val openaiRequest = buildOpenAiRequest(request)
         val jsonBody = buildOpenAiJsonBody(openaiRequest)
-        
+
         val httpRequestBuilder = Request.Builder()
             .url("$baseUrl/chat/completions")
             .addHeader("Content-Type", "application/json")
             .post(jsonBody.toRequestBody("application/json".toMediaType()))
-        
+
         // Add auth header if API key or Codex subscription token is set.
         if (apiKey.isNotBlank()) {
             httpRequestBuilder.addHeader("Authorization", "Bearer $apiKey")
         }
-        
+
         val httpRequest = httpRequestBuilder.build()
-        
+
         if (request.stream) {
             // Streaming request
             val eventSourceFactory = EventSources.createFactory(httpClient)
-            
+
             val listener = object : EventSourceListener() {
-                private val toolCallBuilders = mutableMapOf<Int, OpenAiToolCallBuilder>()
+                private val toolCallAccumulator = OpenAiToolCallAccumulator()
                 private var receivedDone = false
-                // Queue-based approach: track which builders have received their args yet.
-                // Server may send args sequentially (tool0-header, tool0-args, tool1-header, tool1-args)
-                // or out-of-order (tool0-header, tool1-header, tool0-args, tool1-args).
-                // argsReceived[idx] = true means this builder already got its args chunk.
-                private val argsReceived = mutableSetOf<Int>()
-                
+                private var terminal = false
+                private var finishReason: String? = null
+                private var latestUsage: TokenUsage? = null
+
+                private fun flushToolCalls(): Boolean {
+                    if (!toolCallAccumulator.isNotEmpty()) return true
+                    for (call in toolCallAccumulator.complete()) {
+                        val arguments = parseJsonArgs(call.argumentsJson).getOrElse { error ->
+                            terminal = true
+                            sendResponse(ChatResponse.Error("Invalid tool arguments: ${error.message}", retryable = false))
+                            return false
+                        }
+                        sendResponse(ChatResponse.ToolCall(call.id, call.name, arguments))
+                    }
+                    toolCallAccumulator.clear()
+                    return true
+                }
+
+                private fun completeFromFinishReason() {
+                    if (terminal || finishReason == null) return
+                    if (finishReason == "tool_calls") {
+                        if (!toolCallAccumulator.isNotEmpty()) {
+                            terminal = true
+                            sendResponse(ChatResponse.Error("Provider finished with tool_calls but supplied no complete call", retryable = false))
+                            return
+                        }
+                        if (!flushToolCalls()) return
+                    } else if (toolCallAccumulator.isNotEmpty()) {
+                        terminal = true
+                        sendResponse(ChatResponse.Error("Provider left a partial tool call at finish_reason=$finishReason", retryable = false))
+                        return
+                    }
+                    terminal = true
+                    if (finishReason == "stop") {
+                        sendResponse(ChatResponse.Done(usage = latestUsage, finishReason = finishReason))
+                    } else {
+                        sendResponse(ChatResponse.Incomplete("Provider stopped with finish_reason=$finishReason", retryable = false))
+                    }
+                }
+
                 override fun onEvent(
                     eventSource: EventSource,
                     id: String?,
@@ -174,218 +280,219 @@ class OpenAiProvider @Inject constructor(
                 ) {
                     if (data == "[DONE]") {
                         receivedDone = true
-                        // Emit any pending tool calls that weren't flushed by finish_reason
-                        // This handles local models that send [DONE] without finish_reason
-                        if (toolCallBuilders.isNotEmpty()) {
-                            toolCallBuilders.keys.sorted().forEach { idx ->
-                                val builder = toolCallBuilders[idx] ?: return@forEach
-                                val rawArgs = builder.argumentsBuilder.toString()
-                                if (builder.isComplete()) {
-                                    trySend(ChatResponse.ToolCall(
-                                        id = builder.id,
-                                        name = builder.name,
-                                        arguments = parseJsonArgs(rawArgs)
-                                    ))
-                                }
+                        if (!terminal && flushToolCalls()) {
+                            terminal = true
+                            if (finishReason == null || finishReason in setOf("stop", "tool_calls")) {
+                                sendResponse(ChatResponse.Done(usage = latestUsage, finishReason = finishReason))
+                            } else {
+                                sendResponse(ChatResponse.Incomplete("Provider stopped with finish_reason=$finishReason", retryable = false))
                             }
-                            toolCallBuilders.clear()
                         }
-                        trySend(ChatResponse.Done())
+                        if (terminal && toolCallAccumulator.isNotEmpty()) eventSource.cancel()
                         close()
                         return
                     }
-                    
+
                     try {
                         val chunk = moshi.adapter(OpenAiStreamChunk::class.java)
-                            .fromJson(data) ?: return
-                        
+                            .fromJson(data) ?: error("Empty Chat Completions stream chunk")
+
                         chunk.choices.firstOrNull()?.let { choice ->
                             // Handle text delta
                             choice.delta.content?.let { content ->
-                                trySend(ChatResponse.TextDelta(content))
+                                sendResponse(ChatResponse.TextDelta(content))
                             }
-                            
-                            // Handle tool calls
+
                             choice.delta.toolCalls?.forEach { toolCall ->
-                                val rawIndex = toolCall.index
-                                val isNewToolCall = toolCall.id != null
-                                val hasArgs = !toolCall.function?.arguments.isNullOrEmpty()
-                                
-                                if (isNewToolCall) {
-                                    // New tool call — use explicit index if valid, else next slot
-                                    val index = if (rawIndex != null && rawIndex >= 0) rawIndex else toolCallBuilders.size
-                                    toolCallBuilders[index] = OpenAiToolCallBuilder(
-                                        id = toolCall.id!!,
-                                        name = toolCall.function?.name ?: ""
-                                    )
-                                    
-                                    // Handle args in same chunk as header
-                                    if (hasArgs) {
-                                        toolCallBuilders[index]?.argumentsBuilder?.append(toolCall.function!!.arguments!!)
-                                        argsReceived.add(index)
-                                    }
-                                } else if (hasArgs) {
-                                    // Continuation args chunk — server often sends index=0 for ALL args
-                                    // regardless of which tool they belong to. So we IGNORE the raw index
-                                    // and use queue: find first builder without args yet.
-                                    val targetIndex = toolCallBuilders.keys.sorted()
-                                        .firstOrNull { it !in argsReceived }
-                                        ?: toolCallBuilders.keys.maxOrNull() ?: 0
-                                    
-                                    val args = toolCall.function!!.arguments!!
-                                    val targetBuilder = toolCallBuilders[targetIndex]
-                                    if (targetBuilder != null) {
-                                        targetBuilder.argumentsBuilder.append(args)
-                                        argsReceived.add(targetIndex)
-                                    }
-                                }
+                                toolCallAccumulator.append(
+                                    index = toolCall.index,
+                                    id = toolCall.id,
+                                    name = toolCall.function?.name,
+                                    argumentsDelta = toolCall.function?.arguments
+                                )
                             }
-                            
-                            // Check finish reason — only flush tool calls here if finish_reason is explicit "tool_calls"
-                            // For "stop", let [DONE] handler flush — some models send args after finish_reason
-                            choice.finishReason?.let { reason ->
-                                when (reason) {
-                                    "tool_calls" -> {
-                                        // Explicit tool_calls finish — safe to flush now
-                                        toolCallBuilders.keys.sorted().forEach { idx ->
-                                            val builder = toolCallBuilders[idx] ?: return@forEach
-                                            val rawArgs = builder.argumentsBuilder.toString()
-                                            if (builder.isComplete()) {
-                                                trySend(ChatResponse.ToolCall(
-                                                    id = builder.id,
-                                                    name = builder.name,
-                                                    arguments = parseJsonArgs(rawArgs)
-                                                ))
-                                            }
-                                        }
-                                        toolCallBuilders.clear()
-                                        val usage = chunk.usage?.let { TokenUsage(it.promptTokens, it.completionTokens) }
-                                        trySend(ChatResponse.Done(finishReason = reason, usage = usage))
-                                        return
-                                    }
-                                    "stop" -> {
-                                        // DO NOT flush tool calls here — args may still be streaming
-                                        // Let [DONE] handler flush after all chunks received
-                                        val usage = chunk.usage?.let { TokenUsage(it.promptTokens, it.completionTokens) }
-                                        trySend(ChatResponse.Done(finishReason = reason, usage = usage))
-                                        return
-                                    }
-                                }
-                            }
+
+                            choice.finishReason?.let { finishReason = it }
+                            chunk.usage?.let { latestUsage = TokenUsage(it.promptTokens, it.completionTokens) }
                         }
-                        
-                        // Handle usage in final chunk (only reached if finish_reason != "stop")
-                        chunk.usage?.let { usage ->
-                            trySend(ChatResponse.Done(
-                                usage = TokenUsage(usage.promptTokens, usage.completionTokens)
-                            ))
-                        }
-                        
+
+
                     } catch (e: Exception) {
-                        trySend(ChatResponse.Error("Failed to parse chunk: ${e.message}"))
+                        terminal = true
+                        sendResponse(ChatResponse.Error("Failed to parse chunk: ${e.message}"))
+                        eventSource.cancel()
+                        close()
                     }
                 }
-                
+
                 override fun onFailure(eventSource: EventSource, t: Throwable?, response: okhttp3.Response?) {
                     // If we already received [DONE], this is just the connection closing normally
                     if (receivedDone) {
                         close()
                         return
                     }
-                    
-                    // Flush any pending tool calls before checking error
-                    if (toolCallBuilders.isNotEmpty()) {
-                        toolCallBuilders.keys.sorted().forEach { idx ->
-                            val builder = toolCallBuilders[idx] ?: return@forEach
-                            if (builder.isComplete()) {
-                                trySend(ChatResponse.ToolCall(
-                                    id = builder.id,
-                                    name = builder.name,
-                                    arguments = parseJsonArgs(builder.argumentsBuilder.toString())
-                                ))
-                            }
-                        }
-                        toolCallBuilders.clear()
-                        // Treat as done if we had tool calls — server closed after sending them
-                        trySend(ChatResponse.Done())
+                    completeFromFinishReason()
+                    if (terminal) {
                         close()
                         return
                     }
-                    
-                    // Socket closed / Connection reset / EOF after 200 = server closed stream normally
-                    val errorMsg = t?.message ?: ""
-                    val isNormalClose = response?.code == 200 || 
-                        errorMsg.contains("Socket closed", ignoreCase = true) ||
-                        errorMsg.contains("Connection reset", ignoreCase = true) ||
-                        errorMsg.contains("EOF", ignoreCase = true) ||
-                        errorMsg.contains("closed", ignoreCase = true)
-                    
-                    if (isNormalClose) {
-                        trySend(ChatResponse.Done())
-                        close()
-                        return
-                    }
-                    
-                    val responseBody = try { response?.body?.string() } catch (e: Exception) { null }
+
+                    val responseBody = try { response?.body?.readUtf8Limited(MAX_ERROR_BODY_BYTES) } catch (e: Exception) { null }
                     android.util.Log.e("OpenAiProvider", "Request FAILED - code: ${response?.code}, t=${t?.message}")
                     val message = responseBody ?: t?.message ?: response?.message ?: "Unknown error"
-                    trySend(ChatResponse.Error(message, retryable = true))
+                    terminal = true
+                    sendResponse(ChatResponse.Error(message, retryable = true))
                     close()
                 }
-                
+
                 override fun onClosed(eventSource: EventSource) {
+                    completeFromFinishReason()
+                    if (!terminal) {
+                        terminal = true
+                        sendResponse(ChatResponse.Incomplete("Provider stream closed without [DONE] or finish_reason"))
+                    }
                     close()
                 }
             }
-            
+
             val eventSource = eventSourceFactory.newEventSource(httpRequest, listener)
-            
+
             awaitClose {
                 eventSource.cancel()
             }
         } else {
             // Non-streaming request
             try {
-                val response = httpClient.newCall(httpRequest).execute()
-                val body = response.body?.string()
-                
+                val response = httpClient.newCall(httpRequest).awaitResponse()
+                val body = response.body?.readUtf8Limited(
+                    if (response.isSuccessful) MAX_REMOTE_BODY_BYTES else MAX_ERROR_BODY_BYTES
+                )
+
                 if (!response.isSuccessful) {
-                    trySend(ChatResponse.Error("API error: ${response.code} - $body"))
+                    sendResponse(ChatResponse.Error("API error: ${response.code} - $body"))
                     close()
                     return@callbackFlow
                 }
-                
+
                 val openaiResponse = moshi.adapter(OpenAiResponse::class.java)
                     .fromJson(body ?: "")
-                
-                openaiResponse?.choices?.firstOrNull()?.let { choice ->
-                    choice.message.content?.let { content ->
-                        trySend(ChatResponse.TextDelta(content))
+
+                val choice = openaiResponse?.choices?.firstOrNull()
+                choice?.let {
+                    it.message.content?.let { content ->
+                        sendResponse(ChatResponse.TextDelta(content))
                     }
-                    
-                    choice.message.toolCalls?.forEach { toolCall ->
-                        trySend(ChatResponse.ToolCall(
+
+                    it.message.toolCalls?.forEach { toolCall ->
+                        val arguments = parseJsonArgs(toolCall.function.arguments).getOrElse { error ->
+                            sendResponse(ChatResponse.Error("Invalid tool arguments: ${error.message}", retryable = false))
+                            close()
+                            return@callbackFlow
+                        }
+                        sendResponse(ChatResponse.ToolCall(
                             id = toolCall.id,
                             name = toolCall.function.name,
-                            arguments = parseJsonArgs(toolCall.function.arguments)
+                            arguments = arguments
                         ))
                     }
                 }
-                
-                trySend(ChatResponse.Done(
-                    usage = openaiResponse?.usage?.let {
-                        TokenUsage(it.promptTokens, it.completionTokens)
-                    }
-                ))
-                
+
+                val finishReason = choice?.finishReason
+                if (finishReason in setOf("stop", "tool_calls")) {
+                    sendResponse(ChatResponse.Done(
+                        usage = openaiResponse?.usage?.let {
+                            TokenUsage(it.promptTokens, it.completionTokens)
+                        },
+                        finishReason = finishReason
+                    ))
+                } else {
+                    sendResponse(ChatResponse.Incomplete(
+                        "Provider stopped with finish_reason=${finishReason ?: "missing"}",
+                        retryable = false
+                    ))
+                }
+
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
-                trySend(ChatResponse.Error("Request failed: ${e.message}"))
+                sendResponse(ChatResponse.Error("Request failed: ${e.message}"))
             }
-            
+
             close()
         }
     }.flowOn(Dispatchers.IO)
-    
+
+    private fun buildResponsesRequest(request: ChatRequest): JSONObject {
+        val body = buildCodexResponsesRequest(request, promptCacheKey = "").apply {
+            remove("prompt_cache_key")
+            remove("text")
+        }
+        val base = OpenAiRequestCodec.responsesBase(
+            request.model,
+            request.systemPrompt,
+            request.maxTokens,
+            request.stream
+        )
+        base.put("input", body.getJSONArray("input"))
+        if (body.has("tools")) base.put("tools", body.getJSONArray("tools"))
+        base.put("tool_choice", "auto")
+        base.put("include", JSONArray().put("reasoning.encrypted_content"))
+        return base
+    }
+
+    private fun consumeResponsesSse(
+        response: okhttp3.Response,
+        state: CodexStreamState,
+        onResponse: (ChatResponse) -> Unit
+    ) {
+        val dataLines = mutableListOf<String>()
+        response.body?.charStream()?.buffered()?.useLines { lines ->
+            lines.forEach { line ->
+                when {
+                    line.isBlank() -> {
+                        val data = dataLines.joinToString("\n").trim()
+                        dataLines.clear()
+                        if (data.isNotBlank()) processCodexSseData(data, state, onResponse, onComplete = {})
+                    }
+                    line.startsWith("data:") -> dataLines += line.removePrefix("data:").trim()
+                }
+            }
+        }
+        dataLines.joinToString("\n").trim().takeIf { it.isNotBlank() }
+            ?.let { processCodexSseData(it, state, onResponse, onComplete = {}) }
+    }
+
+    private fun emitResponsesObject(
+        response: JSONObject,
+        state: CodexStreamState,
+        onResponse: (ChatResponse) -> Unit
+    ) {
+        when (response.optString("status")) {
+            "completed" -> {
+                emitCodexResponseText(response, onResponse)
+                emitCodexResponseItems(response, state, onResponse)
+                if (!state.completed) onResponse(ChatResponse.Done(parseCodexUsage(response), "completed"))
+            }
+            "incomplete" -> onResponse(ChatResponse.Incomplete(
+                "OpenAI response incomplete: ${response.optJSONObject("incomplete_details") ?: "unknown reason"}"
+            ))
+            else -> onResponse(ChatResponse.Error(
+                response.optJSONObject("error")?.optString("message") ?: "OpenAI response failed",
+                code = response.optString("status"),
+                retryable = false
+            ))
+        }
+        state.completed = true
+    }
+
+    private fun emitCodexResponseItems(response: JSONObject, state: CodexStreamState, onResponse: (ChatResponse) -> Unit) {
+        val output = response.optJSONArray("output") ?: return
+        for (i in 0 until output.length()) {
+            val item = output.optJSONObject(i) ?: continue
+            emitResponseItem(item, state, onResponse)
+        }
+    }
+
     private fun buildCodexResponsesRequest(request: ChatRequest, promptCacheKey: String): JSONObject {
         val body = JSONObject()
             .put("model", request.model)
@@ -397,7 +504,7 @@ class OpenAiProvider @Inject constructor(
             .put("include", JSONArray().put("reasoning.encrypted_content"))
             .put("prompt_cache_key", promptCacheKey)
             .put("tool_choice", "auto")
-            .put("parallel_tool_calls", true)
+            .put("parallel_tool_calls", false)
 
         val input = body.getJSONArray("input")
         val pendingBridgeImages = mutableListOf<ToolResultMessage>()
@@ -410,9 +517,30 @@ class OpenAiProvider @Inject constructor(
             pendingBridgeImages.clear()
         }
         request.messages.forEachIndexed { index, msg ->
+            if (msg.responseItems.isNotEmpty()) {
+                msg.responseItems.forEach { raw ->
+                    runCatching { JSONObject(raw) }.getOrNull()?.let(input::put)
+                }
+                return@forEachIndexed
+            }
             if (msg.role != MessageRole.TOOL) flushBridgeImages()
             when (msg.role) {
-                MessageRole.USER -> input.put(codexMessage("user", msg.content.orEmpty(), "input_text"))
+                MessageRole.USER -> {
+                    if (msg.images.isEmpty()) input.put(codexMessage("user", msg.content.orEmpty(), "input_text"))
+                    else input.put(JSONObject()
+                        .put("type", "message")
+                        .put("role", "user")
+                        .put("content", JSONArray().apply {
+                            msg.content?.takeIf { it.isNotBlank() }?.let {
+                                put(JSONObject().put("type", "input_text").put("text", it))
+                            }
+                            msg.images.forEach { image ->
+                                put(JSONObject()
+                                    .put("type", "input_image")
+                                    .put("image_url", "data:${image.mediaType};base64,${image.base64}"))
+                            }
+                        }))
+                }
                 MessageRole.ASSISTANT -> {
                     msg.content?.takeIf { it.isNotBlank() }?.let { input.put(codexMessage("assistant", it, "output_text")) }
                     msg.toolCalls?.forEach { call ->
@@ -439,29 +567,7 @@ class OpenAiProvider @Inject constructor(
         flushBridgeImages()
 
         if (request.tools.isNotEmpty()) {
-            val tools = JSONArray()
-            request.tools.forEach { tool ->
-                tools.put(JSONObject()
-                    .put("type", "function")
-                    .put("name", tool.name)
-                    .put("description", tool.description)
-                    .put("parameters", JSONObject()
-                        .put("type", tool.parameters.type)
-                        .put("properties", JSONObject(tool.parameters.properties.mapValues { (_, prop) ->
-                            mutableMapOf<String, Any?>(
-                                "type" to prop.type,
-                                "description" to prop.description
-                            ).apply {
-                                prop.enum?.let { put("enum", JSONArray(it)) }
-                                prop.items?.let { put("items", JSONObject().put("type", it.type)) }
-                            }
-                        }))
-                        .put("required", JSONArray(tool.parameters.required))
-                    )
-                    .put("strict", JSONObject.NULL)
-                )
-            }
-            body.put("tools", tools)
+            body.put("tools", JSONArray(request.tools.map(OpenAiRequestCodec::responsesTool)))
         }
 
         return body
@@ -487,6 +593,7 @@ class OpenAiProvider @Inject constructor(
         var emittedText: Boolean = false
         var completed: Boolean = false
         val emittedToolCalls: MutableSet<String> = mutableSetOf()
+        val emittedResponseItems: MutableSet<String> = mutableSetOf()
         val argumentDeltas: MutableMap<String, StringBuilder> = mutableMapOf()
     }
 
@@ -498,9 +605,7 @@ class OpenAiProvider @Inject constructor(
     ) {
         if (state.completed) return
         if (data == "[DONE]") {
-            state.completed = true
-            onResponse(ChatResponse.Done())
-            onComplete()
+            // Responses API completion is authoritative only via response.completed.
             return
         }
         val json = runCatching { JSONObject(data) }.getOrNull() ?: return
@@ -516,23 +621,51 @@ class OpenAiProvider @Inject constructor(
                 val callId = json.optString("call_id", json.optString("item_id", ""))
                 if (callId.isNotBlank()) state.argumentDeltas.getOrPut(callId) { StringBuilder() }.append(json.optString("delta", ""))
             }
-            "response.output_item.done" -> json.optJSONObject("item")?.let { emitCodexOutputItem(it, state, onResponse) }
-            "response.completed", "response.done", "response.incomplete" -> {
+            "response.function_call_arguments.done" -> {
+                val callId = json.optString("call_id", json.optString("item_id", ""))
+                if (callId.isNotBlank() && json.has("arguments")) {
+                    state.argumentDeltas[callId] = StringBuilder(json.optString("arguments"))
+                }
+            }
+            "response.output_item.done" -> json.optJSONObject("item")?.let { item ->
+                emitResponseItem(item, state, onResponse)
+            }
+            "response.completed" -> {
                 json.optJSONObject("response")?.let { response ->
                     if (!state.emittedText) emitCodexResponseText(response, onResponse)
-                    emitCodexResponseToolCalls(response, state, onResponse)
-                    onResponse(ChatResponse.Done(usage = parseCodexUsage(response), finishReason = response.optString("status", "").ifBlank { null }))
-                } ?: onResponse(ChatResponse.Done())
+                    emitCodexResponseItems(response, state, onResponse)
+                    if (!state.completed) {
+                        onResponse(ChatResponse.Done(usage = parseCodexUsage(response), finishReason = "completed"))
+                    }
+                } ?: onResponse(ChatResponse.Error("Completed event missing response", retryable = false))
                 state.completed = true
+                onComplete()
+            }
+            "response.incomplete" -> {
+                val response = json.optJSONObject("response")
+                state.completed = true
+                onResponse(ChatResponse.Incomplete(
+                    "OpenAI response incomplete: ${response?.optJSONObject("incomplete_details") ?: "unknown reason"}"
+                ))
                 onComplete()
             }
             "error", "response.failed" -> {
                 val error = json.optJSONObject("error") ?: json.optJSONObject("response")?.optJSONObject("error")
                 state.completed = true
-                onResponse(ChatResponse.Error(friendlyCodexError(null, error?.toString() ?: json.toString(), null, error?.optString("message")), retryable = true))
+                onResponse(ChatResponse.Error(
+                    friendlyCodexError(null, error?.toString() ?: json.toString(), null, error?.optString("message")),
+                    code = error?.optString("code"),
+                    retryable = error?.optString("code") in setOf("rate_limit_exceeded", "server_error")
+                ))
                 onComplete()
             }
         }
+    }
+
+    private fun emitResponseItem(item: JSONObject, state: CodexStreamState, onResponse: (ChatResponse) -> Unit) {
+        val identity = item.optString("id").ifBlank { item.toString() }
+        if (state.emittedResponseItems.add(identity)) onResponse(ChatResponse.ResponseItem(item.toString()))
+        emitCodexOutputItem(item, state, onResponse)
     }
 
     private fun emitCodexOutputItem(item: JSONObject, state: CodexStreamState, onResponse: (ChatResponse) -> Unit) {
@@ -540,10 +673,15 @@ class OpenAiProvider @Inject constructor(
         val callId = item.optString("call_id", item.optString("id", ""))
         if (callId.isBlank() || !state.emittedToolCalls.add(callId)) return
         val args = item.optString("arguments", state.argumentDeltas[callId]?.toString().orEmpty())
+        val parsed = parseJsonArgs(args).getOrElse { error ->
+            onResponse(ChatResponse.Error("Invalid tool arguments: ${error.message}", retryable = false))
+            state.completed = true
+            return
+        }
         onResponse(ChatResponse.ToolCall(
             id = callId,
             name = item.optString("name", ""),
-            arguments = parseJsonArgs(args)
+            arguments = parsed
         ))
     }
 
@@ -558,13 +696,6 @@ class OpenAiProvider @Inject constructor(
                 val text = part.optString("text", "")
                 if (text.isNotEmpty()) onResponse(ChatResponse.TextDelta(text))
             }
-        }
-    }
-
-    private fun emitCodexResponseToolCalls(response: JSONObject, state: CodexStreamState, onResponse: (ChatResponse) -> Unit) {
-        val output = response.optJSONArray("output") ?: return
-        for (i in 0 until output.length()) {
-            output.optJSONObject(i)?.let { emitCodexOutputItem(it, state, onResponse) }
         }
     }
 
@@ -590,7 +721,7 @@ class OpenAiProvider @Inject constructor(
 
     private fun buildOpenAiRequest(request: ChatRequest): OpenAiRequest {
         val messages = mutableListOf<OpenAiMessage>()
-        
+
         // Detect if model supports role="tool" for tool results.
         // Some providers (StepFun, older models) only support role="user"/"assistant"/"system".
         // Models that don't support role="tool": stepfun, moonshot, baichuan, yi, etc.
@@ -600,7 +731,7 @@ class OpenAiProvider @Inject constructor(
             !modelLower.contains("moonshot") &&
             !modelLower.contains("baichuan") &&
             !modelLower.contains("yi-")
-        
+
         // Add system prompt
         request.systemPrompt?.let { systemPrompt ->
             messages.add(OpenAiMessage(
@@ -608,7 +739,7 @@ class OpenAiProvider @Inject constructor(
                 content = systemPrompt
             ))
         }
-        
+
         val pendingBridgeImages = mutableListOf<ToolResultMessage>()
         fun flushBridgeImages() {
             pendingBridgeImages.forEach { result ->
@@ -627,10 +758,21 @@ class OpenAiProvider @Inject constructor(
             if (msg.role != MessageRole.TOOL) flushBridgeImages()
             when (msg.role) {
                 MessageRole.USER -> {
-                    messages.add(OpenAiMessage(
-                        role = "user",
-                        content = msg.content
-                    ))
+                    val content = if (msg.images.isEmpty()) msg.content else {
+                        MULTIPART_PREFIX + JSONArray().apply {
+                            msg.content?.takeIf { it.isNotBlank() }?.let {
+                                put(JSONObject().put("type", "text").put("text", it))
+                            }
+                            msg.images.forEach { image ->
+                                put(JSONObject()
+                                    .put("type", "image_url")
+                                    .put("image_url", JSONObject()
+                                        .put("url", "data:${image.mediaType};base64,${image.base64}")
+                                        .put("detail", "high")))
+                            }
+                        }.toString()
+                    }
+                    messages.add(OpenAiMessage(role = "user", content = content))
                 }
                 MessageRole.ASSISTANT -> {
                     val aiToolCalls = msg.toolCalls?.takeIf { it.isNotEmpty() }?.map { call ->
@@ -658,7 +800,7 @@ class OpenAiProvider @Inject constructor(
                         }
                         messages.add(OpenAiMessage(
                             role = "assistant",
-                            content = if (msg.content.isNullOrBlank()) toolCallText 
+                            content = if (msg.content.isNullOrBlank()) toolCallText
                                       else "${msg.content}\n\n$toolCallText"
                         ))
                     } else {
@@ -698,7 +840,7 @@ class OpenAiProvider @Inject constructor(
                 MessageRole.SYSTEM -> { /* Already handled above */ }
             }
         }
-        
+
         flushBridgeImages()
 
         val tools = request.tools.map { tool ->
@@ -707,22 +849,11 @@ class OpenAiProvider @Inject constructor(
                 function = OpenAiFunctionDef(
                     name = tool.name,
                     description = tool.description,
-                    parameters = OpenAiParameters(
-                        type = "object",
-                        properties = tool.parameters.properties.mapValues { (_, prop) ->
-                            OpenAiPropertyDef(
-                                type = prop.type,
-                                description = prop.description,
-                                enum = prop.enum,
-                                items = prop.items?.let { OpenAiItemsDef(it.type) }
-                            )
-                        },
-                        required = tool.parameters.required
-                    )
+                    parametersJson = tool.schemaJson()
                 )
             )
         }
-        
+
         return OpenAiRequest(
             model = request.model,
             messages = messages,
@@ -733,20 +864,21 @@ class OpenAiProvider @Inject constructor(
             streamOptions = if (request.stream) OpenAiStreamOptions(includeUsage = true) else null
         )
     }
-    
-    // FIX 4.1: Replaced with shared extension moshi.parseJsonArgs() from AiProvider.kt
-    private fun parseJsonArgs(json: String): Map<String, Any?> = moshi.parseJsonArgs(json)
 
-    private fun openAiVisionContent(text: String, attachment: BridgeImageAttachment): String = JSONArray()
-        .put(JSONObject().put("type", "text").put("text", text))
-        .put(JSONObject()
-            .put("type", "image_url")
-            .put("image_url", JSONObject()
-                .put("url", "data:${attachment.mediaType};base64,${attachment.base64}")
-                .put("detail", "high")
+    // FIX 4.1: Replaced with shared extension moshi.parseJsonArgs() from AiProvider.kt
+    private fun parseJsonArgs(json: String): Result<Map<String, Any?>> = moshi.parseJsonArgs(json)
+
+    private fun openAiVisionContent(text: String, attachment: BridgeImageAttachment): String =
+        MULTIPART_PREFIX + JSONArray()
+            .put(JSONObject().put("type", "text").put("text", text))
+            .put(JSONObject()
+                .put("type", "image_url")
+                .put("image_url", JSONObject()
+                    .put("url", "data:${attachment.mediaType};base64,${attachment.base64}")
+                    .put("detail", "high")
+                )
             )
-        )
-        .toString()
+            .toString()
 
     /**
      * Serialize an [OpenAiRequest] to a JSON string.
@@ -758,11 +890,12 @@ class OpenAiProvider @Inject constructor(
      * rather than an escaped string.  All other fields are still serialized by Moshi.
      */
     private fun buildOpenAiJsonBody(req: OpenAiRequest): String {
-        val root = JSONObject()
-        root.put("model", req.model)
-        root.put("max_tokens", req.maxTokens)
-        root.put("temperature", req.temperature.toDouble())
-        root.put("stream", req.stream)
+        val root = OpenAiRequestCodec.compatibleChatBase(
+            model = req.model,
+            maxCompletionTokens = req.maxTokens,
+            stream = req.stream,
+            temperature = req.temperature
+        )
         if (req.streamOptions != null) {
             root.put("stream_options", JSONObject().put("include_usage", req.streamOptions.includeUsage))
         }
@@ -774,9 +907,8 @@ class OpenAiProvider @Inject constructor(
             msgObj.put("role", msg.role)
             if (msg.toolCallId != null) msgObj.put("tool_call_id", msg.toolCallId)
             when {
-                msg.content != null && msg.content.trimStart().startsWith("[") -> {
-                    // Raw JSON array — emit as-is so OpenAI receives a content-parts array
-                    msgObj.put("content", org.json.JSONArray(msg.content))
+                msg.content != null && msg.content.startsWith(MULTIPART_PREFIX) -> {
+                    msgObj.put("content", org.json.JSONArray(msg.content.removePrefix(MULTIPART_PREFIX)))
                 }
                 msg.content != null -> msgObj.put("content", msg.content)
                 else -> msgObj.put("content", JSONObject.NULL)
@@ -804,25 +936,12 @@ class OpenAiProvider @Inject constructor(
         if (req.tools != null) {
             val toolsArr = JSONArray()
             for (tool in req.tools) {
-                val propsObj = JSONObject()
-                for ((k, prop) in tool.function.parameters.properties) {
-                    val propObj = JSONObject()
-                        .put("type", prop.type)
-                        .put("description", prop.description)
-                    if (prop.enum != null) propObj.put("enum", JSONArray(prop.enum))
-                    if (prop.items != null) propObj.put("items", JSONObject().put("type", prop.items.type))
-                    propsObj.put(k, propObj)
-                }
                 toolsArr.put(JSONObject()
                     .put("type", tool.type)
                     .put("function", JSONObject()
                         .put("name", tool.function.name)
                         .put("description", tool.function.description)
-                        .put("parameters", JSONObject()
-                            .put("type", tool.function.parameters.type)
-                            .put("properties", propsObj)
-                            .put("required", JSONArray(tool.function.parameters.required))
-                        )
+                        .put("parameters", JSONObject(tool.function.parametersJson))
                     )
                 )
             }
@@ -831,15 +950,7 @@ class OpenAiProvider @Inject constructor(
 
         return root.toString()
     }
-    
-    private class OpenAiToolCallBuilder(
-        var id: String = "",
-        var name: String = ""
-    ) {
-        val argumentsBuilder = StringBuilder()
-        
-        fun isComplete() = id.isNotEmpty() && name.isNotEmpty()
-    }
+
 }
 
 // ============================================================================
@@ -851,8 +962,8 @@ data class OpenAiRequest(
     val model: String,
     val messages: List<OpenAiMessage>,
     val tools: List<OpenAiToolDef>? = null,
-    @Json(name = "max_tokens") val maxTokens: Int = 8192,
-    val temperature: Float = 0.7f,
+    @Json(name = "max_completion_tokens") val maxTokens: Int = 8192,
+    val temperature: Float? = null,
     val stream: Boolean = false,
     @Json(name = "stream_options") val streamOptions: OpenAiStreamOptions? = null
 )
@@ -880,27 +991,7 @@ data class OpenAiToolDef(
 data class OpenAiFunctionDef(
     val name: String,
     val description: String,
-    val parameters: OpenAiParameters
-)
-
-@JsonClass(generateAdapter = true)
-data class OpenAiParameters(
-    val type: String = "object",
-    val properties: Map<String, OpenAiPropertyDef>,
-    val required: List<String> = emptyList()
-)
-
-@JsonClass(generateAdapter = true)
-data class OpenAiPropertyDef(
-    val type: String,
-    val description: String,
-    val enum: List<String>? = null,
-    val items: OpenAiItemsDef? = null  // For array types
-)
-
-@JsonClass(generateAdapter = true)
-data class OpenAiItemsDef(
-    val type: String = "string"
+    val parametersJson: String
 )
 
 @JsonClass(generateAdapter = true)

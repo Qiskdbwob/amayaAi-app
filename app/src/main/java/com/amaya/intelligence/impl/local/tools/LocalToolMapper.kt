@@ -24,37 +24,15 @@ object LocalToolMapper {
      * Local tools already use standard naming, so this is mostly pass-through.
      */
     fun mapToolName(rawName: String): String = when (rawName) {
-        // File operations - normalize to standard names
-        "read_file", "view_file", "read" -> "read_file"
-        "write_file", "write", "create_file" -> "write_file"
-        "edit_file", "replace_file_content", "multi_replace_file_content" -> "edit_file"
-        "delete_file", "delete" -> "delete_file"
-        "list_files", "list_dir", "ls" -> "list_files"
-        
-        // Shell/terminal
-        "run_shell", "run_command", "shell", "execute" -> "run_shell"
-        "command_status", "check_status" -> "check_status_terminal"
-        "read_terminal", "read_output" -> "read_terminal"
-        
-        // Search
-        "find_files", "find", "search_files" -> "find_files"
-        "grep_search", "grep", "search" -> "grep_search"
-        
-        // Web
-        "web_search", "websearch" -> "web_search"
-        "search_web" -> "search_web"
-        "read_url_content", "fetch_url" -> "read_url_content"
-        "browser" -> "browser"
-        
-        // Task management
-        "task_boundary", "task" -> "task_boundary"
-        "notify_user", "notify" -> "notify_user"
-        
-        // Image generation
-        "generate_image", "image" -> "generate_image"
-        
-        // MCP tools - pass through
-        else -> if (rawName.startsWith("mcp_")) rawName else rawName
+        "read", "view_file" -> "read_file"
+        "write", "create_file" -> "write_file"
+        "replace_file_content", "multi_replace_file_content" -> "edit_file"
+        "delete" -> "delete_file"
+        "list_dir", "ls" -> "list_files"
+        "run_command", "shell", "execute" -> "run_shell"
+        "find", "search_files" -> "find_files"
+        "websearch" -> "web_search"
+        else -> rawName
     }
 
     /**
@@ -75,7 +53,7 @@ object LocalToolMapper {
             "TaskSummary",
             "taskSummary"
         )
-        
+
         when (normalizedName) {
             "run_shell" -> {
                 mapped["command"] = firstNonNull(mapped, "command", "cmd", "CommandLine", "commandLine")
@@ -112,10 +90,10 @@ object LocalToolMapper {
                 mapped["taskStatus"] = firstNonNull(mapped, "taskStatus", "TaskStatus", "status", "status_text")
             }
         }
-        
+
         // Preserve original name
         mapped["original_name"] = args["original_name"] ?: toolName
-        
+
         return mapped
     }
 

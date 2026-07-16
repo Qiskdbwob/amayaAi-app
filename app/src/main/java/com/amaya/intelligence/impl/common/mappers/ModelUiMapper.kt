@@ -18,7 +18,8 @@ object ModelUiMapper {
         providerName = connection.name.ifBlank {
             AmayaProviderRegistry.displayName(connection.providerId)
         },
-        iconType = connection.providerId
+        iconType = connection.providerId,
+        supportsImages = model.supportsImages
     )
 
     fun mapRemoteModel(

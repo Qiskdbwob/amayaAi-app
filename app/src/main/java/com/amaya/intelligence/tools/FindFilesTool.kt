@@ -16,19 +16,24 @@ import javax.inject.Singleton
 @Singleton
 class FindFilesTool @Inject constructor(
     private val commandValidator: CommandValidator
-) : Tool {
-    
+) : Tool, ContextAwareTool {
+
     companion object {
         const val MAX_RESULTS = 100
         const val MAX_DEPTH = 20
     }
-    
+
     override val name = "find_files"
 
     override val description = "Find files by name pattern (glob) or search content within files. Use 'pattern' for filename glob (*.kt), or 'content' for grep-style content search."
-    
+
     override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
-        withContext(Dispatchers.IO) {
+        execute(arguments, ToolExecutionContext())
+
+    override suspend fun execute(
+        arguments: Map<String, Any?>,
+        executionContext: ToolExecutionContext
+    ): ToolResult = withContext(Dispatchers.IO) {
 
         // ── Content search mode (replaces search_files) ──────────────────
         val contentQuery = arguments["content"] as? String
@@ -38,19 +43,27 @@ class FindFilesTool @Inject constructor(
             // FIX #12: Validate path before content search to prevent scanning protected dirs
             when (val v = commandValidator.validatePath(searchPath, isWrite = false)) {
                 is ValidationResult.Denied -> return@withContext ToolResult.Error(v.reason, ErrorType.SECURITY_VIOLATION)
-                is ValidationResult.RequiresConfirmation -> return@withContext ToolResult.RequiresConfirmation(v.reason, searchPath)
+                is ValidationResult.RequiresConfirmation -> if (!executionContext.confirmed) {
+                    return@withContext ToolResult.RequiresConfirmation(v.reason, searchPath)
+                }
                 is ValidationResult.Allowed -> { /* proceed */ }
             }
             val caseSensitive = arguments["case_sensitive"] as? Boolean ?: false
-            val maxResults = (arguments["max_results"] as? Number)?.toInt() ?: 50
+            val maxResults = ((arguments["max_results"] as? Number)?.toInt() ?: 50).coerceIn(1, MAX_RESULTS)
+            val maxDepth = ((arguments["max_depth"] as? Number)?.toInt() ?: 10).coerceIn(1, MAX_DEPTH)
             val dir = java.io.File(searchPath)
             if (!dir.exists()) return@withContext ToolResult.Error("Path not found: $searchPath", ErrorType.NOT_FOUND)
+            if (!dir.isDirectory) return@withContext ToolResult.Error("Path is not a directory: $searchPath", ErrorType.VALIDATION_ERROR)
 
             val matches = mutableListOf<String>()
             dir.walkTopDown()
-                .filter { it.isFile && it.length() < 5 * 1024 * 1024 }
+                .maxDepth(maxDepth)
+                .onEnter { directory ->
+                    matches.size < maxResults && !java.nio.file.Files.isSymbolicLink(directory.toPath())
+                }
+                .filter { !java.nio.file.Files.isSymbolicLink(it.toPath()) && it.isFile && it.length() < 5 * 1024 * 1024 }
+                .takeWhile { matches.size < maxResults }
                 .forEach { file ->
-                    if (matches.size >= maxResults) return@forEach
                     try {
                         val lines = file.readLines(Charsets.UTF_8)
                         lines.forEachIndexed { idx, line ->
@@ -73,54 +86,53 @@ class FindFilesTool @Inject constructor(
                 "Missing required argument: path",
                 ErrorType.VALIDATION_ERROR
             )
-        
+
         val pattern = arguments["pattern"] as? String
             ?: return@withContext ToolResult.Error(
                 "Missing required argument: pattern",
                 ErrorType.VALIDATION_ERROR
             )
-        
+
         // Validate path access
         when (val validation = commandValidator.validatePath(pathStr, isWrite = false)) {
             is ValidationResult.Denied -> return@withContext ToolResult.Error(
                 validation.reason,
                 ErrorType.SECURITY_VIOLATION
             )
-            is ValidationResult.RequiresConfirmation -> return@withContext ToolResult.RequiresConfirmation(
-                validation.reason,
-                "Path: $pathStr"
-            )
+            is ValidationResult.RequiresConfirmation -> if (!executionContext.confirmed) {
+                return@withContext ToolResult.RequiresConfirmation(validation.reason, "Path: $pathStr")
+            }
             is ValidationResult.Allowed -> { /* proceed */ }
         }
-        
+
         val directory = File(pathStr)
-        
+
         if (!directory.exists()) {
             return@withContext ToolResult.Error(
                 "Path does not exist: $pathStr",
                 ErrorType.NOT_FOUND
             )
         }
-        
+
         if (!directory.isDirectory) {
             return@withContext ToolResult.Error(
                 "Path is not a directory: $pathStr",
                 ErrorType.VALIDATION_ERROR
             )
         }
-        
+
         val typeFilter = arguments["type"] as? String ?: "all"
         val maxDepth = (arguments["max_depth"] as? Number)?.toInt()?.coerceIn(1, MAX_DEPTH) ?: 10
         val maxResults = (arguments["max_results"] as? Number)?.toInt()?.coerceIn(1, MAX_RESULTS) ?: 50
-        
+
         try {
             val regex = globToRegex(pattern)
             val results = mutableListOf<String>()
             var skippedDirs = 0
-            
+
             // Use recursive walk with java.io.File for Android compatibility
             walkDirectory(directory, directory, maxDepth, 0, results, regex, typeFilter, maxResults) { skippedDirs++ }
-            
+
             val output = if (results.isEmpty()) {
                 buildString {
                     append("No files found matching pattern: $pattern")
@@ -137,7 +149,7 @@ class FindFilesTool @Inject constructor(
                     }
                 }
             }
-            
+
             ToolResult.Success(
                 output = output,
                 metadata = mapOf(
@@ -146,7 +158,7 @@ class FindFilesTool @Inject constructor(
                     "skipped_dirs" to skippedDirs
                 )
             )
-            
+
         } catch (e: Exception) {
             ToolResult.Error(
                 "Find failed: ${e.message}",
@@ -154,7 +166,7 @@ class FindFilesTool @Inject constructor(
             )
         }
     }
-    
+
     private fun walkDirectory(
         baseDir: File,
         currentDir: File,
@@ -167,7 +179,7 @@ class FindFilesTool @Inject constructor(
         onSkipped: () -> Unit
     ) {
         if (currentDepth > maxDepth || results.size >= maxResults) return
-        
+
         val files = try {
             currentDir.listFiles()
         } catch (e: SecurityException) {
@@ -177,28 +189,32 @@ class FindFilesTool @Inject constructor(
             onSkipped()
             return
         }
-        
+
         for (file in files) {
             if (results.size >= maxResults) break
-            
+            if (java.nio.file.Files.isSymbolicLink(file.toPath())) {
+                onSkipped()
+                continue
+            }
+
             val matchesType = when (typeFilter) {
                 "file" -> file.isFile
                 "directory" -> file.isDirectory
                 else -> true
             }
-            
+
             if (matchesType && pattern.matcher(file.name).matches()) {
                 val relativePath = file.absolutePath.removePrefix(baseDir.absolutePath).removePrefix("/")
                 results.add(relativePath)
             }
-            
+
             // Recurse into subdirectories
             if (file.isDirectory && currentDepth < maxDepth) {
                 walkDirectory(baseDir, file, maxDepth, currentDepth + 1, results, pattern, typeFilter, maxResults, onSkipped)
             }
         }
     }
-    
+
     private fun globToRegex(glob: String): Pattern {
         // FIX 10: Properly escape all regex metacharacters before translating glob syntax.
         // Old code passed literal chars like '+', '(', '$' etc. directly into regex, causing

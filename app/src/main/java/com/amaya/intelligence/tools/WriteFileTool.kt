@@ -25,8 +25,8 @@ import javax.inject.Singleton
 class WriteFileTool @Inject constructor(
     private val commandValidator: CommandValidator,
     @ApplicationContext private val context: Context
-) : Tool {
-    
+) : Tool, ContextAwareTool {
+
     // FIX #19: State machine enum for bracket-matching parser — must be at class level (not inside function)
     private enum class ParseState {
         NORMAL, STRING_SINGLE, STRING_DOUBLE, MULTILINE_DOUBLE, MULTILINE_SINGLE, LINE_COMMENT, BLOCK_COMMENT
@@ -35,32 +35,32 @@ class WriteFileTool @Inject constructor(
     companion object {
         const val TAG = "WriteFileTool"
         const val MAX_BACKUPS = 5
-        
+
         val CODE_EXTENSIONS = setOf(
             "kt", "java", "py", "js", "ts", "jsx", "tsx",
             "c", "cpp", "h", "hpp", "cs", "go", "rs",
             "swift", "dart", "rb", "php", "scala"
         )
-        
+
         val STRUCTURED_EXTENSIONS = setOf(
             "json", "xml", "yaml", "yml", "toml", "html", "htm"
         )
-        
+
         // Document formats that can be written
         val DOCUMENT_EXTENSIONS = setOf(
             "docx", "xlsx", "pptx", "odt", "ods", "odp"
         )
     }
-    
+
     override val name = "write_file"
-    
+
     override val description = """
         Write content to a file with atomic operations and automatic backup.
         Supports text files and document formats (DOCX, XLSX, PPTX, ODT, ODS, ODP).
-        
+
         SAFETY: Always creates a backup before writing. If write fails,
         automatically restores from backup.
-        
+
         Arguments:
         - path (string, required): Absolute path to the file
         - content (string, required): Content to write (plain text for documents)
@@ -68,47 +68,54 @@ class WriteFileTool @Inject constructor(
         - validate_syntax (bool, optional): Validate code syntax (default: false)
         - create_dirs (bool, optional): Create parent directories if needed (default: true)
         - append (bool, optional): Append instead of overwrite (default: false)
-        
+
         For document formats: Creates new document with plain text content. Existing formatting is replaced.
     """.trimIndent()
-    
-    override suspend fun execute(arguments: Map<String, Any?>): ToolResult = 
-        withContext(Dispatchers.IO) {
-            
+
+    override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
+        execute(arguments, ToolExecutionContext())
+
+    override suspend fun execute(
+        arguments: Map<String, Any?>,
+        executionContext: ToolExecutionContext
+    ): ToolResult = withContext(Dispatchers.IO) {
+
         val pathStr = arguments["path"] as? String
             ?: return@withContext ToolResult.Error(
                 "Missing required argument: path",
                 ErrorType.VALIDATION_ERROR
             )
-        
+
         val content = arguments["content"] as? String
             ?: return@withContext ToolResult.Error(
                 "Missing required argument: content",
                 ErrorType.VALIDATION_ERROR
             )
-        
+
         // Validate path access
         when (val validation = commandValidator.validatePath(pathStr, isWrite = true)) {
             is ValidationResult.Denied -> return@withContext ToolResult.Error(
                 validation.reason,
                 ErrorType.SECURITY_VIOLATION
             )
-            is ValidationResult.RequiresConfirmation -> return@withContext ToolResult.RequiresConfirmation(
-                validation.reason,
-                "Path: $pathStr, Content length: ${content.length} chars"
-            )
+            is ValidationResult.RequiresConfirmation -> if (!executionContext.confirmed) {
+                return@withContext ToolResult.RequiresConfirmation(
+                    validation.reason,
+                    "Path: $pathStr, Content length: ${content.length} chars"
+                )
+            }
             is ValidationResult.Allowed -> { /* proceed */ }
         }
-        
+
         val file = File(pathStr)
         val createBackup = arguments["create_backup"] as? Boolean ?: true
         // Default false — AI-generated code is typically valid, validation causes false positives
         val validateSyntax = arguments["validate_syntax"] as? Boolean ?: false
         val createDirs = arguments["create_dirs"] as? Boolean ?: true
         val append = arguments["append"] as? Boolean ?: false
-        
+
         var backupFile: File? = null
-        
+
         try {
             // 1. Create parent directories if needed
             val parent = file.parentFile
@@ -122,18 +129,18 @@ class WriteFileTool @Inject constructor(
                     )
                 }
             }
-            
+
             // 2. Create backup of existing file
             if (createBackup && file.exists()) {
                 backupFile = createBackupFile(file)
             }
-            
+
             // 3. Check if this is a document format
             val ext = file.extension.lowercase()
             if (ext in DOCUMENT_EXTENSIONS) {
                 return@withContext writeDocument(file, content, ext, append, backupFile)
             }
-            
+
             // 4. Validate syntax for code files
             if (validateSyntax && shouldValidateSyntax(file)) {
                 val syntaxResult = validateCodeSyntax(content, file.extension)
@@ -146,7 +153,7 @@ class WriteFileTool @Inject constructor(
                     )
                 }
             }
-            
+
             // 5. Atomic write process for text files
             if (append && file.exists()) {
                 val existingContent = file.readText()
@@ -155,12 +162,12 @@ class WriteFileTool @Inject constructor(
             } else {
                 atomicWrite(file, content)
             }
-            
+
             // 6. Clean up old backups
             if (backupFile != null) {
                 cleanupOldBackups(file)
             }
-            
+
             val operation = if (append) "appended to" else "written to"
             ToolResult.Success(
                 output = "Successfully $operation: $pathStr (${content.length} chars)" +
@@ -171,7 +178,7 @@ class WriteFileTool @Inject constructor(
                     "backup" to (backupFile?.absolutePath ?: "none")
                 )
             )
-            
+
         } catch (e: Exception) {
             Log.e(TAG, "FAILED: ${e.javaClass.simpleName}: ${e.message}", e)
             // ROLLBACK: Restore from backup if we have one
@@ -186,31 +193,31 @@ class WriteFileTool @Inject constructor(
                         ErrorType.EXECUTION_ERROR
                     )
                 }
-                
+
                 return@withContext ToolResult.Error(
                     "Write failed (${e.javaClass.simpleName}): ${e.message}",
                     ErrorType.EXECUTION_ERROR,
                     recoverable = true
                 )
             }
-            
+
             ToolResult.Error(
                 "Failed to write file (${e.javaClass.simpleName}): ${e.message}",
                 ErrorType.EXECUTION_ERROR
             )
         }
     }
-    
+
     private fun createBackupFile(file: File): File {
         val timestamp = System.currentTimeMillis()
         val backupName = "${file.name}.bak.$timestamp"
         val backupFile = File(file.parentFile, backupName)
-        
+
         file.copyTo(backupFile, overwrite = true)
-        
+
         return backupFile
     }
-    
+
     private fun atomicWrite(targetFile: File, content: String) {
         // Strategy 1: temp file in same directory → atomic rename (preferred)
         val parentDir = targetFile.parentFile
@@ -221,17 +228,17 @@ class WriteFileTool @Inject constructor(
                 null
             }
         } else null
-        
+
         val tempFile = tempInSameDir ?: File.createTempFile(".write_", ".tmp", context.cacheDir.also { it.mkdirs() })
-        
+
         try {
             tempFile.writeText(content, Charsets.UTF_8)
-            
+
             // Try rename first (atomic, same filesystem)
             if (tempFile.renameTo(targetFile)) {
                 return
             }
-            
+
             // Rename failed (cross-filesystem or permission) → copy
             tempFile.copyTo(targetFile, overwrite = true)
             tempFile.delete()
@@ -241,12 +248,12 @@ class WriteFileTool @Inject constructor(
             throw e
         }
     }
-    
+
     private fun shouldValidateSyntax(file: File): Boolean {
         val ext = file.extension.lowercase()
         return ext in CODE_EXTENSIONS || ext in STRUCTURED_EXTENSIONS
     }
-    
+
     private fun validateCodeSyntax(content: String, extension: String): String? {
         return when (extension.lowercase()) {
             "json" -> validateJson(content)
@@ -254,7 +261,7 @@ class WriteFileTool @Inject constructor(
             else -> validateBracketMatching(content)
         }
     }
-    
+
     private fun validateBracketMatching(content: String): String? {
         // FIX #19: Rewritten to handle multiline strings (""" / '''), single-line comments (//),
         // block comments (/* */), and escape sequences — eliminating false positives on valid code.
@@ -332,34 +339,34 @@ class WriteFileTool @Inject constructor(
 
         return null
     }
-    
+
     private fun validateJson(content: String): String? {
         val trimmed = content.trim()
-        
+
         if (trimmed.isEmpty()) {
             return "Empty JSON"
         }
-        
+
         if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
             return "JSON must start with '{' or '['"
         }
-        
+
         return validateBracketMatching(content)
     }
-    
+
     private fun validateXml(content: String): String? {
         val tagStack = ArrayDeque<String>()
         // FIX 2.6: In raw strings ("""), \\w is two literal chars — must use \w for regex word-char.
         // Also fixed self-closing pattern: (/)? at end instead of (/?)\> which was broken.
         val tagPattern = Regex("""<(/?)(\w+)[^>]*(/)?>""")
-        
+
         for (match in tagPattern.findAll(content)) {
             val isClosing = match.groupValues[1] == "/"
             val tagName = match.groupValues[2]
             val isSelfClosing = match.groupValues[3] == "/"
-            
+
             if (isSelfClosing) continue
-            
+
             if (isClosing) {
                 if (tagStack.isEmpty()) {
                     return "Unexpected closing tag: </$tagName>"
@@ -372,19 +379,19 @@ class WriteFileTool @Inject constructor(
                 tagStack.addLast(tagName)
             }
         }
-        
+
         if (tagStack.isNotEmpty()) {
             return "Unclosed tags: ${tagStack.joinToString(", ") { "<$it>" }}"
         }
-        
+
         return null
     }
-    
+
     private fun cleanupOldBackups(originalFile: File) {
         val parent = originalFile.parentFile ?: return
         val baseName = originalFile.name
         val pattern = Regex("""${Regex.escape(baseName)}\.bak\.(\d+)""")
-        
+
         val backups = try {
             parent.listFiles()?.filter { pattern.matches(it.name) }
                 ?.sortedByDescending { file ->
@@ -393,12 +400,12 @@ class WriteFileTool @Inject constructor(
         } catch (e: SecurityException) {
             return
         }
-        
+
         backups.drop(MAX_BACKUPS).forEach { backup ->
             runCatching { backup.delete() }
         }
     }
-    
+
     // ── Document Write ──────────────────────────────────────────────────────────
     private fun writeDocument(
         file: File,
@@ -420,11 +427,11 @@ class WriteFileTool @Inject constructor(
                     ErrorType.VALIDATION_ERROR
                 )
             }
-            
+
             if (backupFile != null) {
                 cleanupOldBackups(file)
             }
-            
+
             val operation = if (append) "appended to" else "written to"
             ToolResult.Success(
                 output = "Successfully $operation document: ${file.name} (${content.length} chars)" +
@@ -448,17 +455,17 @@ class WriteFileTool @Inject constructor(
             )
         }
     }
-    
+
     // ── DOCX Write ──────────────────────────────────────────────────────────────
     private fun writeDocx(file: File, content: String, append: Boolean) {
         val paragraphs = content.lines()
-        
+
         // Create minimal DOCX structure
         val documentXml = buildString {
             appendLine("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>""")
             appendLine("""<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">""")
             appendLine("""  <w:body>""")
-            
+
             paragraphs.forEach { line ->
                 appendLine("""    <w:p>""")
                 appendLine("""      <w:r>""")
@@ -466,13 +473,13 @@ class WriteFileTool @Inject constructor(
                 appendLine("""      </w:r>""")
                 appendLine("""    </w:p>""")
             }
-            
+
             appendLine("""  </w:body>""")
             appendLine("""</w:document>""")
         }
-        
+
         // Write ZIP via temp file first to avoid corrupting target on failure
-        val tempFile = File.createTempFile(".docx_write_", ".tmp", 
+        val tempFile = File.createTempFile(".docx_write_", ".tmp",
             file.parentFile?.takeIf { it.exists() } ?: context.cacheDir)
         try {
             ZipOutputStream(tempFile.outputStream()).use { zip ->
@@ -485,7 +492,7 @@ class WriteFileTool @Inject constructor(
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 </Types>""".toByteArray())
                 zip.closeEntry()
-                
+
                 // _rels/.rels
                 zip.putNextEntry(ZipEntry("_rels/.rels"))
                 zip.write("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -493,7 +500,7 @@ class WriteFileTool @Inject constructor(
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>""".toByteArray())
                 zip.closeEntry()
-                
+
                 // word/document.xml
                 zip.putNextEntry(ZipEntry("word/document.xml"))
                 zip.write(documentXml.toByteArray())
@@ -509,7 +516,7 @@ class WriteFileTool @Inject constructor(
             throw e
         }
     }
-    
+
     // ── XLSX Write ──────────────────────────────────────────────────────────────
     // Content format:
     //   - Tab-separated values per row, newline per row
@@ -518,7 +525,7 @@ class WriteFileTool @Inject constructor(
     private fun writeXlsx(file: File, content: String, append: Boolean) {
         val lines = content.lines().filter { it.isNotEmpty() }
         val hasHeader = lines.isNotEmpty()
-        
+
         // Style IDs: 0=normal, 1=header (bold+border), 2=data with border
         val stylesXml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -562,7 +569,7 @@ class WriteFileTool @Inject constructor(
                 appendLine("""  </cols>""")
             }
             appendLine("""  <sheetData>""")
-            
+
             lines.forEachIndexed { rowIdx, line ->
                 val cells = line.split("\t")
                 val isHeader = rowIdx == 0 && hasHeader
@@ -595,7 +602,7 @@ class WriteFileTool @Inject constructor(
                 }
                 appendLine("""    </row>""")
             }
-            
+
             appendLine("""  </sheetData>""")
             // Freeze first row if has header
             if (hasHeader && lines.size > 1) {
@@ -603,7 +610,7 @@ class WriteFileTool @Inject constructor(
             }
             appendLine("""</worksheet>""")
         }
-        
+
         ZipOutputStream(file.outputStream()).use { zip ->
             // [Content_Types].xml
             zip.putNextEntry(ZipEntry("[Content_Types].xml"))
@@ -616,7 +623,7 @@ class WriteFileTool @Inject constructor(
   <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 </Types>""".toByteArray())
             zip.closeEntry()
-            
+
             // _rels/.rels
             zip.putNextEntry(ZipEntry("_rels/.rels"))
             zip.write("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -624,7 +631,7 @@ class WriteFileTool @Inject constructor(
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
 </Relationships>""".toByteArray())
             zip.closeEntry()
-            
+
             // xl/workbook.xml
             zip.putNextEntry(ZipEntry("xl/workbook.xml"))
             zip.write("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -634,12 +641,12 @@ class WriteFileTool @Inject constructor(
   </sheets>
 </workbook>""".toByteArray())
             zip.closeEntry()
-            
+
             // xl/styles.xml
             zip.putNextEntry(ZipEntry("xl/styles.xml"))
             zip.write(stylesXml.toByteArray())
             zip.closeEntry()
-            
+
             // xl/_rels/workbook.xml.rels
             zip.putNextEntry(ZipEntry("xl/_rels/workbook.xml.rels"))
             zip.write("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -648,14 +655,14 @@ class WriteFileTool @Inject constructor(
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
 </Relationships>""".toByteArray())
             zip.closeEntry()
-            
+
             // xl/worksheets/sheet1.xml
             zip.putNextEntry(ZipEntry("xl/worksheets/sheet1.xml"))
             zip.write(sheetXml.toByteArray())
             zip.closeEntry()
         }
     }
-    
+
     // Convert column index (0-based) to Excel letter ref: 0→A, 25→Z, 26→AA
     private fun colIdxToRef(idx: Int): String {
         var n = idx
@@ -666,11 +673,11 @@ class WriteFileTool @Inject constructor(
         } while (n >= 0)
         return sb.toString()
     }
-    
+
     // ── PPTX Write ──────────────────────────────────────────────────────────────
     private fun writePptx(file: File, content: String, append: Boolean) {
         val lines = content.lines()
-        
+
         val slideXml = buildString {
             appendLine("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>""")
             appendLine("""<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">""")
@@ -689,7 +696,7 @@ class WriteFileTool @Inject constructor(
             appendLine("""  </p:cSld>""")
             appendLine("""</p:sld>""")
         }
-        
+
         ZipOutputStream(file.outputStream()).use { zip ->
             // Minimal PPTX structure (simplified)
             zip.putNextEntry(ZipEntry("[Content_Types].xml"))
@@ -701,17 +708,17 @@ class WriteFileTool @Inject constructor(
   <Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
 </Types>""".toByteArray())
             zip.closeEntry()
-            
+
             zip.putNextEntry(ZipEntry("ppt/slides/slide1.xml"))
             zip.write(slideXml.toByteArray())
             zip.closeEntry()
         }
     }
-    
+
     // ── ODT Write ───────────────────────────────────────────────────────────────
     private fun writeOdt(file: File, content: String, append: Boolean) {
         val paragraphs = content.lines()
-        
+
         val contentXml = buildString {
             appendLine("""<?xml version="1.0" encoding="UTF-8"?>""")
             appendLine("""<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">""")
@@ -724,22 +731,22 @@ class WriteFileTool @Inject constructor(
             appendLine("""  </office:body>""")
             appendLine("""</office:document-content>""")
         }
-        
+
         ZipOutputStream(file.outputStream()).use { zip ->
             zip.putNextEntry(ZipEntry("mimetype"))
             zip.write("application/vnd.oasis.opendocument.text".toByteArray())
             zip.closeEntry()
-            
+
             zip.putNextEntry(ZipEntry("content.xml"))
             zip.write(contentXml.toByteArray())
             zip.closeEntry()
         }
     }
-    
+
     // ── ODS Write ───────────────────────────────────────────────────────────────
     private fun writeOds(file: File, content: String, append: Boolean) {
         val lines = content.lines()
-        
+
         val contentXml = buildString {
             appendLine("""<?xml version="1.0" encoding="UTF-8"?>""")
             appendLine("""<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">""")
@@ -758,22 +765,22 @@ class WriteFileTool @Inject constructor(
             appendLine("""  </office:body>""")
             appendLine("""</office:document-content>""")
         }
-        
+
         ZipOutputStream(file.outputStream()).use { zip ->
             zip.putNextEntry(ZipEntry("mimetype"))
             zip.write("application/vnd.oasis.opendocument.spreadsheet".toByteArray())
             zip.closeEntry()
-            
+
             zip.putNextEntry(ZipEntry("content.xml"))
             zip.write(contentXml.toByteArray())
             zip.closeEntry()
         }
     }
-    
+
     // ── ODP Write ───────────────────────────────────────────────────────────────
     private fun writeOdp(file: File, content: String, append: Boolean) {
         val lines = content.lines()
-        
+
         val contentXml = buildString {
             appendLine("""<?xml version="1.0" encoding="UTF-8"?>""")
             appendLine("""<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0">""")
@@ -788,18 +795,18 @@ class WriteFileTool @Inject constructor(
             appendLine("""  </office:body>""")
             appendLine("""</office:document-content>""")
         }
-        
+
         ZipOutputStream(file.outputStream()).use { zip ->
             zip.putNextEntry(ZipEntry("mimetype"))
             zip.write("application/vnd.oasis.opendocument.presentation".toByteArray())
             zip.closeEntry()
-            
+
             zip.putNextEntry(ZipEntry("content.xml"))
             zip.write(contentXml.toByteArray())
             zip.closeEntry()
         }
     }
-    
+
     // ── Helper: XML Escaping ────────────────────────────────────────────────────
     private fun String.escapeXml(): String {
         return this

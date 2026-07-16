@@ -11,13 +11,10 @@ import com.amaya.intelligence.domain.models.ConversationMode as DomainConversati
 import com.amaya.intelligence.data.repository.CronJobRepository
 import com.amaya.intelligence.tools.TodoRepository
 import com.amaya.intelligence.tools.TodoItem
-import com.amaya.intelligence.tools.ConfirmationRequest
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 
 @HiltViewModel
@@ -45,7 +42,7 @@ class ChatViewModel @Inject constructor(
         extraBufferCapacity = 8
     )
     val scrollEvent: kotlinx.coroutines.flow.SharedFlow<ScrollReason> = _scrollEvent
-    
+
     // Conversations derived from service
     val conversations: StateFlow<List<com.amaya.intelligence.data.local.entity.ConversationEntity>> = intelligenceService.conversations
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -57,62 +54,43 @@ class ChatViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
     val workspaces: StateFlow<List<com.amaya.intelligence.domain.models.RemoteWorkspace>> = intelligenceService.workspaces
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-    
-    private val _confirmationRequest = MutableStateFlow<ConfirmationRequest?>(null)
-    val confirmationRequest: StateFlow<ConfirmationRequest?> = _confirmationRequest.asStateFlow()
-    
-    // Continuation for local tool confirmations if handled at ViewModel level
-    private val confirmationContinuation = java.util.concurrent.atomic.AtomicReference<((Boolean) -> Unit)?>(null)
 
-    override fun onCleared() {
-        super.onCleared()
-        confirmationContinuation.getAndSet(null)?.invoke(false)
-    }
-    
     fun sendMessage(content: String) {
         _scrollEvent.tryEmit(ScrollReason.NEW_MESSAGE)
         intelligenceService.sendMessage(content)
     }
-    
+
     fun sendMessageWithImage(content: String, imageBase64: String, mimeType: String, fileName: String) {
         android.util.Log.d("ChatViewModel", "sendMessageWithImage: content=${content.take(50)}, mimeType=$mimeType, base64Len=${imageBase64.length}, fileName=$fileName")
         _scrollEvent.tryEmit(ScrollReason.NEW_MESSAGE)
         intelligenceService.sendMessageWithImage(content, imageBase64, mimeType, fileName)
     }
-    
-    fun respondToConfirmation(confirmed: Boolean) {
-        // Delegate to service
-        intelligenceService.respondToToolInteraction("", confirmed)
-        // Also handle local continuation if any
-        confirmationContinuation.getAndSet(null)?.invoke(confirmed)
-        _confirmationRequest.value = null
-    }
-    
+
     fun stopGeneration() {
         intelligenceService.stopGeneration()
     }
-    
+
     fun respondToToolInteraction(id: String, confirmed: Boolean) {
         intelligenceService.respondToToolInteraction(id, confirmed)
     }
-    
+
     fun selectModel(modelKey: String) {
         intelligenceService.selectModel(modelKey)
     }
-    
+
     fun clearConversation() {
         todoRepository.clear()
         intelligenceService.clearConversation()
     }
-    
+
     fun loadConversation(conversationId: Long) {
         intelligenceService.loadConversation(conversationId.toString())
     }
-    
+
     fun deleteConversation(conversationId: Long) {
         intelligenceService.deleteConversation(conversationId.toString())
     }
-    
+
     fun switchMode(mode: com.amaya.intelligence.domain.ai.IntelligenceSessionManager.SessionMode) {
         sessionManager.setMode(mode)
     }
@@ -120,7 +98,7 @@ class ChatViewModel @Inject constructor(
     fun connect(ip: String, port: Int) {
         intelligenceService.connect(ip, port)
     }
-    
+
     fun setWorkspace(path: String?) {
         intelligenceService.setWorkspace(path)
     }
@@ -134,11 +112,11 @@ class ChatViewModel @Inject constructor(
     fun getProjectFiles(path: String) {
         intelligenceService.getProjectFiles(path)
     }
-    
+
     fun loadMoreConversations() {
         intelligenceService.loadMoreConversations()
     }
-    
+
     fun hasMoreConversations(): Boolean {
         return intelligenceService.hasMoreConversations()
     }

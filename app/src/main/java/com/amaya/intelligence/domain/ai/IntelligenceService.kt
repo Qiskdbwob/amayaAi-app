@@ -14,17 +14,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 interface IntelligenceService {
     val uiState: StateFlow<ChatUiState>
     val conversations: StateFlow<List<ConversationEntity>>
-    
+
     // Actions
     fun sendMessage(content: String)
-    fun sendMessageWithImage(content: String, imageBase64: String, mimeType: String, fileName: String) {}
+    fun sendMessageWithImage(content: String, imageBase64: String, mimeType: String, fileName: String) {
+        error("Image input is not supported by this intelligence service")
+    }
     fun stopGeneration()
     fun clearConversation()
     fun loadConversation(id: String)
     fun deleteConversation(id: String)
     fun resync() {}
     fun refreshState() {}
-    
+
     // Workspace & Projects
     val projectFiles: StateFlow<List<ProjectFileEntry>> get() = MutableStateFlow(emptyList())
     val projectPath: StateFlow<String> get() = MutableStateFlow("")
@@ -36,9 +38,9 @@ interface IntelligenceService {
     fun clearError() {}
     fun loadMoreConversations() {}
     fun hasMoreConversations(): Boolean = false
-    
+
     fun refreshModels() {}
-    
+
     // Remote-specific (will be no-op in local)
     fun respondToToolInteraction(executionId: String, confirmed: Boolean) {}
     fun connect(ip: String, port: Int) {}

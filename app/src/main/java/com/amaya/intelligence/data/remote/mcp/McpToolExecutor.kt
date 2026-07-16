@@ -5,6 +5,7 @@ import com.amaya.intelligence.tools.ConfirmationRequest
 import com.amaya.intelligence.tools.ToolExecutor
 import com.amaya.intelligence.tools.ToolResult
 import com.amaya.intelligence.tools.resolveBridgeToolWireName
+import com.amaya.intelligence.tools.sanitizeModelArguments
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -28,16 +29,37 @@ class McpToolExecutor @Inject constructor(
         // The model receives sanitized names (dots replaced with underscores) because OpenAI
         // rejects names that don't match ^[a-zA-Z0-9_-]+$. We restore the wire name here
         // before routing so the bridge registry lookup always uses the canonical dot form.
+        val safeArguments = sanitizeModelArguments(arguments).getOrElse { error ->
+            return ToolResult.Error(error.message.orEmpty(), com.amaya.intelligence.tools.ErrorType.VALIDATION_ERROR)
+        }
         val wireName = resolveBridgeToolWireName(toolName)
 
         // FIX 9: Use McpClientManager.TOOL_PREFIX constant — no hardcoded "mcp__" string here
         return when {
-            wireName.startsWith(McpClientManager.TOOL_PREFIX) ->
-                mcpClientManager.callTool(wireName, arguments)
+            wireName.startsWith(McpClientManager.TOOL_PREFIX) -> {
+                val identity = toolCallId ?: return ToolResult.Error(
+                    "MCP tool call is missing a call ID; approval cannot be bound safely.",
+                    com.amaya.intelligence.tools.ErrorType.VALIDATION_ERROR
+                )
+                val approved = onConfirmationRequired(
+                    ConfirmationRequest(
+                        toolName = wireName,
+                        reason = "External MCP servers are untrusted and may access or modify data",
+                        details = safeArguments.toString(),
+                        riskLevel = com.amaya.intelligence.domain.security.RiskLevel.MEDIUM,
+                        toolCallId = identity
+                    )
+                )
+                if (!approved) return ToolResult.Error(
+                    "User declined external MCP tool call",
+                    com.amaya.intelligence.tools.ErrorType.PERMISSION_ERROR
+                )
+                mcpClientManager.callTool(wireName, safeArguments)
+            }
             windowsBridgeToolProvider.isBridgeTool(wireName) ->
-                windowsBridgeToolProvider.executeBridgeTool(wireName, arguments)
+                windowsBridgeToolProvider.executeBridgeTool(wireName, safeArguments)
             else ->
-                toolExecutor.execute(wireName, arguments, workspacePath, toolCallId, onEvent, onConfirmationRequired, providerConnection, selectedModelId)
+                toolExecutor.execute(wireName, safeArguments, workspacePath, toolCallId, onEvent, onConfirmationRequired, providerConnection, selectedModelId)
         }
     }
 }

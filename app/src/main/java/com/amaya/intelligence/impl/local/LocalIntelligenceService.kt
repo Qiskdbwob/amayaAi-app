@@ -27,8 +27,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
-import kotlin.coroutines.resume
 import javax.inject.Singleton
 
 /**
@@ -41,8 +41,11 @@ class LocalIntelligenceService @Inject constructor(
     private val conversationDao: ConversationDao,
     private val settingsManager: AiSettingsManager,
     private val browserSessionManager: BrowserSessionManager,
-    @ApplicationScope private val scope: CoroutineScope
+    @ApplicationScope appScope: CoroutineScope
 ) : IntelligenceService {
+
+    // Confine mutable chat/UI state to the main thread while retaining process lifetime.
+    private val scope = CoroutineScope(appScope.coroutineContext + Dispatchers.Main.immediate)
 
     private val _uiState = MutableStateFlow(ChatUiState(
         sessionMode = IntelligenceSessionManager.SessionMode.LOCAL
@@ -60,9 +63,14 @@ class LocalIntelligenceService @Inject constructor(
     private var currentAssistantMessageId: String? = null
     private val assistantTextBuffer = StringBuilder()
     private var lastAssistantTextUiEmitAt = 0L
+    private var assistantFlushJob: Job? = null
     private var browserConversationKey: String? = null
     private val conversationSaveMutex = Mutex()
-    private val pendingToolConfirmations = ConcurrentHashMap<String, CancellableContinuation<Boolean>>()
+    private val pendingToolConfirmations = ToolConfirmationRegistry()
+    private val pendingConfirmationUi = ConcurrentHashMap<String, ConfirmationRequest>()
+    private val pendingApprovalIds = ConcurrentHashMap<String, String>()
+    private val titleJobs = ConcurrentHashMap<Long, Job>()
+    private val activeTurnId = AtomicLong(0L)
 
     init {
 
@@ -91,25 +99,58 @@ class LocalIntelligenceService @Inject constructor(
         }
     }
 
-    override fun sendMessage(content: String) {
+    override fun sendMessage(content: String) = sendMessageInternal(content, emptyList())
+
+    override fun sendMessageWithImage(content: String, imageBase64: String, mimeType: String, fileName: String) {
+        if (!mimeType.startsWith("image/") || imageBase64.isBlank() || imageBase64.length > 1_000_000) {
+            _uiState.update { it.copy(error = "Invalid or oversized image attachment") }
+            return
+        }
+        sendMessageInternal(
+            content,
+            listOf(com.amaya.intelligence.data.remote.api.ChatImage(imageBase64, mimeType, fileName))
+        )
+    }
+
+    private fun sendMessageInternal(
+        content: String,
+        images: List<com.amaya.intelligence.data.remote.api.ChatImage>
+    ) {
+        val trimmedContent = content.trim()
+        if (trimmedContent.isBlank() && images.isEmpty()) return
+        val turnId = activeTurnId.incrementAndGet()
+        val interruptedTurn = chatJob?.isActive == true
         chatJob?.cancel()
+        chatJob = null
+        assistantFlushJob?.cancel()
+        assistantFlushJob = null
+        pendingToolConfirmations.cancelAll()
+        pendingConfirmationUi.clear()
+        pendingApprovalIds.clear()
+        if (interruptedTurn) {
+            flushAssistantTextBuffer()
+            markActiveToolsStopped()
+            markCurrentAssistantTerminal("cancelled")
+            saveCurrentConversation()
+        }
         currentAssistantMessageId = null
         assistantTextBuffer.clear()
         lastAssistantTextUiEmitAt = 0L
-        
+
         val currentState = _uiState.value
         LocalStreamPerfLog.startTurn(
-            messageChars = content.length,
+            messageChars = trimmedContent.length,
             historyMessages = currentState.messages.size,
             model = currentState.selectedModel.ifBlank { currentState.activeModelKey }
         )
         val userMsg = UiMessage(
             role = MessageRole.USER,
-            content = content
+            content = trimmedContent,
+            attachments = images.map { MessageAttachment(it.mediaType, it.base64, it.fileName) }
         )
         ensureBrowserConversationSession(userMsg.id)
         browserSessionManager.onAssistantStreamingChanged(true)
-        
+
         // Optimistic update
         _uiState.update { it.copy(
             messages = it.messages + userMsg,
@@ -123,14 +164,16 @@ class LocalIntelligenceService @Inject constructor(
                 // Check BEFORE persist so currentConversationId is still null on the first message.
                 val isNewConversation = currentConversationId == null
                 val conversationIdForTurn = persistCurrentConversation()
+                    ?: throw IllegalStateException("Could not save this conversation. Message was not sent.")
                 if (isNewConversation) {
-                    launchTitleGeneration(content, conversationIdForTurn)
+                    launchTitleGeneration(trimmedContent, conversationIdForTurn)
                 }
-                
-                val history = _uiState.value.messages.map { it.toChatMessage() }
-                
+
+                val history = _uiState.value.messages.flatMap { it.toChatMessages() }
+
                 aiRepository.chat(
-                    message = content,
+                    message = trimmedContent,
+                    userImages = images,
                     conversationHistory = history.dropLast(1), // Exclude the one we just added
                     workspacePath = currentState.workspacePath,
                     connectionId = currentState.activeModelKey
@@ -139,11 +182,15 @@ class LocalIntelligenceService @Inject constructor(
                         ?.getOrNull(1),
                     conversationId = conversationIdForTurn,
                     selectedModel = currentState.selectedModel,
-                    onConfirmation = { request -> awaitInlineToolConfirmation(request) }
+                    onConfirmation = { request -> awaitInlineToolConfirmation(request, turnId) }
                 ).collect { event ->
-                    handleAgentEvent(event)
+                    if (activeTurnId.get() == turnId) handleAgentEvent(event)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                if (activeTurnId.get() != turnId) return@launch
+                chatJob = null
                 flushAssistantTextBuffer()
                 browserSessionManager.onAssistantStreamingChanged(false)
                 _uiState.update { it.copy(error = e.message, isLoading = false, isStreaming = false) }
@@ -162,27 +209,46 @@ class LocalIntelligenceService @Inject constructor(
                 flushAssistantTextBuffer()
                 val normalizedName = LocalToolMapper.mapToolName(event.name)
                 val normalizedArgs = LocalToolMapper.mapToolArgs(event.name, event.arguments)
+                val pendingApproval = pendingConfirmationUi[event.toolCallId]
+                val approvalId = pendingApprovalIds[event.toolCallId]
+                val canonicalCall = JSONObject()
+                    .put("kind", "assistant_tool_call")
+                    .put("id", event.toolCallId)
+                    .put("name", event.name)
+                    .put("arguments", JSONObject(event.arguments))
+                    .put("metadata", JSONObject(event.metadata))
+                    .toString()
                 val toolExec = ToolExecution(
                     toolCallId = event.toolCallId,
                     name = normalizedName,
                     arguments = normalizedArgs,
-                    status = ToolStatus.RUNNING,
-                    metadata = mapOf(
-                        "source" to "local",
-                        "animateOnMount" to "true"
-                    ),
+                    status = if (pendingApproval == null) ToolStatus.RUNNING else ToolStatus.PENDING,
+                    metadata = buildMap {
+                        put("source", "local")
+                        put("animateOnMount", "true")
+                        putAll(event.metadata)
+                        pendingApproval?.let { putAll(approvalMetadata(it, approvalId.orEmpty())) }
+                    },
                     uiMetadata = LocalToolMapper.getUiMetadata(event.name, event.arguments)
                 )
                 ensureAssistantMessage()
                 updateCurrentAssistantMessage { msg ->
                     msg.copy(
                         toolExecutions = msg.toolExecutions + toolExec,
-                        steps = msg.steps + MessageStep.ToolCall(execution = toolExec)
+                        steps = msg.steps + MessageStep.ToolCall(execution = toolExec),
+                        canonicalHistory = msg.canonicalHistory + canonicalCall
                     )
                 }
             }
             is AgentEvent.ToolCallResult -> {
                 flushAssistantTextBuffer()
+                val canonicalResult = JSONObject()
+                    .put("kind", "tool_result")
+                    .put("id", event.toolCallId)
+                    .put("name", event.toolName)
+                    .put("result", event.result)
+                    .put("isError", event.isError)
+                    .toString()
                 updateCurrentAssistantMessage { msg ->
                     val updatedTools = msg.toolExecutions.map {
                         if (it.toolCallId == event.toolCallId) {
@@ -202,7 +268,24 @@ class LocalIntelligenceService @Inject constructor(
                             )
                         } else step
                     }
-                    msg.copy(toolExecutions = updatedTools, steps = updatedSteps)
+                    msg.copy(
+                        toolExecutions = updatedTools,
+                        steps = updatedSteps,
+                        canonicalHistory = msg.canonicalHistory + canonicalResult
+                    )
+                }
+            }
+            is AgentEvent.ResponseItem -> {
+                ensureAssistantMessage()
+                updateCurrentAssistantMessage { message ->
+                    if (event.json in message.responseItems) message
+                    else message.copy(
+                        responseItems = message.responseItems + event.json,
+                        canonicalHistory = message.canonicalHistory + JSONObject()
+                            .put("kind", "response_item")
+                            .put("item", JSONObject(event.json))
+                            .toString()
+                    )
                 }
             }
             is AgentEvent.Usage -> {
@@ -213,13 +296,28 @@ class LocalIntelligenceService @Inject constructor(
                     )
                 }
             }
-            is AgentEvent.Error -> {
+            is AgentEvent.Incomplete -> {
+                chatJob = null
                 flushAssistantTextBuffer()
+                markActiveToolsStopped()
+                markCurrentAssistantTerminal("incomplete")
+                browserSessionManager.onAssistantStreamingChanged(false)
+                _uiState.update { it.copy(error = event.reason, isLoading = false, isStreaming = false) }
+                LocalStreamPerfLog.endTurn("incomplete:${event.reason.take(80)}", _uiState.value.messages.size, currentAssistantTextLength())
+                saveCurrentConversation()
+            }
+            is AgentEvent.Error -> {
+                chatJob = null
+                flushAssistantTextBuffer()
+                markActiveToolsStopped()
+                markCurrentAssistantTerminal("failed")
                 browserSessionManager.onAssistantStreamingChanged(false)
                 _uiState.update { it.copy(error = event.message, isLoading = false, isStreaming = false) }
                 LocalStreamPerfLog.endTurn("error:${event.message.take(80)}", _uiState.value.messages.size, currentAssistantTextLength())
+                saveCurrentConversation()
             }
             is AgentEvent.Done -> {
+                chatJob = null
                 flushAssistantTextBuffer()
                 markCurrentAssistantCompleted()
                 browserSessionManager.onAssistantStreamingChanged(false)
@@ -227,31 +325,65 @@ class LocalIntelligenceService @Inject constructor(
                 LocalStreamPerfLog.endTurn("done", _uiState.value.messages.size, currentAssistantTextLength())
                 saveCurrentConversation()
             }
-            else -> {}
+            is AgentEvent.SubagentUpdate -> {
+                updateCurrentAssistantMessage { msg ->
+                    fun updateExecution(tool: ToolExecution): ToolExecution {
+                        if (tool.toolCallId != event.parentToolCallId) return tool
+                        val child = SubagentExecution(
+                            index = event.index,
+                            taskName = event.taskName,
+                            prompt = event.prompt,
+                            result = event.result,
+                            status = when {
+                                !event.isComplete -> ToolStatus.RUNNING
+                                event.isError -> ToolStatus.ERROR
+                                else -> ToolStatus.SUCCESS
+                            }
+                        )
+                        return tool.copy(children = (tool.children.filterNot { it.index == event.index } + child).sortedBy { it.index })
+                    }
+                    msg.copy(
+                        toolExecutions = msg.toolExecutions.map(::updateExecution),
+                        steps = msg.steps.map { step ->
+                            if (step is MessageStep.ToolCall) step.copy(execution = updateExecution(step.execution)) else step
+                        }
+                    )
+                }
+            }
+            is AgentEvent.NewIteration -> Unit
         }
     }
 
-    private suspend fun awaitInlineToolConfirmation(request: ConfirmationRequest): Boolean {
+    private suspend fun awaitInlineToolConfirmation(request: ConfirmationRequest, turnId: Long): Boolean {
         val toolCallId = request.toolCallId ?: return false
-        updateToolExecution(toolCallId) { tool ->
-            tool.copy(
-                status = ToolStatus.PENDING,
-                metadata = tool.metadata + mapOf(
-                    "approvalRequired" to "true",
-                    "approvalState" to "pending",
-                    "approvalReason" to request.reason,
-                    "approvalDetails" to request.details,
-                    "riskLevel" to request.riskLevel.name.lowercase()
-                )
-            )
-        }
-        return suspendCancellableCoroutine { continuation ->
-            pendingToolConfirmations[toolCallId] = continuation
-            continuation.invokeOnCancellation {
-                pendingToolConfirmations.remove(toolCallId)
+        if (activeTurnId.get() != turnId) return false
+        val approvalId = "$turnId:$toolCallId"
+        pendingConfirmationUi[toolCallId] = request
+        pendingApprovalIds[toolCallId] = approvalId
+        return try {
+            pendingToolConfirmations.await(approvalId, turnId) {
+                if (activeTurnId.get() != turnId) return@await
+                updateToolExecution(toolCallId) { tool ->
+                    tool.copy(
+                        status = ToolStatus.PENDING,
+                        metadata = tool.metadata + approvalMetadata(request, approvalId)
+                    )
+                }
             }
+        } finally {
+            pendingConfirmationUi.remove(toolCallId, request)
+            pendingApprovalIds.remove(toolCallId, approvalId)
         }
     }
+
+    private fun approvalMetadata(request: ConfirmationRequest, approvalId: String): Map<String, String> = mapOf(
+        "approvalRequired" to "true",
+        "approvalState" to "pending",
+        "approvalReason" to request.reason,
+        "approvalDetails" to request.details,
+        "riskLevel" to request.riskLevel.name.lowercase(),
+        "approvalId" to approvalId
+    )
 
     private fun updateToolExecution(toolCallId: String, transform: (ToolExecution) -> ToolExecution) {
         updateCurrentAssistantMessage { msg ->
@@ -271,10 +403,22 @@ class LocalIntelligenceService @Inject constructor(
         if (delta.isEmpty()) return
         assistantTextBuffer.append(delta)
         LocalStreamPerfLog.onInboundDelta(delta.length, assistantTextBuffer.length)
-        flushAssistantTextBuffer(System.currentTimeMillis())
+        if (assistantTextBuffer.length >= 256) {
+            assistantFlushJob?.cancel()
+            assistantFlushJob = null
+            flushAssistantTextBuffer()
+        } else if (assistantFlushJob?.isActive != true) {
+            assistantFlushJob = scope.launch {
+                delay(24)
+                flushAssistantTextBuffer()
+                assistantFlushJob = null
+            }
+        }
     }
 
     private fun flushAssistantTextBuffer(now: Long = System.currentTimeMillis()) {
+        assistantFlushJob?.cancel()
+        assistantFlushJob = null
         if (assistantTextBuffer.isEmpty()) return
         val chunk = assistantTextBuffer.toString()
         assistantTextBuffer.clear()
@@ -293,7 +437,14 @@ class LocalIntelligenceService @Inject constructor(
             }
             totalAssistantChars = newContent.length
             stepCount = newSteps.size
-            msg.copy(content = newContent, steps = newSteps)
+            msg.copy(
+                content = newContent,
+                steps = newSteps,
+                canonicalHistory = msg.canonicalHistory + JSONObject()
+                    .put("kind", "assistant_text")
+                    .put("text", chunk)
+                    .toString()
+            )
         }
         LocalStreamPerfLog.onUiFlush(
             chunkChars = chunk.length,
@@ -355,10 +506,44 @@ class LocalIntelligenceService @Inject constructor(
         return _uiState.value.messages.lastOrNull { it.id == assistantId }?.content?.length ?: 0
     }
 
-    private fun markCurrentAssistantCompleted() {
-        val completedAt = System.currentTimeMillis().toString()
+    private fun markCurrentAssistantCompleted() = markCurrentAssistantTerminal("completed")
+
+    private fun markCurrentAssistantTerminal(status: String) {
+        val now = System.currentTimeMillis().toString()
         updateCurrentAssistantMessage { msg ->
-            if (msg.metadata["completedAt"] != null) msg else msg.copy(metadata = msg.metadata + ("completedAt" to completedAt))
+            msg.copy(metadata = msg.metadata + mapOf("completedAt" to now, "turnStatus" to status))
+        }
+    }
+
+    private fun markActiveToolsStopped() {
+        updateCurrentAssistantMessage { msg ->
+            val active = msg.toolExecutions.filter {
+                it.status == ToolStatus.RUNNING || it.status == ToolStatus.PENDING
+            }
+            fun stopped(tool: ToolExecution): ToolExecution = if (tool in active) tool.copy(
+                status = ToolStatus.ERROR,
+                result = tool.result ?: "Stopped by user",
+                metadata = tool.metadata + mapOf(
+                    "approvalRequired" to "false",
+                    "approvalState" to "cancelled"
+                )
+            ) else tool
+            val terminalItems = active.map { tool ->
+                JSONObject()
+                    .put("kind", "tool_result")
+                    .put("id", tool.toolCallId)
+                    .put("name", tool.name)
+                    .put("result", tool.result ?: "Stopped by user")
+                    .put("isError", true)
+                    .toString()
+            }
+            msg.copy(
+                toolExecutions = msg.toolExecutions.map(::stopped),
+                steps = msg.steps.map { step ->
+                    if (step is MessageStep.ToolCall) step.copy(execution = stopped(step.execution)) else step
+                },
+                canonicalHistory = msg.canonicalHistory + terminalItems
+            )
         }
     }
 
@@ -376,14 +561,32 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     override fun stopGeneration() {
+        activeTurnId.incrementAndGet()
         chatJob?.cancel()
+        chatJob = null
+        assistantFlushJob?.cancel()
+        assistantFlushJob = null
+        pendingToolConfirmations.cancelAll()
+        pendingConfirmationUi.clear()
+        pendingApprovalIds.clear()
         flushAssistantTextBuffer()
+        markActiveToolsStopped()
+        markCurrentAssistantTerminal("cancelled")
+        browserSessionManager.cancelFromUser()
         browserSessionManager.onAssistantStreamingChanged(false)
         _uiState.update { it.copy(isLoading = false, isStreaming = false) }
+        saveCurrentConversation()
     }
 
     override fun clearConversation() {
+        activeTurnId.incrementAndGet()
         chatJob?.cancel()
+        chatJob = null
+        assistantFlushJob?.cancel()
+        assistantFlushJob = null
+        pendingToolConfirmations.cancelAll()
+        pendingConfirmationUi.clear()
+        pendingApprovalIds.clear()
         currentConversationId = null
         currentAssistantMessageId = null
         assistantTextBuffer.clear()
@@ -403,16 +606,29 @@ class LocalIntelligenceService @Inject constructor(
 
     override fun loadConversation(id: String) {
         val longId = id.toLongOrNull() ?: return
+        val turnId = activeTurnId.incrementAndGet()
+        chatJob?.cancel()
+        chatJob = null
+        assistantFlushJob?.cancel()
+        assistantFlushJob = null
+        pendingToolConfirmations.cancelAll()
+        pendingConfirmationUi.clear()
+        pendingApprovalIds.clear()
         scope.launch {
             val entity = conversationDao.getConversationById(longId)
+            if (activeTurnId.get() != turnId) return@launch
             entity?.let { conv ->
+                val parsed = parseMessagesFromJson(conv.messagesJson)
+                val messages = parsed.getOrElse {
+                    _uiState.update { state -> state.copy(error = "Conversation data is corrupted and could not be loaded") }
+                    return@launch
+                }
                 currentConversationId = conv.id
                 currentAssistantMessageId = null
                 assistantTextBuffer.clear()
                 lastAssistantTextUiEmitAt = 0L
                 browserConversationKey = "conversation:${conv.id}"
                 browserSessionManager.resetForConversation(browserConversationKey!!)
-                val messages = parseMessagesFromJson(conv.messagesJson)
                 _uiState.update { it.copy(
                     conversationId = conv.id.toString(),
                     workspacePath = conv.workspacePath,
@@ -427,15 +643,13 @@ class LocalIntelligenceService @Inject constructor(
 
     override fun deleteConversation(id: String) {
         val longId = id.toLongOrNull() ?: return
-        scope.launch {
-            conversationDao.deleteConversationById(longId)
-            if (currentConversationId == longId) {
-                clearConversation()
-            }
-        }
+        titleJobs.remove(longId)?.cancel()
+        if (currentConversationId == longId) clearConversation()
+        scope.launch { conversationDao.deleteConversationById(longId) }
     }
 
     override fun selectModel(modelKey: String) {
+        if (_uiState.value.isStreaming) stopGeneration()
         scope.launch {
             val parts = modelKey.split('|', limit = 3)
             if (parts.size != 3 || parts[0] != "model") return@launch
@@ -468,28 +682,26 @@ class LocalIntelligenceService @Inject constructor(
         // Local project files logic if needed
     }
 
-    override fun refreshModels() = Unit
-
     override fun respondToToolInteraction(executionId: String, confirmed: Boolean) {
-        val continuation = pendingToolConfirmations.remove(executionId) ?: return
-        updateToolExecution(executionId) { tool ->
-            tool.copy(
-                status = if (confirmed) ToolStatus.RUNNING else ToolStatus.ERROR,
-                result = if (confirmed) tool.result else "User declined: ${tool.metadata["approvalReason"].orEmpty()}",
-                metadata = tool.metadata + ("approvalState" to if (confirmed) "accepted" else "declined")
-            )
+        val toolCallId = executionId.substringAfter(':', executionId)
+        pendingToolConfirmations.resolve(executionId, activeTurnId.get(), confirmed) {
+            pendingConfirmationUi.remove(toolCallId)
+            pendingApprovalIds.remove(toolCallId, executionId)
+            updateToolExecution(toolCallId) { tool ->
+                tool.copy(
+                    status = if (confirmed) ToolStatus.RUNNING else ToolStatus.ERROR,
+                    result = if (confirmed) tool.result else "User declined: ${tool.metadata["approvalReason"].orEmpty()}",
+                    metadata = tool.metadata + mapOf(
+                        "approvalRequired" to "false",
+                        "approvalState" to if (confirmed) "accepted" else "declined"
+                    )
+                )
+            }
         }
-        continuation.resume(confirmed)
     }
 
-    private fun formatTokenCount(count: Int): String = when {
-        count >= 1_000_000 -> if (count % 1_000_000 == 0) "${count / 1_000_000}M" else String.format("%.1fM", count / 1_000_000.0)
-        count >= 1_000 -> if (count % 1_000 == 0) "${count / 1_000}k" else String.format("%.1fk", count / 1_000.0)
-        else -> count.toString()
-    }
-
-    private fun parseMessagesFromJson(json: String): List<UiMessage> {
-        if (json.isBlank()) return emptyList()
+    private fun parseMessagesFromJson(json: String): Result<List<UiMessage>> {
+        if (json.isBlank()) return Result.success(emptyList())
         return try {
             val messages = mutableListOf<UiMessage>()
             val jsonArray = JSONArray(json)
@@ -562,6 +774,24 @@ class LocalIntelligenceService @Inject constructor(
                     }
                 }
 
+                val responseItems = obj.optJSONArray("responseItems")?.let { array ->
+                    (0 until array.length()).mapNotNull { index -> array.optString(index).takeIf { it.isNotBlank() } }
+                }.orEmpty()
+                val canonicalHistory = obj.optJSONArray("canonicalHistory")?.let { array ->
+                    (0 until array.length()).mapNotNull { index -> array.optString(index).takeIf { it.isNotBlank() } }
+                }.orEmpty()
+                val attachments = obj.optJSONArray("attachments")?.let { array ->
+                    (0 until array.length()).mapNotNull { index ->
+                        val attachment = array.optJSONObject(index) ?: return@mapNotNull null
+                        val mime = attachment.optString("mimeType")
+                        val data = attachment.optString("dataBase64")
+                        if (mime.isBlank() || data.isBlank()) null else MessageAttachment(
+                            mimeType = mime,
+                            dataBase64 = data,
+                            fileName = attachment.optString("fileName")
+                        )
+                    }
+                }.orEmpty()
                 messages.add(
                     UiMessage(
                         id = obj.optString("id", UUID.randomUUID().toString()),
@@ -571,37 +801,61 @@ class LocalIntelligenceService @Inject constructor(
                         metadata = metadata,
                         toolExecutions = toolExecutions,
                         steps = steps,
-                        todoItems = todoItems
+                        todoItems = todoItems,
+                        attachments = attachments,
+                        responseItems = responseItems,
+                        canonicalHistory = canonicalHistory
                     )
                 )
             }
-            messages
-        } catch (_: Exception) {
-            emptyList()
+            Result.success(messages)
+        } catch (error: Exception) {
+            Result.failure(error)
         }
     }
 
     private fun saveCurrentConversation() {
-        scope.launch { persistCurrentConversation() }
+        val conversationId = currentConversationId ?: return
+        val messages = _uiState.value.messages
+        val messagesJson = serializeMessagesToJson(messages)
+        scope.launch {
+            conversationSaveMutex.withLock {
+                try {
+                    if (currentConversationId == conversationId &&
+                        serializeMessagesToJson(_uiState.value.messages) != messagesJson
+                    ) return@withLock
+                    val existing = conversationDao.getConversationById(conversationId) ?: return@withLock
+                    conversationDao.updateConversation(
+                        existing.copy(messagesJson = messagesJson, updatedAt = System.currentTimeMillis())
+                    )
+                } catch (error: Exception) {
+                    if (currentConversationId == conversationId) {
+                        _uiState.update { it.copy(error = "Could not save this conversation: ${error.message.orEmpty()}") }
+                    }
+                }
+            }
+        }
     }
 
     private fun launchTitleGeneration(userMessage: String, conversationId: Long?) {
         if (conversationId == null) return
-        scope.launch {
+        val settings = settingsManager.getSettings()
+        val selection = settings.activeSelection ?: return
+        val connection = settings.connections.firstOrNull { it.id == selection.connectionId } ?: return
+        val selectedModel = _uiState.value.selectedModel.ifBlank { selection.modelId }
+        titleJobs.remove(conversationId)?.cancel()
+        titleJobs[conversationId] = scope.launch {
             try {
-                val settings = settingsManager.getSettings()
-                val selection = settings.activeSelection ?: return@launch
-                val connection = settings.connections.firstOrNull { it.id == selection.connectionId }
-                    ?: return@launch
-                val selectedModel = _uiState.value.selectedModel.ifBlank { selection.modelId }
-                val title = aiRepository.generateTitle(
-                    userMessage = userMessage,
-                    providerConnection = connection,
-                    selectedModel = selectedModel
-                )
-                conversationDao.updateTitle(conversationId, title)
+                val title = aiRepository.generateTitle(userMessage, connection, selectedModel)
+                if (conversationDao.getConversationById(conversationId) != null) {
+                    conversationDao.updateTitle(conversationId, title)
+                }
+            } catch (error: CancellationException) {
+                throw error
             } catch (_: Exception) {
-                // Title generation failure is non-fatal — conversation persists without title update.
+                // Title generation failure is non-fatal.
+            } finally {
+                titleJobs.remove(conversationId, coroutineContext[Job])
             }
         }
     }
@@ -638,8 +892,9 @@ class LocalIntelligenceService @Inject constructor(
             } else {
                 insertConversationLocked(title, messagesJson, now)
             }
-        } catch (_: Exception) {
-            currentConversationId
+        } catch (error: Exception) {
+            _uiState.update { it.copy(error = "Could not save this conversation: ${error.message.orEmpty()}") }
+            null
         }
     }
 
@@ -667,6 +922,18 @@ class LocalIntelligenceService @Inject constructor(
                 put("role", msg.role.name)
                 put("content", msg.content)
                 put("timestamp", msg.timestamp)
+                if (msg.responseItems.isNotEmpty()) put("responseItems", JSONArray(msg.responseItems))
+                if (msg.canonicalHistory.isNotEmpty()) put("canonicalHistory", JSONArray(msg.canonicalHistory))
+                if (msg.attachments.isNotEmpty()) {
+                    put("attachments", JSONArray().apply {
+                        msg.attachments.forEach { attachment ->
+                            put(JSONObject()
+                                .put("mimeType", attachment.mimeType)
+                                .put("dataBase64", attachment.dataBase64)
+                                .put("fileName", attachment.fileName))
+                        }
+                    })
+                }
             }
 
             if (msg.toolExecutions.isNotEmpty()) {
@@ -743,6 +1010,7 @@ class LocalIntelligenceService @Inject constructor(
                         result = c.optString("result").takeIf { it.isNotBlank() },
                         status = runCatching { ToolStatus.valueOf(c.getString("status")) }
                             .getOrDefault(ToolStatus.SUCCESS)
+                            .let { status -> if (status == ToolStatus.PENDING || status == ToolStatus.RUNNING) ToolStatus.ERROR else status }
                     )
                 )
             }
@@ -754,15 +1022,21 @@ class LocalIntelligenceService @Inject constructor(
         } else {
             metaMap["source"] = "local"
         }
+        val persistedStatus = runCatching { ToolStatus.valueOf(e.getString("status")) }
+            .getOrDefault(ToolStatus.SUCCESS)
+        val interrupted = persistedStatus == ToolStatus.PENDING || persistedStatus == ToolStatus.RUNNING
         return ToolExecution(
             toolCallId = e.getString("toolCallId"),
             name = e.getString("name"),
             arguments = argsMap,
-            result = e.optString("result").takeIf { it.isNotBlank() },
-            status = runCatching { ToolStatus.valueOf(e.getString("status")) }
-                .getOrDefault(ToolStatus.SUCCESS),
+            result = e.optString("result").takeIf { it.isNotBlank() }
+                ?: "Stopped before completion".takeIf { interrupted },
+            status = if (interrupted) ToolStatus.ERROR else persistedStatus,
             children = children,
-            metadata = metaMap,
+            metadata = if (metaMap["approvalState"] == "pending") metaMap + mapOf(
+                "approvalRequired" to "false",
+                "approvalState" to "cancelled"
+            ) else metaMap,
             uiMetadata = LocalToolMapper.getUiMetadata(
                 toolName = e.getString("name"),
                 args = argsMap
@@ -805,9 +1079,101 @@ class LocalIntelligenceService @Inject constructor(
 }
 
 // Extension to map domain to repository model
-private fun UiMessage.toChatMessage(): ChatMessage {
-    return ChatMessage(
-        role = this.role,
-        content = this.content
+private fun UiMessage.toChatMessages(): List<ChatMessage> {
+    if (role == MessageRole.ASSISTANT && canonicalHistory.isNotEmpty()) {
+        canonicalHistoryToChatMessages(canonicalHistory).takeIf { it.isNotEmpty() }?.let { return it }
+    }
+    val calls = toolExecutions.map { execution ->
+        com.amaya.intelligence.data.remote.api.ToolCallMessage(
+            id = execution.toolCallId,
+            name = execution.name,
+            arguments = execution.arguments,
+            metadata = execution.metadata.filterKeys { it == "thoughtSignature" }
+        )
+    }
+    val message = ChatMessage(
+        role = role,
+        content = content,
+        images = attachments.filter { it.mimeType.startsWith("image/") }.map {
+            com.amaya.intelligence.data.remote.api.ChatImage(it.dataBase64, it.mimeType, it.fileName)
+        },
+        toolCalls = calls.takeIf { it.isNotEmpty() },
+        responseItems = responseItems
     )
+    if (role != MessageRole.ASSISTANT || calls.isEmpty()) return listOf(message)
+    return buildList {
+        add(message)
+        toolExecutions.forEach { execution ->
+            execution.result?.let { result ->
+                add(ChatMessage(
+                    role = MessageRole.TOOL,
+                    toolResult = com.amaya.intelligence.data.remote.api.ToolResultMessage(
+                        toolCallId = execution.toolCallId,
+                        content = result,
+                        isError = execution.status == ToolStatus.ERROR,
+                        metadata = execution.metadata.filterKeys { it == "thoughtSignature" } +
+                            ("toolName" to execution.name)
+                    )
+                ))
+            }
+        }
+    }
+}
+
+internal fun canonicalHistoryToChatMessages(history: List<String>): List<ChatMessage> {
+    val messages = mutableListOf<ChatMessage>()
+    val text = StringBuilder()
+    val calls = mutableListOf<com.amaya.intelligence.data.remote.api.ToolCallMessage>()
+    val responseItems = mutableListOf<String>()
+
+    fun flushAssistant() {
+        if (text.isEmpty() && calls.isEmpty() && responseItems.isEmpty()) return
+        messages += ChatMessage(
+            role = MessageRole.ASSISTANT,
+            content = text.toString().takeIf { it.isNotBlank() },
+            toolCalls = calls.toList().takeIf { it.isNotEmpty() },
+            responseItems = responseItems.toList()
+        )
+        text.clear()
+        calls.clear()
+        responseItems.clear()
+    }
+
+    history.forEach { raw ->
+        val item = runCatching { JSONObject(raw) }.getOrNull() ?: return@forEach
+        when (item.optString("kind")) {
+            "assistant_text" -> text.append(item.optString("text"))
+            "response_item" -> item.optJSONObject("item")?.let { responseItem ->
+                responseItems += responseItem.toString()
+            }
+            "assistant_tool_call" -> calls += com.amaya.intelligence.data.remote.api.ToolCallMessage(
+                id = item.optString("id"),
+                name = item.optString("name"),
+                arguments = item.optJSONObject("arguments")?.toAnyMap().orEmpty(),
+                metadata = item.optJSONObject("metadata")?.toStringMap().orEmpty()
+            )
+            "tool_result" -> {
+                flushAssistant()
+                messages += ChatMessage(
+                    role = MessageRole.TOOL,
+                    toolResult = com.amaya.intelligence.data.remote.api.ToolResultMessage(
+                        toolCallId = item.optString("id"),
+                        content = item.optString("result"),
+                        isError = item.optBoolean("isError"),
+                        metadata = mapOf("toolName" to item.optString("name"))
+                    )
+                )
+            }
+        }
+    }
+    flushAssistant()
+    return messages
+}
+
+private fun JSONObject.toAnyMap(): Map<String, Any?> = buildMap {
+    keys().forEach { key -> put(key, opt(key).takeUnless { it == JSONObject.NULL }) }
+}
+
+private fun JSONObject.toStringMap(): Map<String, String> = buildMap {
+    keys().forEach { key -> put(key, optString(key, "")) }
 }

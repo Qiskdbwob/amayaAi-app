@@ -8,7 +8,7 @@ import javax.inject.Singleton
 
 /**
  * Central executor for all AI tools.
- * 
+ *
  * This class:
  * 1. Routes tool calls to the appropriate handler
  * 2. Applies security validation
@@ -42,7 +42,7 @@ class ToolExecutor @Inject constructor(
     private val browserUseToolset: BrowserUseToolset,
     private val commandValidator: CommandValidator
 ) {
-    
+
     private val tools: Map<String, Tool> by lazy {
         mapOf(
             listFilesTool.name      to listFilesTool,
@@ -65,10 +65,10 @@ class ToolExecutor @Inject constructor(
             webSearchTool.name      to webSearchTool
         ) + browserUseToolset.tools.associateBy { it.name }
     }
-    
+
     /**
      * Execute a tool by name with the given arguments.
-     * 
+     *
      * @param toolName Name of the tool to execute
      * @param arguments Map of argument name to value
      * @param workspacePath Optional workspace path to use as default working directory
@@ -97,30 +97,48 @@ class ToolExecutor @Inject constructor(
             )
         }
 
-        // FIX 1.6/3.6: Pass eventEmitter and toolCallId via arguments map (per-call context)
-        // instead of mutating mutable singleton fields on InvokeSubagentsTool.
-        // Keys prefixed with "__" to avoid collision with real tool arguments.
-        val finalArguments = buildMap<String, Any?> {
-            putAll(arguments)
-            // Auto-inject workspace as default working_dir for run_shell
-            if (toolName == "run_shell" && workspacePath != null && arguments["working_dir"] == null) {
+        val safeArguments = sanitizeModelArguments(arguments).getOrElse { error ->
+            return ToolResult.Error(error.message.orEmpty(), ErrorType.VALIDATION_ERROR)
+        }
+        val workspaceTools = setOf(
+            "list_files", "read_file", "write_file", "create_directory", "delete_file",
+            "edit_file", "find_files", "undo_change", "run_shell", "invoke_subagents"
+        )
+        if (toolName in workspaceTools && workspacePath.isNullOrBlank()) {
+            val hasExplicitTarget = when (toolName) {
+                "run_shell" -> (safeArguments["working_dir"] as? String)?.isNotBlank() == true
+                "read_file" -> (safeArguments["path"] as? String)?.isNotBlank() == true ||
+                    (safeArguments["paths"] as? List<*>)?.isNotEmpty() == true
+                "invoke_subagents" -> false
+                else -> (safeArguments["path"] as? String)?.isNotBlank() == true
+            }
+            if (!hasExplicitTarget) return ToolResult.Error(
+                "No workspace is selected. Select a workspace before using '$toolName'.",
+                ErrorType.VALIDATION_ERROR,
+                recoverable = true
+            )
+        }
+        val modelArguments = buildMap<String, Any?> {
+            putAll(safeArguments)
+            if (toolName == "run_shell" && !workspacePath.isNullOrBlank() && safeArguments["working_dir"] == null) {
                 put("working_dir", workspacePath)
             }
-            if (browserUseToolset.isBrowserTool(toolName) && toolCallId != null) {
-                put("__toolCallId", toolCallId)
-            }
-            // Inject emitter context for invoke_subagents
-            if (toolName == "invoke_subagents") {
-                if (onEvent != null) put("__eventEmitter", onEvent)
-                if (toolCallId != null) put("__toolCallId", toolCallId)
-                if (providerConnection != null) put("__providerConnection", providerConnection)
-                if (selectedModelId != null) put("__selectedModelId", selectedModelId)
-            }
         }
-        
-        // Pre-validate the tool call
-        val validation = commandValidator.validateToolCall(toolName, finalArguments)
-        
+        val callIdentity = toolCallId ?: return ToolResult.Error(
+            "Tool call '$toolName' is missing a call ID; approval cannot be bound safely.",
+            ErrorType.VALIDATION_ERROR
+        )
+        val executionContext = ToolExecutionContext(
+            toolCallId = callIdentity,
+            workspacePath = workspacePath,
+            onEvent = onEvent,
+            providerConnection = providerConnection,
+            selectedModelId = selectedModelId
+        )
+
+        // Pre-validate model-owned arguments only.
+        val validation = commandValidator.validateToolCall(toolName, modelArguments)
+
         when (validation) {
             is ValidationResult.Denied -> {
                 return ToolResult.Error(
@@ -128,18 +146,18 @@ class ToolExecutor @Inject constructor(
                     ErrorType.SECURITY_VIOLATION
                 )
             }
-            
+
             is ValidationResult.RequiresConfirmation -> {
                 val confirmed = onConfirmationRequired(
                     ConfirmationRequest(
                         toolName = toolName,
                         reason = validation.reason,
-                        details = finalArguments.toString(),
+                        details = modelArguments.toString(),
                         riskLevel = validation.riskLevel,
-                        toolCallId = toolCallId
+                        toolCallId = callIdentity
                     )
                 )
-                
+
                 if (!confirmed) {
                     return ToolResult.Error(
                         "User declined: ${validation.reason}",
@@ -147,13 +165,19 @@ class ToolExecutor @Inject constructor(
                     )
                 }
             }
-            
+
             is ValidationResult.Allowed -> { /* proceed */ }
         }
-        
-        // Execute the tool
-        val result = tool.execute(finalArguments)
-        
+
+        suspend fun run(context: ToolExecutionContext): ToolResult =
+            if (tool is ContextAwareTool) tool.execute(modelArguments, context)
+            else tool.execute(modelArguments)
+
+        val approvedContext = executionContext.copy(
+            confirmed = validation is ValidationResult.RequiresConfirmation
+        )
+        val result = run(approvedContext)
+
         // Handle nested confirmation requests from tools
         if (result is ToolResult.RequiresConfirmation) {
             val confirmed = onConfirmationRequired(
@@ -162,31 +186,28 @@ class ToolExecutor @Inject constructor(
                     reason = result.reason,
                     details = result.details,
                     riskLevel = RiskLevel.MEDIUM,
-                    toolCallId = toolCallId
+                    toolCallId = callIdentity
                 )
             )
-            
+
             if (!confirmed) {
                 return ToolResult.Error(
                     "User declined: ${result.reason}",
                     ErrorType.PERMISSION_ERROR
                 )
             }
-            
-            // Retry execution after confirmation — inject __confirmed=true so tools
-            // (e.g. RunShellTool) skip re-validation and don't block the command again.
-            return tool.execute(finalArguments + mapOf("__confirmed" to true))
+
+            return run(approvedContext.copy(confirmed = true))
         }
-        
+
         return result
     }
-    
+
     /**
      * Get all available tools.
      */
-    fun getTools(): List<Tool> = tools.values.toList()
     fun getModelCallableTools(): List<Tool> = tools.values.filter { it.visibility == ToolVisibility.MODEL }
-    
+
     /**
      * Get model-callable tool definitions for AI prompts (JSON Schema format).
      */
@@ -249,7 +270,7 @@ class ToolExecutor @Inject constructor(
                     - Git operations (git status, git diff, git commit)
                     - Complex text search (grep with regex)
                     - Build tools (gradle, make)
-                    
+
                     Do NOT use for basic file operations - use native tools instead.""".trimIndent(),
                 parameters = listOf(
                     ToolParameter("command", "string", "The shell command to run", required = true),
@@ -499,7 +520,9 @@ fun ToolDefinition.toAiToolDefinition(truncateDesc: Boolean = false): com.amaya.
                     items = param.items?.let { com.amaya.intelligence.data.remote.api.AiToolPropertyItems(it) }
                 )
             },
-            required = parameters.filter { it.required }.map { it.name }
-        )
+            required = parameters.filter { it.required }.map { it.name },
+            additionalProperties = false
+        ),
+        strict = false
     )
 }

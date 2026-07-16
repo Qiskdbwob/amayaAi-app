@@ -21,24 +21,30 @@ import javax.inject.Singleton
 class EditFileTool @Inject constructor(
     @ApplicationContext private val context: Context,
     private val commandValidator: CommandValidator
-) : Tool {
-    
+) : Tool, ContextAwareTool {
+
     companion object {
         const val MAX_FILE_SIZE = 5 * 1024 * 1024L // 5MB
         const val MAX_REPLACEMENTS = 100
-        
+        const val MAX_EXPANDED_DOCUMENT_BYTES = 20L * 1024 * 1024
+
         // Document formats that can be edited
         val DOCUMENT_EXTENSIONS = setOf(
             "docx", "xlsx", "pptx", "odt", "ods", "odp"
         )
     }
-    
+
     override val name = "edit_file"
 
     override val description = "Edit a file by replacing specific text, or apply a unified diff/patch. Supports text files and document formats (DOCX, XLSX, PPTX, ODT, ODS, ODP). Use 'old_content'+'new_content' for text replacement, or 'diff' for patch mode (text files only). Set 'create_backup=false' to skip backup."
-    
+
     override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
-        withContext(Dispatchers.IO) {
+        execute(arguments, ToolExecutionContext())
+
+    override suspend fun execute(
+        arguments: Map<String, Any?>,
+        executionContext: ToolExecutionContext
+    ): ToolResult = withContext(Dispatchers.IO) {
 
         val pathStr = arguments["path"] as? String
             ?: return@withContext ToolResult.Error("Missing required argument: path", ErrorType.VALIDATION_ERROR)
@@ -50,7 +56,9 @@ class EditFileTool @Inject constructor(
         if (diffStr != null) {
             when (val v = commandValidator.validatePath(pathStr, isWrite = true)) {
                 is ValidationResult.Denied -> return@withContext ToolResult.Error(v.reason, ErrorType.SECURITY_VIOLATION)
-                is ValidationResult.RequiresConfirmation -> return@withContext ToolResult.RequiresConfirmation(v.reason, pathStr)
+                is ValidationResult.RequiresConfirmation -> if (!executionContext.confirmed) {
+                    return@withContext ToolResult.RequiresConfirmation(v.reason, pathStr)
+                }
                 is ValidationResult.Allowed -> {}
             }
             val file = java.io.File(pathStr)
@@ -59,48 +67,50 @@ class EditFileTool @Inject constructor(
             // Parse unified diff — apply @@ hunks
             return@withContext applyUnifiedDiff(file, content, diffStr, createBackup)
         }
-        
+
         val oldContent = arguments["old_content"] as? String
             ?: return@withContext ToolResult.Error(
                 "Missing required argument: old_content",
                 ErrorType.VALIDATION_ERROR
             )
-        
+
         val newContent = arguments["new_content"] as? String
             ?: return@withContext ToolResult.Error(
                 "Missing required argument: new_content",
                 ErrorType.VALIDATION_ERROR
             )
-        
+
         // Validate path access
         when (val validation = commandValidator.validatePath(pathStr, isWrite = true)) {
             is ValidationResult.Denied -> return@withContext ToolResult.Error(
                 validation.reason,
                 ErrorType.SECURITY_VIOLATION
             )
-            is ValidationResult.RequiresConfirmation -> return@withContext ToolResult.RequiresConfirmation(
-                validation.reason,
-                "Path: $pathStr\nReplace: ${oldContent.take(50)}...\nWith: ${newContent.take(50)}..."
-            )
+            is ValidationResult.RequiresConfirmation -> if (!executionContext.confirmed) {
+                return@withContext ToolResult.RequiresConfirmation(
+                    validation.reason,
+                    "Path: $pathStr\nReplace: ${oldContent.take(50)}...\nWith: ${newContent.take(50)}..."
+                )
+            }
             is ValidationResult.Allowed -> { /* proceed */ }
         }
-        
+
         val file = File(pathStr)
-        
+
         if (!file.exists()) {
             return@withContext ToolResult.Error(
                 "File does not exist: $pathStr",
                 ErrorType.NOT_FOUND
             )
         }
-        
+
         if (!file.isFile) {
             return@withContext ToolResult.Error(
                 "Path is not a regular file: $pathStr",
                 ErrorType.VALIDATION_ERROR
             )
         }
-        
+
         val fileSize = file.length()
         if (fileSize > MAX_FILE_SIZE) {
             return@withContext ToolResult.Error(
@@ -108,20 +118,20 @@ class EditFileTool @Inject constructor(
                 ErrorType.SIZE_LIMIT
             )
         }
-        
+
         // Check if this is a document format
         val ext = file.extension.lowercase()
         if (ext in DOCUMENT_EXTENSIONS) {
             return@withContext editDocument(file, oldContent, newContent, ext, createBackup)
         }
-        
+
         val replaceAll = arguments["all_occurrences"] as? Boolean ?: false
         val dryRun = arguments["dry_run"] as? Boolean ?: false
-        
+
         try {
             // Read current content
             val currentContent = file.readText()
-            
+
             // Check if old_content exists
             if (!currentContent.contains(oldContent)) {
                 return@withContext ToolResult.Error(
@@ -130,7 +140,7 @@ class EditFileTool @Inject constructor(
                     recoverable = true
                 )
             }
-            
+
             // Count occurrences
             var occurrences = 0
             var searchIndex = 0
@@ -141,16 +151,16 @@ class EditFileTool @Inject constructor(
                 searchIndex = foundIndex + oldContent.length
                 if (occurrences >= MAX_REPLACEMENTS) break
             }
-            
+
             // Perform replacement
             val newFullContent = if (replaceAll) {
                 currentContent.replace(oldContent, newContent)
             } else {
                 currentContent.replaceFirst(oldContent, newContent)
             }
-            
+
             val replacementCount = if (replaceAll) occurrences else 1
-            
+
             // Dry run - just preview
             if (dryRun) {
                 return@withContext ToolResult.Success(
@@ -173,7 +183,7 @@ class EditFileTool @Inject constructor(
                     )
                 )
             }
-            
+
             // Create backup only if requested
             val backupFile = if (createBackup) {
                 File(file.parentFile ?: file, "${file.name}.bak.${System.currentTimeMillis()}").also {
@@ -197,7 +207,7 @@ class EditFileTool @Inject constructor(
                 backupFile?.copyTo(file, overwrite = true)
                 throw e
             }
-            
+
             ToolResult.Success(
                 output = buildString {
                     append("Successfully replaced $replacementCount occurrence(s)\n")
@@ -215,7 +225,7 @@ class EditFileTool @Inject constructor(
                     "backup" to (backupFile?.absolutePath ?: "none")
                 )
             )
-            
+
         } catch (e: SecurityException) {
             ToolResult.Error(
                 "Permission denied: ${e.message}",
@@ -311,7 +321,7 @@ class EditFileTool @Inject constructor(
             ToolResult.Error("Failed to apply diff: ${e.message}", ErrorType.EXECUTION_ERROR)
         }
     }
-    
+
     // ── Document Edit ───────────────────────────────────────────────────────────
     // Strategy: replace inside XML text nodes — match plain text, not raw XML markup.
     // This handles the case where oldContent spans a single XML <t> or <w:t> text node.
@@ -323,7 +333,7 @@ class EditFileTool @Inject constructor(
                     file.copyTo(it, overwrite = true)
                 }
             } else null
-            
+
             val targetXmlPaths = when (ext) {
                 "docx" -> listOf("word/document.xml")
                 "xlsx" -> listOf("xl/sharedStrings.xml") + (1..10).map { "xl/worksheets/sheet$it.xml" }
@@ -334,9 +344,9 @@ class EditFileTool @Inject constructor(
                     ErrorType.VALIDATION_ERROR
                 )
             }
-            
+
             val (changed, replacements) = editZipXmlTextNodes(file, targetXmlPaths, oldContent, newContent)
-            
+
             if (!changed) {
                 // Remove backup since nothing changed
                 backup?.delete()
@@ -347,7 +357,7 @@ class EditFileTool @Inject constructor(
                     recoverable = true
                 )
             }
-            
+
             ToolResult.Success(
                 output = "Successfully edited document: ${file.name} ($replacements replacement(s))" +
                         if (backup != null) "\nBackup: ${backup.name}" else "",
@@ -365,7 +375,7 @@ class EditFileTool @Inject constructor(
             )
         }
     }
-    
+
     // ── Helper: Edit XML text nodes inside ZIP entries ──────────────────────────
     // Replaces oldContent→newContent only within XML text content (not attributes/tags).
     // Returns (changed: Boolean, totalReplacements: Int)
@@ -377,26 +387,27 @@ class EditFileTool @Inject constructor(
     ): Pair<Boolean, Int> {
         // Read all entries into memory first
         val entries = mutableMapOf<String, ByteArray>()
+        val budget = ByteReadBudget(MAX_EXPANDED_DOCUMENT_BYTES)
         ZipInputStream(file.inputStream()).use { zipIn ->
             var entry = zipIn.nextEntry
             while (entry != null) {
-                entries[entry.name] = zipIn.readBytes()
+                entries[entry.name] = budget.readBytes(zipIn)
                 entry = zipIn.nextEntry
             }
         }
-        
+
         var totalReplacements = 0
         val modifiedEntries = mutableMapOf<String, ByteArray>()
-        
+
         for (path in targetPaths) {
             val bytes = entries[path] ?: continue
             val xmlStr = bytes.toString(Charsets.UTF_8)
-            
+
             // Replace plain text within XML text node values.
             // We escape oldContent for XML comparison, then replace.
             val oldEscaped = oldContent.escapeXml()
             val newEscaped = newContent.escapeXml()
-            
+
             // Count occurrences before replacing
             var count = 0
             var searchIdx = 0
@@ -406,16 +417,16 @@ class EditFileTool @Inject constructor(
                 count++
                 searchIdx = idx + oldEscaped.length
             }
-            
+
             if (count > 0) {
                 val edited = xmlStr.replace(oldEscaped, newEscaped)
                 modifiedEntries[path] = edited.toByteArray(Charsets.UTF_8)
                 totalReplacements += count
             }
         }
-        
+
         if (totalReplacements == 0) return Pair(false, 0)
-        
+
         // Write back ZIP with modified entries
         val tempFile = File.createTempFile(".doc_edit_", ".tmp", file.parentFile ?: file)
         ZipOutputStream(tempFile.outputStream()).use { zipOut ->
@@ -425,16 +436,16 @@ class EditFileTool @Inject constructor(
                 zipOut.closeEntry()
             }
         }
-        
+
         // Atomic replace
         if (!tempFile.renameTo(file)) {
             tempFile.copyTo(file, overwrite = true)
             tempFile.delete()
         }
-        
+
         return Pair(true, totalReplacements)
     }
-    
+
     // XML escape helper (same as WriteFileTool)
     private fun String.escapeXml(): String = this
         .replace("&", "&amp;")

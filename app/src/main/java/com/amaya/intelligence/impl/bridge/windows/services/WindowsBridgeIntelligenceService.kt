@@ -272,6 +272,7 @@ class WindowsBridgeIntelligenceService @Inject constructor(
                     )
                 }
             }
+            is AgentEvent.ResponseItem -> Unit
             is AgentEvent.Usage -> {
                 _uiState.update {
                     it.copy(
@@ -279,6 +280,10 @@ class WindowsBridgeIntelligenceService @Inject constructor(
                         totalOutputTokens = it.totalOutputTokens + event.outputTokens
                     )
                 }
+            }
+            is AgentEvent.Incomplete -> {
+                flushAssistantTextBuffer()
+                _uiState.update { it.copy(error = event.reason, isLoading = false, isStreaming = false) }
             }
             is AgentEvent.Error -> {
                 flushAssistantTextBuffer()

@@ -9,11 +9,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.amaya.intelligence.tools.ToolExecutionContext
 
 @Singleton
 class BrowserSessionManager @Inject constructor(
@@ -36,6 +39,8 @@ class BrowserSessionManager @Inject constructor(
     private var parentSummary = "Browser task"
     private val parentSubToolcalls = mutableListOf<JSONObject>()
     private var conversationKey: String? = null
+    private val executionMutex = Mutex()
+    @Volatile private var approvalGrant: BrowserApprovalGrant? = null
 
     fun resetForConversation(key: String) {
         if (conversationKey == key) return
@@ -46,6 +51,7 @@ class BrowserSessionManager @Inject constructor(
         parentStartedAt = BrowserResponseFormatter.nowIso()
         parentSummary = "Browser task"
         parentSubToolcalls.clear()
+        approvalGrant = null
         val tab = BrowserPageTab()
         _uiState.value = BrowserUiState(activeTabId = tab.id, tabs = listOf(tab))
     }
@@ -196,12 +202,14 @@ class BrowserSessionManager @Inject constructor(
         appendLog("browser", "", "error", message)
     }
 
-    suspend fun executeBrowserTask(arguments: Map<String, Any?>): String {
+    suspend fun executeBrowserTask(
+        arguments: Map<String, Any?>,
+        executionContext: ToolExecutionContext = ToolExecutionContext()
+    ): String = executionMutex.withLock {
         _uiState.update { it.copy(browserAccessActive = true) }
         val reset = arguments["reset_task"] == true || parentSubToolcalls.isEmpty()
         if (reset) {
-            parentTaskId = arguments["parent_call_id"]?.toString()
-                ?: arguments["__toolCallId"]?.toString()
+            parentTaskId = executionContext.toolCallId
                 ?: "browser_task_${UUID.randomUUID().toString().take(8)}"
             parentStartedAt = BrowserResponseFormatter.nowIso()
             parentSubToolcalls.clear()
@@ -227,7 +235,7 @@ class BrowserSessionManager @Inject constructor(
                 return parentSnapshot(lastLabel, index + 1, totalSteps).toString(2)
             }
         }
-        return parentSnapshot(lastLabel, totalSteps, totalSteps).toString(2)
+        parentSnapshot(lastLabel, totalSteps, totalSteps).toString(2)
     }
 
     private suspend fun executeNormalizedSubtool(
@@ -300,7 +308,7 @@ class BrowserSessionManager @Inject constructor(
             }.ifEmpty { listOf("get_status" to emptyMap()) }
         }
         val action = normalizeActionName(arguments["action"]?.toString() ?: "get_status")
-        val topLevelParams = arguments.filterKeys { it !in setOf("task", "action", "params", "steps", "reset_task", "debug", "__toolCallId", "parent_call_id") }
+        val topLevelParams = arguments.filterKeys { it !in setOf("task", "action", "params", "steps", "reset_task", "debug", "parent_call_id") }
         val nestedParams = (arguments["params"] as? Map<*, *>)?.entries?.associate { it.key.toString() to it.value }.orEmpty()
         return listOf(action to (topLevelParams + nestedParams))
     }
@@ -313,7 +321,6 @@ class BrowserSessionManager @Inject constructor(
             "click_element" -> "click"
             "scroll_page", "swipe" -> "scroll"
             "get_screenshot" -> "screenshot"
-            "eval", "evaluate", "execute_script" -> "evaluate_script"
             "reload_page" -> "reload"
             "new_page" -> "new_tab"
             "close_page" -> "close_tab"
@@ -442,6 +449,15 @@ class BrowserSessionManager @Inject constructor(
     }
 
     fun allowSensitiveAndResume() {
+        _uiState.value.safetyPrompt?.let { prompt ->
+            approvalGrant = BrowserApprovalGrant(
+                toolName = prompt.toolName.orEmpty(),
+                selector = prompt.selector,
+                origin = prompt.origin.orEmpty(),
+                actionFingerprint = prompt.actionFingerprint.orEmpty(),
+                expiresAt = System.currentTimeMillis() + 60_000L
+            )
+        }
         _uiState.update {
             it.copy(
                 status = BrowserAgentStatus.IDLE,
@@ -470,13 +486,41 @@ class BrowserSessionManager @Inject constructor(
     private suspend fun executeBrowserTool(toolName: String, arguments: Map<String, Any?>): BrowserToolResponse {
         val controller = ensureController()
             ?: return BrowserToolResponse.Failure("Browser UI is not ready. Open AI Browser Operator and retry.")
-        val forceSensitive = arguments["allow_sensitive"] == true || arguments["__confirmed"] == true
-        if (forceSensitive) allowSensitiveAndResume()
+        val origin = runCatching { android.net.Uri.parse(_uiState.value.activeUrl).let { "${it.scheme}://${it.authority}" } }
+            .getOrDefault("")
+        fun fingerprint(selector: String?): String = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(listOf(
+                toolName,
+                selector.orEmpty(),
+                arguments.toSortedMap().entries.joinToString("&") { "${it.key}=${it.value}" }
+            ).joinToString("|").toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        fun consumeApproval(selector: String?): Boolean {
+            val grant = approvalGrant ?: return false
+            val valid = grant.expiresAt >= System.currentTimeMillis() &&
+                grant.toolName == toolName &&
+                grant.origin == origin &&
+                grant.actionFingerprint == fingerprint(selector) &&
+                grant.selector == selector
+            if (valid) approvalGrant = null
+            return valid
+        }
+        fun approvalPause(reason: String, selector: String? = null) = BrowserToolResponse.SafetyPause(
+            BrowserSafetyPrompt(
+                reason = reason,
+                selector = selector,
+                toolName = toolName,
+                origin = origin,
+                actionFingerprint = fingerprint(selector)
+            )
+        )
 
         suspend fun guardSelector(selector: String): BrowserToolResponse? {
             val element = controller.inspectElement(selector)
-            if (!forceSensitive && safetyGuard.isSensitiveField(element)) {
-                return BrowserToolResponse.SafetyPause(safetyGuard.buildPrompt(toolName, element))
+            if (safetyGuard.requiresApproval(toolName, element) && !consumeApproval(selector)) {
+                return BrowserToolResponse.SafetyPause(
+                    safetyGuard.buildPrompt(toolName, element, origin, fingerprint(selector))
+                )
             }
             return null
         }
@@ -521,7 +565,13 @@ class BrowserSessionManager @Inject constructor(
                     ?: return domBackedFailure(controller, "Missing selector/element_id for focus. Use element_id from interactive_elements.")
                 guardSelector(selector) ?: controller.focus(selector)
             }
-            "press_key" -> controller.pressKey(arguments["key"]?.toString() ?: arguments["text"]?.toString() ?: "ENTER").also { updateTabAfterNavigation(controller) }
+            "press_key" -> {
+                val key = arguments["key"]?.toString() ?: arguments["text"]?.toString() ?: "ENTER"
+                if (key.equals("ENTER", true) && !consumeApproval(null)) {
+                    return approvalPause("Pressing Enter may submit a form or trigger an external action. User approval is required.")
+                }
+                controller.pressKey(key).also { updateTabAfterNavigation(controller) }
+            }
             "search" -> {
                 val text = arguments["query"]?.toString() ?: arguments["text"]?.toString()
                     ?: return domBackedFailure(controller, "Missing query/text for search.")
@@ -535,7 +585,9 @@ class BrowserSessionManager @Inject constructor(
                 val text = arguments["text"]?.toString() ?: return BrowserToolResponse.Failure("Missing text for type_text")
                 guardSelector(selector) ?: run {
                     val typed = controller.typeText(selector, text, boolArg(arguments, "append", true))
-                    if (typed is BrowserToolResponse.Success && boolArg(arguments, "submit", false)) {
+                    if (typed is BrowserToolResponse.Success && boolArg(arguments, "submit", false) && !consumeApproval(selector)) {
+                        approvalPause("Submitting this form may create an external change. User approval is required.", selector)
+                    } else if (typed is BrowserToolResponse.Success && boolArg(arguments, "submit", false)) {
                         controller.submitFromContext(selector).also { updateTabAfterNavigation(controller) }
                     } else typed
                 }
@@ -561,11 +613,6 @@ class BrowserSessionManager @Inject constructor(
             "get_dom" -> controller.getDom()
             "get_visible_text" -> controller.getVisibleText()
             "get_screenshot" -> controller.screenshot()
-            "evaluate_script" -> {
-                val script = arguments["script"]?.toString() ?: arguments["text"]?.toString()
-                    ?: return BrowserToolResponse.Failure("Missing script for evaluate_script")
-                controller.evaluateScript(script, intArg(arguments, "max_chars", 4000))
-            }
             "find_element" -> {
                 val query = queryArg(arguments)
                 if (query == null) {

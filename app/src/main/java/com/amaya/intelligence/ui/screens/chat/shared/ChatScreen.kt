@@ -40,7 +40,6 @@ import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.domain.ai.displayName
 import com.amaya.intelligence.domain.models.ConnectionState
 import com.amaya.intelligence.domain.models.ToolExecution
-import com.amaya.intelligence.ui.components.shared.ConfirmationDialog
 import com.amaya.intelligence.ui.components.shared.ConversationModeSheet
 import com.amaya.intelligence.ui.components.shared.LocalhostLinkBottomSheet
 import com.amaya.intelligence.ui.components.shared.LocalhostLinkInfo
@@ -84,7 +83,6 @@ fun ChatScreen(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
-    val confirmationRequest by viewModel.confirmationRequest.collectAsState()
     val todoItems by viewModel.todoItems.collectAsState()
     val localReminderCount by viewModel.activeReminderCount.collectAsState()
     val effectiveReminderCount = if (activeReminderCount >= 0) activeReminderCount else localReminderCount
@@ -105,7 +103,6 @@ fun ChatScreen(
     }
     val doStopGeneration: () -> Unit = remember(viewModel) { { viewModel.stopGeneration() } }
     val doClearConversation: () -> Unit = remember(viewModel) { { viewModel.clearConversation() } }
-    val doRespondToConfirmation: (Boolean) -> Unit = remember(viewModel) { { viewModel.respondToConfirmation(it) } }
     val doSelectModel: (String) -> Unit = remember(viewModel) { { viewModel.selectModel(it) } }
     val doLoadConversation: (Long) -> Unit = remember(viewModel) { { viewModel.loadConversation(it) } }
     val doDeleteConversation: (Long) -> Unit = remember(viewModel) { { viewModel.deleteConversation(it) } }
@@ -255,10 +252,14 @@ fun ChatScreen(
     val selectedModelFallbackLabel = config?.selectedModelFallbackLabel ?: "Select Model"
 
     val onToolAccept: ((ToolExecution) -> Unit)? = remember(viewModel) {
-        { execution: ToolExecution -> viewModel.respondToToolInteraction(execution.toolCallId, true) }
+        { execution: ToolExecution ->
+            viewModel.respondToToolInteraction(execution.metadata["approvalId"] ?: execution.toolCallId, true)
+        }
     }
     val onToolDecline: ((ToolExecution) -> Unit)? = remember(viewModel) {
-        { execution: ToolExecution -> viewModel.respondToToolInteraction(execution.toolCallId, false) }
+        { execution: ToolExecution ->
+            viewModel.respondToToolInteraction(execution.metadata["approvalId"] ?: execution.toolCallId, false)
+        }
     }
 
     val displayMessages by remember(uiState.messages) {
@@ -358,14 +359,6 @@ fun ChatScreen(
             delay(120)
             performScrollToBottom(true)
         }
-    }
-
-    confirmationRequest?.let { request ->
-        ConfirmationDialog(
-            request = request,
-            onConfirm = { doRespondToConfirmation(true) },
-            onDismiss = { doRespondToConfirmation(false) }
-        )
     }
 
     BackHandler(
@@ -550,6 +543,7 @@ fun ChatScreen(
                 scope = scope,
                 onClearError = doClearError,
                 onSendMessage = doSendMessage,
+                supportsImages = selectedModelItem?.supportsImages == true,
                 onSendMessageWithImage = doSendMessageWithImage,
                 onClearImageAttachment = {
                     attachedImageBase64 = null

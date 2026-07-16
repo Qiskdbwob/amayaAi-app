@@ -7,10 +7,10 @@ import javax.inject.Singleton
 
 /**
  * Security guardrails for command and path validation.
- * 
+ *
  * This is the "Shield" module of the AI Coding Agent. Every tool call
  * from the AI goes through validation before execution.
- * 
+ *
  * SECURITY PRINCIPLES:
  * 1. Whitelist over Blacklist: Only allow known-safe commands
  * 2. Defense in Depth: Multiple layers of validation
@@ -21,49 +21,48 @@ import javax.inject.Singleton
 class CommandValidator @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
-    
+
     companion object {
         // ====================================================================
         // COMMAND WHITELIST
         // ====================================================================
-        
+
         /**
          * Commands that are always allowed.
          * These are safe, read-only or low-impact commands.
          */
         private val ALWAYS_ALLOWED = setOf(
             "echo", "printf", "cat", "head", "tail",
-            "grep", "awk", "sed", "cut", "sort", "uniq",
-            "wc", "tr", "diff", "patch",
-            "ls", "find", "which", "whereis", "file",
+            "grep", "cut", "sort", "uniq",
+            "wc", "tr", "diff",
+            "ls", "which", "whereis", "file",
             "pwd", "basename", "dirname", "realpath",
             "date", "cal", "uptime",
-            // Build tools — FIX #16: gradle/gradlew were documented as whitelisted but missing
-            "gradle", "gradlew", "./gradlew",
-            // Node.js/npm commands - handled by RunShellTool with NodeRunner
-            "npm", "node", "npx",
-            // Android tools
-            "adb", "aapt", "apksigner",
+            // Build and package tools can execute project-controlled code; require confirmation below.
+            // Read-only Android inspection remains allowed.
+            "aapt", "apksigner",
             // FIX 1.10: Removed "task_status" and "task_stop" — no tool/service/script defines them.
             // Adding unimplemented commands to the whitelist expands attack surface for no benefit.
         )
-        
+
         /**
          * Commands allowed but may require confirmation for certain args.
          */
         private val CONDITIONALLY_ALLOWED = setOf(
-            "git", "logcat", "am", "pm",
+            "git", "logcat", "am", "pm", "adb",
+            "gradle", "gradlew", "npm", "node", "npx",
+            "awk", "sed", "find", "patch",
             "mkdir", "touch", "cp", "mv",
             "chmod", "chown",
             "curl", "wget",
             "tar", "zip", "unzip", "gzip", "gunzip"
             // Note: adb, gradle, gradlew moved to ALWAYS_ALLOWED (FIX #16)
         )
-        
+
         // ====================================================================
         // COMMAND BLACKLIST
         // ====================================================================
-        
+
         /**
          * Commands that are NEVER allowed.
          * These can cause irreversible system damage.
@@ -81,7 +80,7 @@ class CommandValidator @Inject constructor(
             "setenforce",               // SELinux
             "factory_reset"             // Factory reset
         )
-        
+
         /**
          * Dangerous argument patterns that block even allowed commands.
          */
@@ -101,11 +100,11 @@ class CommandValidator @Inject constructor(
             Regex(""">\s*/etc/"""),                  // Write to /etc
             Regex(""">\s*/system/""")                // Write to /system
         )
-        
+
         // ====================================================================
         // PROTECTED PATHS
         // ====================================================================
-        
+
         /**
          * System paths that should never be modified.
          */
@@ -123,79 +122,63 @@ class CommandValidator @Inject constructor(
             ProtectedPath("/data/system", "System settings")
         )
     }
-    
+
     // Current app's data directory (safe to access)
     private val appDataDir: String by lazy {
-        context.filesDir.absolutePath.substringBefore("/files")
+        context.filesDir.parentFile?.absolutePath ?: context.filesDir.absolutePath
     }
-    
+
     // ========================================================================
     // PUBLIC API
     // ========================================================================
-    
+
     /**
      * Validate a shell command before execution.
      */
     fun validateCommand(command: String): ValidationResult {
-        val trimmed = command.trim()
-        
-        // Empty command check
-        if (trimmed.isEmpty()) {
-            return ValidationResult.Denied("Empty command", command)
-        }
-        
-        // Extract the base command (first word)
-        val baseCommand = extractBaseCommand(trimmed)
-        
-        // Check blacklist first
-        if (baseCommand in ALWAYS_BLOCKED) {
-            return ValidationResult.Denied(
-                "Command '$baseCommand' is blocked for safety",
-                command
-            )
-        }
-        
-        // Check for root command
-        if (trimmed.startsWith("su ") || trimmed == "su") {
-            return ValidationResult.RequiresConfirmation(
-                "This command requires root access",
-                command,
-                RiskLevel.ROOT
-            )
-        }
-        
-        // Check dangerous patterns
-        for (pattern in DANGEROUS_PATTERNS) {
-            if (pattern.containsMatchIn(trimmed)) {
-                return ValidationResult.Denied(
-                    "Command contains dangerous pattern: ${pattern.pattern}",
-                    command
-                )
-            }
-        }
-        
-        // Check whitelist
-        if (baseCommand in ALWAYS_ALLOWED) {
-            return ValidationResult.Allowed
-        }
-        
-        // Check conditional commands
-        if (baseCommand in CONDITIONALLY_ALLOWED) {
-            return validateConditionalCommand(baseCommand, trimmed)
-        }
-        
-        // Unknown command - require confirmation
-        return ValidationResult.RequiresConfirmation(
-            "Unknown command '$baseCommand' requires confirmation",
-            command,
-            RiskLevel.MEDIUM
+        val argv = parseSafeCommandArguments(command) ?: return ValidationResult.Denied(
+            "Shell operators, substitutions, redirects, and unterminated quotes are not allowed",
+            command
         )
+        if (argv.isEmpty()) return ValidationResult.Denied("Empty command", command)
+        val executable = argv.first()
+        if (executable.contains('/') && !java.io.File(executable).isAbsolute && !executable.startsWith("./")) {
+            return ValidationResult.Denied("Executable path must be absolute, relative to the workspace, or resolved from PATH", command)
+        }
+        val baseCommand = executable.substringAfterLast('/')
+        if (baseCommand in ALWAYS_BLOCKED || baseCommand in setOf("sh", "bash", "dash", "zsh", "ash", "su", "sudo")) {
+            return ValidationResult.Denied("Command '$baseCommand' is blocked for safety", command)
+        }
+        DANGEROUS_PATTERNS.firstOrNull { it.containsMatchIn(command) }?.let { pattern ->
+            return ValidationResult.Denied("Command contains dangerous pattern: ${pattern.pattern}", command)
+        }
+        return when (baseCommand) {
+            in ALWAYS_ALLOWED -> ValidationResult.RequiresConfirmation(
+                "Run shell command '$baseCommand'",
+                command,
+                RiskLevel.LOW
+            )
+            in CONDITIONALLY_ALLOWED -> validateConditionalCommand(baseCommand, argv, command)
+            else -> ValidationResult.RequiresConfirmation(
+                "Unknown command '$baseCommand' requires confirmation",
+                command,
+                RiskLevel.MEDIUM
+            )
+        }
     }
-    
+
+    /** Parse one executable plus argv. Compound shell grammar is deliberately unsupported. */
+    fun parseCommandArguments(command: String): List<String>? = parseSafeCommandArguments(command)
+
     /**
      * Validate a file path for read or write access.
      */
     fun validatePath(path: String, isWrite: Boolean): ValidationResult {
+        if (path.isBlank()) return ValidationResult.Denied("Path is required", path)
+        if (!java.io.File(path).isAbsolute) {
+            return ValidationResult.Denied("Path must be absolute. Select a workspace or provide an absolute path.", path)
+        }
+        if (containsPathTraversal(path)) return ValidationResult.Denied("Path traversal detected", path)
         val normalizedPath = normalizePath(path)
 
         // FIX 3: Resolve symlinks to prevent symlink-based path traversal bypass.
@@ -206,8 +189,8 @@ class CommandValidator @Inject constructor(
         if (canonicalPath != normalizedPath) {
             // Re-check canonical path against protected prefixes
             for (protected in PROTECTED_PATHS) {
-                if (canonicalPath.startsWith(protected.path) &&
-                    !canonicalPath.startsWith("/data/data/${context.packageName}")) {
+                if (isWithinPath(canonicalPath, protected.path) &&
+                    !isWithinPath(canonicalPath, appDataDir)) {
                     return ValidationResult.Denied(
                         "Symlink traversal into protected path detected: $path → $canonicalPath",
                         path
@@ -217,32 +200,32 @@ class CommandValidator @Inject constructor(
         }
 
         // Check if it's our app's directory (always allowed)
-        if (normalizedPath.startsWith(appDataDir)) {
+        if (isWithinPath(normalizedPath, appDataDir)) {
             return ValidationResult.Allowed
         }
-        
+
         // Check protected paths
         for (protected in PROTECTED_PATHS) {
-            if (normalizedPath.startsWith(protected.path)) {
+            if (isWithinPath(normalizedPath, protected.path)) {
                 // Special case: reading from own data directory
-                if (normalizedPath.startsWith("/data/data/${context.packageName}")) {
+                if (isWithinPath(normalizedPath, appDataDir)) {
                     return ValidationResult.Allowed
                 }
-                
+
                 if (isWrite && !protected.allowWrite) {
                     return ValidationResult.Denied(
                         "Cannot write to protected path: ${protected.reason}",
                         path
                     )
                 }
-                
+
                 if (!isWrite && !protected.allowRead) {
                     return ValidationResult.Denied(
                         "Cannot read from protected path: ${protected.reason}",
                         path
                     )
                 }
-                
+
                 // Reading from protected but readable paths requires confirmation
                 if (!isWrite && protected.allowRead) {
                     return ValidationResult.RequiresConfirmation(
@@ -253,18 +236,10 @@ class CommandValidator @Inject constructor(
                 }
             }
         }
-        
-        // Check for path traversal attempts
-        if (containsPathTraversal(normalizedPath)) {
-            return ValidationResult.Denied(
-                "Path traversal detected",
-                path
-            )
-        }
-        
+
         return ValidationResult.Allowed
     }
-    
+
     /**
      * Check if a tool operation is allowed.
      */
@@ -272,26 +247,32 @@ class CommandValidator @Inject constructor(
         toolName: String,
         arguments: Map<String, Any?>
     ): ValidationResult {
+        missingToolTarget(toolName, arguments)?.let { return ValidationResult.Denied(it, "") }
         return when (toolName) {
             "run_shell" -> {
-                val command = arguments["command"] as? String ?: ""
-                validateCommand(command)
+                val commandResult = validateCommand(arguments["command"] as? String ?: "")
+                val workingDir = arguments["working_dir"] as? String
+                val pathResult = if (workingDir.isNullOrBlank()) ValidationResult.Allowed
+                    else validatePath(workingDir, isWrite = false)
+                combineValidation(commandResult, pathResult)
             }
-            
+
             "read_file" -> {
-                val path = arguments["path"] as? String ?: ""
-                validatePath(path, isWrite = false)
+                val paths = (arguments["paths"] as? List<*>)
+                    ?.mapNotNull { (it as? String)?.takeIf(String::isNotBlank) }
+                if (paths != null) combinePathValidation(paths, isWrite = false)
+                else validatePath(arguments["path"] as? String ?: "", isWrite = false)
             }
-            
+
             "write_file" -> {
                 val path = arguments["path"] as? String ?: ""
                 validatePath(path, isWrite = true)
             }
-            
+
             "delete_file" -> {
                 val path = arguments["path"] as? String ?: ""
                 val result = validatePath(path, isWrite = true)
-                
+
                 // Deletion always requires confirmation
                 if (result is ValidationResult.Allowed) {
                     ValidationResult.RequiresConfirmation(
@@ -301,7 +282,7 @@ class CommandValidator @Inject constructor(
                     )
                 } else result
             }
-            
+
             "list_files" -> {
                 val path = arguments["path"] as? String ?: ""
                 validatePath(path, isWrite = false)
@@ -335,95 +316,90 @@ class CommandValidator @Inject constructor(
             else -> ValidationResult.Allowed
         }
     }
-    
+
     // ========================================================================
     // PRIVATE HELPERS
     // ========================================================================
-    
-    private fun extractBaseCommand(command: String): String {
-        // FIX 3.9: Strip all env var prefixes (A=1 B=2 cmd → cmd)
-        var trimmed = command.trim()
-        while (trimmed.matches(Regex("""\w+=\S+\s+.*"""))) {
-            trimmed = trimmed.substringAfter(" ").trim()
-        }
-        val base = trimmed.split(Regex("""\s+""")).firstOrNull() ?: ""
 
-        // FIX 9: Block "sh -c" / "bash -c" metacharacter bypass.
-        // "sh -c 'rm -rf /'" passes base="sh" (whitelisted) but executes blacklisted content.
-        // Detect -c flag and validate the shell argument string too.
-        val tokens = trimmed.split(Regex("""\s+"""))
-        val shell = setOf("sh", "bash", "dash", "zsh", "ash")
-        if (base in shell) {
-            val cIdx = tokens.indexOf("-c")
-            if (cIdx >= 0 && cIdx + 1 < tokens.size) {
-                // Extract the shell command string and re-validate it
-                val shellCmd = tokens.drop(cIdx + 1).joinToString(" ")
-                    .trim('"', '\'')
-                val innerBase = extractBaseCommand(shellCmd)
-                if (innerBase !in ALWAYS_ALLOWED) {
-                    // Return a sentinel that will fail whitelist check
-                    return "__BLOCKED_SHELL_INJECTION__"
-                }
-                // Also check blacklist patterns on the inner command
-                if (ALWAYS_BLOCKED.any { shellCmd.split(Regex("""\s+""")).firstOrNull() == it }) {
-                    return "__BLOCKED_SHELL_INJECTION__"
-                }
+    private fun combinePathValidation(paths: List<String>, isWrite: Boolean): ValidationResult {
+        var confirmation: ValidationResult.RequiresConfirmation? = null
+        for (path in paths) {
+            when (val result = validatePath(path, isWrite)) {
+                is ValidationResult.Denied -> return result
+                is ValidationResult.RequiresConfirmation -> if (confirmation == null) confirmation = result
+                is ValidationResult.Allowed -> Unit
             }
         }
-
-        return base
+        return confirmation ?: ValidationResult.Allowed
     }
-    
+
     private fun validateConditionalCommand(
         baseCommand: String,
+        argv: List<String>,
         fullCommand: String
     ): ValidationResult {
         return when (baseCommand) {
-            "git" -> {
-                // Allow most git commands, require confirmation for push/reset
-                when {
-                    fullCommand.contains("push") -> ValidationResult.RequiresConfirmation(
-                        "Git push will modify remote repository",
+            "git" -> ValidationResult.RequiresConfirmation(
+                "Git commands can execute configured aliases or modify the repository",
+                fullCommand,
+                if ("reset" in argv || "clean" in argv) RiskLevel.HIGH else RiskLevel.MEDIUM
+            )
+
+            "mv", "cp" -> {
+                val destination = argv.lastOrNull() ?: ""
+                combineValidation(
+                    validatePath(destination, isWrite = true),
+                    ValidationResult.RequiresConfirmation(
+                        "File copy or move can overwrite data",
                         fullCommand,
                         RiskLevel.MEDIUM
                     )
-                    fullCommand.contains("reset --hard") -> ValidationResult.RequiresConfirmation(
-                        "Git reset --hard will discard uncommitted changes",
-                        fullCommand,
-                        RiskLevel.HIGH
-                    )
-                    fullCommand.contains("clean -fd") -> ValidationResult.RequiresConfirmation(
-                        "Git clean will delete untracked files",
-                        fullCommand,
-                        RiskLevel.HIGH
-                    )
-                    else -> ValidationResult.Allowed
-                }
+                )
             }
-            
-            "mv", "cp" -> {
-                // Check if destination is protected
-                val parts = fullCommand.split(Regex("""\s+"""))
-                val destination = parts.lastOrNull() ?: ""
-                validatePath(destination, isWrite = true)
-            }
-            
+
+            "awk", "sed", "find", "patch" -> ValidationResult.RequiresConfirmation(
+                "Command can write files or execute external programs",
+                fullCommand,
+                RiskLevel.MEDIUM
+            )
+
+            "gradle", "gradlew", "npm", "node", "npx", "adb", "am", "pm" -> ValidationResult.RequiresConfirmation(
+                "Command can execute code or modify device/project state",
+                fullCommand,
+                RiskLevel.MEDIUM
+            )
+
             "curl", "wget" -> ValidationResult.RequiresConfirmation(
                 "Network request to external URL",
                 fullCommand,
                 RiskLevel.MEDIUM
             )
-            
+
             "chmod", "chown" -> ValidationResult.RequiresConfirmation(
                 "Changing file permissions",
                 fullCommand,
                 RiskLevel.HIGH
             )
-            
-            else -> ValidationResult.Allowed
+
+            else -> ValidationResult.RequiresConfirmation(
+                "Run shell command '$baseCommand'",
+                fullCommand,
+                RiskLevel.MEDIUM
+            )
         }
     }
-    
+
+    private fun combineValidation(vararg results: ValidationResult): ValidationResult {
+        results.filterIsInstance<ValidationResult.Denied>().firstOrNull()?.let { return it }
+        return results.filterIsInstance<ValidationResult.RequiresConfirmation>()
+            .maxByOrNull { it.riskLevel.ordinal } ?: ValidationResult.Allowed
+    }
+
+    private fun isWithinPath(candidate: String, root: String): Boolean {
+        val normalizedRoot = root.trimEnd('/')
+        return candidate == normalizedRoot || candidate.startsWith("$normalizedRoot/")
+    }
+
     private fun normalizePath(path: String): String {
         // Resolve all . and .. segments, remove double slashes
         val parts = path.replace(Regex("""//+"""), "/").split("/")

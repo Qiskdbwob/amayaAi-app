@@ -236,12 +236,16 @@ class AndroidBrowserController(
         }
         suppressSoftKeyboard()
         when (response) {
-            is BrowserToolResponse.Success -> response.copy(
+            is BrowserToolResponse.Success -> if (verified) response.copy(
                 metadata = response.metadata + mapOf(
-                    "verified" to verified,
+                    "verified" to true,
                     "before_state" to (before?.toString() ?: ""),
                     "after_state" to (after?.toString() ?: "")
                 )
+            ) else BrowserToolResponse.Failure(
+                "Text input completed but the page did not reflect the change",
+                recoverable = true,
+                metadata = mapOf("before_state" to (before?.toString() ?: ""), "after_state" to (after?.toString() ?: ""))
             )
             else -> response
         }
@@ -367,33 +371,6 @@ class AndroidBrowserController(
         if (submitted is BrowserToolResponse.Failure) pressKey("ENTER") else submitted
     }
 
-    suspend fun evaluateScript(script: String, maxChars: Int): BrowserToolResponse = withContext(Dispatchers.Main.immediate) {
-        val source = org.json.JSONObject.quote(script)
-        val wrapped = """
-            (function() {
-              var __src = $source;
-              try {
-                var result;
-                try {
-                  result = (new Function('return (' + __src + ');'))();
-                } catch (__exprErr) {
-                  result = (new Function(__src))();
-                }
-                if (result === undefined) result = null;
-                if (typeof result === 'string') return result;
-                return JSON.stringify(result);
-              } catch (e) {
-                return JSON.stringify({ ok:false, error:String(e && (e.stack || e.message) || e) });
-              }
-            })();
-        """.trimIndent()
-        val output = evaluateString(wrapped).take(maxChars.coerceIn(200, 20000))
-        BrowserToolResponse.Success(
-            output = output,
-            metadata = currentMetadata() + mapOf("script_output" to output, "truncated" to (output.length >= maxChars.coerceIn(200, 20000)))
-        )
-    }
-
     suspend fun clearInput(selector: String): BrowserToolResponse = withContext(Dispatchers.Main.immediate) {
         var json = evaluateJson(DomInspector.clearScript(selector))
         waitForDomReady(700)
@@ -409,11 +386,15 @@ class AndroidBrowserController(
         }
         suppressSoftKeyboard()
         when (response) {
-            is BrowserToolResponse.Success -> response.copy(
+            is BrowserToolResponse.Success -> if (cleared) response.copy(
                 metadata = response.metadata + mapOf(
-                    "verified" to cleared,
+                    "verified" to true,
                     "after_state" to (after?.toString() ?: "")
                 )
+            ) else BrowserToolResponse.Failure(
+                "Clear input completed but the field is still populated",
+                recoverable = true,
+                metadata = mapOf("after_state" to (after?.toString() ?: ""))
             )
             else -> response
         }

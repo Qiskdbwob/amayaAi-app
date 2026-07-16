@@ -20,9 +20,9 @@ import javax.inject.Singleton
 
 /**
  * Google Gemini AI provider.
- * 
+ *
  * API Documentation: https://ai.google.dev/gemini-api/docs
- * 
+ *
  * KEY FEATURES:
  * - Function calling via functionDeclarations
  * - Streaming via streamGenerateContent endpoint
@@ -35,73 +35,79 @@ class GeminiProvider @Inject constructor(
     private val settingsProvider: () -> AiSettings,
     private val settingsManager: AiSettingsManager
 ) : AiProvider {
-    
+
     companion object {
         const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
     }
-    
+
     override val name = "Google Gemini"
-    
+
     override suspend fun chat(request: ChatRequest): Flow<ChatResponse> = callbackFlow {
+        fun sendResponse(response: ChatResponse): Boolean {
+            val result = trySend(response)
+            if (result.isFailure) close(IllegalStateException("Gemini stream event buffer overflow"))
+            return result.isSuccess
+        }
         val settings = settingsProvider()
         val connectionId = request.connectionId.ifBlank {
             settings.activeSelection?.connectionId.orEmpty()
         }
         val apiKey = settingsManager.getConnectionApiKey(connectionId)
-        
+
         if (apiKey.isBlank()) {
-            trySend(ChatResponse.Error("Gemini API key is missing for the selected provider", "AUTH_ERROR"))
+            sendResponse(ChatResponse.Error("Gemini API key is missing for the selected provider", "AUTH_ERROR"))
             close()
             return@callbackFlow
         }
-        
+
         // Build request body
         val geminiRequest = buildGeminiRequest(request)
         val jsonBody = moshi.adapter(GeminiRequest::class.java).toJson(geminiRequest)
-        
+
         val endpoint = if (request.stream) "streamGenerateContent" else "generateContent"
         val url = "$BASE_URL/models/${request.model}:$endpoint"
-        
+
         val httpRequest = Request.Builder()
             .url(url)
             .addHeader("Content-Type", "application/json")
             .addHeader("x-goog-api-key", apiKey)
             .post(jsonBody.toRequestBody("application/json".toMediaType()))
             .build()
-        
+
         if (request.stream) {
             // Gemini uses newline-delimited JSON for streaming
             try {
-                val response = httpClient.newCall(httpRequest).execute()
-                
+                val response = httpClient.newCall(httpRequest).awaitResponse()
+
                 if (!response.isSuccessful) {
-                    val body = response.body?.string()
-                    trySend(ChatResponse.Error("API error: ${response.code} - $body"))
+                    val body = response.body?.readUtf8Limited(MAX_ERROR_BODY_BYTES)
+                    sendResponse(ChatResponse.Error("API error: ${response.code} - $body"))
                     close()
                     return@callbackFlow
                 }
-                
+
                 val reader = BufferedReader(InputStreamReader(response.body?.byteStream()))
                 val jsonBuffer = StringBuilder()
                 var bracketCount = 0
+                var terminalFinishReason: String? = null
                 // FIX 2.4: Use escapeCount parity to correctly handle \\" (double-escaped backslash).
                 // Old logic: prevChar != '\\' only handled one level — "\\" before '"' was wrongly
                 // treated as escape, flipping inString mid-object and causing parse errors.
                 var inString = false
                 var escapeCount = 0
-                
+
                 reader.use { bufferedReader ->
                     var char: Int
                     while (bufferedReader.read().also { char = it } != -1) {
                         val c = char.toChar()
-                        
+
                         // Skip array brackets at root level
                         if (bracketCount == 0 && (c == '[' || c == ']' || c == ',')) {
                             continue
                         }
-                        
+
                         jsonBuffer.append(c)
-                        
+
                         // Track string state with backslash parity
                         if (c == '\\') {
                             escapeCount++
@@ -111,7 +117,7 @@ class GeminiProvider @Inject constructor(
                             }
                             escapeCount = 0
                         }
-                        
+
                         if (!inString) {
                             when (c) {
                                 '{' -> bracketCount++
@@ -121,11 +127,12 @@ class GeminiProvider @Inject constructor(
                                         // Complete JSON object
                                         val json = jsonBuffer.toString().trim()
                                         jsonBuffer.clear()
-                                        
+
                                         if (json.isNotEmpty() && json.startsWith("{")) {
-                                            processGeminiChunk(json).forEach { response ->
-                                                trySend(response)
-                                            }
+                                            val chunk = moshi.adapter(GeminiResponse::class.java).fromJson(json)
+                                            terminalFinishReason = chunk?.candidates?.firstOrNull()?.finishReason
+                                                ?.takeIf { it.isNotBlank() } ?: terminalFinishReason
+                                            processGeminiChunk(json).forEach { event -> sendResponse(event) }
                                         }
                                     }
                                 }
@@ -133,62 +140,85 @@ class GeminiProvider @Inject constructor(
                         }
                     }
                 }
-                
-                trySend(ChatResponse.Done())
-                
+
+                if (bracketCount != 0 || jsonBuffer.isNotBlank()) {
+                    sendResponse(ChatResponse.Incomplete("Gemini stream ended with a partial JSON object"))
+                } else if (terminalFinishReason == null) {
+                    sendResponse(ChatResponse.Incomplete("Gemini stream ended without finishReason"))
+                } else if (terminalFinishReason == "STOP") {
+                    sendResponse(ChatResponse.Done(finishReason = terminalFinishReason))
+                } else {
+                    sendResponse(ChatResponse.Incomplete("Gemini stopped with finishReason=$terminalFinishReason", retryable = false))
+                }
+
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
-                trySend(ChatResponse.Error("Stream error: ${e.message}"))
+                sendResponse(ChatResponse.Error("Stream error: ${e.message}"))
             }
-            
+
             close()
         } else {
             // Non-streaming request
             try {
-                val response = httpClient.newCall(httpRequest).execute()
-                val body = response.body?.string()
-                
+                val response = httpClient.newCall(httpRequest).awaitResponse()
+                val body = response.body?.readUtf8Limited(
+                    if (response.isSuccessful) MAX_REMOTE_BODY_BYTES else MAX_ERROR_BODY_BYTES
+                )
+
                 if (!response.isSuccessful) {
-                    trySend(ChatResponse.Error("API error: ${response.code} - $body"))
+                    sendResponse(ChatResponse.Error("API error: ${response.code} - $body"))
                     close()
                     return@callbackFlow
                 }
-                
+
                 val geminiResponse = moshi.adapter(GeminiResponse::class.java)
                     .fromJson(body ?: "")
-                
+
                 geminiResponse?.candidates?.firstOrNull()?.content?.parts?.forEach { part ->
                     part.text?.let { text ->
-                        trySend(ChatResponse.TextDelta(text))
+                        sendResponse(ChatResponse.TextDelta(text))
                     }
-                    
+
                     part.functionCall?.let { functionCall ->
-                        trySend(ChatResponse.ToolCall(
+                        sendResponse(ChatResponse.ToolCall(
                             id = "call_${java.util.UUID.randomUUID()}",
                             name = functionCall.name,
                             arguments = functionCall.args ?: emptyMap()
                         ))
                     }
                 }
-                
-                trySend(ChatResponse.Done(
-                    usage = geminiResponse?.usageMetadata?.let {
-                        TokenUsage(it.promptTokenCount, it.candidatesTokenCount)
-                    }
-                ))
-                
+
+                val finishReason = geminiResponse?.candidates?.firstOrNull()?.finishReason
+                if (finishReason.isNullOrBlank()) {
+                    sendResponse(ChatResponse.Incomplete("Gemini response ended without finishReason"))
+                } else if (finishReason != "STOP") {
+                    sendResponse(ChatResponse.Incomplete("Gemini stopped with finishReason=$finishReason", retryable = false))
+                } else {
+                    sendResponse(ChatResponse.Done(
+                        usage = geminiResponse.usageMetadata?.let {
+                            TokenUsage(it.promptTokenCount, it.candidatesTokenCount)
+                        },
+                        finishReason = finishReason
+                    ))
+                }
+
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
-                trySend(ChatResponse.Error("Request failed: ${e.message}"))
+                sendResponse(ChatResponse.Error("Request failed: ${e.message}"))
             }
-            
+
             close()
         }
     }.flowOn(Dispatchers.IO)
-    
+
     // Returns ALL ChatResponse items from a single Gemini chunk (not just the first).
     // Previous bug: early `return` inside forEach caused only first part to be emitted.
     private fun processGeminiChunk(json: String): List<ChatResponse> {
         return try {
             val chunk = moshi.adapter(GeminiResponse::class.java).fromJson(json)
+                ?: return listOf(ChatResponse.Error("Gemini returned an empty stream chunk", retryable = false))
             val responses = mutableListOf<ChatResponse>()
 
             // Collect thoughtSignature first (comes separately from text/functionCall)
@@ -217,27 +247,32 @@ class GeminiProvider @Inject constructor(
             }
             responses
         } catch (e: Exception) {
-            emptyList()
+            listOf(ChatResponse.Error("Invalid Gemini stream chunk: ${e.message}", retryable = false))
         }
     }
-    
+
     private fun buildGeminiRequest(request: ChatRequest): GeminiRequest {
         val contents = mutableListOf<GeminiContent>()
-        
+
         // Convert messages to Gemini format
         request.messages.forEach { msg ->
             when (msg.role) {
                 MessageRole.USER -> {
                     contents.add(GeminiContent(
                         role = "user",
-                        parts = listOf(GeminiPart(text = msg.content))
+                        parts = buildList {
+                            msg.content?.let { add(GeminiPart(text = it)) }
+                            msg.images.forEach { image ->
+                                add(GeminiPart(inlineData = GeminiInlineData(image.mediaType, image.base64)))
+                            }
+                        }
                     ))
                 }
                 MessageRole.ASSISTANT -> {
                     val parts = mutableListOf<GeminiPart>()
-                    msg.content?.let { 
+                    msg.content?.let {
                         if (it.isNotEmpty()) {
-                            parts.add(GeminiPart(text = it)) 
+                            parts.add(GeminiPart(text = it))
                         }
                     }
                     msg.toolCalls?.forEach { call ->
@@ -293,29 +328,21 @@ class GeminiProvider @Inject constructor(
                 MessageRole.SYSTEM -> { /* Handled in systemInstruction */ }
             }
         }
-        
+
         val tools = if (request.tools.isNotEmpty()) {
             listOf(GeminiTools(
                 functionDeclarations = request.tools.map { tool ->
                     GeminiFunctionDeclaration(
                         name = tool.name,
                         description = tool.description,
-                        parameters = GeminiSchema(
-                            type = "OBJECT",
-                            properties = tool.parameters.properties.mapValues { (_, prop) ->
-                                GeminiPropertySchema(
-                                    type = prop.type.uppercase(),
-                                    description = prop.description,
-                                    enum = prop.enum
-                                )
-                            },
-                            required = tool.parameters.required
-                        )
+                        parameters = moshi.adapter(Map::class.java)
+                            .fromJson(tool.schemaJson())
+                            ?: emptyMap<String, Any?>()
                     )
                 }
             ))
         } else null
-        
+
         return GeminiRequest(
             contents = contents,
             systemInstruction = request.systemPrompt?.let {
@@ -384,27 +411,13 @@ data class GeminiTools(
 data class GeminiFunctionDeclaration(
     val name: String,
     val description: String,
-    val parameters: GeminiSchema
-)
-
-@JsonClass(generateAdapter = true)
-data class GeminiSchema(
-    val type: String = "OBJECT",
-    val properties: Map<String, GeminiPropertySchema>,
-    val required: List<String> = emptyList()
-)
-
-@JsonClass(generateAdapter = true)
-data class GeminiPropertySchema(
-    val type: String,
-    val description: String,
-    val enum: List<String>? = null
+    val parameters: Map<*, *>
 )
 
 @JsonClass(generateAdapter = true)
 data class GeminiGenerationConfig(
     @Json(name = "maxOutputTokens") val maxOutputTokens: Int = 8192,
-    val temperature: Float = 0.7f
+    val temperature: Float? = null
 )
 
 @JsonClass(generateAdapter = true)

@@ -2,7 +2,7 @@ package com.amaya.intelligence.data.remote.api
 
 enum class ProviderCategory { SUBSCRIPTION, API, CUSTOM }
 
-enum class ProviderAdapter { OPENAI_COMPATIBLE, ANTHROPIC, GEMINI, CODEX }
+enum class ProviderAdapter { OPENAI_RESPONSES, OPENAI_COMPATIBLE, ANTHROPIC, GEMINI, CODEX }
 
 
 
@@ -32,7 +32,7 @@ object AmayaProviderRegistry {
             id = "openai",
             displayName = "OpenAI API",
             category = ProviderCategory.API,
-            adapter = ProviderAdapter.OPENAI_COMPATIBLE,
+            adapter = ProviderAdapter.OPENAI_RESPONSES,
             defaultBaseUrl = "https://api.openai.com/v1",
             credentialRequired = true
         ),

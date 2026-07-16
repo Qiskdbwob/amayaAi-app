@@ -64,7 +64,7 @@ app/
 - `src/main/java/com/amaya/intelligence/impl/ide/antigravity/`: remote IDE runtime and Antigravity integration.
 - `src/main/java/com/amaya/intelligence/impl/local/`: local runtime, browser automation, services, and background behavior.
 - `src/main/java/com/amaya/intelligence/impl/local/browser/`: WebView controller, session manager, DOM inspection, and safety guard.
-- `src/main/java/com/amaya/intelligence/tools/`: built-in local tools, memory/skill/recall tools, browser tool wrappers, and tool execution helpers.
+- `src/main/java/com/amaya/intelligence/tools/`: built-in local tools, memory/skill/recall tools, browser tool wrappers, and tool execution helpers including model-argument sanitization.
 - `src/main/java/com/amaya/intelligence/service/`: app services, receivers, and workers.
 - `src/main/java/com/amaya/intelligence/ui/activities/browser/`: fullscreen browser operator activity.
 - `src/main/java/com/amaya/intelligence/ui/`: Compose UI screens, activities, and theme.
@@ -74,7 +74,7 @@ app/
 - `src/main/java/com/amaya/intelligence/utils/`: temporary runtime utilities such as local stream profiling.
 
 ## Key Source Code
-- `src/main/java/com/amaya/intelligence/domain/`: shared state, models, memory/skill domain logic, and service contracts used across remote/local flows.
+- `src/main/java/com/amaya/intelligence/domain/`: shared state, models, memory/skill domain logic, service contracts, and tool target policy used across remote/local flows.
 - `src/main/java/com/amaya/intelligence/domain/bridge/`: bridge envelope, tool, approval, risk, audit, and session-state contract types.
 - `src/main/java/com/amaya/intelligence/data/remote/api/`: provider clients such as Gemini, OpenAI, Anthropic, and settings managers.
 - `src/main/java/com/amaya/intelligence/data/remote/mcp/`: MCP client and tool executor integration.

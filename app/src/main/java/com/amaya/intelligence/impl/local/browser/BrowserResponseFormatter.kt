@@ -30,9 +30,13 @@ object BrowserResponseFormatter {
         error: JSONObject? = null
     ): JSONObject = JSONObject().apply {
         put("id", id)
+        put("parent_call_id", parentCallId)
         put("tool", "browser.$tool")
         put("status", status)
+        put("timestamp", nowIso())
         put("duration_ms", durationMs)
+        put("session", session)
+        put("request", JSONObject().put("params", toJsonValue(redactParams(requestParams))))
         put("result", toJsonValue(result))
         put("safety", safety)
         put("ui", JSONObject().apply {
@@ -63,7 +67,12 @@ object BrowserResponseFormatter {
         put("type", "parent_toolcall")
         put("status", status)
         put("summary", summary)
+        put("session_id", sessionId)
+        put("browser_id", browserId)
+        put("active_page_id", activePageId)
         put("active_url", activeUrl)
+        put("started_at", startedAt)
+        put("updated_at", updatedAt)
         put("progress", JSONObject().apply {
             put("current_step", currentStep)
             put("total_steps", totalSteps)
@@ -192,15 +201,6 @@ object BrowserResponseFormatter {
                 put("truncated", response.output.length > 6000)
                 put("length", response.output.length)
             }
-            "evaluate_script" -> JSONObject().apply {
-                put("mode", "script_result")
-                put("output", response.metadata["script_output"] ?: response.output.take(4000))
-                put("truncated", response.metadata["truncated"] ?: (response.output.length > 4000))
-                put("page", JSONObject().apply {
-                    put("url", metadata["url"] ?: JSONObject.NULL)
-                    put("title", metadata["title"] ?: JSONObject.NULL)
-                })
-            }
             "screenshot" -> JSONObject().apply {
                 put("captured", true)
                 put("mime_type", metadata["mime_type"] ?: "image/jpeg")
@@ -317,7 +317,7 @@ object BrowserResponseFormatter {
             }
             result.optJSONObject("element")?.let { put("element", it) }
         }
-        put("hint", "Use element_id from interactive_elements for click/type. If latest_status is error, use observe/search/evaluate_script or ask the user.")
+        put("hint", "Use element_id from interactive_elements for click/type. If latest_status is error, observe/search or ask the user.")
     }
 
     private fun compactResult(value: Any?): Any {

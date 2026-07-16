@@ -16,17 +16,22 @@ import javax.inject.Singleton
 class SkillManageTool @Inject constructor(
     private val skillRepository: SkillRepository,
     private val memoryClassifier: MemoryClassifier
-) : Tool {
+) : Tool, ContextAwareTool {
     override val name = "skill_manage"
     override val description = "Create, update, patch, archive, delete, or record usage for reusable procedural skills when the user explicitly asks to manage skills. Never store credentials or trivial one-off notes."
 
-    override suspend fun execute(arguments: Map<String, Any?>): ToolResult = withContext(Dispatchers.IO) {
+    override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
+        execute(arguments, ToolExecutionContext())
+
+    override suspend fun execute(arguments: Map<String, Any?>, context: ToolExecutionContext): ToolResult = withContext(Dispatchers.IO) {
         val action = (arguments["action"] as? String)?.lowercase()
             ?: return@withContext ToolResult.Error("Missing required: action", ErrorType.VALIDATION_ERROR)
         val name = arguments["name"] as? String
             ?: return@withContext ToolResult.Error("Missing required: name", ErrorType.VALIDATION_ERROR)
-        val confirmed = arguments["__confirmed"] as? Boolean == true
-        if (action == "delete" && !confirmed) {
+        if (action in setOf("create", "update", "patch") && (arguments["content"] as? String).isNullOrBlank()) {
+            return@withContext ToolResult.Error("Missing required: content", ErrorType.VALIDATION_ERROR)
+        }
+        if (action == "delete" && !context.confirmed) {
             return@withContext ToolResult.RequiresConfirmation(
                 reason = "Delete reusable skill '$name'?",
                 details = "This permanently removes the local skill folder and SKILL.md content."
