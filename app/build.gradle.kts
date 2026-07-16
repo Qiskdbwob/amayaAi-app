@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+    alias(libs.plugins.android.baselineprofile)
 }
 
 import java.util.Properties
@@ -69,6 +70,16 @@ android {
         debug {
             isMinifyEnabled = false
             applicationIdSuffix = ".debug"
+        }
+        // Profileable build for daily testing: AOT-compiled by ART at install and
+        // picks up the bundled baseline profile. Fixes the ~5s cold-start JIT jank
+        // seen on debug (debuggable builds cannot be AOT-compiled by ART).
+        create("benchmark") {
+            initWith(buildTypes.getByName("release"))
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
         }
     }
 
@@ -194,4 +205,8 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
+
+    // Baseline profile producer module; the androidx.baselineprofile plugin wires
+    // its generated baseline-prof.txt into assets/dexopt/baseline-prof.
+    baselineProfile(project(":baselineprofile"))
 }

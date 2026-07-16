@@ -12,6 +12,8 @@
 ## Build
 - ./gradlew installDebug
 - ./gradlew assembleDebug
+- ./gradlew :app:installBenchmark
+- ./gradlew :baselineprofile:connectedBenchmarkAndroidTest
 - npx @vscode/vsce package
 - (cd windows-bridge && npm run verify)
 - (cd windows-bridge && npm run package)
@@ -43,6 +45,7 @@ amaya/
 ├─ AGENTS.md
 ├─ amaya-remote-extension/
 ├─ app/
+├─ baselineprofile/
 ├─ docs/
 └─ windows-bridge/
 ```
@@ -60,6 +63,7 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/impl/local/AGENTS.md`: local Android runtime and service guidance.
 - `windows-bridge/AGENTS.md`: Electron Windows bridge and native helper guidance.
 - `windows-bridge/native-helper/AGENTS.md`: C# helper-specific Win32 and JSON-RPC guidance.
+- `baselineprofile/AGENTS.md`: macrobenchmark baseline-profile generator guidance.
 
 ## Key Source Code
 - `amaya-remote-extension/src/extension.ts`: extension bootstrap and command registration.
@@ -93,3 +97,4 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/impl/local/browser/`: WebView controller, session manager, DOM inspection, and safety guard.
 - `windows-bridge/`: Electron Windows bridge main process, transport, permissions, audit, and native helper runtime.
 - `windows-bridge/src/agents/`: CLI coding-agent runtimes (opencode, claude-code, codex) behind the shared `AgentProvider` contract.
+- `baselineprofile/src/main/java/com/amaya/intelligence/baselineprofile/BaselineProfileGenerator.kt`: macrobenchmark that captures the app cold-start baseline profile bundled into `:app`.

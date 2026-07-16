@@ -23,3 +23,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "OpenCode Mobile"
 include(":app")
+include(":baselineprofile")
