@@ -57,6 +57,8 @@ fun ChatBottomSection(
     modelProviderId: String?,
     modelIconType: String?,
     onSelectModel: () -> Unit,
+    effort: com.amaya.intelligence.data.remote.api.ThinkingEffort = com.amaya.intelligence.data.remote.api.ThinkingEffort.MEDIUM,
+    onEffortChange: (com.amaya.intelligence.data.remote.api.ThinkingEffort) -> Unit = {},
     onInputBarHeightChange: (Int) -> Unit
 ) {
     var attachedPath by remember { mutableStateOf(attachedFilePath) }
@@ -149,6 +151,8 @@ fun ChatBottomSection(
             modelProviderId = modelProviderId,
             modelIconType = modelIconType,
             onSelectModel = onSelectModel,
+            effort = effort,
+            onEffortChange = onEffortChange,
             onSendMessage = { text ->
                 keyboardController?.hide()
                 val path = attachedPath

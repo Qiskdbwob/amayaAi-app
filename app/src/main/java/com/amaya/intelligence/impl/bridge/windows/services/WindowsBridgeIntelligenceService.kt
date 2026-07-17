@@ -237,6 +237,7 @@ class WindowsBridgeIntelligenceService @Inject constructor(
     private fun handleAgentEvent(event: AgentEvent) {
         when (event) {
             is AgentEvent.TextDelta -> bufferAssistantTextDelta(event.text)
+            is AgentEvent.ThinkingDelta -> { /* reasoning not surfaced in bridge mode */ }
             is AgentEvent.ToolCallStart -> {
                 flushAssistantTextBuffer()
                 val toolExec = ToolExecution(
@@ -356,9 +357,17 @@ class WindowsBridgeIntelligenceService @Inject constructor(
 
     private fun markCurrentAssistantCompleted() {
         val id = currentAssistantMessageId ?: return
+        val nowMs = System.currentTimeMillis()
         _uiState.update { state ->
             state.copy(messages = state.messages.map { msg ->
-                if (msg.id == id) msg.copy(metadata = msg.metadata + ("completedAt" to System.currentTimeMillis().toString())) else msg
+                if (msg.id == id) {
+                    val durationMs = msg.thinkingStartedAt?.let { (nowMs - it).coerceAtLeast(0L) }
+                    msg.copy(
+                        metadata = msg.metadata + ("completedAt" to nowMs.toString()),
+                        isThinking = false,
+                        thinkingDurationMs = msg.thinkingDurationMs ?: durationMs
+                    )
+                } else msg
             })
         }
     }

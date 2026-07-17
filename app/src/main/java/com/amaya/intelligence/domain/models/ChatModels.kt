@@ -2,6 +2,7 @@ package com.amaya.intelligence.domain.models
 
 
 import com.amaya.intelligence.data.remote.api.MessageRole
+import com.amaya.intelligence.data.remote.api.ThinkingEffort
 import com.amaya.intelligence.tools.TodoItem
 import java.util.UUID
 
@@ -25,7 +26,9 @@ data class ChatUiState(
     val conversationModeId: String?        = null,
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     val sessionMode: com.amaya.intelligence.domain.ai.IntelligenceSessionManager.SessionMode = com.amaya.intelligence.domain.ai.IntelligenceSessionManager.SessionMode.LOCAL,
-    val serverIp: String? = null
+    val serverIp: String? = null,
+    /** Global reasoning effort from the chat bulb. */
+    val effort: ThinkingEffort = ThinkingEffort.MEDIUM
 )
 
 
@@ -68,6 +71,10 @@ data class UiMessage(
     val thinking: String? = null,
     val isThinking: Boolean = false,
     val thinkingStartedAt: Long? = null,
+    /** Thinking duration in ms, captured when the turn ends so the
+     *  "Thought for Xs" label survives reloads without recomputing from
+     *  startedAt/completedAt (which may be absent for remote/inline tags). */
+    val thinkingDurationMs: Long? = null,
     val intent: String? = null,
     val timestamp: Long = System.currentTimeMillis(),
     val toolExecutions: List<ToolExecution> = emptyList(),

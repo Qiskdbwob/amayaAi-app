@@ -116,6 +116,11 @@ class AnthropicProvider @Inject constructor(
                                                 sendResponse(ChatResponse.TextDelta(text))
                                             }
                                         }
+                                        "thinking_delta" -> {
+                                            delta.text?.let { text ->
+                                                sendResponse(ChatResponse.ThinkingDelta(text))
+                                            }
+                                        }
                                         "input_json_delta" -> {
                                             val index = event.index ?: error("Tool delta missing index")
                                             val builder = toolCallBuilders[index] ?: error("Tool delta has no matching block")
@@ -223,6 +228,11 @@ class AnthropicProvider @Inject constructor(
                         "text" -> {
                             sendResponse(ChatResponse.TextDelta(block.text ?: ""))
                         }
+                        "thinking" -> {
+                            block.text?.takeIf { it.isNotEmpty() }?.let {
+                                sendResponse(ChatResponse.ThinkingDelta(it))
+                            }
+                        }
                         "tool_use" -> {
                             sendResponse(ChatResponse.ToolCall(
                                 id = block.id ?: "",
@@ -327,13 +337,30 @@ class AnthropicProvider @Inject constructor(
             )
         }
 
+        val thinkingConfig = buildThinkingConfig(request)
+
         return AnthropicRequest(
             model = request.model,
             messages = messages,
             system = request.systemPrompt,
             tools = tools.takeIf { it.isNotEmpty() },
             maxTokens = request.maxTokens,
-            stream = request.stream
+            stream = request.stream,
+            thinking = thinkingConfig
+        )
+    }
+
+    /** Resolve Anthropic extended-thinking config from the request effort + model cap. */
+    private fun buildThinkingConfig(request: ChatRequest): AnthropicThinkingConfig? {
+        val effort = request.effort ?: return null
+        val providerId = request.providerId.ifBlank { "anthropic" }
+        val cap = ReasoningCatalog.cap(providerId, request.model)
+        val attachment = ReasoningRequestBuilder.build(cap, effort) ?: return null
+        // attachment.value for ANTHROPIC_THINKING is a JSONObject {type, budget_tokens}.
+        val obj = attachment.value as? org.json.JSONObject ?: return null
+        return AnthropicThinkingConfig(
+            type = obj.optString("type"),
+            budgetTokens = obj.optInt("budget_tokens")
         )
     }
 
@@ -356,7 +383,14 @@ data class AnthropicRequest(
     val system: String? = null,
     val tools: List<AnthropicTool>? = null,
     @Json(name = "max_tokens") val maxTokens: Int = 8192,
-    val stream: Boolean = false
+    val stream: Boolean = false,
+    val thinking: AnthropicThinkingConfig? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class AnthropicThinkingConfig(
+    val type: String,
+    @Json(name = "budget_tokens") val budgetTokens: Int
 )
 
 @JsonClass(generateAdapter = true)

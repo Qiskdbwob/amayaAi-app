@@ -282,6 +282,7 @@ class SubagentRunner @Inject constructor(
             provider.chat(request).collect { response ->
                 when (response) {
                     is ChatResponse.TextDelta -> textBuffer.append(response.text)
+                    is ChatResponse.ThinkingDelta -> { /* reasoning — not surfaced in subagent result */ }
                     is ChatResponse.ToolCall  -> {
                         hasToolCall = true
                         toolCalls.add(

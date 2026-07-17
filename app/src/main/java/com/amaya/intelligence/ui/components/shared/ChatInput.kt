@@ -10,6 +10,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -54,6 +55,8 @@ fun ChatInput(
     modelProviderId: String? = null,
     modelIconType: String? = null,
     onSelectModel: () -> Unit = {},
+    effort: com.amaya.intelligence.data.remote.api.ThinkingEffort = com.amaya.intelligence.data.remote.api.ThinkingEffort.MEDIUM,
+    onEffortChange: (com.amaya.intelligence.data.remote.api.ThinkingEffort) -> Unit = {},
     onSendMessage: (String) -> Unit,
     onStopGeneration: () -> Unit
 ) {
@@ -290,7 +293,6 @@ fun ChatInput(
                         ),
                     attachment = {
                         ComposerAttachmentButton(
-                            expansion = expansion,
                             isStreaming = isStreaming,
                             onAttachFile = onAttachFile,
                             onAttachImage = onAttachImage
@@ -330,14 +332,19 @@ fun ChatInput(
                         }
                     },
                     model = {
-                        val modelHeight = androidx.compose.ui.unit.lerp(40.dp, 32.dp, expansion)
-                        val iconSize = androidx.compose.ui.unit.lerp(18.dp, 14.dp, expansion)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            ReasoningEffortButton(
+                                effort = effort,
+                                onEffortChange = onEffortChange,
+                                enabled = true
+                            )
+                            Spacer(Modifier.width(8.dp))
                         Surface(
                             onClick = onSelectModel,
                             enabled = expansion > 0.5f,
                             shape = RoundedCornerShape(50),
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
-                            modifier = Modifier.height(modelHeight)
+                            modifier = Modifier.height(40.dp)
                         ) {
                             Row(
                                 modifier = Modifier
@@ -350,12 +357,13 @@ fun ChatInput(
                                     modelId = modelId,
                                     providerId = modelProviderId,
                                     iconType = modelIconType,
-                                    modifier = Modifier.size(iconSize),
+                                    modifier = Modifier.size(18.dp),
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Text(
                                     text = modelLabel,
                                     style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = androidx.compose.ui.text.font.FontWeight.Normal,
                                     color = MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
@@ -363,10 +371,10 @@ fun ChatInput(
                                 )
                             }
                         }
+                        }
                     },
                     send = {
                         ComposerSendButton(
-                            expansion = expansion,
                             isStreaming = isStreaming,
                             canSend = canSend,
                             onClick = submitMessage,
@@ -398,19 +406,38 @@ private fun ComposerLayout(
     Layout(
         modifier = modifier,
         content = {
-            attachment()
+            Box(
+                modifier = Modifier.graphicsLayer {
+                    val scale = 1f - (0.1f * controlsProgress)
+                    scaleX = scale
+                    scaleY = scale
+                    transformOrigin = TransformOrigin(0f, 0.5f)
+                }
+            ) {
+                attachment()
+            }
             input()
             Box(
                 modifier = Modifier.graphicsLayer {
                     alpha = modelProgress
-                    scaleX = 0.96f + (0.04f * modelProgress)
-                    scaleY = 0.96f + (0.04f * modelProgress)
-                    transformOrigin = TransformOrigin(1f, 1f)
+                    val scale = 1f - (0.1f * controlsProgress)
+                    scaleX = scale
+                    scaleY = scale
+                    transformOrigin = TransformOrigin(1f, 0.5f)
                 }
             ) {
                 model()
             }
-            send()
+            Box(
+                modifier = Modifier.graphicsLayer {
+                    val scale = 1f - (0.1f * controlsProgress)
+                    scaleX = scale
+                    scaleY = scale
+                    transformOrigin = TransformOrigin(1f, 0.5f)
+                }
+            ) {
+                send()
+            }
         }
     ) { measurables, constraints ->
         val gap = 8.dp.roundToPx()
@@ -459,7 +486,10 @@ private fun ComposerLayout(
             sendStartY + ((controlsRowY - sendStartY) * controlsProgress)
         ).roundToInt()
         val inputY = (topHeight - inputPlaceable.height) / 2
-        val modelX = constraints.maxWidth - sendPlaceable.width - gap - modelPlaceable.width
+        val visualScale = 1f - (0.1f * controlsProgress)
+        val modelRightVisualShift = sendPlaceable.width * (1f - visualScale)
+        val modelXOffset = modelRightVisualShift.roundToInt()
+        val modelX = constraints.maxWidth - sendPlaceable.width - gap - modelPlaceable.width + modelXOffset
         val modelY = controlsRowY + (controlsRowHeight - modelPlaceable.height) / 2
 
         layout(constraints.maxWidth, layoutHeight) {
@@ -473,19 +503,16 @@ private fun ComposerLayout(
 
 @Composable
 private fun ComposerAttachmentButton(
-    expansion: Float,
     isStreaming: Boolean,
     onAttachFile: () -> Unit,
     onAttachImage: (() -> Unit)?
 ) {
     var showMenu by remember { mutableStateOf(false) }
-    val buttonSize = androidx.compose.ui.unit.lerp(40.dp, 32.dp, expansion)
-    val iconSize = androidx.compose.ui.unit.lerp(23.dp, 18.dp, expansion)
 
     Box {
         Box(
             modifier = Modifier
-                .size(buttonSize)
+                .size(40.dp)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.onSurface.copy(alpha = if (isStreaming) 0.05f else 0.08f))
                 .clickable(enabled = !isStreaming) { showMenu = true },
@@ -494,14 +521,20 @@ private fun ComposerAttachmentButton(
             Icon(
                 Icons.Default.Add,
                 contentDescription = "Attach",
-                modifier = Modifier.size(iconSize),
+                modifier = Modifier.size(23.dp),
                 tint = if (isStreaming) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
             )
         }
         DropdownMenu(
             expanded = showMenu,
-            onDismissRequest = { showMenu = false }
+            onDismissRequest = { showMenu = false },
+            properties = androidx.compose.ui.window.PopupProperties(focusable = false),
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 6.dp,
+            shadowElevation = 8.dp,
+            offset = androidx.compose.ui.unit.DpOffset(0.dp, 6.dp),
+            modifier = Modifier.widthIn(min = 180.dp)
         ) {
             DropdownMenuItem(
                 text = { Text("Attach file") },
@@ -509,6 +542,9 @@ private fun ComposerAttachmentButton(
                     showMenu = false
                     onAttachFile()
                 },
+                modifier = Modifier
+                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                    .clip(RoundedCornerShape(12.dp)),
                 leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) }
             )
             if (onAttachImage != null) {
@@ -518,6 +554,9 @@ private fun ComposerAttachmentButton(
                         showMenu = false
                         onAttachImage()
                     },
+                    modifier = Modifier
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                        .clip(RoundedCornerShape(12.dp)),
                     leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) }
                 )
             }
@@ -527,19 +566,14 @@ private fun ComposerAttachmentButton(
 
 @Composable
 private fun ComposerSendButton(
-    expansion: Float,
     isStreaming: Boolean,
     canSend: Boolean,
     onClick: () -> Unit,
     onEmptyClick: () -> Unit
 ) {
-    val buttonSize = androidx.compose.ui.unit.lerp(40.dp, 32.dp, expansion)
-    val iconSize = androidx.compose.ui.unit.lerp(18.dp, 14.dp, expansion)
-    val stopIconSize = androidx.compose.ui.unit.lerp(16.dp, 12.dp, expansion)
-
     Box(
         modifier = Modifier
-            .size(buttonSize)
+            .size(40.dp)
             .clip(CircleShape)
             .background(
                 if (isStreaming) MaterialTheme.colorScheme.error.copy(alpha = 0.14f)
@@ -555,7 +589,7 @@ private fun ComposerSendButton(
             Icon(
                 Icons.Default.Stop,
                 contentDescription = "Stop",
-                modifier = Modifier.size(stopIconSize),
+                modifier = Modifier.size(16.dp),
                 tint = MaterialTheme.colorScheme.error
             )
         } else {
@@ -563,10 +597,88 @@ private fun ComposerSendButton(
                 Icons.AutoMirrored.Filled.Send,
                 contentDescription = "Send",
                 modifier = Modifier
-                    .size(iconSize)
+                    .size(18.dp)
                     .offset(x = 1.dp), // optical alignment
                 tint = if (canSend) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
             )
         }
     }
+}
+
+@Composable
+private fun ReasoningEffortButton(
+    effort: com.amaya.intelligence.data.remote.api.ThinkingEffort,
+    onEffortChange: (com.amaya.intelligence.data.remote.api.ThinkingEffort) -> Unit,
+    enabled: Boolean
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val isActive = effort != com.amaya.intelligence.data.remote.api.ThinkingEffort.NONE
+    
+    Box {
+        Surface(
+            onClick = { if (enabled) expanded = true },
+            enabled = enabled,
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
+            modifier = Modifier.height(40.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    Icons.Outlined.Lightbulb,
+                    contentDescription = "Reasoning effort",
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (isActive) {
+                    Text(
+                        text = effort.label(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Normal,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            properties = androidx.compose.ui.window.PopupProperties(focusable = false),
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 6.dp,
+            shadowElevation = 8.dp,
+            offset = androidx.compose.ui.unit.DpOffset(0.dp, 6.dp),
+            modifier = Modifier.widthIn(min = 180.dp)
+        ) {
+            com.amaya.intelligence.data.remote.api.ThinkingEffort.entries.forEach { level ->
+                DropdownMenuItem(
+                    text = { Text(level.label()) },
+                    onClick = {
+                        onEffortChange(level)
+                        expanded = false
+                    },
+                    modifier = Modifier
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            if (level == effort) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+                            else Color.Transparent
+                        ),
+                    colors = MenuDefaults.itemColors(
+                        textColor = MaterialTheme.colorScheme.onSurface
+                    )
+                )
+            }
+        }
+    }
+}
+
+private fun com.amaya.intelligence.data.remote.api.ThinkingEffort.label(): String = when (this) {
+    com.amaya.intelligence.data.remote.api.ThinkingEffort.NONE -> "Off"
+    com.amaya.intelligence.data.remote.api.ThinkingEffort.LOW -> "Low"
+    com.amaya.intelligence.data.remote.api.ThinkingEffort.MEDIUM -> "Medium"
+    com.amaya.intelligence.data.remote.api.ThinkingEffort.HIGH -> "High"
 }

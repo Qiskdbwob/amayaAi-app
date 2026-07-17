@@ -137,6 +137,10 @@ class ChatViewModel @Inject constructor(
         intelligenceService.setConversationModeId(modeId)
     }
 
+    fun setEffort(effort: com.amaya.intelligence.data.remote.api.ThinkingEffort) {
+        intelligenceService.setEffort(effort)
+    }
+
     fun refreshModels() {
         intelligenceService.refreshModels()
     }

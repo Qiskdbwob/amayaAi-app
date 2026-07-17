@@ -231,6 +231,7 @@ class OpenAiProvider @Inject constructor(
 
             val listener = object : EventSourceListener() {
                 private val toolCallAccumulator = OpenAiToolCallAccumulator()
+                private val inlineThinkStripper = InlineThinkStripper()
                 private var receivedDone = false
                 private var terminal = false
                 private var finishReason: String? = null
@@ -298,9 +299,16 @@ class OpenAiProvider @Inject constructor(
                             .fromJson(data) ?: error("Empty Chat Completions stream chunk")
 
                         chunk.choices.firstOrNull()?.let { choice ->
-                            // Handle text delta
+                            // Vendor reasoning field (DeepSeek/vLLM/GLM/Kimi) → ThinkingDelta.
+                            choice.delta.reasoningContent?.takeIf { it.isNotEmpty() }?.let {
+                                sendResponse(ChatResponse.ThinkingDelta(it))
+                            }
+
+                            // Handle text delta (strip inline  tags if present).
                             choice.delta.content?.let { content ->
-                                sendResponse(ChatResponse.TextDelta(content))
+                                val (visible, thinking) = inlineThinkStripper.feed(content)
+                                if (thinking.isNotEmpty()) sendResponse(ChatResponse.ThinkingDelta(thinking))
+                                if (visible.isNotEmpty()) sendResponse(ChatResponse.TextDelta(visible))
                             }
 
                             choice.delta.toolCalls?.forEach { toolCall ->
@@ -378,9 +386,14 @@ class OpenAiProvider @Inject constructor(
                     .fromJson(body ?: "")
 
                 val choice = openaiResponse?.choices?.firstOrNull()
+                val nonStreamStripper = InlineThinkStripper()
                 choice?.let {
+                    // Vendor reasoning field (non-streaming shape).
+                    // Moshi does not model reasoning_content on OpenAiMessage; parse raw if needed.
                     it.message.content?.let { content ->
-                        sendResponse(ChatResponse.TextDelta(content))
+                        val (visible, thinking) = nonStreamStripper.feed(content)
+                        if (thinking.isNotEmpty()) sendResponse(ChatResponse.ThinkingDelta(thinking))
+                        if (visible.isNotEmpty()) sendResponse(ChatResponse.TextDelta(visible))
                     }
 
                     it.message.toolCalls?.forEach { toolCall ->
@@ -436,7 +449,15 @@ class OpenAiProvider @Inject constructor(
         base.put("input", body.getJSONArray("input"))
         if (body.has("tools")) base.put("tools", body.getJSONArray("tools"))
         base.put("tool_choice", "auto")
-        base.put("include", JSONArray().put("reasoning.encrypted_content"))
+        base.put("include", JSONArray()
+            .put("reasoning.encrypted_content")
+            .put("reasoning.summary_text"))
+        resolveReasoningAttachment(request)?.let { att ->
+            when (val v = att.value) {
+                is JSONObject -> base.put(att.key, v)
+                is Boolean -> base.put(att.key, v)
+            }
+        }
         return base
     }
 
@@ -501,7 +522,9 @@ class OpenAiProvider @Inject constructor(
             .put("instructions", request.systemPrompt.orEmpty())
             .put("input", JSONArray())
             .put("text", JSONObject().put("verbosity", "low"))
-            .put("include", JSONArray().put("reasoning.encrypted_content"))
+            .put("include", JSONArray()
+                .put("reasoning.encrypted_content")
+                .put("reasoning.summary_text"))
             .put("prompt_cache_key", promptCacheKey)
             .put("tool_choice", "auto")
             .put("parallel_tool_calls", false)
@@ -665,6 +688,8 @@ class OpenAiProvider @Inject constructor(
     private fun emitResponseItem(item: JSONObject, state: CodexStreamState, onResponse: (ChatResponse) -> Unit) {
         val identity = item.optString("id").ifBlank { item.toString() }
         if (state.emittedResponseItems.add(identity)) onResponse(ChatResponse.ResponseItem(item.toString()))
+        // OpenAI Responses reasoning items → ThinkingDelta (summary text).
+        ReasoningStreamParser.parseResponsesReasoning(item)?.let { onResponse(ChatResponse.ThinkingDelta(it)) }
         emitCodexOutputItem(item, state, onResponse)
     }
 
@@ -861,8 +886,19 @@ class OpenAiProvider @Inject constructor(
             maxTokens = request.maxTokens,
             temperature = request.temperature,
             stream = request.stream,
-            streamOptions = if (request.stream) OpenAiStreamOptions(includeUsage = true) else null
+            streamOptions = if (request.stream) OpenAiStreamOptions(includeUsage = true) else null,
+            reasoning = resolveReasoningAttachment(request)
         )
+    }
+
+    /** Resolve (cap, effort) → attachment using the per-model catalog + provider fallback. */
+    private fun resolveReasoningAttachment(request: ChatRequest): ReasoningAttachment? {
+        val effort = request.effort ?: return null
+        val providerId = request.providerId.ifBlank {
+            settingsProvider().connections.find { it.id == request.connectionId }?.providerId.orEmpty()
+        }
+        val cap = ReasoningCatalog.cap(providerId, request.model)
+        return ReasoningRequestBuilder.build(cap, effort)
     }
 
     // FIX 4.1: Replaced with shared extension moshi.parseJsonArgs() from AiProvider.kt
@@ -932,6 +968,15 @@ class OpenAiProvider @Inject constructor(
         }
         root.put("messages", messagesArr)
 
+        // Reasoning attachment (vLLM toggle, GLM/Kimi thinking, MiniMax split, OpenAI effort).
+        // null → strip entirely (non-reasoning models avoid HTTP 400; always-on send nothing).
+        req.reasoning?.let { att ->
+            when (val v = att.value) {
+                is JSONObject -> root.put(att.key, v)
+                is Boolean -> root.put(att.key, v)
+            }
+        }
+
         // Tools
         if (req.tools != null) {
             val toolsArr = JSONArray()
@@ -965,7 +1010,9 @@ data class OpenAiRequest(
     @Json(name = "max_completion_tokens") val maxTokens: Int = 8192,
     val temperature: Float? = null,
     val stream: Boolean = false,
-    @Json(name = "stream_options") val streamOptions: OpenAiStreamOptions? = null
+    @Json(name = "stream_options") val streamOptions: OpenAiStreamOptions? = null,
+    /** Reasoning attachment to merge into the JSON body, or null to strip. */
+    val reasoning: ReasoningAttachment? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -1053,7 +1100,9 @@ data class OpenAiStreamChoice(
 data class OpenAiDelta(
     val role: String? = null,
     val content: String? = null,
-    @Json(name = "tool_calls") val toolCalls: List<OpenAiDeltaToolCall>? = null
+    @Json(name = "tool_calls") val toolCalls: List<OpenAiDeltaToolCall>? = null,
+    /** Vendor reasoning field (DeepSeek/vLLM/LM Studio/GLM/Kimi). Moshi ignores when absent. */
+    @Json(name = "reasoning_content") val reasoningContent: String? = null
 )
 
 @JsonClass(generateAdapter = true)

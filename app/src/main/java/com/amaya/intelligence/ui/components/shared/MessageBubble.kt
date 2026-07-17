@@ -20,11 +20,14 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -47,7 +50,8 @@ fun MessageBubble(
     onToolAccept: ((ToolExecution) -> Unit)? = null,
     onToolDecline: ((ToolExecution) -> Unit)? = null,
     onLocalhostLinkClick: ((String) -> Unit)? = null,
-    onInteraction: () -> Unit = {}
+    onInteraction: () -> Unit = {},
+    onThinkingScroll: () -> Unit = {}
 ) {
     val isUser = message.role == MessageRole.USER
     if (isUser) {
@@ -107,6 +111,10 @@ fun MessageBubble(
             }
         }
     } else {
+        val sawLiveThinking = remember(message.id) { mutableStateOf(message.isThinking) }
+        SideEffect {
+            if (message.isThinking) sawLiveThinking.value = true
+        }
         Row(
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -120,13 +128,30 @@ fun MessageBubble(
                             finalVisibleTextIndexForSummary(message)
                         }
                         if (finalTextIndex != null) {
+                            // Steps branch — completed turn wrapped in a
+                            // "Worked for {duration} · N tools" card. The
+                            // thinking segment lives INSIDE this card so it
+                            // stays inside the same container as the tool
+                            // timeline; without this the reasoning card
+                            // rendered outside the worked-by header and read
+                            // as a separate block. The ThinkingCard keeps
+                            // its own PROCESSING → DONE auto-collapse so a
+                            // finished segment doesn't bloat the summary.
                             val summarySteps = summaryTimelineSteps(message, finalTextIndex)
                             val finalTextStep = message.steps[finalTextIndex] as MessageStep.Text
                             WorkSummaryCard(
                                 message = message,
                                 steps = summarySteps,
-                                onInteraction = onInteraction
+                                onInteraction = onInteraction,
+                                animateInitialCollapse = sawLiveThinking.value
                             ) {
+                                MessageThinkingBlock(
+                                    message = message,
+                                    hideWhenDuplicate = hideThinkingHeader,
+                                    onLocalhostLinkClick = onLocalhostLinkClick,
+                                    onBodyScroll = onThinkingScroll,
+                                    animateInitialCollapse = sawLiveThinking.value && !message.isThinking
+                                )
                                 StepTimeline(
                                     steps = summarySteps,
                                     hideThinkingHeader = hideThinkingHeader,
@@ -151,6 +176,17 @@ fun MessageBubble(
                                 }
                             }
                         } else {
+                            // Steps branch — no summary card (streaming or
+                            // single-step shortcut). Thinking card stays
+                            // OUTSIDE above the timeline, matching legacy
+                            // behaviour.
+                            MessageThinkingBlock(
+                                message = message,
+                                hideWhenDuplicate = hideThinkingHeader,
+                                onLocalhostLinkClick = onLocalhostLinkClick,
+                                onBodyScroll = onThinkingScroll,
+                                animateInitialCollapse = sawLiveThinking.value && !message.isThinking
+                            )
                             StepTimeline(
                                 steps = message.steps,
                                 hideThinkingHeader = hideThinkingHeader,
@@ -162,49 +198,66 @@ fun MessageBubble(
                         }
                     }
                 } else {
-                    if (message.toolExecutions.isNotEmpty()) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            val browserMerged = mergeBrowserToolExecutions(message.toolExecutions.filter { it.name == "browser" })
-                            message.toolExecutions.filter { it.name != "update_todo" }.forEach { execution ->
-                                when {
-                                    execution.name == "browser" && browserMerged != null && execution == message.toolExecutions.firstOrNull { it.name == "browser" } -> {
-                                        key(browserMerged.toolCallId) {
-                                            ToolCallCard(
-                                                execution = browserMerged,
-                                                onAccept = onToolAccept?.let { callback -> { callback(execution) } },
-                                                onDecline = onToolDecline?.let { callback -> { callback(execution) } },
-                                                onLocalhostLinkClick = onLocalhostLinkClick,
-                                                onInteraction = onInteraction
-                                            )
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (message.toolExecutions.isNotEmpty()) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                val browserMerged = mergeBrowserToolExecutions(message.toolExecutions.filter { it.name == "browser" })
+                                message.toolExecutions.filter { it.name != "update_todo" }.forEach { execution ->
+                                    when {
+                                        execution.name == "browser" && browserMerged != null && execution == message.toolExecutions.firstOrNull { it.name == "browser" } -> {
+                                            key(browserMerged.toolCallId) {
+                                                ToolCallCard(
+                                                    execution = browserMerged,
+                                                    onAccept = onToolAccept?.let { callback -> { callback(execution) } },
+                                                    onDecline = onToolDecline?.let { callback -> { callback(execution) } },
+                                                    onLocalhostLinkClick = onLocalhostLinkClick,
+                                                    onInteraction = onInteraction
+                                                )
+                                            }
                                         }
-                                    }
-                                    execution.name == "browser" -> Unit
-                                    else -> {
-                                        key(execution.toolCallId) {
-                                            ToolCallCard(
-                                                execution = execution,
-                                                onAccept = onToolAccept?.let { callback -> { callback(execution) } },
-                                                onDecline = onToolDecline?.let { callback -> { callback(execution) } },
-                                                onLocalhostLinkClick = onLocalhostLinkClick,
-                                                onInteraction = onInteraction
-                                            )
+                                        execution.name == "browser" -> Unit
+                                        else -> {
+                                            key(execution.toolCallId) {
+                                                ToolCallCard(
+                                                    execution = execution,
+                                                    onAccept = onToolAccept?.let { callback -> { callback(execution) } },
+                                                    onDecline = onToolDecline?.let { callback -> { callback(execution) } },
+                                                    onLocalhostLinkClick = onLocalhostLinkClick,
+                                                    onInteraction = onInteraction
+                                                )
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    if (message.content.isNotBlank()) {
-                        val content = message.formattedContent ?: message.content
-                        AssistantTextWithThinking(
-                            text = content,
-                            hideThinkingHeader = hideThinkingHeader,
-                            onLocalhostLinkClick = onLocalhostLinkClick
+                        // Reasoning accumulated from provider thinking deltas (e.g.
+                        // DeepSeek reasoning_content). Rendered via the dedicated
+                        // ThinkingCard — single source of truth for both
+                        // reasoning_delta and inline <think> tags.
+                        MessageThinkingBlock(
+                            message = message,
+                            hideWhenDuplicate = hideThinkingHeader,
+                            onLocalhostLinkClick = onLocalhostLinkClick,
+                            onBodyScroll = onThinkingScroll,
+                            animateInitialCollapse = sawLiveThinking.value && !message.isThinking
                         )
+
+                        if (message.content.isNotBlank()) {
+                            val content = message.formattedContent ?: message.content
+                            AssistantTextWithThinking(
+                                text = content,
+                                hideThinkingHeader = hideThinkingHeader,
+                                onLocalhostLinkClick = onLocalhostLinkClick
+                            )
+                        }
                     }
                 }
             }
@@ -263,6 +316,14 @@ private fun StepTimeline(
                         }
                     }
                     step.execution.name == "browser" -> Unit
+                    isThinkingExecution(step.execution) -> {
+                        key(step.execution.toolCallId) {
+                            ThinkingCard(
+                                text = step.execution.result.orEmpty(),
+                                isStreaming = step.execution.status == ToolStatus.RUNNING
+                            )
+                        }
+                    }
                     else -> {
                         key(step.execution.toolCallId) {
                             ToolCallCard(
@@ -299,10 +360,17 @@ private fun WorkSummaryCard(
     message: UiMessage,
     steps: List<MessageStep>,
     onInteraction: () -> Unit,
+    animateInitialCollapse: Boolean,
     content: @Composable ColumnScope.() -> Unit
 ) {
     if (steps.isEmpty()) return
-    var expanded by remember(message.id, steps.size) { mutableStateOf(false) }
+    var expanded by remember(message.id, steps.size) { mutableStateOf(animateInitialCollapse) }
+    LaunchedEffect(animateInitialCollapse) {
+        if (animateInitialCollapse) {
+            withFrameNanos { }
+            expanded = false
+        }
+    }
     val toolCount = steps.count { it is MessageStep.ToolCall && it.execution.name != "update_todo" && !isThinkingExecution(it.execution) }
     val duration = formatWorkedDuration(message.timestamp, message.metadata["completedAt"]?.toLongOrNull())
     val subtitle = "Worked for $duration${if (toolCount > 0) " · $toolCount tool${if (toolCount == 1) "" else "s"}" else ""}"
@@ -507,38 +575,12 @@ private fun attachBrowserTimeline(
     return execution.copy(result = parent.toString(2))
 }
 
-private data class AssistantTextPart(
-    val text: String,
-    val isThinking: Boolean,
-    val isOpen: Boolean = false
-)
-
-private fun parseThinkingTags(raw: String): List<AssistantTextPart> {
-    if (raw.isBlank()) return emptyList()
-    val parts = mutableListOf<AssistantTextPart>()
-    var cursor = 0
-    val tagRegex = Regex("</?think>", RegexOption.IGNORE_CASE)
-    var inThinking = false
-
-    tagRegex.findAll(raw).forEach { match ->
-        raw.substring(cursor, match.range.first).takeIf { it.isNotBlank() }?.let {
-            parts += AssistantTextPart(it.trim(), isThinking = inThinking)
-        }
-        inThinking = !match.value.startsWith("</", ignoreCase = true)
-        cursor = match.range.last + 1
-    }
-
-    raw.substring(cursor).takeIf { it.isNotBlank() }?.let {
-        parts += AssistantTextPart(it.trim(), isThinking = inThinking, isOpen = inThinking)
-    }
-    return parts.ifEmpty { listOf(AssistantTextPart(raw, isThinking = false)) }
-}
-
-fun stripThinkingTags(raw: String): String = parseThinkingTags(raw)
-    .filterNot { it.isThinking }
-    .joinToString("\n\n") { it.text }
-    .ifBlank { raw.replace(Regex("</?think>", RegexOption.IGNORE_CASE), "").trim() }
-
+/**
+ * Render the visible (non-thinking) answer body. Thinking is intentionally
+ * NOT rendered here — it is owned by [MessageThinkingBlock] at message level
+ * so there is a single source of truth. Any inline <think> tags still present
+ * in providers that do not strip them are dropped here to avoid duplication.
+ */
 @Composable
 fun AssistantTextWithThinking(
     text: String,
@@ -546,39 +588,14 @@ fun AssistantTextWithThinking(
     onLocalhostLinkClick: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val parts = parseThinkingTags(text)
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        parts.forEachIndexed { index, part ->
-            if (part.isThinking) {
-                if (part.text.isNotBlank()) {
-                    ToolCallCard(
-                        execution = ToolExecution(
-                            toolCallId = "think_${text.hashCode()}_$index",
-                            name = "thinking",
-                            arguments = mapOf("source" to "think_tag"),
-                            result = part.text,
-                            status = if (part.isOpen) ToolStatus.RUNNING else ToolStatus.SUCCESS,
-                            metadata = mapOf("syntheticThinking" to "true"),
-                            uiMetadata = ToolUiMetadata(
-                                category = ToolCategory.TASK_MANAGEMENT,
-                                label = "Thinking",
-                                actionIcon = ToolInfoIcon.LIGHTBULB,
-                                targetIcon = ToolInfoIcon.GENERATE,
-                                badges = listOf("THINKING")
-                            )
-                        ),
-                        onLocalhostLinkClick = onLocalhostLinkClick
-                    )
-                }
-            } else {
-                MarkdownText(
-                    text = part.text,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.fillMaxWidth(),
-                    onLocalhostLinkClick = onLocalhostLinkClick
-                )
-            }
-        }
-    }
+    val visible = remember(text) { stripThinkingTags(text) }
+    if (visible.isBlank()) return
+    MarkdownText(
+        text = visible,
+        color = MaterialTheme.colorScheme.onSurface,
+        modifier = modifier.fillMaxWidth(),
+        onLocalhostLinkClick = onLocalhostLinkClick
+    )
 }
+
 

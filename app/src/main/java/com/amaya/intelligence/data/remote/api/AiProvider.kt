@@ -41,7 +41,11 @@ data class ChatRequest(
     val stream: Boolean = true,
     val connectionId: String = "",
     /** Stable conversation/session id for providers that support prompt caching or session headers. */
-    val sessionId: String = ""
+    val sessionId: String = "",
+    /** Provider id used to resolve reasoning capability when the model is unknown to the catalog. */
+    val providerId: String = "",
+    /** Global reasoning effort from the chat bulb; null = do not attach reasoning params. */
+    val effort: ThinkingEffort? = null
 )
 
 /**
@@ -124,6 +128,12 @@ sealed class ChatResponse {
      * A text chunk from the assistant's response.
      */
     data class TextDelta(val text: String) : ChatResponse()
+
+    /**
+     * A reasoning/thinking chunk, kept separate from the final answer text.
+     * Surfaced from any vendor field via [ReasoningStreamParser].
+     */
+    data class ThinkingDelta(val text: String) : ChatResponse()
 
     /**
      * The assistant wants to call a tool.

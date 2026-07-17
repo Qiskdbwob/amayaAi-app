@@ -31,7 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 
 // ── ToolCallCard ─────────────────────────────────────────────────────────────
 
-private object ToolCallMotion {
+internal object ToolCallMotion {
     val motionSpec: FiniteAnimationSpec<IntSize> = spring(
         dampingRatio = Spring.DampingRatioNoBouncy,
         stiffness = Spring.StiffnessMedium
@@ -131,12 +131,13 @@ private fun truncateTerminalHeaderCommand(command: String, maxLength: Int = 88):
 }
 
 @Composable
-private fun ToolCallAnimatedSection(
+internal fun ToolCallAnimatedSection(
     visible: Boolean,
     modifier: Modifier = Modifier,
+    initiallyVisible: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val visibilityState = remember { MutableTransitionState(false) }
+    val visibilityState = remember { MutableTransitionState(initiallyVisible) }
     LaunchedEffect(visible) {
         visibilityState.targetState = visible
     }

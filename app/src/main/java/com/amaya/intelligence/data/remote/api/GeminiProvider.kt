@@ -230,7 +230,12 @@ class GeminiProvider @Inject constructor(
             chunk?.candidates?.firstOrNull()?.content?.parts?.forEach { part ->
                 part.text?.let { text ->
                     if (text.isNotEmpty()) {
-                        responses.add(ChatResponse.TextDelta(text))
+                        // Gemini 2.5: parts marked thought=true carry reasoning content.
+                        if (part.thought == true) {
+                            responses.add(ChatResponse.ThinkingDelta(text))
+                        } else {
+                            responses.add(ChatResponse.TextDelta(text))
+                        }
                     }
                 }
                 part.functionCall?.let { functionCall ->
@@ -351,9 +356,27 @@ class GeminiProvider @Inject constructor(
             tools = tools,
             generationConfig = GeminiGenerationConfig(
                 maxOutputTokens = request.maxTokens,
-                temperature = request.temperature
+                temperature = request.temperature,
+                thinkingConfig = resolveGeminiThinkingConfig(request)
             )
         )
+    }
+
+    /** Resolve Gemini thinkingConfig from [ChatRequest.effort]. NONE→disabled, else budgeted. */
+    private fun resolveGeminiThinkingConfig(request: ChatRequest): GeminiThinkingConfig? {
+        val effort = request.effort ?: return null
+        val cap = ReasoningCatalog.cap(request.providerId.ifBlank { "google_gemini_api" }, request.model)
+        if (cap.shape != RequestShape.GEMINI_BUDGET) return null
+        if (effort == ThinkingEffort.NONE) {
+            return GeminiThinkingConfig(thinkingBudget = 0, includeThoughts = false)
+        }
+        val budget = when (effort) {
+            ThinkingEffort.LOW -> 512
+            ThinkingEffort.MEDIUM -> 8192
+            ThinkingEffort.HIGH -> 24576
+            ThinkingEffort.NONE -> 0
+        }
+        return GeminiThinkingConfig(thinkingBudget = budget, includeThoughts = true)
     }
 }
 
@@ -381,7 +404,9 @@ data class GeminiPart(
     val functionCall: GeminiFunctionCall? = null,
     val functionResponse: GeminiFunctionResponse? = null,
     val thoughtSignature: String? = null,
-    val inlineData: GeminiInlineData? = null
+    val inlineData: GeminiInlineData? = null,
+    /** Gemini 2.5+: when true, [text] is reasoning content, not visible output. */
+    val thought: Boolean? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -417,7 +442,15 @@ data class GeminiFunctionDeclaration(
 @JsonClass(generateAdapter = true)
 data class GeminiGenerationConfig(
     @Json(name = "maxOutputTokens") val maxOutputTokens: Int = 8192,
-    val temperature: Float? = null
+    val temperature: Float? = null,
+    /** Gemini 2.5+ thinking budget. 0 = disable, -1 = dynamic (only when includeThoughts true). */
+    val thinkingConfig: GeminiThinkingConfig? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class GeminiThinkingConfig(
+    @Json(name = "thinkingBudget") val thinkingBudget: Int,
+    @Json(name = "includeThoughts") val includeThoughts: Boolean = true
 )
 
 @JsonClass(generateAdapter = true)

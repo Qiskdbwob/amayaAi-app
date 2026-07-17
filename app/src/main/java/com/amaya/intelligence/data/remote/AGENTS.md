@@ -9,6 +9,9 @@
 - Keep serialization, auth/token handling, and provider-specific mapping here rather than in UI or local runtime code.
 - Avoid adding file-system, shell, or other device-local behavior in this subtree.
 - Before changing provider contracts or payload shapes, crosscheck the current workspace diff and recent commits for the affected remote surface.
+- Reasoning effort is controlled by a single global `ThinkingEffort` (NONE/LOW/MEDIUM/HIGH) from the chat bulb. It flows into `ChatRequest.effort` + `providerId`, resolved per model via `ReasoningCatalog` (prefix match) with a per-provider fallback in `ReasoningProfileRegistry`. Never add per-model settings UI — capability is data-driven from `ReasoningCatalog`.
+- Vendors that share the OpenAI-compatible wire format (GLM/Kimi/MiniMax) reuse `OpenAiProvider`; adding one is a data-only diff (catalog prefix + `RequestShape` + optional `ProviderRegistry` entry). Do not create a new `AiProvider` class per vendor.
+- Response reasoning is parsed universally by `ReasoningStreamParser` (probes `reasoning_content`, `reasoning_details[]`, `reasoning`, `thinking.reasoning`, Responses reasoning items) plus stateful `InlineThinkStripper` for `<think>` tags leaked into content. New vendors that emit reasoning under a new field name extend the parser probe chain, not the provider class.
 
 ## Coordination
 - Coordinate remote transport and model mapping changes with `impl/ide/antigravity/` when the runtime flow depends on Antigravity-specific behavior.
@@ -42,6 +45,7 @@ data/remote/
 - `api/AnthropicProvider.kt`: Anthropic request/response models and streaming parsing.
 - `api/McpModels.kt`: MCP-related model definitions and payload mapping.
 - `api/AiProvider.kt`: common remote provider contracts.
+- `api/ReasoningContract.kt`: `ThinkingEffort`, `RequestShape`, per-model `ReasoningCatalog`, `ReasoningRequestBuilder` (effort→attachment), `ReasoningStreamParser` (universal field probe), and `InlineThinkStripper` (stateful `<think>` tag removal).
 - `mcp/McpClientManager.kt`: lifecycle for remote MCP connectivity.
 - `mcp/McpToolExecutor.kt`: execution bridge for MCP tools.
 - `repository/AiRepository.kt`: repository orchestration for remote-backed chat flows.

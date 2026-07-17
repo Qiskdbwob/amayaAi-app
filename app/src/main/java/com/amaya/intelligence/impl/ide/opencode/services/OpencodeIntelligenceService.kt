@@ -366,7 +366,32 @@ class OpencodeIntelligenceService @Inject constructor(
             (raw["status"] as? Map<*, *>)?.get("type") == "idle" ||
             raw["idle"] == true
         if (idle) {
-            _uiState.update { it.copy(isLoading = false, isStreaming = false) }
+            // Mark the last assistant message terminal so UI surfaces that key
+            // off `completedAt` (e.g. ThinkingCard's auto-collapse) fire once,
+            // at genuine turn end — mirroring LocalIntelligenceService's
+            // markCurrentAssistantTerminal and antigravity's
+            // markLastAssistantCompleted. Without this the thinking card has no
+            // stable terminal signal and never auto-collapses for opencode.
+            _uiState.update { state ->
+                val nowMs = System.currentTimeMillis()
+                val now = nowMs.toString()
+                val idx = state.messages.indexOfLast { it.role == MessageRole.ASSISTANT }
+                val messages = if (idx == -1) state.messages else {
+                    val msg = state.messages[idx]
+                    if (msg.metadata["completedAt"] != null) state.messages
+                    else {
+                        val durationMs = msg.thinkingStartedAt?.let { (nowMs - it).coerceAtLeast(0L) }
+                        state.messages.toMutableList().apply {
+                            this[idx] = msg.copy(
+                                metadata = msg.metadata + ("completedAt" to now),
+                                isThinking = false,
+                                thinkingDurationMs = msg.thinkingDurationMs ?: durationMs
+                            )
+                        }
+                    }
+                }
+                state.copy(messages = messages, isLoading = false, isStreaming = false)
+            }
         }
     }
 
@@ -501,7 +526,17 @@ class OpencodeIntelligenceService @Inject constructor(
             val id = currentAssistantMessageId ?: return@update state
             state.copy(messages = state.messages.map { msg ->
                 if (msg.id != id) msg
-                else msg.copy(thinking = update.text, isThinking = update.timeEnd == null)
+                else msg.copy(
+                    thinking = update.text,
+                    isThinking = update.timeEnd == null,
+                    // Seed startedAt on the first reasoning token so the
+                    // "Thought for Xs" label and the terminal durationMs
+                    // (set on session.idle) can be computed. Parity with
+                    // LocalIntelligenceService, which seeds this on the first
+                    // ThinkingDelta.
+                    thinkingStartedAt = msg.thinkingStartedAt
+                        ?: System.currentTimeMillis()
+                )
             })
         }
     }
@@ -662,6 +697,7 @@ class OpencodeIntelligenceService @Inject constructor(
         put("content", msg.content)
         put("timestamp", msg.timestamp)
         msg.thinking?.let { put("thinking", it) }
+        msg.thinkingDurationMs?.let { put("thinkingDurationMs", it) }
         put("steps", JSONArray().apply {
             msg.steps.forEach { step ->
                 when (step) {
@@ -727,6 +763,7 @@ class OpencodeIntelligenceService @Inject constructor(
                         .getOrDefault(MessageRole.USER),
                     content = obj.optString("content"),
                     thinking = obj.optString("thinking").takeIf { it.isNotBlank() },
+                    thinkingDurationMs = obj.optLong("thinkingDurationMs", 0L).takeIf { it > 0 },
                     timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
                     toolExecutions = tools,
                     steps = steps

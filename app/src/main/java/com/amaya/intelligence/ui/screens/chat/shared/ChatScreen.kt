@@ -469,6 +469,7 @@ fun ChatScreen(
                             scope.launch { performScrollToBottom(true) }
                         }
                     },
+                    onThinkingScroll = { shouldAutoScroll = false },
                     onScrollToBottomClick = {
                         shouldAutoScroll = true
                         scope.launch { performScrollToBottom(true) }
@@ -558,6 +559,8 @@ fun ChatScreen(
                 modelId = selectedModelItem?.modelId.orEmpty(),
                 modelProviderId = selectedModelItem?.providerId,
                 modelIconType = selectedModelItem?.iconType,
+                effort = uiState.effort,
+                onEffortChange = { viewModel.setEffort(it) },
                 onSelectModel = {
                     keyboardController?.hide()
                     showModelSelector = true

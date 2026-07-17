@@ -61,6 +61,7 @@ class AiSettingsManager @Inject constructor(
         private val KEY_THEME = stringPreferencesKey("theme")
         private val KEY_MCP_CONFIG_JSON = stringPreferencesKey("mcp_config_json")
         private val KEY_LAST_WORKSPACE = stringPreferencesKey("last_workspace_path")
+        private val KEY_THINKING_EFFORT_PREFIX = "thinking_effort|"
         private val KEY_ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
 
         private val LEGACY_AGENT_CONFIGS = stringPreferencesKey("agent_configs")
@@ -303,6 +304,24 @@ class AiSettingsManager @Inject constructor(
     suspend fun setMcpConfigJson(json: String) {
         context.dataStore.edit { it[KEY_MCP_CONFIG_JSON] = json }
         writeMcpConfigToFixedPath(json)
+    }
+
+    /** Per-model thinking effort persistence. Key: `thinking_effort|<connId>|<modelId>`. */
+    suspend fun setThinkingEffort(connectionId: String, modelId: String, effort: ThinkingEffort) {
+        val key = stringPreferencesKey("$KEY_THINKING_EFFORT_PREFIX$connectionId|$modelId")
+        context.dataStore.edit { prefs ->
+            if (effort == ThinkingEffort.MEDIUM) prefs.remove(key)
+            else prefs[key] = effort.name
+        }
+    }
+
+    /** Sync getter; defaults to MEDIUM when unset. */
+    fun getThinkingEffort(connectionId: String, modelId: String): ThinkingEffort {
+        val key = stringPreferencesKey("$KEY_THINKING_EFFORT_PREFIX$connectionId|$modelId")
+        return runCatching {
+            kotlinx.coroutines.runBlocking { context.dataStore.data.first() }[key]
+                ?.let { runCatching { ThinkingEffort.valueOf(it) }.getOrNull() }
+        }.getOrNull() ?: ThinkingEffort.MEDIUM
     }
 
     suspend fun loadMcpConfigFromFixedPath(): String? = withContext(Dispatchers.IO) {

@@ -88,13 +88,18 @@ class LocalIntelligenceService @Inject constructor(
                         ModelUiMapper.mapConnectionModel(connection, model)
                     }
                 }
-                _uiState.update {
-                    it.copy(
-                        modelOptions = options,
-                        activeModelKey = settings.activeSelection?.key.orEmpty(),
-                        selectedModel = settings.activeSelection?.modelId.orEmpty()
-                    )
-                }
+            // Load persisted effort when active model changes.
+            val persistedEffort = settings.activeSelection?.let { sel ->
+                settingsManager.getThinkingEffort(sel.connectionId, sel.modelId)
+            } ?: com.amaya.intelligence.data.remote.api.ThinkingEffort.MEDIUM
+            _uiState.update {
+                it.copy(
+                    modelOptions = options,
+                    activeModelKey = settings.activeSelection?.key.orEmpty(),
+                    selectedModel = settings.activeSelection?.modelId.orEmpty(),
+                    effort = persistedEffort
+                )
+            }
             }
         }
     }
@@ -182,6 +187,7 @@ class LocalIntelligenceService @Inject constructor(
                         ?.getOrNull(1),
                     conversationId = conversationIdForTurn,
                     selectedModel = currentState.selectedModel,
+                    effort = currentState.effort,
                     onConfirmation = { request -> awaitInlineToolConfirmation(request, turnId) }
                 ).collect { event ->
                     if (activeTurnId.get() == turnId) handleAgentEvent(event)
@@ -202,10 +208,22 @@ class LocalIntelligenceService @Inject constructor(
     private fun handleAgentEvent(event: AgentEvent) {
         when (event) {
             is AgentEvent.TextDelta -> {
+                finalizeThinkingIfActive()
                 browserSessionManager.onAssistantTextDelta(event.text)
                 bufferAssistantTextDelta(event.text)
             }
+            is AgentEvent.ThinkingDelta -> {
+                ensureAssistantMessage()
+                updateCurrentAssistantMessage { msg ->
+                    msg.copy(
+                        thinking = (msg.thinking.orEmpty() + event.text),
+                        isThinking = true,
+                        thinkingStartedAt = msg.thinkingStartedAt ?: System.currentTimeMillis()
+                    )
+                }
+            }
             is AgentEvent.ToolCallStart -> {
+                finalizeThinkingIfActive()
                 flushAssistantTextBuffer()
                 val normalizedName = LocalToolMapper.mapToolName(event.name)
                 val normalizedArgs = LocalToolMapper.mapToolArgs(event.name, event.arguments)
@@ -241,6 +259,7 @@ class LocalIntelligenceService @Inject constructor(
                 }
             }
             is AgentEvent.ToolCallResult -> {
+                finalizeThinkingIfActive()
                 flushAssistantTextBuffer()
                 val canonicalResult = JSONObject()
                     .put("kind", "tool_result")
@@ -508,10 +527,39 @@ class LocalIntelligenceService @Inject constructor(
 
     private fun markCurrentAssistantCompleted() = markCurrentAssistantTerminal("completed")
 
-    private fun markCurrentAssistantTerminal(status: String) {
-        val now = System.currentTimeMillis().toString()
+    /**
+     * Reasoning is finalized the moment any *non-thinking* event follows a
+     * [AgentEvent.ThinkingDelta] (text delta, tool call start, tool result,
+     * stream end, error). Without this, the ThinkingCard would stay in
+     * "pending" until [markCurrentAssistantTerminal] runs at the end of the
+     * agent turn, which is exactly the race condition that hides reasoning
+     * behind every other timeline event.
+     *
+     * Captures duration if not already set, and is a no-op when reasoning
+     * was already finalised or never started.
+     */
+    private fun finalizeThinkingIfActive() {
         updateCurrentAssistantMessage { msg ->
-            msg.copy(metadata = msg.metadata + mapOf("completedAt" to now, "turnStatus" to status))
+            if (!msg.isThinking && msg.thinkingDurationMs != null) return@updateCurrentAssistantMessage msg
+            val nowMs = System.currentTimeMillis()
+            val durationMs = msg.thinkingStartedAt?.let { (nowMs - it).coerceAtLeast(0L) }
+            msg.copy(
+                isThinking = false,
+                thinkingDurationMs = msg.thinkingDurationMs ?: durationMs
+            )
+        }
+    }
+
+    private fun markCurrentAssistantTerminal(status: String) {
+        val nowMs = System.currentTimeMillis()
+        val now = nowMs.toString()
+        updateCurrentAssistantMessage { msg ->
+            val durationMs = msg.thinkingStartedAt?.let { (nowMs - it).coerceAtLeast(0L) }
+            msg.copy(
+                metadata = msg.metadata + mapOf("completedAt" to now, "turnStatus" to status),
+                isThinking = false,
+                thinkingDurationMs = msg.thinkingDurationMs ?: durationMs
+            )
         }
     }
 
@@ -659,6 +707,18 @@ class LocalIntelligenceService @Inject constructor(
                     modelId = parts[2]
                 )
             )
+            // Optimistically load persisted effort for the newly selected model.
+            val loaded = settingsManager.getThinkingEffort(parts[1], parts[2])
+            _uiState.update { it.copy(effort = loaded) }
+        }
+    }
+
+    override fun setEffort(effort: com.amaya.intelligence.data.remote.api.ThinkingEffort) {
+        _uiState.update { it.copy(effort = effort) }
+        // Persist per-model so it survives restart and model switches.
+        val selection = settingsManager.getSettings().activeSelection ?: return
+        scope.launch {
+            settingsManager.setThinkingEffort(selection.connectionId, selection.modelId, effort)
         }
     }
 
@@ -798,6 +858,9 @@ class LocalIntelligenceService @Inject constructor(
                         role = role,
                         content = obj.optString("content"),
                         timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
+                        thinking = obj.optString("thinking").takeIf { it.isNotBlank() },
+                        thinkingStartedAt = obj.optLong("thinkingStartedAt", 0L).takeIf { it > 0 },
+                        thinkingDurationMs = obj.optLong("thinkingDurationMs", 0L).takeIf { it > 0 },
                         metadata = metadata,
                         toolExecutions = toolExecutions,
                         steps = steps,
@@ -922,6 +985,9 @@ class LocalIntelligenceService @Inject constructor(
                 put("role", msg.role.name)
                 put("content", msg.content)
                 put("timestamp", msg.timestamp)
+                if (!msg.thinking.isNullOrBlank()) put("thinking", msg.thinking)
+                msg.thinkingStartedAt?.let { put("thinkingStartedAt", it) }
+                msg.thinkingDurationMs?.let { put("thinkingDurationMs", it) }
                 if (msg.responseItems.isNotEmpty()) put("responseItems", JSONArray(msg.responseItems))
                 if (msg.canonicalHistory.isNotEmpty()) put("canonicalHistory", JSONArray(msg.canonicalHistory))
                 if (msg.attachments.isNotEmpty()) {

@@ -101,6 +101,30 @@ object AmayaProviderRegistry {
             credentialRequired = true
         ),
         ProviderConfig(
+            id = "glm",
+            displayName = "Z.ai GLM",
+            category = ProviderCategory.API,
+            adapter = ProviderAdapter.OPENAI_COMPATIBLE,
+            defaultBaseUrl = "https://open.bigmodel.cn/api/paas/v4",
+            credentialRequired = true
+        ),
+        ProviderConfig(
+            id = "kimi",
+            displayName = "Moonshot Kimi",
+            category = ProviderCategory.API,
+            adapter = ProviderAdapter.OPENAI_COMPATIBLE,
+            defaultBaseUrl = "https://api.moonshot.cn/v1",
+            credentialRequired = true
+        ),
+        ProviderConfig(
+            id = "minimax",
+            displayName = "MiniMax",
+            category = ProviderCategory.API,
+            adapter = ProviderAdapter.OPENAI_COMPATIBLE,
+            defaultBaseUrl = "https://api.minimax.chat/v1",
+            credentialRequired = true
+        ),
+        ProviderConfig(
             id = "custom_openai_compatible",
             displayName = "OpenAI-compatible",
             category = ProviderCategory.CUSTOM,

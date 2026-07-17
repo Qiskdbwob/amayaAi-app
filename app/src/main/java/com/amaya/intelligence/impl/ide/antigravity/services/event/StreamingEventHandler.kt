@@ -131,8 +131,13 @@ class StreamingEventHandler(
         if (idx == -1) return messages
         val msg = messages[idx]
         if (msg.metadata["completedAt"] != null) return messages
+        val nowMs = System.currentTimeMillis()
+        val durationMs = msg.thinkingStartedAt?.let { (nowMs - it).coerceAtLeast(0L) }
         return messages.toMutableList().apply {
-            this[idx] = msg.copy(metadata = msg.metadata + ("completedAt" to System.currentTimeMillis().toString()))
+            this[idx] = msg.copy(
+                metadata = msg.metadata + ("completedAt" to nowMs.toString()),
+                thinkingDurationMs = msg.thinkingDurationMs ?: durationMs
+            )
         }
     }
 
@@ -187,10 +192,20 @@ class StreamingEventHandler(
     private fun finalizeRunningThinkingOnLastAssistant(messages: List<UiMessage>): List<UiMessage> {
         val idx = messages.indexOfLast { it.role == MessageRole.ASSISTANT }
         if (idx == -1) return messages
-        
+
         val msg = messages[idx]
-        if (!hasSyntheticThinkingTool(msg)) return messages
-        
+        if (!hasSyntheticThinkingTool(msg)) {
+            // No synthetic thinking tool in the timeline, but the message
+            // can still be marked isThinking=true (e.g. from AiThinking
+            // events). Forcing isThinking=false here would break providers
+            // that drive reasoning purely via UiMessage.thinking without a
+            // matching tool call — local LLM/DeepSeek/etc. rely on the
+            // isThinking flag to drive the ThinkingCard shimmer until the
+            // agent stream itself ends. So only flip when we *actually*
+            // observed the thinking tool reach a terminal status.
+            return messages
+        }
+
         val updatedTools = msg.toolExecutions.map { tool ->
             if ((tool.metadata[AntigravityProtocol.ToolMarkers.THINKING_TOOL_META_KEY] == "true" ||
                     tool.name.equals(AntigravityProtocol.ToolMarkers.THINKING_TOOL_NAME, ignoreCase = true)) &&
@@ -201,9 +216,9 @@ class StreamingEventHandler(
                 tool
             }
         }
-        
+
         val updatedSteps = msg.steps.map { step ->
-            if (step is MessageStep.ToolCall && 
+            if (step is MessageStep.ToolCall &&
                 (step.execution.metadata[AntigravityProtocol.ToolMarkers.THINKING_TOOL_META_KEY] == "true" ||
                  step.execution.name.equals(AntigravityProtocol.ToolMarkers.THINKING_TOOL_NAME, ignoreCase = true)) &&
                 step.execution.status == ToolStatus.RUNNING
@@ -211,7 +226,24 @@ class StreamingEventHandler(
                 step.copy(execution = step.execution.copy(status = ToolStatus.SUCCESS))
             } else step
         }
-        return messages.toMutableList().apply { this[idx] = msg.copy(toolExecutions = updatedTools, steps = updatedSteps) }
+        val nowMs = System.currentTimeMillis()
+        val durationMs = msg.thinkingStartedAt?.let { (nowMs - it).coerceAtLeast(0L) }
+        return messages.toMutableList().apply {
+            this[idx] = msg.copy(
+                toolExecutions = updatedTools,
+                steps = updatedSteps,
+                // The synthetic thinking tool reached a terminal status, so
+                // the ThinkingCard must stop shimmering — otherwise the
+                // reasoning block stays in "pending" until the chat stream
+                // itself ends, which is exactly the race condition the UI
+                // contract should avoid.
+                isThinking = msg.isThinking && updatedTools.any {
+                    it.name.equals(AntigravityProtocol.ToolMarkers.THINKING_TOOL_NAME, ignoreCase = true) &&
+                        it.status == ToolStatus.RUNNING
+                },
+                thinkingDurationMs = msg.thinkingDurationMs ?: durationMs
+            )
+        }
     }
     
     private fun ensureAssistantMessage(messages: List<UiMessage>, force: Boolean): List<UiMessage> {

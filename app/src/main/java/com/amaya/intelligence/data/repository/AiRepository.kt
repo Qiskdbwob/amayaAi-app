@@ -126,6 +126,7 @@ class AiRepository @Inject constructor(
         conversationId: Long? = null,
         connectionId: String? = null,
         selectedModel: String? = null,
+        effort: ThinkingEffort? = null,
         runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL,
         onConfirmation: suspend (ConfirmationRequest) -> Boolean = { false }
     ): Flow<AgentEvent> = channelFlow {
@@ -242,7 +243,9 @@ class AiRepository @Inject constructor(
                 maxTokens    = maxOutputTokens,
                 stream       = true,
                 connectionId = connection.id,
-                sessionId    = sessionId
+                sessionId    = sessionId,
+                providerId   = connection.providerId,
+                effort       = effort
             )
 
             var textBuffer = StringBuilder()
@@ -262,6 +265,10 @@ class AiRepository @Inject constructor(
                     is ChatResponse.TextDelta -> {
                         textBuffer.append(response.text)
                         send(AgentEvent.TextDelta(response.text))
+                    }
+
+                    is ChatResponse.ThinkingDelta -> {
+                        send(AgentEvent.ThinkingDelta(response.text))
                     }
 
                     is ChatResponse.ToolCall -> {
@@ -730,6 +737,8 @@ $userMessage"""
  */
 sealed class AgentEvent {
     data class TextDelta(val text: String) : AgentEvent()
+    /** Reasoning/thinking chunk, rendered separately from the answer. */
+    data class ThinkingDelta(val text: String) : AgentEvent()
     data class ToolCallStart(
         val toolCallId: String,
         val name: String,

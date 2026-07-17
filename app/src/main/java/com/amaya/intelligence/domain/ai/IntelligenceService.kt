@@ -46,6 +46,9 @@ interface IntelligenceService {
     fun connect(ip: String, port: Int) {}
     fun setConversationMode(mode: ConversationMode) {}
 
+    /** Set the global reasoning effort shown by the chat bulb. */
+    fun setEffort(effort: com.amaya.intelligence.data.remote.api.ThinkingEffort) {}
+
     /**
      * Generic hook: pick a conversation mode by its provider-defined id.
      * Default implementation bridges legacy "planning"/"fast" to

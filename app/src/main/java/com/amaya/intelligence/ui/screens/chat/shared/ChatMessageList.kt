@@ -55,6 +55,7 @@ fun ChatMessageList(
     onToolDecline: ((ToolExecution) -> Unit)?,
     onLocalhostLinkClick: ((String) -> Unit)?,
     onContentResized: () -> Unit = {},
+    onThinkingScroll: () -> Unit = {},
     onScrollToBottomClick: () -> Unit = {},
     shouldAutoScroll: Boolean = false,
     scope: CoroutineScope
@@ -230,7 +231,8 @@ fun ChatMessageList(
                     onToolAccept = onToolAccept,
                     onToolDecline = onToolDecline,
                     onLocalhostLinkClick = onLocalhostLinkClick,
-                    onInteraction = onContentResized
+                    onInteraction = onContentResized,
+                    onThinkingScroll = onThinkingScroll
                 )
             }
         }
