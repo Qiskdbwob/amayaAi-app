@@ -38,9 +38,23 @@ object ToolUiMapper {
             "delete_file" -> ToolUiMetadata(
                 category = ToolCategory.FILE_IO,
                 label = cleanArtifact(fileName("path", safeArgs)),
-                actionIcon = ToolInfoIcon.EDIT,
+                actionIcon = ToolInfoIcon.DELETE,
                 targetIcon = ToolInfoIcon.FILE,
                 badges = listOf("DELETE")
+            )
+            "create_directory" -> ToolUiMetadata(
+                category = ToolCategory.FILE_IO,
+                label = cleanArtifact(fileName("path", safeArgs)).ifBlank { "Directory" },
+                actionIcon = ToolInfoIcon.FOLDER,
+                targetIcon = ToolInfoIcon.FOLDER,
+                badges = listOf("CREATE")
+            )
+            "undo_change" -> ToolUiMetadata(
+                category = ToolCategory.FILE_IO,
+                label = cleanArtifact(fileName("path", safeArgs)).ifBlank { "Restore file" },
+                actionIcon = ToolInfoIcon.EDIT,
+                targetIcon = ToolInfoIcon.FILE,
+                badges = listOf("RESTORE")
             )
             "list_files", "list_dir" -> ToolUiMetadata(
                 category = ToolCategory.FILE_IO,
@@ -58,6 +72,27 @@ object ToolUiMapper {
             )
 
             // -- Tasks ---------------------------------------------------------
+            "invoke_subagents" -> ToolUiMetadata(
+                category = ToolCategory.TASK_MANAGEMENT,
+                label = safeText(safeArgs["title"], 120) ?: "Parallel work",
+                actionIcon = ToolInfoIcon.ROCKET,
+                targetIcon = ToolInfoIcon.PERSON,
+                badges = listOf("SUBAGENTS")
+            )
+            "create_reminder" -> ToolUiMetadata(
+                category = ToolCategory.TASK_MANAGEMENT,
+                label = safeText(safeArgs["title"], 120) ?: "Reminder",
+                actionIcon = ToolInfoIcon.TASK,
+                targetIcon = ToolInfoIcon.MESSAGE,
+                badges = listOf("REMINDER")
+            )
+            "session_search" -> ToolUiMetadata(
+                category = ToolCategory.SEARCH,
+                label = safeText(safeArgs["query"], 120) ?: "Previous sessions",
+                actionIcon = ToolInfoIcon.SEARCH,
+                targetIcon = ToolInfoIcon.MESSAGE,
+                badges = listOf("RECALL")
+            )
             "task_boundary" -> {
                 val rawMode = (safeArgs["Mode"]?.toString() ?: "TASK").uppercase()
                 val mode = if (rawMode.contains("%SAME%") || rawMode.contains("SAME")) "UPDATE" else rawMode

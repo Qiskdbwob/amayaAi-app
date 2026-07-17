@@ -33,7 +33,9 @@ fun ToolResultPreview(
     isDark: Boolean,
     category: ToolCategory = ToolCategory.UNKNOWN,
     onLocalhostLinkClick: ((String) -> Unit)? = null,
-    uiMetadata: ToolUiMetadata? = null
+    uiMetadata: ToolUiMetadata? = null,
+    isLocal: Boolean = false,
+    isError: Boolean = false
 ) {
     val codeBlockBg   = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
     val codeTextColor = if (isDark) Color(0xFFD1D1D6) else Color(0xFF3A3A3C)
@@ -64,6 +66,11 @@ fun ToolResultPreview(
     fun truncateBlock(text: String, maxChars: Int = 1800): String {
         val trimmed = text.trim()
         return if (trimmed.length <= maxChars) trimmed else trimmed.take(maxChars).trimEnd() + "\n… truncated"
+    }
+
+    @Composable
+    fun SectionLabel(label: String) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = metaColor)
     }
 
     @Composable
@@ -101,6 +108,23 @@ fun ToolResultPreview(
                 }
             }
         }
+    }
+
+    if (isLocal) {
+        LocalToolResultBody(
+            toolName = toolName,
+            arguments = arguments,
+            result = result,
+            isError = isError,
+            codeBlockBg = codeBlockBg,
+            codeTextColor = codeTextColor,
+            metaColor = metaColor,
+            blockBorderColor = blockBorderColor,
+            sectionLabel = { SectionLabel(it) },
+            diffBlock = { DiffBlock(it) },
+            onLocalhostLinkClick = onLocalhostLinkClick
+        )
+        return
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -220,6 +244,151 @@ fun ToolResultPreview(
             ToolCategory.UNKNOWN -> {
                 if (result.isNotBlank() && !result.lowercase().contains("success")) {
                     GenericResultBlock(result, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LocalToolResultBody(
+    toolName: String,
+    arguments: Map<String, Any?>,
+    result: String,
+    isError: Boolean,
+    codeBlockBg: Color,
+    codeTextColor: Color,
+    metaColor: Color,
+    blockBorderColor: Color,
+    sectionLabel: @Composable (String) -> Unit,
+    diffBlock: @Composable (String) -> Unit,
+    onLocalhostLinkClick: ((String) -> Unit)?
+) {
+    val cleanResult = result.trim()
+    if (isError) {
+        sectionLabel("Error")
+        GenericResultBlock(cleanResult.ifBlank { "Tool failed." }, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
+        return
+    }
+
+    fun arg(vararg keys: String): String? = keys.firstNotNullOfOrNull { key ->
+        arguments[key]?.toString()?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+    }
+    fun canonicalDiff(): String {
+        val chunks = (arguments["replacementChunks"] as? List<*>)
+            ?: (arguments["ReplacementChunks"] as? List<*>)
+            ?: emptyList<Any?>()
+        val chunkDiff = chunks.mapNotNull { it as? Map<*, *> }.joinToString("\n") { chunk ->
+            val before = chunk["TargetContent"]?.toString() ?: chunk["targetContent"]?.toString()
+            val after = chunk["ReplacementContent"]?.toString() ?: chunk["replacementContent"]?.toString()
+            listOfNotNull(before?.let { "- $it" }, after?.let { "+ $it" }).joinToString("\n")
+        }
+        if (chunkDiff.isNotBlank()) return chunkDiff
+        return listOfNotNull(
+            arg("old_content", "targetContent", "TargetContent")?.let { "- $it" },
+            arg("new_content", "replacementContent", "ReplacementContent", "CodeContent", "codeContent")?.let { "+ $it" },
+            arg("diff")
+        ).joinToString("\n")
+    }
+    fun isNoisySuccess(): Boolean {
+        val normalized = cleanResult.lowercase()
+        return cleanResult.isBlank() || normalized == "done" || normalized == "success" ||
+            normalized.startsWith("successfully ") || normalized.startsWith("created directory:") ||
+            normalized.startsWith("directory already exists:") || normalized.startsWith("moved to trash:") ||
+            normalized.startsWith("permanently deleted:") || normalized.startsWith("restored ")
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        when (toolName) {
+            "read_file" -> if (cleanResult.isNotBlank()) {
+                sectionLabel("Content")
+                GenericResultBlock(cleanResult, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
+            }
+            "edit_file" -> canonicalDiff().takeIf { it.isNotBlank() }?.let {
+                sectionLabel("Diff")
+                diffBlock(it)
+            }
+            "write_file", "create_directory", "delete_file", "undo_change" -> {
+                if (!isNoisySuccess()) {
+                    sectionLabel("Output")
+                    GenericResultBlock(cleanResult, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
+                }
+            }
+            "list_files", "find_files", "run_shell" -> if (cleanResult.isNotBlank()) {
+                sectionLabel("Output")
+                GenericResultBlock(cleanResult, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
+            }
+            "web_search" -> if (cleanResult.isNotBlank()) {
+                sectionLabel("Records")
+                WebSearchResultBlock(cleanResult, codeBlockBg, codeTextColor, metaColor, blockBorderColor)
+            }
+            "create_reminder" -> Unit
+            "update_memory" -> {
+                val parsed = remember(cleanResult) { runCatching { JSONObject(cleanResult) }.getOrNull() }
+                val content = parsed?.optString("content")?.takeIf { it.isNotBlank() }
+                if (content != null) {
+                    sectionLabel("Content")
+                    GenericResultBlock(content, codeBlockBg, codeTextColor, blockBorderColor)
+                }
+            }
+            "memory_manage" -> {
+                sectionLabel("Records")
+                MemoryManageResultBlock(cleanResult, codeBlockBg, codeTextColor, metaColor, blockBorderColor)
+            }
+            "skill_view", "skill_manage" -> {
+                val parsed = remember(cleanResult) { runCatching { JSONObject(cleanResult) }.getOrNull() }
+                val diff = parsed?.optString("diff")?.takeIf { it.isNotBlank() }
+                val content = parsed?.optString("content")?.takeIf { it.isNotBlank() }
+                when {
+                    diff != null -> { sectionLabel("Diff"); diffBlock(diff) }
+                    content != null -> { sectionLabel("Content"); GenericResultBlock(content, codeBlockBg, codeTextColor, blockBorderColor) }
+                    cleanResult.isNotBlank() -> { sectionLabel("Records"); SkillResultBlock(toolName, cleanResult, codeBlockBg, codeTextColor, metaColor, blockBorderColor, { text, max -> if (text.length <= max) text else text.take(max) + "\n… truncated" }, diffBlock) }
+                }
+            }
+            "session_search" -> {
+                sectionLabel("Records")
+                SessionSearchRecordsBlock(cleanResult, codeBlockBg, codeTextColor, metaColor, blockBorderColor)
+            }
+            "invoke_subagents" -> if (cleanResult.isNotBlank()) {
+                sectionLabel("Nested tools")
+                GenericResultBlock(cleanResult, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
+            }
+            else -> if (!isNoisySuccess()) {
+                sectionLabel("Output")
+                GenericResultBlock(cleanResult, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionSearchRecordsBlock(
+    result: String,
+    codeBlockBg: Color,
+    codeTextColor: Color,
+    metaColor: Color,
+    blockBorderColor: Color
+) {
+    val parsed = remember(result) { runCatching { JSONObject(result) }.getOrNull() }
+    val records = parsed?.optJSONArray("results")
+    if (records == null || records.length() == 0) {
+        Text("No previous chats found.", style = MaterialTheme.typography.labelSmall, color = metaColor)
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        repeat(records.length().coerceAtMost(5)) { index ->
+            val record = records.optJSONObject(index) ?: return@repeat
+            val summary = record.optString("summary").ifBlank { record.optString("matchedText") }.ifBlank { "Previous chat" }
+            val matched = record.optString("matchedText").takeIf { it.isNotBlank() && it != summary }
+            Surface(
+                shape = RoundedCornerShape(7.dp),
+                color = codeBlockBg,
+                border = BorderStroke(1.dp, blockBorderColor),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(summary, style = MaterialTheme.typography.labelSmall, color = codeTextColor, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    matched?.let { Text(it, style = MaterialTheme.typography.bodySmall, fontSize = 10.sp, color = metaColor, maxLines = 2, overflow = TextOverflow.Ellipsis) }
                 }
             }
         }

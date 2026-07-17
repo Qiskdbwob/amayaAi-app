@@ -143,7 +143,7 @@ fun MessageBubble(
                                 message = message,
                                 steps = summarySteps,
                                 onInteraction = onInteraction,
-                                animateInitialCollapse = sawLiveThinking.value
+                                animateInitialCollapse = hasLocalError(summarySteps)
                             ) {
                                 MessageThinkingBlock(
                                     message = message,
@@ -208,8 +208,27 @@ fun MessageBubble(
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 val browserMerged = mergeBrowserToolExecutions(message.toolExecutions.filter { it.name == "browser" })
-                                message.toolExecutions.filter { it.name != "update_todo" }.forEach { execution ->
+                                val visibleExecutions = message.toolExecutions.filter { it.name != "update_todo" }
+                                val groups = buildToolExecutionGroups(
+                                    visibleExecutions.map { MessageStep.ToolCall(execution = it) },
+                                    autoExpandLatest = !visibleExecutions.any { it.status == ToolStatus.ERROR }
+                                )
+
+                                visibleExecutions.forEach { execution ->
+                                    val group = groups.find { it.executions.contains(execution) }
                                     when {
+                                        group != null && execution == group.executions.first() -> {
+                                            key(group.key + "_" + execution.toolCallId) {
+                                                ToolExecutionGroupCard(
+                                                    group = group,
+                                                    onToolAccept = onToolAccept,
+                                                    onToolDecline = onToolDecline,
+                                                    onLocalhostLinkClick = onLocalhostLinkClick,
+                                                    onInteraction = onInteraction
+                                                )
+                                            }
+                                        }
+                                        group != null -> Unit // Skip other group members
                                         execution.name == "browser" && browserMerged != null && execution == message.toolExecutions.firstOrNull { it.name == "browser" } -> {
                                             key(browserMerged.toolCallId) {
                                                 ToolCallCard(
@@ -290,6 +309,7 @@ private fun StepTimeline(
             (textStep.formattedContent ?: textStep.content).takeIf { it.isNotBlank() }
         }.joinToString("\n\n").takeIf { it.isNotBlank() }
     } else null
+    val groups = buildToolExecutionGroups(steps, autoExpandLatest = !steps.any { (it as? MessageStep.ToolCall)?.execution?.status == ToolStatus.ERROR })
 
     steps.forEachIndexed { idx, step ->
         val isBetweenBrowserCalls = firstBrowserIndex != null && lastBrowserIndex != null && idx in (firstBrowserIndex + 1) until lastBrowserIndex
@@ -325,14 +345,32 @@ private fun StepTimeline(
                         }
                     }
                     else -> {
-                        key(step.execution.toolCallId) {
-                            ToolCallCard(
-                                execution = step.execution,
-                                onAccept = onToolAccept?.let { callback -> { callback(step.execution) } },
-                                onDecline = onToolDecline?.let { callback -> { callback(step.execution) } },
-                                onLocalhostLinkClick = onLocalhostLinkClick,
-                                onInteraction = onInteraction
-                            )
+                        val group = groups.find { it.executions.contains(step.execution) }
+
+                        when {
+                            group != null && step.execution == group.executions.first() -> {
+                                key(group.key + "_" + step.execution.toolCallId) {
+                                    ToolExecutionGroupCard(
+                                        group = group,
+                                        onToolAccept = onToolAccept,
+                                        onToolDecline = onToolDecline,
+                                        onLocalhostLinkClick = onLocalhostLinkClick,
+                                        onInteraction = onInteraction
+                                    )
+                                }
+                            }
+                            group != null -> Unit // Skip other group members
+                            else -> {
+                                key(step.execution.toolCallId) {
+                                    ToolCallCard(
+                                        execution = step.execution,
+                                        onAccept = onToolAccept?.let { callback -> { callback(step.execution) } },
+                                        onDecline = onToolDecline?.let { callback -> { callback(step.execution) } },
+                                        onLocalhostLinkClick = onLocalhostLinkClick,
+                                        onInteraction = onInteraction
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -355,6 +393,9 @@ private fun StepTimeline(
     }
 }
 
+private fun hasLocalError(steps: List<MessageStep>): Boolean =
+    steps.any { (it as? MessageStep.ToolCall)?.execution?.status == ToolStatus.ERROR }
+
 @Composable
 private fun WorkSummaryCard(
     message: UiMessage,
@@ -364,7 +405,7 @@ private fun WorkSummaryCard(
     content: @Composable ColumnScope.() -> Unit
 ) {
     if (steps.isEmpty()) return
-    var expanded by remember(message.id, steps.size) { mutableStateOf(animateInitialCollapse) }
+    var expanded by remember(message.id, steps.size) { mutableStateOf(!animateInitialCollapse) }
     LaunchedEffect(animateInitialCollapse) {
         if (animateInitialCollapse) {
             withFrameNanos { }
