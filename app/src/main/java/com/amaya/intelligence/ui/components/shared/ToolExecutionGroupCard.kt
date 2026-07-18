@@ -45,10 +45,7 @@ internal data class ToolExecutionGroup(
 )
 
 /** Contiguous local tool calls sharing [toolGroupKey]; only groups with count >= 2. */
-internal fun buildToolExecutionGroups(
-    steps: List<MessageStep>,
-    autoExpandLatest: Boolean
-): List<ToolExecutionGroup> {
+internal fun buildToolExecutionGroups(steps: List<MessageStep>): List<ToolExecutionGroup> {
     val groups = mutableListOf<ToolExecutionGroup>()
     var index = 0
     while (index < steps.size) {
@@ -73,7 +70,9 @@ internal fun buildToolExecutionGroups(
                 startIndex = start,
                 endIndex = index,
                 executions = children,
-                isActive = autoExpandLatest && index == steps.lastIndex
+                isActive = children.any {
+                    it.status == ToolStatus.RUNNING || it.status == ToolStatus.PENDING
+                }
             )
         }
         index++
@@ -121,6 +120,7 @@ internal fun ToolExecutionGroupCard(
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = background,
+        border = toolCardBorder(),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(Modifier.fillMaxWidth()) {
@@ -147,8 +147,8 @@ internal fun ToolExecutionGroupCard(
                     fontWeight = FontWeight.Normal,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier.weight(1f).toolHeaderFade()
                 )
                 if (isRunning) {
                     Icon(Icons.Default.Autorenew, null, modifier = Modifier.size(14.dp), tint = tint)

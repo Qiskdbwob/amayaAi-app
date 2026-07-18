@@ -11,8 +11,20 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.rememberScrollableState
+import androidx.compose.foundation.gestures.scrollable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
@@ -48,8 +60,15 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 
@@ -63,6 +82,79 @@ internal object ToolCallMotion {
     val enter = expandVertically(animationSpec = motionSpec) + fadeIn(tween(durationMillis = 180, easing = FastOutSlowInEasing))
     val exit = shrinkVertically(animationSpec = motionSpec) + fadeOut(tween(durationMillis = 140, easing = FastOutSlowInEasing))
 }
+
+/** Standard one-pixel outline for every top-level timeline card. */
+@Composable
+internal fun toolCardBorder(): BorderStroke = BorderStroke(
+    1.dp,
+    if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
+)
+
+/** Maximum expanded-body height. Header + body stay within roughly one quarter screen. */
+@Composable
+internal fun toolCardBodyMaxHeight(): Dp =
+    (LocalConfiguration.current.screenHeightDp.dp / 4 - 44.dp).coerceAtLeast(120.dp)
+
+/** Scrollable result block with affordance fades. Call only from visible expandable content. */
+@Composable
+internal fun ToolScrollableBlock(
+    fadeColor: Color,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val scrollState = rememberScrollState()
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = toolCardBodyMaxHeight())
+    ) {
+        val scrollableState = rememberScrollableState { delta ->
+            scrollState.dispatchRawDelta(-delta)
+            // Consume edge deltas too. Nested chat LazyColumn must never receive
+            // a drag/fling started inside a scrollable tool result block.
+            delta
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .scrollable(scrollableState, Orientation.Vertical)
+                .verticalScroll(scrollState, enabled = false),
+            content = content
+        )
+        if (scrollState.canScrollBackward) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(24.dp)
+                    .background(Brush.verticalGradient(listOf(fadeColor, fadeColor.copy(alpha = 0f))))
+            )
+        }
+        if (scrollState.canScrollForward) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(24.dp)
+                    .background(Brush.verticalGradient(listOf(fadeColor.copy(alpha = 0f), fadeColor)))
+            )
+        }
+    }
+}
+
+/** Fades an overlong one-line card header without adding an ellipsis. */
+internal fun Modifier.toolHeaderFade(): Modifier =
+    graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithContent {
+            drawContent()
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    0f to Color.White,
+                    0.78f to Color.White,
+                    1f to Color.Transparent
+                ),
+                blendMode = BlendMode.DstIn
+            )
+        }
 
 /** Lead-icon pill shared by tool, thinking, group, and browser cards. */
 @Composable
