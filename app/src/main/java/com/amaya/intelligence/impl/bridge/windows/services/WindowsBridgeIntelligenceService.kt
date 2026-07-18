@@ -129,6 +129,7 @@ class WindowsBridgeIntelligenceService @Inject constructor(
                         ?.split('|', limit = 3)
                         ?.getOrNull(1),
                     selectedModel = _uiState.value.selectedModel,
+                    effort = _uiState.value.effort,
                     runtimeTarget = AgentRuntimeTarget.WINDOWS_BRIDGE,
                     onConfirmation = { false }
                 ).collect { handleAgentEvent(it) }
@@ -232,6 +233,10 @@ class WindowsBridgeIntelligenceService @Inject constructor(
 
     override fun clearError() {
         _uiState.update { it.copy(error = null) }
+    }
+
+    override fun setEffort(effort: com.amaya.intelligence.data.remote.api.ThinkingEffort) {
+        _uiState.update { it.copy(effort = effort) }
     }
 
     private fun handleAgentEvent(event: AgentEvent) {

@@ -75,6 +75,13 @@ class ReasoningCatalogTest {
     }
 
     @Test
+    fun minimaxM3UsesThinkingToggle() {
+        val cap = ReasoningCatalog.cap("custom_openai_compatible", "minimax-m3")
+        assertEquals(RequestShape.MINIMAX_M3_THINKING, cap.shape)
+        assertTrue(cap.canDisable)
+    }
+
+    @Test
     fun llamaNonReasoning() {
         val cap = ReasoningCatalog.cap("custom_openai_compatible", "llama-3.1-70b")
         assertEquals(ReasonKind.NONE, cap.kind)

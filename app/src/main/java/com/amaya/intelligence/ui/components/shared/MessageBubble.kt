@@ -27,7 +27,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
@@ -142,8 +141,7 @@ fun MessageBubble(
                             WorkSummaryCard(
                                 message = message,
                                 steps = summarySteps,
-                                onInteraction = onInteraction,
-                                animateInitialCollapse = hasLocalError(summarySteps)
+                                onInteraction = onInteraction
                             ) {
                                 MessageThinkingBlock(
                                     message = message,
@@ -210,8 +208,7 @@ fun MessageBubble(
                                 val browserMerged = mergeBrowserToolExecutions(message.toolExecutions.filter { it.name == "browser" })
                                 val visibleExecutions = message.toolExecutions.filter { it.name != "update_todo" }
                                 val groups = buildToolExecutionGroups(
-                                    visibleExecutions.map { MessageStep.ToolCall(execution = it) },
-                                    autoExpandLatest = !visibleExecutions.any { it.status == ToolStatus.ERROR }
+                                    visibleExecutions.map { MessageStep.ToolCall(execution = it) }
                                 )
 
                                 visibleExecutions.forEach { execution ->
@@ -309,7 +306,7 @@ private fun StepTimeline(
             (textStep.formattedContent ?: textStep.content).takeIf { it.isNotBlank() }
         }.joinToString("\n\n").takeIf { it.isNotBlank() }
     } else null
-    val groups = buildToolExecutionGroups(steps, autoExpandLatest = !steps.any { (it as? MessageStep.ToolCall)?.execution?.status == ToolStatus.ERROR })
+    val groups = buildToolExecutionGroups(steps)
 
     steps.forEachIndexed { idx, step ->
         val isBetweenBrowserCalls = firstBrowserIndex != null && lastBrowserIndex != null && idx in (firstBrowserIndex + 1) until lastBrowserIndex
@@ -393,25 +390,15 @@ private fun StepTimeline(
     }
 }
 
-private fun hasLocalError(steps: List<MessageStep>): Boolean =
-    steps.any { (it as? MessageStep.ToolCall)?.execution?.status == ToolStatus.ERROR }
-
 @Composable
 private fun WorkSummaryCard(
     message: UiMessage,
     steps: List<MessageStep>,
     onInteraction: () -> Unit,
-    animateInitialCollapse: Boolean,
     content: @Composable ColumnScope.() -> Unit
 ) {
     if (steps.isEmpty()) return
-    var expanded by remember(message.id, steps.size) { mutableStateOf(!animateInitialCollapse) }
-    LaunchedEffect(animateInitialCollapse) {
-        if (animateInitialCollapse) {
-            withFrameNanos { }
-            expanded = false
-        }
-    }
+    var expanded by remember(message.id) { mutableStateOf(false) }
     val toolCount = steps.count { it is MessageStep.ToolCall && it.execution.name != "update_todo" && !isThinkingExecution(it.execution) }
     val duration = formatWorkedDuration(message.timestamp, message.metadata["completedAt"]?.toLongOrNull())
     val subtitle = "Worked for $duration${if (toolCount > 0) " · $toolCount tool${if (toolCount == 1) "" else "s"}" else ""}"
@@ -449,8 +436,8 @@ private fun WorkSummaryCard(
                     fontWeight = FontWeight.Normal,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier.weight(1f).toolHeaderFade()
                 )
                 Icon(
                     if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,

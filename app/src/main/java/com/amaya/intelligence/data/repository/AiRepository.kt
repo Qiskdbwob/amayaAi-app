@@ -27,6 +27,53 @@ enum class AgentRuntimeTarget {
     WINDOWS_BRIDGE
 }
 
+private const val TITLE_FALLBACK = "New Chat"
+private val TITLE_PREFIX = Regex("(?i)^\\s*(?:title|judul)\\s*:\\s*")
+private val TITLE_TAG = Regex("(?is)<title>\\s*(.*?)\\s*</title>")
+private val TITLE_QUOTED = Regex("[\"“]([^\"”\\r\\n]{2,60})[\"”]")
+private val TITLE_SEPARATOR = Regex("\\s+(?:[–—|]|-)\\s+")
+private val TITLE_EDGE_MARKUP = Regex("^[\\s*#>`_-]+|[\\s*#>`_-]+$")
+private val TITLE_META = Regex("(?i)^(?:here is|this is|the title|your title|berikut|judulnya)\\b")
+private val TITLE_TRAILING_PUNCTUATION = Regex("[.!?:;]+$")
+private val TITLE_WHITESPACE = Regex("\\s+")
+private val THINK_BLOCK = Regex("(?is)<think>.*?</think>")
+
+internal fun fallbackConversationTitle(userMessage: String): String =
+    userMessage
+        .replace(TITLE_WHITESPACE, " ")
+        .trim()
+        .ifBlank { TITLE_FALLBACK }
+
+internal fun extractConversationTitle(raw: String): String? {
+    val cleaned = raw.replace(THINK_BLOCK, " ").trim()
+    val candidates = buildList {
+        TITLE_TAG.find(cleaned)?.groupValues?.getOrNull(1)?.let(::add)
+        TITLE_QUOTED.findAll(cleaned).forEach { add(it.groupValues[1]) }
+        cleaned.lineSequence()
+            .firstOrNull { it.isNotBlank() }
+            ?.split(TITLE_SEPARATOR, limit = 2)
+            ?.firstOrNull()
+            ?.let(::add)
+    }
+    return candidates.firstNotNullOfOrNull { candidate ->
+        candidate
+            .replace(TITLE_EDGE_MARKUP, "")
+            .replace(TITLE_PREFIX, "")
+            .replace(TITLE_EDGE_MARKUP, "")
+            .replace(TITLE_TRAILING_PUNCTUATION, "")
+            .replace(TITLE_WHITESPACE, " ")
+            .trim()
+            .takeIf { title ->
+                !TITLE_META.containsMatchIn(title) &&
+                    title.length <= 60 &&
+                    title.split(TITLE_WHITESPACE).size in 2..5
+            }
+    }
+}
+
+internal fun sanitizeConversationTitle(raw: String, fallback: String): String =
+    extractConversationTitle(raw) ?: fallback
+
 /**
  * Repository for AI interactions.
  *
@@ -668,66 +715,70 @@ class AiRepository @Inject constructor(
         return localTools + mcpTools
     }
 
-    /**
-     * Generate a short conversation title (max 3 sentences) from the user's first message.
-     * Uses the same AI provider/model as the active conversation.
-     */
+    /** Generate a compact conversation title from the user's first message. */
     suspend fun generateTitle(
         userMessage: String,
         providerConnection: ProviderConnection,
         selectedModel: String?
     ): String {
+        val fallback = fallbackConversationTitle(userMessage)
         return try {
             val provider = resolveProvider(providerConnection)
-            val model = when {
-                !selectedModel.isNullOrBlank() -> selectedModel
-                else -> return "New Chat"
-            }
+            val model = selectedModel?.takeIf { it.isNotBlank() } ?: return fallback
+            var retryFeedback: String? = null
+            repeat(2) { attempt ->
+                val result = StringBuilder()
+                var failure: String? = null
+                provider.chat(
+                    ChatRequest(
+                        model = model,
+                        messages = listOf(ChatMessage(
+                            role = MessageRole.USER,
+                            content = buildString {
+                                appendLine("Create a title for this message:")
+                                append(userMessage)
+                                retryFeedback?.let { append("\n\nCorrection: $it") }
+                            }
+                        )),
+                        systemPrompt = """Create a concise, useful chat title from the user's primary intent and specific subject.
+Use the user's language. Write a natural noun phrase of 2-3 words; use up to 5 only when needed for clarity.
+Prefer concrete actions and subjects over vague wording. Preserve established technical terms.
+Return exactly <title>YOUR TITLE</title>. Never answer the message or add text outside those tags.
 
-            val request = ChatRequest(
-                model = model,
-                messages = listOf(
-                    ChatMessage(
-                        role = MessageRole.USER,
-                        content = """Summarize the user's main intent into a short, clear title.
-Max 3 sentences, ideally 3-7 words.
-Use the same language as the user.
-Reply with the title only — no quotes, no explanation, no markdown.
-
-User's first message:
-$userMessage"""
+Examples:
+Tolong terjemahkan ini ke bahasa Inggris → <title>Terjemahan ke Inggris</title>
+What model are you? → <title>Model Identification Request</title>
+Audit logic codebase ini → <title>Audit Logic Codebase</title>
+Berikan ide website yang kreatif → <title>Ide Website Kreatif</title>""",
+                        // Stream: local reasoning providers often expose final text only through SSE.
+                        maxTokens = 512,
+                        temperature = 0f,
+                        stream = true,
+                        connectionId = providerConnection.id,
+                        providerId = providerConnection.providerId,
+                        effort = ThinkingEffort.NONE
                     )
-                ),
-                systemPrompt = "You are a session title generator. Produce concise, natural titles that capture the user's intent. Keep it short.",
-                tools = emptyList(),
-                maxTokens = 50,
-                stream = false,
-                connectionId = providerConnection.id
-            )
-
-            val result = StringBuilder()
-            provider.chat(request).collect { response ->
-                if (response is ChatResponse.TextDelta) {
-                    result.append(response.text)
+                ).collect { response ->
+                    when (response) {
+                        is ChatResponse.TextDelta -> result.append(response.text)
+                        is ChatResponse.Error -> failure = response.message
+                        is ChatResponse.Incomplete -> failure = response.reason
+                        else -> Unit
+                    }
                 }
+                val rawTitle = result.toString()
+                val title = extractConversationTitle(rawTitle)
+                debugLog("AiRepository") {
+                    "Title attempt=${attempt + 1} chars=${rawTitle.length} valid=${title != null} failure=${failure.orEmpty().take(80)}"
+                }
+                if (title != null) return title
+                retryFeedback = "Your previous output was invalid. Return only one 2-5 word title inside <title> and </title>."
             }
-            sanitizeTitle(result.toString())
+            fallback
         } catch (e: Exception) {
             errorLog("AiRepository", "Failed to generate title", e)
-            "New Chat"
+            fallback
         }
-    }
-
-    private fun sanitizeTitle(raw: String): String {
-        return raw
-            .lines()
-            .firstOrNull { it.isNotBlank() }
-            ?.replace(Regex("^[\\s\\*\\#\\`\\>\\-_]+"), "")
-            ?.replace(Regex("\\s+"), " ")
-            ?.trim()
-            ?.take(60)
-            ?.ifBlank { "New Chat" }
-            ?: "New Chat"
     }
 
 }

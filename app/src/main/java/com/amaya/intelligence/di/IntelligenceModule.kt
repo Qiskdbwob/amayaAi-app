@@ -130,6 +130,7 @@ object IntelligenceModule {
             override fun refreshState() = active.refreshState()
             override fun setConversationMode(mode: ConversationMode) = active.setConversationMode(mode)
             override fun setConversationModeId(modeId: String) = active.setConversationModeId(modeId)
+            override fun setEffort(effort: com.amaya.intelligence.data.remote.api.ThinkingEffort) = active.setEffort(effort)
             override fun refreshModels() = active.refreshModels()
         }
     }

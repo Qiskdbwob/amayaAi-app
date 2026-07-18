@@ -1,6 +1,7 @@
 package com.amaya.intelligence.ui.screens.chat.shared
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -35,6 +36,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -47,6 +51,7 @@ import com.amaya.intelligence.ui.res.UiStrings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 private const val UNCATEGORIZED_WORKSPACE_KEY = "uncategorized"
 
@@ -599,10 +604,8 @@ private fun DrawerSearchContent(
                                 .fillMaxWidth()
                                 .padding(horizontal = 14.dp, vertical = 10.dp)
                         ) {
-                            Text(
-                                conv.title.ifEmpty { "New Chat" },
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
+                            HyperText(
+                                text = conv.title.ifEmpty { "New Chat" },
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = colors.primaryText.copy(alpha = 0.85f)
                             )
@@ -828,6 +831,68 @@ private fun DrawerNormalContent(
 // Conversation Item
 // =============================================================================
 
+private const val HYPER_TEXT_GLYPHS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+private const val HYPER_TEXT_DURATION_MS = 900
+
+internal fun hyperTextFrame(from: String, to: String, progress: Float): String {
+    val fraction = progress.coerceIn(0f, 1f)
+    if (fraction == 0f) return from
+    if (fraction == 1f) return to
+
+    val maxLength = maxOf(from.length, to.length)
+    val visibleLength = (maxLength + (to.length - maxLength) * fraction).roundToInt()
+    val resolvedLength = (to.length * fraction).toInt()
+    val frame = (fraction * 24).toInt()
+    return buildString(visibleLength) {
+        repeat(visibleLength) { index ->
+            append(when {
+                index < resolvedLength -> to[index]
+                index < to.length && to[index].isWhitespace() -> to[index]
+                index < from.length && from[index].isWhitespace() -> ' '
+                else -> HYPER_TEXT_GLYPHS[Math.floorMod(to.hashCode() + index * 31 + frame * 17, HYPER_TEXT_GLYPHS.length)]
+            })
+        }
+    }
+}
+
+@Composable
+internal fun rememberHyperText(text: String): String {
+    var target by remember { mutableStateOf(text) }
+    var rendered by remember { mutableStateOf(text) }
+
+    LaunchedEffect(text) {
+        if (text == target) return@LaunchedEffect
+        val from = rendered
+        target = text
+        Animatable(0f).animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = HYPER_TEXT_DURATION_MS, easing = FastOutSlowInEasing)
+        ) {
+            rendered = hyperTextFrame(from, text, value)
+        }
+        rendered = text
+    }
+    return rendered
+}
+
+@Composable
+private fun HyperText(
+    text: String,
+    style: TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    val rendered = rememberHyperText(text)
+    Text(
+        text = rendered,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        style = style,
+        color = color,
+        modifier = modifier.clearAndSetSemantics { contentDescription = text }
+    )
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ConversationDrawerItem(
@@ -855,10 +920,8 @@ private fun ConversationDrawerItem(
                 .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                conv.title.ifEmpty { "New Chat" },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            HyperText(
+                text = conv.title.ifEmpty { "New Chat" },
                 style = MaterialTheme.typography.bodyLarge.copy(
                     fontWeight = if (isActive) FontWeight.Medium else FontWeight.Normal,
                     fontSize = 15.sp,

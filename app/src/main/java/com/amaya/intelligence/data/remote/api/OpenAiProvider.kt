@@ -19,6 +19,7 @@ import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -45,9 +46,13 @@ class OpenAiProvider @Inject constructor(
     override val name = "OpenAI Compatible"
 
     override suspend fun chat(request: ChatRequest): Flow<ChatResponse> = callbackFlow {
+        val eventSourceRef = AtomicReference<EventSource?>()
         fun sendResponse(response: ChatResponse): Boolean {
             val result = trySend(response)
-            if (result.isFailure) close(IllegalStateException("OpenAI stream event buffer overflow"))
+            if (result.isFailure) {
+                eventSourceRef.getAndSet(null)?.cancel()
+                close(IllegalStateException("OpenAI stream event buffer overflow"))
+            }
             return result.isSuccess
         }
 
@@ -364,9 +369,10 @@ class OpenAiProvider @Inject constructor(
             }
 
             val eventSource = eventSourceFactory.newEventSource(httpRequest, listener)
+            eventSourceRef.set(eventSource)
 
             awaitClose {
-                eventSource.cancel()
+                eventSourceRef.getAndSet(null)?.cancel()
             }
         } else {
             // Non-streaming request

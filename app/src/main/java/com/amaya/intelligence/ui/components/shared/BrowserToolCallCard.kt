@@ -101,6 +101,7 @@ fun BrowserToolCallCard(
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = bgColor,
+        border = toolCardBorder(),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -124,8 +125,8 @@ fun BrowserToolCallCard(
                     fontWeight = FontWeight.Normal,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier.weight(1f).toolHeaderFade()
                 )
                 Icon(
                     Icons.Default.OpenInBrowser,
@@ -300,8 +301,8 @@ private fun BrowserWorkSummaryCard(
                     fontWeight = FontWeight.Normal,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier.weight(1f).toolHeaderFade()
                 )
                 Icon(
                     if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
@@ -384,8 +385,8 @@ private fun BrowserTimelineThinking(text: String, onInteraction: () -> Unit) {
                     fontWeight = FontWeight.Normal,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier.weight(1f).toolHeaderFade()
                 )
                 Icon(
                     if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
@@ -490,7 +491,8 @@ fun BrowserSubToolCallItem(
                         fontWeight = FontWeight.Normal,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Clip,
+                        modifier = Modifier.toolHeaderFade()
                     )
                     val meta = listOfNotNull(summary, duration).joinToString(" · ")
                     if (meta.isNotBlank()) {

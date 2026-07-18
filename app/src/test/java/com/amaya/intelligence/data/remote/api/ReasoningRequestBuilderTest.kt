@@ -89,6 +89,16 @@ class ReasoningRequestBuilderTest {
     }
 
     @Test
+    fun minimaxM3ThinkingTogglesType() {
+        val cap = ModelReasoningCap(ReasonKind.TOGGLE, RequestShape.MINIMAX_M3_THINKING, canDisable = true)
+        val off = ReasoningRequestBuilder.build(cap, ThinkingEffort.NONE)!!.value as JSONObject
+        assertEquals("disabled", off.getString("type"))
+
+        val on = ReasoningRequestBuilder.build(cap, ThinkingEffort.HIGH)!!.value as JSONObject
+        assertEquals("adaptive", on.getString("type"))
+    }
+
+    @Test
     fun anthropicThinkingDisabledWhenNone() {
         val cap = ModelReasoningCap(ReasonKind.TIERED, RequestShape.ANTHROPIC_THINKING, canDisable = true)
         val off = ReasoningRequestBuilder.build(cap, ThinkingEffort.NONE)

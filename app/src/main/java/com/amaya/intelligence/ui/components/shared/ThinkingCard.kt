@@ -27,7 +27,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Autorenew
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.Icon
@@ -53,7 +52,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -200,7 +198,7 @@ fun ThinkingCard(
         MaterialTheme.colorScheme.surfaceContainerLow
     }
     val statusColor = if (isProcessing) iosBlue else iosGreen
-    val statusIcon = if (isProcessing) Icons.Default.Autorenew else Icons.Default.Check
+    val statusIcon = Icons.Default.Autorenew
     val blockBorderColor = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
     val bodyColor = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
 
@@ -208,7 +206,7 @@ fun ThinkingCard(
     // Kept independent of streaming text so a user scroll position never resets
     // when the next token recomposes this card.
     val bodyScrollState = rememberScrollState()
-    val maxBodyHeight = (LocalConfiguration.current.screenHeightDp.dp / 4 - 44.dp).coerceAtLeast(120.dp)
+    val maxBodyHeight = toolCardBodyMaxHeight()
     val fadeHeight = 24.dp
     val currentOnBodyScroll by rememberUpdatedState(onBodyScroll)
     val followLatest = remember { mutableStateOf(true) }
@@ -253,6 +251,7 @@ fun ThinkingCard(
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = bgColor,
+        border = toolCardBorder(),
         modifier = modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -261,7 +260,7 @@ fun ThinkingCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .then(if (canExpand) Modifier.clickable { userExpanded = !userExpanded } else Modifier)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -279,7 +278,7 @@ fun ThinkingCard(
                     fontWeight = FontWeight.Normal,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    overflow = TextOverflow.Clip,
                     modifier = Modifier
                         .weight(1f)
                         .then(
@@ -310,10 +309,13 @@ fun ThinkingCard(
                                     }
                             else Modifier
                         )
+                        .toolHeaderFade()
                 )
 
-                // Status icon
-                Icon(statusIcon, null, modifier = Modifier.size(14.dp), tint = statusColor)
+                // Status icon — only while processing (spinner). Hide once done.
+                if (isProcessing) {
+                    Icon(statusIcon, null, modifier = Modifier.size(14.dp), tint = statusColor)
+                }
 
                 if (canExpand) {
                     Icon(

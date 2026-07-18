@@ -259,6 +259,12 @@ class OpencodeIntelligenceService @Inject constructor(
         _uiState.update { it.copy(error = null) }
     }
 
+    // ponytail: ceiling = Opencode JSON-RPC envelope has no per-turn reasoning field.
+    // Visual-only state update keeps the chat bulb consistent with other runtimes.
+    override fun setEffort(effort: com.amaya.intelligence.data.remote.api.ThinkingEffort) {
+        _uiState.update { it.copy(effort = effort) }
+    }
+
     override fun refreshModels() {
         opencodeClient.requestProviders()
         opencodeClient.requestModels()

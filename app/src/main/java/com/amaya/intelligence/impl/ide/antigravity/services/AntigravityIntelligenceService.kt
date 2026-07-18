@@ -216,6 +216,12 @@ class AntigravityIntelligenceService @Inject constructor(
         _uiState.update { it.copy(error = null) }
     }
 
+    // ponytail: ceiling = Antigravity protocol has no per-turn reasoning field.
+    // Visual-only state update keeps the chat bulb consistent with other runtimes.
+    override fun setEffort(effort: com.amaya.intelligence.data.remote.api.ThinkingEffort) {
+        _uiState.update { it.copy(effort = effort) }
+    }
+
     override fun connect(ip: String, port: Int) {
         client.connect(ip, port)
     }

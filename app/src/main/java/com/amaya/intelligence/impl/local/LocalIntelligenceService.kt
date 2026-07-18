@@ -62,8 +62,10 @@ class LocalIntelligenceService @Inject constructor(
     private var currentConversationId: Long? = null
     private var currentAssistantMessageId: String? = null
     private val assistantTextBuffer = StringBuilder()
+    private val assistantThinkingBuffer = StringBuilder()
     private var lastAssistantTextUiEmitAt = 0L
     private var assistantFlushJob: Job? = null
+    private var thinkingFlushJob: Job? = null
     private var browserConversationKey: String? = null
     private val conversationSaveMutex = Mutex()
     private val pendingToolConfirmations = ToolConfirmationRegistry()
@@ -129,10 +131,13 @@ class LocalIntelligenceService @Inject constructor(
         chatJob = null
         assistantFlushJob?.cancel()
         assistantFlushJob = null
+        thinkingFlushJob?.cancel()
+        thinkingFlushJob = null
         pendingToolConfirmations.cancelAll()
         pendingConfirmationUi.clear()
         pendingApprovalIds.clear()
         if (interruptedTurn) {
+            flushAssistantThinkingBuffer()
             flushAssistantTextBuffer()
             markActiveToolsStopped()
             markCurrentAssistantTerminal("cancelled")
@@ -140,6 +145,7 @@ class LocalIntelligenceService @Inject constructor(
         }
         currentAssistantMessageId = null
         assistantTextBuffer.clear()
+        assistantThinkingBuffer.clear()
         lastAssistantTextUiEmitAt = 0L
 
         val currentState = _uiState.value
@@ -165,16 +171,13 @@ class LocalIntelligenceService @Inject constructor(
 
         chatJob = scope.launch {
             try {
-                // Kick off async title generation for new conversations — does not block streaming.
-                // Check BEFORE persist so currentConversationId is still null on the first message.
+                // Check before persistence: the first turn alone receives an AI title.
                 val isNewConversation = currentConversationId == null
                 val conversationIdForTurn = persistCurrentConversation()
                     ?: throw IllegalStateException("Could not save this conversation. Message was not sent.")
-                if (isNewConversation) {
-                    launchTitleGeneration(trimmedContent, conversationIdForTurn)
-                }
 
                 val history = _uiState.value.messages.flatMap { it.toChatMessages() }
+                var turnCompleted = false
 
                 aiRepository.chat(
                     message = trimmedContent,
@@ -190,7 +193,15 @@ class LocalIntelligenceService @Inject constructor(
                     effort = currentState.effort,
                     onConfirmation = { request -> awaitInlineToolConfirmation(request, turnId) }
                 ).collect { event ->
-                    if (activeTurnId.get() == turnId) handleAgentEvent(event)
+                    if (activeTurnId.get() == turnId) {
+                        if (event is AgentEvent.Done) turnCompleted = true
+                        handleAgentEvent(event)
+                    }
+                }
+                // Local model servers commonly allow one generation at a time. Start the
+                // auxiliary title request only after the visible answer has released it.
+                if (isNewConversation && turnCompleted && activeTurnId.get() == turnId) {
+                    launchTitleGeneration(trimmedContent, conversationIdForTurn)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -208,21 +219,14 @@ class LocalIntelligenceService @Inject constructor(
     private fun handleAgentEvent(event: AgentEvent) {
         when (event) {
             is AgentEvent.TextDelta -> {
+                flushAssistantThinkingBuffer()
                 finalizeThinkingIfActive()
                 browserSessionManager.onAssistantTextDelta(event.text)
                 bufferAssistantTextDelta(event.text)
             }
-            is AgentEvent.ThinkingDelta -> {
-                ensureAssistantMessage()
-                updateCurrentAssistantMessage { msg ->
-                    msg.copy(
-                        thinking = (msg.thinking.orEmpty() + event.text),
-                        isThinking = true,
-                        thinkingStartedAt = msg.thinkingStartedAt ?: System.currentTimeMillis()
-                    )
-                }
-            }
+            is AgentEvent.ThinkingDelta -> bufferAssistantThinkingDelta(event.text)
             is AgentEvent.ToolCallStart -> {
+                flushAssistantThinkingBuffer()
                 finalizeThinkingIfActive()
                 flushAssistantTextBuffer()
                 val normalizedName = LocalToolMapper.mapToolName(event.name)
@@ -259,6 +263,7 @@ class LocalIntelligenceService @Inject constructor(
                 }
             }
             is AgentEvent.ToolCallResult -> {
+                flushAssistantThinkingBuffer()
                 finalizeThinkingIfActive()
                 flushAssistantTextBuffer()
                 val canonicalResult = JSONObject()
@@ -295,6 +300,8 @@ class LocalIntelligenceService @Inject constructor(
                 }
             }
             is AgentEvent.ResponseItem -> {
+                flushAssistantThinkingBuffer()
+                finalizeThinkingIfActive()
                 ensureAssistantMessage()
                 updateCurrentAssistantMessage { message ->
                     if (event.json in message.responseItems) message
@@ -317,6 +324,7 @@ class LocalIntelligenceService @Inject constructor(
             }
             is AgentEvent.Incomplete -> {
                 chatJob = null
+                flushAssistantThinkingBuffer()
                 flushAssistantTextBuffer()
                 markActiveToolsStopped()
                 markCurrentAssistantTerminal("incomplete")
@@ -327,6 +335,7 @@ class LocalIntelligenceService @Inject constructor(
             }
             is AgentEvent.Error -> {
                 chatJob = null
+                flushAssistantThinkingBuffer()
                 flushAssistantTextBuffer()
                 markActiveToolsStopped()
                 markCurrentAssistantTerminal("failed")
@@ -337,6 +346,7 @@ class LocalIntelligenceService @Inject constructor(
             }
             is AgentEvent.Done -> {
                 chatJob = null
+                flushAssistantThinkingBuffer()
                 flushAssistantTextBuffer()
                 markCurrentAssistantCompleted()
                 browserSessionManager.onAssistantStreamingChanged(false)
@@ -432,6 +442,38 @@ class LocalIntelligenceService @Inject constructor(
                 flushAssistantTextBuffer()
                 assistantFlushJob = null
             }
+        }
+    }
+
+    private fun bufferAssistantThinkingDelta(delta: String) {
+        if (delta.isEmpty()) return
+        assistantThinkingBuffer.append(delta)
+        if (assistantThinkingBuffer.length >= 256) {
+            thinkingFlushJob?.cancel()
+            thinkingFlushJob = null
+            flushAssistantThinkingBuffer()
+        } else if (thinkingFlushJob?.isActive != true) {
+            thinkingFlushJob = scope.launch {
+                delay(24)
+                flushAssistantThinkingBuffer()
+                thinkingFlushJob = null
+            }
+        }
+    }
+
+    private fun flushAssistantThinkingBuffer() {
+        thinkingFlushJob?.cancel()
+        thinkingFlushJob = null
+        if (assistantThinkingBuffer.isEmpty()) return
+        val chunk = assistantThinkingBuffer.toString()
+        assistantThinkingBuffer.clear()
+        ensureAssistantMessage()
+        updateCurrentAssistantMessage { msg ->
+            msg.copy(
+                thinking = msg.thinking.orEmpty() + chunk,
+                isThinking = true,
+                thinkingStartedAt = msg.thinkingStartedAt ?: System.currentTimeMillis()
+            )
         }
     }
 
@@ -614,9 +656,12 @@ class LocalIntelligenceService @Inject constructor(
         chatJob = null
         assistantFlushJob?.cancel()
         assistantFlushJob = null
+        thinkingFlushJob?.cancel()
+        thinkingFlushJob = null
         pendingToolConfirmations.cancelAll()
         pendingConfirmationUi.clear()
         pendingApprovalIds.clear()
+        flushAssistantThinkingBuffer()
         flushAssistantTextBuffer()
         markActiveToolsStopped()
         markCurrentAssistantTerminal("cancelled")
@@ -632,12 +677,15 @@ class LocalIntelligenceService @Inject constructor(
         chatJob = null
         assistantFlushJob?.cancel()
         assistantFlushJob = null
+        thinkingFlushJob?.cancel()
+        thinkingFlushJob = null
         pendingToolConfirmations.cancelAll()
         pendingConfirmationUi.clear()
         pendingApprovalIds.clear()
         currentConversationId = null
         currentAssistantMessageId = null
         assistantTextBuffer.clear()
+        assistantThinkingBuffer.clear()
         lastAssistantTextUiEmitAt = 0L
         browserConversationKey = null
         browserSessionManager.resetEphemeral()
@@ -659,6 +707,8 @@ class LocalIntelligenceService @Inject constructor(
         chatJob = null
         assistantFlushJob?.cancel()
         assistantFlushJob = null
+        thinkingFlushJob?.cancel()
+        thinkingFlushJob = null
         pendingToolConfirmations.cancelAll()
         pendingConfirmationUi.clear()
         pendingApprovalIds.clear()
@@ -674,6 +724,7 @@ class LocalIntelligenceService @Inject constructor(
                 currentConversationId = conv.id
                 currentAssistantMessageId = null
                 assistantTextBuffer.clear()
+                assistantThinkingBuffer.clear()
                 lastAssistantTextUiEmitAt = 0L
                 browserConversationKey = "conversation:${conv.id}"
                 browserSessionManager.resetForConversation(browserConversationKey!!)
@@ -910,9 +961,8 @@ class LocalIntelligenceService @Inject constructor(
         titleJobs[conversationId] = scope.launch {
             try {
                 val title = aiRepository.generateTitle(userMessage, connection, selectedModel)
-                if (conversationDao.getConversationById(conversationId) != null) {
-                    conversationDao.updateTitle(conversationId, title)
-                }
+                val conversation = conversationDao.getConversationById(conversationId) ?: return@launch
+                conversationDao.updateTitle(conversationId, title)
             } catch (error: CancellationException) {
                 throw error
             } catch (_: Exception) {

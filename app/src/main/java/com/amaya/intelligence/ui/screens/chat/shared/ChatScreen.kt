@@ -11,6 +11,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -28,6 +30,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.BlendMode
 
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -381,7 +388,7 @@ fun ChatScreen(
     }
     val topBarTitle = activeConversationTitle
         ?.takeIf { uiState.messages.isNotEmpty() }
-        ?: "Amaya"
+        ?: ""
 
     // WindowInsets
     val statusBarInsets = WindowInsets.statusBars.asPaddingValues()
@@ -514,13 +521,17 @@ fun ChatScreen(
                     keyboardController?.hide()
                     scope.launch { drawerState.open() }
                 },
-                onMoreClick = {
+                onTitleClick = {
                     when {
                         isBridgeMode -> showBridgeSessionInfo = true
                         isRemoteMode -> viewModel.refreshState()
                         todoItems.isNotEmpty() -> showTodoSheet = true
                         else -> showSessionInfo = true
                     }
+                },
+                onNewChatClick = {
+                    keyboardController?.hide()
+                    doClearConversation()
                 },
                 modifier = Modifier.align(Alignment.TopStart)
             )
@@ -679,7 +690,8 @@ private fun ChatFloatingTopBar(
     isRemoteMode: Boolean,
     isBridgeMode: Boolean,
     onMenuClick: () -> Unit,
-    onMoreClick: () -> Unit,
+    onTitleClick: () -> Unit,
+    onNewChatClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val isDark = isSystemInDarkTheme()
@@ -688,56 +700,141 @@ private fun ChatFloatingTopBar(
     val borderColor = if (isDark) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.10f)
 
 
-    Box(
+    Row(
         modifier = modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .padding(horizontal = 18.dp, vertical = 2.dp)
+            .padding(horizontal = 18.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
         LiquidOrbButton(
             icon = Icons.Default.Menu,
             contentDescription = "Menu",
             color = orbColor,
             borderColor = borderColor,
-            onClick = onMenuClick,
-            modifier = Modifier.align(Alignment.CenterStart)
+            onClick = onMenuClick
         )
 
-        Surface(
-            shape = RoundedCornerShape(999.dp),
-            color = micaColor,
-            border = BorderStroke(0.7.dp, borderColor),
-            shadowElevation = 0.dp,
-            tonalElevation = 0.dp,
-            modifier = Modifier
-                .align(Alignment.Center)
-                .width(176.dp)
-                .height(44.dp)
-        ) {
-            Box(
+        Spacer(modifier = Modifier.width(12.dp))
+
+        if (title.isNotEmpty()) {
+            FadingTitleLayout(
+                title = title,
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 14.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+                    .weight(1f)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onTitleClick
+                    )
+            )
+        } else {
+            Spacer(modifier = Modifier.weight(1f))
         }
 
+        Spacer(modifier = Modifier.width(18.dp))
+
         LiquidOrbButton(
-            icon = if (isRemoteMode && !isBridgeMode) Icons.Default.Refresh else Icons.Default.MoreVert,
-            contentDescription = if (isRemoteMode && !isBridgeMode) "Refresh" else "More",
+            icon = Icons.Default.Add,
+            contentDescription = "New Chat",
             color = orbColor,
             borderColor = borderColor,
-            onClick = onMoreClick,
-            modifier = Modifier.align(Alignment.CenterEnd)
+            onClick = onNewChatClick
         )
+    }
+}
+
+@Composable
+private fun FadingTitleLayout(
+    title: String,
+    modifier: Modifier = Modifier
+) {
+    var isOverflowing by remember { mutableStateOf(false) }
+    val renderedTitle = rememberHyperText(title)
+
+    androidx.compose.ui.layout.Layout(
+        modifier = modifier,
+        content = {
+            Text(
+                text = renderedTitle,
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Normal),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Visible,
+                modifier = Modifier
+                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                    .drawWithContent {
+                        drawContent()
+                        if (isOverflowing) {
+                            val fadeStartPx = 64.dp.toPx()
+                            val fadeEndPx = 24.dp.toPx()
+                            drawRect(
+                                brush = Brush.horizontalGradient(
+                                    colorStops = arrayOf(
+                                        0.0f to Color.Black,
+                                        0.2f to Color.Black.copy(alpha = 0.9f),
+                                        0.4f to Color.Black.copy(alpha = 0.7f),
+                                        0.6f to Color.Black.copy(alpha = 0.4f),
+                                        0.8f to Color.Black.copy(alpha = 0.15f),
+                                        1.0f to Color.Transparent
+                                    ),
+                                    startX = size.width - fadeStartPx,
+                                    endX = size.width - fadeEndPx
+                                ),
+                                blendMode = BlendMode.DstIn
+                            )
+                        }
+                    }
+            )
+            Icon(
+                imageVector = Icons.Default.KeyboardArrowRight,
+                contentDescription = "Session Info",
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                modifier = Modifier.padding(start = 4.dp).size(20.dp)
+            )
+        }
+    ) { measurables, constraints ->
+        val textMeasurable = measurables[0]
+        val iconMeasurable = measurables[1]
+
+        val iconPlaceable = iconMeasurable.measure(constraints.copy(minWidth = 0))
+        val iconWidth = iconPlaceable.width
+
+        val textIntrinsicWidth = textMeasurable.maxIntrinsicWidth(constraints.maxHeight)
+        val totalIntrinsicWidth = textIntrinsicWidth + iconWidth
+
+        val overflowing = totalIntrinsicWidth > constraints.maxWidth
+
+        val textPlaceable = textMeasurable.measure(
+            if (overflowing) {
+                constraints.copy(maxWidth = constraints.maxWidth, minWidth = 0)
+            } else {
+                constraints.copy(maxWidth = textIntrinsicWidth, minWidth = 0)
+            }
+        )
+
+        if (isOverflowing != overflowing) {
+            isOverflowing = overflowing
+        }
+
+        val width = if (constraints.hasBoundedWidth && constraints.minWidth == constraints.maxWidth) {
+            constraints.maxWidth
+        } else if (overflowing) {
+            constraints.maxWidth
+        } else {
+            totalIntrinsicWidth
+        }
+
+        val height = maxOf(textPlaceable.height, iconPlaceable.height)
+
+        layout(width, height) {
+            textPlaceable.placeRelative(0, (height - textPlaceable.height) / 2)
+            if (overflowing) {
+                iconPlaceable.placeRelative(width - iconWidth, (height - iconPlaceable.height) / 2)
+            } else {
+                iconPlaceable.placeRelative(textPlaceable.width, (height - iconPlaceable.height) / 2)
+            }
+        }
     }
 }
 
@@ -757,7 +854,7 @@ private fun LiquidOrbButton(
         border = BorderStroke(0.7.dp, borderColor),
         shadowElevation = 0.dp,
         tonalElevation = 0.dp,
-        modifier = modifier.size(44.dp)
+        modifier = modifier.size(42.dp)
     ) {
         Box(contentAlignment = Alignment.Center) {
             Icon(

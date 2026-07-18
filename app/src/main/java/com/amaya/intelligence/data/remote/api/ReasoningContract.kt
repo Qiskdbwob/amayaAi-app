@@ -20,6 +20,7 @@ enum class RequestShape {
     GLM_THINKING,       // thinking:{type:"enabled"|"disabled"} — Z.ai GLM-4.6
     KIMI_THINKING,      // thinking:{type,keep?} — Moonshot Kimi K2.6
     MINIMAX_SPLIT,      // reasoning_split:true|false — MiniMax M2
+    MINIMAX_M3_THINKING,// thinking:{type:"disabled"|"adaptive"} — MiniMax M3
     ANTHROPIC_THINKING, // thinking:{type,budget_tokens} — Claude (phase 2)
     GEMINI_BUDGET       // thinkingConfig:{thinkingBudget} — Gemini 2.5 (phase 2)
 }
@@ -50,6 +51,7 @@ object ReasoningCatalog {
     private val TOGGLE_GLM = ModelReasoningCap(ReasonKind.TOGGLE, RequestShape.GLM_THINKING, canDisable = true)
     private val TOGGLE_KIMI = ModelReasoningCap(ReasonKind.TOGGLE, RequestShape.KIMI_THINKING, canDisable = true)
     private val TOGGLE_MINIMAX = ModelReasoningCap(ReasonKind.TOGGLE, RequestShape.MINIMAX_SPLIT, canDisable = true)
+    private val TOGGLE_MINIMAX_M3 = ModelReasoningCap(ReasonKind.TOGGLE, RequestShape.MINIMAX_M3_THINKING, canDisable = true)
     private val TIERED_ANTHROPIC = ModelReasoningCap(ReasonKind.TIERED, RequestShape.ANTHROPIC_THINKING, canDisable = true)
     private val TIERED_GEMINI = ModelReasoningCap(ReasonKind.TIERED, RequestShape.GEMINI_BUDGET, canDisable = true)
 
@@ -89,6 +91,7 @@ object ReasoningCatalog {
         // Moonshot Kimi
         "kimi-k2" to TOGGLE_KIMI,
         // MiniMax
+        "minimax-m3" to TOGGLE_MINIMAX_M3,
         "minimax-m2" to TOGGLE_MINIMAX,
         // Plain non-reasoning OSS
         "llama-3" to NON_REASONING,
@@ -163,6 +166,10 @@ object ReasoningRequestBuilder {
             }
             RequestShape.MINIMAX_SPLIT -> if (effort == ThinkingEffort.NONE) null
                 else ReasoningAttachment("reasoning_split", true)
+            RequestShape.MINIMAX_M3_THINKING -> ReasoningAttachment(
+                "thinking",
+                JSONObject().put("type", if (effort == ThinkingEffort.NONE) "disabled" else "adaptive")
+            )
             RequestShape.ANTHROPIC_THINKING -> {
                 if (effort == ThinkingEffort.NONE) ReasoningAttachment(
                     "thinking",
