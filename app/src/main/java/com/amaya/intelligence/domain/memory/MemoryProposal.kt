@@ -14,31 +14,28 @@ data class MemoryProposal(
     val content: String,
     val reason: String,
     val confidence: Double,
-    val importance: Double,
     val createdAt: Long = System.currentTimeMillis(),
-    val expiresAt: Long? = null
+    val expiresAt: Long? = null,
+    /** Host-owned canonical root for workspace-scoped memory. */
+    val workspacePath: String? = null,
+    val workspaceId: String? = null,
+    val sourceConversationId: String? = null,
+    val subject: String = "",
+    val attribute: String = ""
 )
 
 enum class MemoryType {
     USER_PROFILE,
-    LONG_TERM_MEMORY,
-    DAILY_LOG,
-    SKILL_CANDIDATE,
-    REMINDER,
     WORKSPACE_FACT
 }
 
 enum class MemoryAction {
     ADD,
     REPLACE,
-    REMOVE,
     IGNORE
 }
 
 enum class MemoryScope {
-    GLOBAL,
     USER,
-    PERSONA,
-    WORKSPACE,
-    SESSION
+    WORKSPACE
 }

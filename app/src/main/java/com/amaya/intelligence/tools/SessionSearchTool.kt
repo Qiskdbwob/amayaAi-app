@@ -14,11 +14,14 @@ import javax.inject.Singleton
 class SessionSearchTool @Inject constructor(
     private val sessionMemoryRepository: SessionMemoryRepository,
     private val brainSettingsRepository: BrainSettingsRepository
-) : Tool {
+) : Tool, ContextAwareTool {
     override val name = "session_search"
-    override val description = "Search previous sessions by query. Use for recall instead of injecting all daily logs or old sessions into the system prompt."
+    override val description = "Search previous sessions by query. Use for recall instead of injecting old sessions into the system prompt."
 
-    override suspend fun execute(arguments: Map<String, Any?>): ToolResult = withContext(Dispatchers.IO) {
+    override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
+        execute(arguments, ToolExecutionContext())
+
+    override suspend fun execute(arguments: Map<String, Any?>, context: ToolExecutionContext): ToolResult = withContext(Dispatchers.IO) {
         val query = arguments["query"] as? String
             ?: return@withContext ToolResult.Error("Missing required: query", ErrorType.VALIDATION_ERROR)
         val settings = brainSettingsRepository.getBrainSettings()
@@ -27,7 +30,7 @@ class SessionSearchTool @Inject constructor(
         }
         val requestedLimit = (arguments["limit"] as? Number)?.toInt() ?: settings.context.maxRecallItems
         val limit = requestedLimit.coerceIn(1, settings.context.maxRecallItems.coerceIn(1, 20))
-        val results = sessionMemoryRepository.searchSessions(query, limit)
+        val results = sessionMemoryRepository.searchSessions(query, limit, context.workspacePath)
         ToolResult.Success(
             output = JSONObject()
                 .put("results", JSONArray(results.map { result ->

@@ -23,11 +23,7 @@ class MemoryContentNormalizer @Inject constructor() {
         requestedTitle: String? = null
     ): NormalizedMemoryText {
         val cleaned = cleanCommandText(content)
-        val normalizedContent = when {
-            action == MemoryAction.REMOVE -> cleaned.toSentence()
-            type == MemoryType.DAILY_LOG -> cleanDailySummary(cleaned)
-            else -> summarizeDurableFact(cleaned, type)
-        }
+        val normalizedContent = summarizeDurableFact(cleaned, type)
         return NormalizedMemoryText(
             title = normalizeTitle(requestedTitle, normalizedContent, type, action),
             content = normalizedContent,
@@ -42,13 +38,8 @@ class MemoryContentNormalizer @Inject constructor() {
             ?.trim(' ', '.', ',', ';', ':')
             ?.takeIf { it.isNotBlank() }
         if (cleanRequested != null) return cleanRequested.take(80)
-        if (action == MemoryAction.REMOVE) return "Remove saved memory"
         val lower = content.lowercase()
         return when {
-            type == MemoryType.DAILY_LOG && "language" in lower -> "Communication preference update"
-            type == MemoryType.DAILY_LOG && "memory" in lower -> "Memory activity"
-            type == MemoryType.DAILY_LOG && ("browser" in lower || "search" in lower) -> "Browser task"
-            type == MemoryType.DAILY_LOG -> "Daily summary"
             "user's name" in lower -> "User name"
             "prefers" in lower && "responses" in lower -> "Response language preference"
             "works at" in lower -> "Workplace context"
@@ -62,6 +53,7 @@ class MemoryContentNormalizer @Inject constructor() {
         val clean = text.trim()
         extractUserName(clean)?.let { return "The user's name is $it." }
         extractLanguagePreference(clean)?.let { return "The user prefers $it for responses." }
+        extractResponseDetail(clean)?.let { return "The user prefers $it responses." }
         extractWorkplace(clean)?.let { return "The user works at $it." }
         extractNickname(clean)?.let { return "The user prefers to be called $it." }
 
@@ -74,8 +66,7 @@ class MemoryContentNormalizer @Inject constructor() {
 
         return when (type) {
             MemoryType.USER_PROFILE -> rewriteFirstPerson(withoutPrefix).toSentence()
-            MemoryType.LONG_TERM_MEMORY -> rewriteFirstPerson(withoutPrefix).toSentence()
-            MemoryType.WORKSPACE_FACT -> withoutPrefix.toSentence()
+            MemoryType.WORKSPACE_FACT -> rewriteWorkspaceInstruction(withoutPrefix).toSentence()
             else -> withoutPrefix.toSentence()
         }
     }
@@ -108,18 +99,16 @@ class MemoryContentNormalizer @Inject constructor() {
             .trim(' ', '.', ',', ';', ':')
     }
 
-    private fun cleanDailySummary(text: String): String {
-        val clean = cleanCommandText(text)
-            .replace(Regex("(?i)\\bOutcome:\\s*[^.]+\\.?"), "")
-            .replace(Regex("(?i)\\bTools used:\\s*[^.]+\\.?"), "")
-            .replace(Regex("(?i)\\bUser asked/discussed:\\s*"), "")
-            .replace(Regex("\\s+"), " ")
-            .trim()
-        return when {
-            clean.isBlank() -> "Interaction summarized."
-            clean.length <= 120 -> clean.toSentence()
-            else -> clean.take(120).trim().toSentence()
-        }
+    fun isInstructionLike(text: String): Boolean {
+        val clean = text.trim().lowercase()
+        if (clean.startsWith("the user ") || clean.startsWith("the workspace ") || clean.startsWith("the project ")) return false
+        return INSTRUCTION_PREFIX.containsMatchIn(clean)
+    }
+
+    private fun rewriteWorkspaceInstruction(text: String): String = when {
+        text.matches(Regex("(?i)^use\\s+.+")) -> "The workspace uses ${text.replaceFirst(Regex("(?i)^use\\s+"), "")}"
+        text.matches(Regex("(?i)^run\\s+.+")) -> "The workspace command is ${text.replaceFirst(Regex("(?i)^run\\s+"), "")}"
+        else -> text
     }
 
     private fun rewriteFirstPerson(text: String): String {
@@ -156,8 +145,17 @@ class MemoryContentNormalizer @Inject constructor() {
             "jawa" in lower || "javanese" in lower -> "Javanese"
             else -> null
         } ?: return null
-        val hasLanguageIntent = listOf("bahasa", "language", "jawab", "reply", "respond", "pakai", "gunakan", "use").any { it in lower }
+        val hasLanguageIntent = listOf("bahasa", "language", "jawab", "answer", "reply", "respond", "pakai", "gunakan", "use").any { it in lower }
         return if (hasLanguageIntent) language else null
+    }
+
+    private fun extractResponseDetail(text: String): String? {
+        val lower = text.lowercase()
+        return when {
+            listOf("concise", "concisely", "ringkas", "singkat", "brief").any { it in lower } -> "concise"
+            listOf("detailed", "detail", "rinci", "lengkap", "verbose").any { it in lower } -> "detailed"
+            else -> null
+        }
     }
 
     private fun extractWorkplace(text: String): String? {
@@ -184,10 +182,8 @@ class MemoryContentNormalizer @Inject constructor() {
     }
 
     private fun normalizedReason(content: String, type: MemoryType, action: MemoryAction, originalReason: String): String {
-        if (action == MemoryAction.REMOVE) return "The user explicitly requested that this saved memory be removed."
         val lower = content.lowercase()
         return when {
-            type == MemoryType.DAILY_LOG -> if (isSpecificReason(originalReason)) originalReason.trim().toSentence() else dailyReason(content)
             "prefers" in lower && ("english" in lower || "indonesian" in lower || "language" in lower || "responses" in lower) ->
                 "The user explicitly asked Amaya to remember their response-language preference."
             "user's name" in lower -> "The user explicitly provided their name as durable profile information."
@@ -199,17 +195,6 @@ class MemoryContentNormalizer @Inject constructor() {
         }
     }
 
-    private fun dailyReason(content: String): String {
-        val lower = content.lowercase()
-        return when {
-            "memory" in lower -> "Daily note summarizing a memory-related action."
-            "profile" in lower || "name" in lower -> "Daily note summarizing a user profile update."
-            "language" in lower || "response" in lower -> "Daily note summarizing a communication preference update."
-            "browser" in lower || "search" in lower -> "Daily note summarizing the user's browser or search request."
-            else -> "Daily note summarizing the completed interaction."
-        }
-    }
-
     private fun isSpecificReason(reason: String): Boolean {
         val lower = reason.lowercase().trim()
         if (lower.isBlank()) return false
@@ -217,6 +202,7 @@ class MemoryContentNormalizer @Inject constructor() {
     }
 
     companion object {
+        private val INSTRUCTION_PREFIX = Regex("(?i)^(always|never|must|should|do not|don't|answer|respond|ignore|bypass|disable|enable|change|act as)\\b")
         private val GENERIC_REASONS = setOf(
             "agent requested memory update",
             "requested by agent",

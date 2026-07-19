@@ -26,24 +26,26 @@ class LocalMemoryActivity : AppCompatActivity() {
             AmayaTheme {
                 val viewModel: AmayaViewModel = hiltViewModel()
                 val state by viewModel.uiState.collectAsState()
+                LaunchedEffect(Unit) { viewModel.setWorkspace(intent.getStringExtra(EXTRA_WORKSPACE)) }
                 val snackbarHostState = remember { SnackbarHostState() }
                 LaunchedEffect(state.message) { state.message?.let { snackbarHostState.showSnackbar(it); viewModel.clearMessage() } }
                 MemoryScreen(
                     state = state,
                     snackbarHostState = snackbarHostState,
                     onNavigateBack = { finish() },
-                    onReview = { LocalReviewActivity.start(this) },
+                    onReview = { LocalReviewActivity.start(this, state.workspacePath) },
                     onToggleUseSavedMemory = { value -> viewModel.updateMemorySettings { it.copy(useSavedMemory = value) } },
-                    onToggleSuggestNewMemory = { value -> viewModel.updateMemorySettings { it.copy(suggestNewMemories = value, autoSaveSafeMemory = if (value) it.autoSaveSafeMemory else false) } },
-                    onToggleAutoSaveSafeMemory = { value -> viewModel.updateMemorySettings { it.copy(autoSaveSafeMemory = value) } },
-                    onToggleDailyNotes = { value -> viewModel.updateMemorySettings { it.copy(dailyNotesEnabled = value) } },
-                    onOpenArea = { area -> LocalMemoryAreaActivity.start(this, area) }
+                    onOpenArea = { area -> LocalMemoryAreaActivity.start(this, area, state.workspacePath) },
+                    onReconnectWorkspace = viewModel::reconnectWorkspaceMemory
                 )
             }
         }
     }
 
     companion object {
-        fun start(activity: Activity) { activity.startActivity(Intent(activity, LocalMemoryActivity::class.java)) }
+        private const val EXTRA_WORKSPACE = "workspace_path"
+        fun start(activity: Activity, workspacePath: String? = null) {
+            activity.startActivity(Intent(activity, LocalMemoryActivity::class.java).putExtra(EXTRA_WORKSPACE, workspacePath))
+        }
     }
 }

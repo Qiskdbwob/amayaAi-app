@@ -119,6 +119,14 @@ private fun SuggestionCard(
                 color = colors.secondaryText,
                 maxLines = 2
             )
+            if (proposal.evidence.isNotEmpty()) {
+                Text(
+                    proposal.evidence.take(2).joinToString("\n") { "• $it" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.secondaryText,
+                    maxLines = 4
+                )
+            }
             Spacer(Modifier.height(2.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { onSave(proposal.id) }) { Text(if (proposal.type.isSkillType()) "Save Skill" else "Save") }
@@ -136,22 +144,16 @@ private fun PendingProposalType.reviewGroup(): String = when {
 
 private fun PendingProposalType.friendlyTitle(): String = when (this) {
     PendingProposalType.USER_PROFILE -> "User preference"
-    PendingProposalType.LONG_TERM_MEMORY -> "Important memory"
-    PendingProposalType.DAILY_LOG -> "Daily note"
     PendingProposalType.WORKSPACE_FACT -> "Project fact"
     PendingProposalType.SKILL_CREATE -> "New reusable workflow"
     PendingProposalType.SKILL_PATCH -> "Skill improvement"
     PendingProposalType.SKILL_UPDATE -> "Skill update"
-    PendingProposalType.REMINDER -> "Reminder"
 }
 
 private fun PendingProposalType.destinationLabel(): String = when (this) {
     PendingProposalType.USER_PROFILE -> "Memory > About You"
-    PendingProposalType.LONG_TERM_MEMORY -> "Memory > Important Memory"
-    PendingProposalType.DAILY_LOG -> "Memory > Daily Notes"
     PendingProposalType.WORKSPACE_FACT -> "Memory > Project Memory"
     PendingProposalType.SKILL_CREATE,
     PendingProposalType.SKILL_PATCH,
     PendingProposalType.SKILL_UPDATE -> "Skills"
-    PendingProposalType.REMINDER -> "Reminders"
 }

@@ -1,4 +1,4 @@
-﻿package com.amaya.intelligence.tools
+package com.amaya.intelligence.tools
 
 import android.content.Context
 import com.amaya.intelligence.data.local.entity.CronJobEntity
@@ -16,9 +16,8 @@ import javax.inject.Singleton
 /**
  * AI tool for scheduling reminders.
  *
- * Creates a CronJob entry + schedules an AlarmManager alarm.
- * Also appends an entry to today's daily memory log so AI remembers
- * it set a reminder in future sessions.
+ * Creates a CronJob entry and schedules an AlarmManager alarm.
+ * Reminders remain separate from durable memory.
  */
 @Singleton
 class CreateReminderTool @Inject constructor(
@@ -32,11 +31,11 @@ class CreateReminderTool @Inject constructor(
         Schedule a reminder at a specific date and time. The user will receive an Android
         notification when the time arrives. Use this when the user asks to be reminded about
         something at a specific time (e.g., "remind me to buy milk at 5pm").
-        
+
         Arguments:
         - title (string, required): Short title for the reminder (e.g., "Buy milk")
         - message (string, required): The reminder message shown in the notification
-        - datetime (string, required): Date and time in ISO format "YYYY-MM-DDTHH:MM" 
+        - datetime (string, required): Date and time in ISO format "YYYY-MM-DDTHH:MM"
           (e.g., "2026-02-27T17:00")
         - repeat (string, optional): "once" (default), "daily", or "weekly"
         - conversation_id (long, optional): ID of the current conversation so Amaya can reply there when the reminder fires

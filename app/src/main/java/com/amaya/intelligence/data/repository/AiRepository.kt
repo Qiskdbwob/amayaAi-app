@@ -1,5 +1,6 @@
-﻿package com.amaya.intelligence.data.repository
+package com.amaya.intelligence.data.repository
 
+import com.amaya.intelligence.data.local.files.FileWorkspaceMemoryStore
 import com.amaya.intelligence.data.remote.api.*
 import com.amaya.intelligence.data.remote.mcp.McpClientManager
 import com.amaya.intelligence.tools.ConfirmationRequest
@@ -10,8 +11,6 @@ import com.amaya.intelligence.util.debugLog
 import com.amaya.intelligence.util.errorLog
 
 import com.amaya.intelligence.di.ApplicationScope
-import com.amaya.intelligence.domain.memory.MemoryType
-import com.amaya.intelligence.domain.memory.MemoryClassifier
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
@@ -37,6 +36,19 @@ private val TITLE_META = Regex("(?i)^(?:here is|this is|the title|your title|ber
 private val TITLE_TRAILING_PUNCTUATION = Regex("[.!?:;]+$")
 private val TITLE_WHITESPACE = Regex("\\s+")
 private val THINK_BLOCK = Regex("(?is)<think>.*?</think>")
+private val INTEGER_TEXT = Regex("[+-]?\\d+")
+
+fun normalizeIntegerArgument(value: Any?): Any? = when (value) {
+    is String -> value.trim().takeIf(INTEGER_TEXT::matches)?.toLongOrNull() ?: value
+    is Number -> value.toDouble().takeIf(Double::isFinite)?.takeIf { it % 1.0 == 0.0 }?.let { number ->
+        when {
+            number in Int.MIN_VALUE.toDouble()..Int.MAX_VALUE.toDouble() -> number.toInt()
+            number in Long.MIN_VALUE.toDouble()..Long.MAX_VALUE.toDouble() -> number.toLong()
+            else -> value
+        }
+    } ?: value
+    else -> value
+}
 
 internal fun fallbackConversationTitle(userMessage: String): String =
     userMessage
@@ -98,12 +110,11 @@ class AiRepository @Inject constructor(
     private val mcpToolExecutor: com.amaya.intelligence.data.remote.mcp.McpToolExecutor,
     private val windowsBridgeToolProvider: com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeToolProvider,
     private val fileIndexRepository: FileIndexRepository,
-    private val personaRepository: PersonaRepository,
-    private val memoryRepository: MemoryRepository,
     private val sessionMemoryRepository: SessionMemoryRepository,
+    private val workspaceMemoryStore: FileWorkspaceMemoryStore,
+    private val skillRepository: SkillRepository,
     private val selfImprovementPipeline: SelfImprovementPipeline,
     private val contextManager: ContextManager,
-    private val memoryClassifier: MemoryClassifier,
     private val mcpClientManager: McpClientManager,
     // FIX 5.11: Inject application-scoped coroutine scope — no more manual SupervisorJob leak
     @ApplicationScope private val repoScope: CoroutineScope
@@ -207,13 +218,15 @@ class AiRepository @Inject constructor(
         debugLog("AiRepository") { "chat() resolved connection=${connection.id}, model=$model" }
 
         val sessionId = conversationId?.toString() ?: "session_${UUID.randomUUID()}"
+        val workspaceId = workspacePath?.takeIf(String::isNotBlank)?.let { workspaceMemoryStore.resolve(it)?.id }
         val completedUserMessages = mutableListOf(message)
         val completedAssistantMessages = mutableListOf<String>()
         val completedToolCalls = mutableListOf<String>()
         val completedToolResults = mutableListOf<String>()
+        val viewedSkills = linkedSetOf<String>()
         if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
             runCatching {
-                sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "user", content = message))
+                sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "user", content = message, workspacePath = workspacePath, workspaceId = workspaceId))
             }.onFailure { errorLog("AiRepository", "Failed to save user session message", it) }
         }
 
@@ -222,9 +235,6 @@ class AiRepository @Inject constructor(
         // workspace hints, browser rules, and self-improvement instructions from the
         // system instruction. The model receives only the bridge-safe operating prompt
         // plus recent conversation history and bridge tool schemas.
-        if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
-            migrateLegacyPersonaFactsIfNeeded()
-        }
         val tools = if (modelConfig.supportsTools) buildToolDefinitions(runtimeTarget) else emptyList()
         if (modelConfig.supportsTools && tools.isEmpty()) {
             send(AgentEvent.Error("No tools are available for this request. Select a workspace or ask for a memory, web, browser, reminder, or todo action.", retryable = false))
@@ -383,7 +393,7 @@ class AiRepository @Inject constructor(
                 completedAssistantMessages.add(assistantText)
                 if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
                     runCatching {
-                        sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "assistant", content = assistantText))
+                        sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "assistant", content = assistantText, workspacePath = workspacePath, workspaceId = workspaceId))
                     }.onFailure { errorLog("AiRepository", "Failed to save assistant session message", it) }
                 }
             }
@@ -431,7 +441,8 @@ class AiRepository @Inject constructor(
                             onEvent = { event -> if (event is AgentEvent) channel.send(event) },
                             onConfirmationRequired = onConfirmation,
                             providerConnection = connection,
-                            selectedModelId = model
+                            selectedModelId = model,
+                            conversationId = sessionId
                         )
                     }
 
@@ -440,9 +451,14 @@ class AiRepository @Inject constructor(
                         is ToolResult.Error -> "Error: ${result.message}"
                         is ToolResult.RequiresConfirmation -> "Error: Approval could not be completed: ${result.reason}"
                     }
-                    val resultContent = limitToolResult(rawResultContent)
+                    val resultContent = if (toolCall.name == "invoke_subagents") rawResultContent else limitToolResult(rawResultContent)
 
                     completedToolResults.add("${toolCall.name}: $resultContent")
+                    if (result is ToolResult.Success && toolCall.name == "skill" && toolCall.arguments["operation"] == "view") {
+                        ((toolCall.arguments["skill_id"] ?: toolCall.arguments["name"]) as? String)
+                            ?.takeIf(String::isNotBlank)
+                            ?.let(viewedSkills::add)
+                    }
                     if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
                         runCatching {
                             sessionMemoryRepository.saveToolCall(
@@ -451,7 +467,9 @@ class AiRepository @Inject constructor(
                                     toolCallId = toolCall.id,
                                     toolName = toolCall.name,
                                     argumentsJson = JSONObject(toolCall.arguments).toString(),
-                                    resultJson = resultContent
+                                    resultJson = resultContent,
+                                    workspacePath = workspacePath,
+                                    workspaceId = workspaceId
                                 )
                             )
                         }.onFailure { errorLog("AiRepository", "Failed to save session tool call", it) }
@@ -516,20 +534,27 @@ class AiRepository @Inject constructor(
             assistantMessages = completedAssistantMessages.toList(),
             toolCalls = completedToolCalls.toList(),
             toolResults = completedToolResults.toList(),
-            timestamp = System.currentTimeMillis()
+            timestamp = System.currentTimeMillis(),
+            workspacePath = workspacePath,
+            workspaceId = workspaceId,
+            successful = !terminalError
         )
 
+        if (viewedSkills.isNotEmpty()) {
+            viewedSkills.forEach { skillName ->
+                runCatching { skillRepository.recordSkillUsage(skillName, success = !terminalError) }
+                    .onFailure { errorLog("AiRepository", "Failed to record skill outcome", it) }
+            }
+        }
+        if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
+            repoScope.launch {
+                runCatching { selfImprovementPipeline.analyzeAndImprove(reflectionContext) }
+                    .onFailure { errorLog("AiRepository", "Post-chat reflection failed", it) }
+            }
+        }
         if (terminalError) return@channelFlow
 
         send(AgentEvent.Done)
-
-        if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
-            repoScope.launch {
-                runCatching {
-                    selfImprovementPipeline.analyzeAndImprove(reflectionContext)
-                }.onFailure { errorLog("AiRepository", "Post-chat reflection failed", it) }
-            }
-        }
     }
 
     private fun validateToolArguments(
@@ -539,17 +564,25 @@ class AiRepository @Inject constructor(
     ): Result<Map<String, Any?>> = runCatching {
         val definition = tools.firstOrNull { it.name == name } ?: error("Tool was not advertised")
         definition.rawParametersJson?.let { schema ->
-            validateJsonSchema(JSONObject(schema), arguments, "arguments")
-            return@runCatching arguments
+            @Suppress("UNCHECKED_CAST")
+            val normalized = normalizeJsonSchemaValue(JSONObject(schema), arguments) as Map<String, Any?>
+            validateJsonSchema(JSONObject(schema), normalized, "arguments")
+            return@runCatching normalized
         }
-        val missing = definition.parameters.required.filter { it !in arguments || arguments[it] == null }
+        val normalized = arguments.toMutableMap()
+        definition.parameters.properties.forEach { (key, property) ->
+            if (property.type.equals("integer", ignoreCase = true) && key in normalized) {
+                normalized[key] = normalizeIntegerArgument(normalized[key])
+            }
+        }
+        val missing = definition.parameters.required.filter { it !in normalized || normalized[it] == null }
         require(missing.isEmpty()) { "Missing required properties: ${missing.joinToString()}" }
         if (!definition.parameters.additionalProperties) {
-            val unknown = arguments.keys - definition.parameters.properties.keys
+            val unknown = normalized.keys - definition.parameters.properties.keys
             require(unknown.isEmpty()) { "Unknown properties: ${unknown.joinToString()}" }
         }
         definition.parameters.properties.forEach { (key, property) ->
-            val value = arguments[key] ?: return@forEach
+            val value = normalized[key] ?: return@forEach
             val validType = when (property.type.lowercase()) {
                 "string" -> value is String
                 "integer" -> value is Number && value.toDouble() % 1.0 == 0.0
@@ -562,7 +595,32 @@ class AiRepository @Inject constructor(
             require(validType) { "$key must be ${property.type}" }
             property.enum?.let { allowed -> require(value.toString() in allowed) { "$key is not an allowed value" } }
         }
-        arguments
+        normalized
+    }
+
+    private fun normalizeJsonSchemaValue(schema: JSONObject, value: Any?): Any? {
+        val types = buildList {
+            schema.optString("type").takeIf { it.isNotBlank() }?.let(::add)
+            schema.optJSONArray("type")?.let { array ->
+                for (index in 0 until array.length()) add(array.optString(index))
+            }
+        }
+        val scalar = if (types.any { it.equals("integer", true) } && types.none { it.equals("string", true) }) {
+            normalizeIntegerArgument(value)
+        } else value
+        return when (scalar) {
+            is Map<*, *> -> {
+                val properties = schema.optJSONObject("properties") ?: return scalar
+                scalar.entries.associate { (key, child) ->
+                    val name = key.toString()
+                    name to (properties.optJSONObject(name)?.let { normalizeJsonSchemaValue(it, child) } ?: child)
+                }
+            }
+            is List<*> -> schema.optJSONObject("items")?.let { itemSchema ->
+                scalar.map { normalizeJsonSchemaValue(itemSchema, it) }
+            } ?: scalar
+            else -> scalar
+        }
     }
 
     private fun validateJsonSchema(schema: JSONObject, value: Any?, path: String) {
@@ -665,22 +723,6 @@ class AiRepository @Inject constructor(
         return "$code:${message.take(120)}"
     }
 
-
-    private suspend fun migrateLegacyPersonaFactsIfNeeded() {
-        val facts = personaRepository.extractLegacyMemoryFacts()
-        if (facts.isEmpty()) return
-        facts.forEach { fact ->
-            val proposal = memoryClassifier.classify(
-                content = fact,
-                requestedType = MemoryType.USER_PROFILE,
-                reason = "Migrated legacy persona user fact into Memory.",
-                confidence = 0.9,
-                importance = 0.7
-            )
-            memoryRepository.applyProposal(proposal)
-        }
-        personaRepository.clearLegacyMemoryFacts()
-    }
 
 
     /**

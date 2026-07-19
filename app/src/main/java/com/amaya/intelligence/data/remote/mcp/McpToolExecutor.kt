@@ -23,13 +23,18 @@ class McpToolExecutor @Inject constructor(
         onEvent: (suspend (Any) -> Unit)? = null,
         onConfirmationRequired: suspend (ConfirmationRequest) -> Boolean,
         providerConnection: com.amaya.intelligence.data.remote.api.ProviderConnection? = null,
-        selectedModelId: String? = null
+        selectedModelId: String? = null,
+        conversationId: String? = null
     ): ToolResult {
         // Reverse-map sanitized bridge tool names (e.g. "screen_capture" → "screen.capture").
         // The model receives sanitized names (dots replaced with underscores) because OpenAI
         // rejects names that don't match ^[a-zA-Z0-9_-]+$. We restore the wire name here
         // before routing so the bridge registry lookup always uses the canonical dot form.
-        val safeArguments = sanitizeModelArguments(arguments).getOrElse { error ->
+        val modelArguments = arguments.toMutableMap().apply {
+            remove("cwd")
+            remove("working_dir")
+        }
+        val safeArguments = sanitizeModelArguments(modelArguments).getOrElse { error ->
             return ToolResult.Error(error.message.orEmpty(), com.amaya.intelligence.tools.ErrorType.VALIDATION_ERROR)
         }
         val wireName = resolveBridgeToolWireName(toolName)
@@ -59,7 +64,17 @@ class McpToolExecutor @Inject constructor(
             windowsBridgeToolProvider.isBridgeTool(wireName) ->
                 windowsBridgeToolProvider.executeBridgeTool(wireName, safeArguments)
             else ->
-                toolExecutor.execute(wireName, safeArguments, workspacePath, toolCallId, onEvent, onConfirmationRequired, providerConnection, selectedModelId)
+                toolExecutor.execute(
+                    wireName,
+                    safeArguments,
+                    workspacePath,
+                    toolCallId,
+                    onEvent,
+                    onConfirmationRequired,
+                    providerConnection,
+                    selectedModelId,
+                    conversationId = conversationId
+                )
         }
     }
 }

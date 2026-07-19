@@ -229,7 +229,7 @@ class LocalIntelligenceService @Inject constructor(
                 flushAssistantThinkingBuffer()
                 finalizeThinkingIfActive()
                 flushAssistantTextBuffer()
-                val normalizedName = LocalToolMapper.mapToolName(event.name)
+                val normalizedName = LocalToolMapper.mapDisplayToolName(event.name, event.arguments)
                 val normalizedArgs = LocalToolMapper.mapToolArgs(event.name, event.arguments)
                 val pendingApproval = pendingConfirmationUi[event.toolCallId]
                 val approvalId = pendingApprovalIds[event.toolCallId]
@@ -775,6 +775,7 @@ class LocalIntelligenceService @Inject constructor(
 
     override fun setWorkspace(path: String?) {
         _uiState.update { it.copy(workspacePath = path) }
+        scope.launch { persistCurrentConversation() }
     }
 
     override fun clearError() {
@@ -993,6 +994,7 @@ class LocalIntelligenceService @Inject constructor(
                 if (existing != null) {
                     conversationDao.updateConversation(
                         existing.copy(
+                            workspacePath = _uiState.value.workspacePath,
                             messagesJson = messagesJson,
                             updatedAt = now
                         )

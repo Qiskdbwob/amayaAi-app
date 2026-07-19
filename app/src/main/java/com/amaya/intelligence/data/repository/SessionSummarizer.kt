@@ -13,14 +13,15 @@ class DeterministicSessionSummarizer @Inject constructor(
 ) : SessionSummarizer {
     override suspend fun summarize(sessionId: String): Result<SessionSummary> = runCatching {
         val summaryText = sessionMemoryRepository.summarizeSession(sessionId, forceRebuild = true)
-        val tags = inferTags(summaryText)
         val now = System.currentTimeMillis()
         val summary = SessionSummary(
             sessionId = sessionId,
             summary = summaryText,
-            tags = tags,
+            tags = inferTags(summaryText),
             createdAt = now,
-            updatedAt = now
+            updatedAt = now,
+            workspacePath = sessionMemoryRepository.sessionWorkspacePath(sessionId),
+            workspaceId = sessionMemoryRepository.sessionWorkspaceId(sessionId)
         )
         sessionMemoryRepository.saveSummary(summary)
         summary

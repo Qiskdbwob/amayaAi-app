@@ -1,4 +1,4 @@
-﻿package com.amaya.intelligence.tools
+package com.amaya.intelligence.tools
 
 import com.amaya.intelligence.domain.security.CommandValidator
 import com.amaya.intelligence.domain.security.RiskLevel
@@ -25,7 +25,6 @@ class ToolExecutor @Inject constructor(
     private val runShellTool: RunShellTool,
     private val editFileTool: EditFileTool,           // now includes apply_diff
     private val findFilesTool: FindFilesTool,         // now includes search_files
-    private val undoChangeTool: UndoChangeTool,
     // Memory, skills, session recall & reminder tools
     private val createReminderTool: CreateReminderTool,
     private val updateMemoryTool: UpdateMemoryTool,
@@ -53,7 +52,6 @@ class ToolExecutor @Inject constructor(
             runShellTool.name       to runShellTool,
             editFileTool.name       to editFileTool,
             findFilesTool.name      to findFilesTool,
-            undoChangeTool.name     to undoChangeTool,
             createReminderTool.name to createReminderTool,
             updateMemoryTool.name   to updateMemoryTool,
             memoryManageTool.name   to memoryManageTool,
@@ -83,9 +81,15 @@ class ToolExecutor @Inject constructor(
         onEvent: (suspend (Any) -> Unit)? = null,
         onConfirmationRequired: suspend (ConfirmationRequest) -> Boolean = { false },
         providerConnection: com.amaya.intelligence.data.remote.api.ProviderConnection? = null,
-        selectedModelId: String? = null
+        selectedModelId: String? = null,
+        readOnly: Boolean = false,
+        conversationId: String? = null
     ): ToolResult {
-        val tool = tools[toolName]
+        val normalizedArguments = normalizeIntegerArguments(toolName, arguments)
+        val capabilityCall = CapabilityToolMapper.map(toolName, normalizedArguments)
+        val handlerName = capabilityCall?.handlerName ?: toolName
+        val handlerArguments = capabilityCall?.arguments ?: normalizedArguments
+        val tool = tools[handlerName]
             ?: return ToolResult.Error(
                 "Unknown tool: $toolName. Available: ${getModelCallableTools().map { it.name }.joinToString()}",
                 ErrorType.VALIDATION_ERROR
@@ -97,32 +101,15 @@ class ToolExecutor @Inject constructor(
             )
         }
 
-        val safeArguments = sanitizeModelArguments(arguments).getOrElse { error ->
+        val safeArguments = sanitizeModelArguments(handlerArguments).getOrElse { error ->
             return ToolResult.Error(error.message.orEmpty(), ErrorType.VALIDATION_ERROR)
         }
-        val workspaceTools = setOf(
-            "list_files", "read_file", "write_file", "create_directory", "delete_file",
-            "edit_file", "find_files", "undo_change", "run_shell", "invoke_subagents"
-        )
-        if (toolName in workspaceTools && workspacePath.isNullOrBlank()) {
-            val hasExplicitTarget = when (toolName) {
-                "run_shell" -> (safeArguments["working_dir"] as? String)?.isNotBlank() == true
-                "read_file" -> (safeArguments["path"] as? String)?.isNotBlank() == true ||
-                    (safeArguments["paths"] as? List<*>)?.isNotEmpty() == true
-                "invoke_subagents" -> false
-                else -> (safeArguments["path"] as? String)?.isNotBlank() == true
-            }
-            if (!hasExplicitTarget) return ToolResult.Error(
-                "No workspace is selected. Select a workspace before using '$toolName'.",
-                ErrorType.VALIDATION_ERROR,
-                recoverable = true
-            )
+        val resolvedArguments = WorkspacePathResolver.resolve(handlerName, safeArguments, workspacePath).getOrElse { error ->
+            return ToolResult.Error(error.message.orEmpty(), ErrorType.SECURITY_VIOLATION, recoverable = true)
         }
-        val modelArguments = buildMap<String, Any?> {
-            putAll(safeArguments)
-            if (toolName == "run_shell" && !workspacePath.isNullOrBlank() && safeArguments["working_dir"] == null) {
-                put("working_dir", workspacePath)
-            }
+        val modelArguments = applyHostExecutionContext(handlerName, resolvedArguments, workspacePath)
+        if (readOnly && !isAllowedInReadOnlyMode(handlerName)) {
+            return ToolResult.Error("Tool '$toolName' is unavailable to read-only subagents.", ErrorType.PERMISSION_ERROR)
         }
         val callIdentity = toolCallId ?: return ToolResult.Error(
             "Tool call '$toolName' is missing a call ID; approval cannot be bound safely.",
@@ -133,11 +120,13 @@ class ToolExecutor @Inject constructor(
             workspacePath = workspacePath,
             onEvent = onEvent,
             providerConnection = providerConnection,
-            selectedModelId = selectedModelId
+            selectedModelId = selectedModelId,
+            conversationId = conversationId,
+            readOnly = readOnly
         )
 
         // Pre-validate model-owned arguments only.
-        val validation = commandValidator.validateToolCall(toolName, modelArguments)
+        val validation = commandValidator.validateToolCall(handlerName, modelArguments)
 
         when (validation) {
             is ValidationResult.Denied -> {
@@ -150,7 +139,7 @@ class ToolExecutor @Inject constructor(
             is ValidationResult.RequiresConfirmation -> {
                 val confirmed = onConfirmationRequired(
                     ConfirmationRequest(
-                        toolName = toolName,
+                        toolName = CapabilityToolMapper.displayName(toolName, arguments),
                         reason = validation.reason,
                         details = modelArguments.toString(),
                         riskLevel = validation.riskLevel,
@@ -182,7 +171,7 @@ class ToolExecutor @Inject constructor(
         if (result is ToolResult.RequiresConfirmation) {
             val confirmed = onConfirmationRequired(
                 ConfirmationRequest(
-                    toolName = toolName,
+                    toolName = CapabilityToolMapper.displayName(toolName, arguments),
                     reason = result.reason,
                     details = result.details,
                     riskLevel = RiskLevel.MEDIUM,
@@ -203,10 +192,38 @@ class ToolExecutor @Inject constructor(
         return result
     }
 
+    private fun normalizeIntegerArguments(toolName: String, arguments: Map<String, Any?>): Map<String, Any?> {
+        val integerNames = getToolDefinitions().firstOrNull { it.name == toolName }
+            ?.parameters
+            ?.filter { it.type.equals("integer", ignoreCase = true) }
+            ?.mapTo(mutableSetOf()) { it.name }
+            .orEmpty()
+        if (integerNames.isEmpty()) return arguments
+        return arguments.mapValues { (name, value) ->
+            if (name in integerNames) com.amaya.intelligence.data.repository.normalizeIntegerArgument(value) else value
+        }
+    }
+
     /**
      * Get all available tools.
      */
     fun getModelCallableTools(): List<Tool> = tools.values.filter { it.visibility == ToolVisibility.MODEL }
+
+    fun getReadOnlyToolDefinitions(): List<ToolDefinition> = getToolDefinitions()
+        .filter { it.name in setOf("read_file", "workspace_search", "web_search", "memory", "skill") }
+        .map { definition ->
+            when (definition.name) {
+                "memory" -> definition.copy(parameters = listOf(
+                    ToolParameter("operation", "string", "recall_sessions", enum = listOf("recall_sessions")),
+                    ToolParameter("query", "string", "Session recall query")
+                ))
+                "skill" -> definition.copy(parameters = listOf(
+                    ToolParameter("operation", "string", "view", enum = listOf("view")),
+                    ToolParameter("skill_id", "string", "Skill id/name")
+                ))
+                else -> definition
+            }
+        }
 
     /**
      * Get model-callable tool definitions for AI prompts (JSON Schema format).
@@ -214,10 +231,33 @@ class ToolExecutor @Inject constructor(
     fun getToolDefinitions(): List<ToolDefinition> {
         val definitions = listOf(
             ToolDefinition(
-                name = "list_files",
-                description = "List files and directories in the specified path using native APIs for high performance.",
+                name = "workspace_search",
+                description = "Search the active workspace. Use list to list a directory (omit path for root), find_name for filename patterns, and find_text for content.",
                 parameters = listOf(
-                    ToolParameter("path", "string", "Absolute path to directory", required = true),
+                    ToolParameter("operation", "string", "list, find_name, or find_text", enum = listOf("list", "find_name", "find_text")),
+                    ToolParameter("path", "string", "Optional path relative to the active workspace", required = false),
+                    ToolParameter("query", "string", "Required for find_name/find_text", required = false),
+                    ToolParameter("max_depth", "integer", "Maximum depth", required = false),
+                    ToolParameter("max_results", "integer", "Maximum results", required = false)
+                )
+            ),
+            ToolDefinition(
+                name = "workspace_change",
+                description = "Change files in the active workspace. Use write, append, replace, patch, mkdir, or delete.",
+                parameters = listOf(
+                    ToolParameter("operation", "string", "write, append, replace, patch, mkdir, or delete", enum = listOf("write", "append", "replace", "patch", "mkdir", "delete")),
+                    ToolParameter("path", "string", "Path relative to the active workspace", required = true),
+                    ToolParameter("content", "string", "Content for write/append", required = false),
+                    ToolParameter("old_text", "string", "Exact text for replace", required = false),
+                    ToolParameter("new_text", "string", "Replacement text", required = false),
+                    ToolParameter("diff", "string", "Unified diff for patch", required = false)
+                )
+            ),
+            ToolDefinition(
+                name = "list_files",
+                description = "List files and directories in the active workspace using native APIs for high performance.",
+                parameters = listOf(
+                    ToolParameter("path", "string", "Optional path relative to the active workspace; omit for its root", required = false),
                     ToolParameter("pattern", "string", "Regex pattern to filter results", required = false),
                     ToolParameter("max_depth", "integer", "Maximum depth to recurse (default: 1)", required = false),
                     ToolParameter("include_hidden", "boolean", "Include hidden files (default: false)", required = false)
@@ -227,8 +267,8 @@ class ToolExecutor @Inject constructor(
                 name = "read_file",
                 description = "Read text files and document formats (DOCX, XLSX, PPTX, ODT, ODS, RTF). Single: pass 'path'. Batch: pass 'paths' array (max 10). Info-only: pass 'info_only=true' for file metadata. Documents are automatically extracted to plain text. Note: PDF currently unavailable.",
                 parameters = listOf(
-                    ToolParameter("path", "string", "Absolute path to single file", required = false),
-                    ToolParameter("paths", "array", "Array of absolute paths for batch read (max 10)", required = false, items = "string"),
+                    ToolParameter("path", "string", "Path relative to the active workspace", required = false),
+                    ToolParameter("paths", "array", "Array of paths relative to the active workspace (max 10)", required = false, items = "string"),
                     ToolParameter("start_line", "integer", "Start reading from this line (1-indexed)", required = false),
                     ToolParameter("end_line", "integer", "Stop reading at this line (inclusive)", required = false),
                     ToolParameter("info_only", "boolean", "Return only metadata (size, modified, permissions) instead of content", required = false),
@@ -237,13 +277,11 @@ class ToolExecutor @Inject constructor(
             ),
             ToolDefinition(
                 name = "write_file",
-                description = "Write content to a file with atomic operations and automatic backup. Supports text files and document formats (DOCX, XLSX, PPTX, ODT, ODS, ODP). " +
-                    "Automatically creates parent directories if they don't exist (create_dirs=true by default). " +
-                    "Always creates a backup before writing. Use append=true to add content without overwriting. For documents: creates new document with plain text content.",
+                description = "Write content using best-effort temp-file replacement. Supports text files and document formats (DOCX, XLSX, PPTX, ODT, ODS, ODP). " +
+                    "Automatically creates parent directories if they don't exist. Use append=true to add content without overwriting. For documents: creates new document with plain text content.",
                 parameters = listOf(
-                    ToolParameter("path", "string", "Absolute path to the file. Parent directories are created automatically if missing.", required = true),
+                    ToolParameter("path", "string", "Path relative to the active workspace. Parent directories are created automatically if missing.", required = true),
                     ToolParameter("content", "string", "Content to write (plain text for documents)", required = true),
-                    ToolParameter("create_backup", "boolean", "Create backup before write (default: true)", required = false),
                     ToolParameter("validate_syntax", "boolean", "Validate code syntax (default: false)", required = false),
                     ToolParameter("create_dirs", "boolean", "Create parent directories if they don't exist (default: true)", required = false),
                     ToolParameter("append", "boolean", "Append to existing content instead of overwrite (default: false)", required = false)
@@ -253,14 +291,14 @@ class ToolExecutor @Inject constructor(
                 name = "create_directory",
                 description = "Create a directory and any necessary parent directories.",
                 parameters = listOf(
-                    ToolParameter("path", "string", "Absolute path of directory to create", required = true)
+                    ToolParameter("path", "string", "Path relative to the active workspace", required = true)
                 )
             ),
             ToolDefinition(
                 name = "delete_file",
                 description = "Safely delete a file or directory by moving it to trash. Can be recovered from .trash directory.",
                 parameters = listOf(
-                    ToolParameter("path", "string", "Absolute path to file or directory", required = true),
+                    ToolParameter("path", "string", "Path relative to the active workspace", required = true),
                     ToolParameter("permanent", "boolean", "Permanently delete (dangerous, default: false)", required = false)
                 )
             ),
@@ -274,21 +312,19 @@ class ToolExecutor @Inject constructor(
                     Do NOT use for basic file operations - use native tools instead.""".trimIndent(),
                 parameters = listOf(
                     ToolParameter("command", "string", "The shell command to run", required = true),
-                    ToolParameter("working_dir", "string", "Working directory for the command", required = false),
                     ToolParameter("timeout_ms", "integer", "Timeout in milliseconds (default: 30000, max: 300000)", required = false)
                 )
             ),
             ToolDefinition(
                 name = "edit_file",
-                description = "Edit a file by replacing text or applying a unified diff. Supports text files and document formats (DOCX, XLSX, PPTX, ODT, ODS, ODP). Use 'old_content'+'new_content' for text replacement, or 'diff' for patch mode (text files only). Use 'create_backup=false' to skip backup.",
+                description = "Edit a workspace file by replacing text or applying a unified diff. Supports text files and document formats (DOCX, XLSX, PPTX, ODT, ODS, ODP). Use 'old_content'+'new_content' for text replacement, or 'diff' for patch mode (text files only).",
                 parameters = listOf(
-                    ToolParameter("path", "string", "Absolute path to the file", required = true),
+                    ToolParameter("path", "string", "Path relative to the active workspace", required = true),
                     ToolParameter("old_content", "string", "Exact text to find and replace", required = false),
                     ToolParameter("new_content", "string", "Text to replace with", required = false),
                     ToolParameter("diff", "string", "Unified diff content (@@ hunks) to apply as patch (text files only)", required = false),
                     ToolParameter("all_occurrences", "boolean", "Replace all occurrences (default: false)", required = false),
-                    ToolParameter("dry_run", "boolean", "Preview changes without saving (default: false)", required = false),
-                    ToolParameter("create_backup", "boolean", "Create backup before editing (default: true). Set false to skip.", required = false)
+                    ToolParameter("dry_run", "boolean", "Preview changes without saving (default: false)", required = false)
                 )
             ),
             ToolDefinition(
@@ -304,19 +340,11 @@ class ToolExecutor @Inject constructor(
                     ToolParameter("max_results", "integer", "Maximum results (default: 50)", required = false)
                 )
             ),
-            ToolDefinition(
-                name = "undo_change",
-                description = "Undo the last change to a file by restoring from backup.",
-                parameters = listOf(
-                    ToolParameter("path", "string", "Absolute path to the file to restore", required = true),
-                    ToolParameter("list_backups", "boolean", "List available backups instead of restoring", required = false)
-                )
-            ),
             // ── Subagent tool ──────────────────────────────────────────────────────
             ToolDefinition(
                 name = "invoke_subagents",
                 description = "Spawn up to 4 independent AI subagents running IN PARALLEL. " +
-                    "Each subagent has its own task and access to all file tools. " +
+                    "Each subagent has its own task and read-only workspace research tools. " +
                     "Use for independent sub-tasks (reading multiple folders, auditing different layers). " +
                     "Subagents do NOT see conversation history — include ALL context in task. " +
                     "Returns combined summary from all subagents.",
@@ -363,6 +391,43 @@ class ToolExecutor @Inject constructor(
             ),
             // ── Memory & Reminder tools ────────────────────────────────────────────
             ToolDefinition(
+                name = "memory",
+                description = "Manage active saved memory or recall previous sessions. Update requires the version returned by list/search.",
+                parameters = listOf(
+                    ToolParameter("operation", "string", "save, list, search, update, or recall_sessions", enum = listOf("save", "list", "search", "update", "recall_sessions")),
+                    ToolParameter("id", "string", "Memory id for update", required = false),
+                    ToolParameter("expected_version", "integer", "Required for update", required = false),
+                    ToolParameter("content", "string", "Memory content", required = false),
+                    ToolParameter("query", "string", "Search or recall query", required = false),
+                    ToolParameter("title", "string", "Short memory title or list/search header", required = false),
+                    ToolParameter("type", "string", "user_profile or workspace_fact", required = false,
+                        enum = listOf("user_profile", "workspace_fact")),
+                    ToolParameter("reason", "string", "Specific reason this memory is durable", required = false),
+                    ToolParameter("confidence", "number", "0.0-1.0 confidence", required = false),
+                    ToolParameter("limit", "integer", "Max list/search results", required = false)
+                )
+            ),
+            ToolDefinition(
+                name = "skill",
+                description = "View or manage reusable skills.",
+                parameters = listOf(
+                    ToolParameter("operation", "string", "view, create, update, patch, archive, or delete", enum = listOf("view", "create", "update", "patch", "archive", "delete")),
+                    ToolParameter("name", "string", "Skill name", required = false),
+                    ToolParameter("skill_id", "string", "Skill id/name for view", required = false),
+                    ToolParameter("content", "string", "Skill content or patch", required = false)
+                )
+            ),
+            ToolDefinition(
+                name = "reminder",
+                description = "Schedule a reminder.",
+                parameters = listOf(
+                    ToolParameter("operation", "string", "create", enum = listOf("create")),
+                    ToolParameter("title", "string", "Reminder title"),
+                    ToolParameter("message", "string", "Reminder message"),
+                    ToolParameter("datetime", "string", "ISO local datetime")
+                )
+            ),
+            ToolDefinition(
                 name = "create_reminder",
                 description = "Schedule a reminder via Android notification at a specific time. " +
                     "Use when user asks to be reminded about something.",
@@ -381,33 +446,30 @@ class ToolExecutor @Inject constructor(
             ),
             ToolDefinition(
                 name = "update_memory",
-                description = "Store explicit durable memory requested by the user. Classifies and dedupes before writing to user memory, important memory, project memory, or daily notes. Never store secrets; use create_reminder for reminders.",
+                description = "Store an explicit durable user preference/profile fact or active-workspace fact. Classifies and dedupes before writing. Never store secrets; use session recall for history and create_reminder for reminders.",
                 parameters = listOf(
                     ToolParameter("title", "string", "Short professional memory title/header, 2-7 words", required = false),
                     ToolParameter("content", "string", "Final durable memory summary. Do not copy raw user commands or include phrases like remember/tolong ingat/user asked", required = true),
-                    ToolParameter("type", "string", "user_profile, long_term_memory, daily_log, reminder, workspace_fact", required = false,
-                        enum = listOf("user_profile", "long_term_memory", "daily_log", "reminder", "workspace_fact")),
-                    ToolParameter("action", "string", "add, replace, remove, or ignore", required = false,
-                        enum = listOf("add", "replace", "remove", "ignore")),
-                    ToolParameter("scope", "string", "global, user, persona, workspace, or session", required = false,
-                        enum = listOf("global", "user", "persona", "workspace", "session")),
+                    ToolParameter("type", "string", "user_profile or workspace_fact", required = false,
+                        enum = listOf("user_profile", "workspace_fact")),
+                    ToolParameter("action", "string", "add, replace, or ignore", required = false,
+                        enum = listOf("add", "replace", "ignore")),
                     ToolParameter("reason", "string", "Specific reason this memory is durable", required = false),
-                    ToolParameter("confidence", "number", "0.0-1.0 confidence; low-confidence proposals are ignored", required = false),
-                    ToolParameter("importance", "number", "0.0-1.0 importance", required = false),
-                    ToolParameter("target", "string", "Legacy: daily or long", required = false, enum = listOf("daily", "long"))
+                    ToolParameter("confidence", "number", "0.0-1.0 confidence; low-confidence proposals are ignored", required = false)
                 )
             ),
             ToolDefinition(
                 name = "memory_manage",
-                description = "List/search saved memory and update or remove a memory by stable id. Use when the user asks what Amaya remembers or asks to change/forget a specific saved memory. For list/search, include title: a concise 3-5 word header explaining why memory is being opened.",
+                description = "List/search active saved memory or update one memory by stable id. For list/search, include a concise title explaining why memory is opened.",
                 parameters = listOf(
                     ToolParameter("title", "string", "List/search header, 3-5 words explaining why memory is opened (e.g. Review saved preferences)", required = false),
-                    ToolParameter("action", "string", "list, search, remove, update", required = true,
-                        enum = listOf("list", "search", "remove", "update")),
-                    ToolParameter("id", "string", "Memory id for remove/update", required = false),
+                    ToolParameter("action", "string", "list, search, update", required = true,
+                        enum = listOf("list", "search", "update")),
+                    ToolParameter("id", "string", "Memory id for update", required = false),
+                    ToolParameter("expected_version", "integer", "Version returned by list/search; required for update to prevent overwriting newer memory", required = false),
                     ToolParameter("query", "string", "Search query for list/search", required = false),
-                    ToolParameter("type", "string", "user_profile, long_term_memory, daily_log, workspace_fact", required = false,
-                        enum = listOf("user_profile", "long_term_memory", "daily_log", "workspace_fact")),
+                    ToolParameter("type", "string", "user_profile or workspace_fact", required = false,
+                        enum = listOf("user_profile", "workspace_fact")),
                     ToolParameter("content", "string", "Replacement content for update", required = false),
                     ToolParameter("limit", "integer", "Max results, default 20", required = false)
                 )
@@ -419,36 +481,41 @@ class ToolExecutor @Inject constructor(
             ),
             ToolDefinition(
                 name = "skill_manage",
-                description = "Create, update, patch, archive, delete, or record usage for reusable procedural skills only when the user explicitly asks to manage or save a skill/workflow. Do not create trivial or duplicate skills; never store credentials.",
+                description = "Create, update, patch, archive, or delete reusable procedural skills only when the user explicitly asks to manage or save a skill/workflow. Do not create trivial or duplicate skills; never store credentials.",
                 parameters = listOf(
-                    ToolParameter("action", "string", "create, update, patch, archive, delete, record_usage", required = true,
-                        enum = listOf("create", "update", "patch", "archive", "delete", "record_usage")),
+                    ToolParameter("action", "string", "create, update, patch, archive, delete", required = true,
+                        enum = listOf("create", "update", "patch", "archive", "delete")),
                     ToolParameter("name", "string", "Skill name", required = true),
                     ToolParameter("content", "string", "SKILL.md content or patch text", required = false),
                     ToolParameter("description", "string", "Short skill description for create", required = false),
                     ToolParameter("reason", "string", "Why this skill is being created or changed", required = false),
                     ToolParameter("summary", "string", "What was added or changed", required = false),
-                    ToolParameter("tags", "array", "Skill tags", required = false, items = "string"),
-                    ToolParameter("success", "boolean", "Usage outcome for record_usage", required = false)
+                    ToolParameter("tags", "array", "Skill tags", required = false, items = "string")
                 )
             ),
             ToolDefinition(
                 name = "session_search",
-                description = "Search previous sessions by query. Use this for recall instead of expecting old sessions/daily logs in the prompt.",
+                description = "Search previous sessions by query. Use this for recall instead of injecting old sessions in the prompt.",
                 parameters = listOf(
                     ToolParameter("query", "string", "Search query", required = true),
                     ToolParameter("limit", "integer", "Max results, default 10", required = false)
                 )
             )
         ) + browserUseToolset.getToolDefinitions()
-        val modelToolNames = getModelCallableTools().map { it.name }.toSet()
-        return definitions.filter { it.name in modelToolNames }
+        val advertisedToolNames = setOf(
+            "workspace_search", "workspace_change", "read_file", "run_shell", "web_search", "browser",
+            "memory", "skill", "reminder", "update_todo", "invoke_subagents"
+        )
+        return definitions.filter { it.name in advertisedToolNames }
     }
 }
 
 /**
  * Request for user confirmation.
  */
+internal fun isAllowedInReadOnlyMode(handlerName: String): Boolean =
+    handlerName in setOf("read_file", "list_files", "find_files", "web_search", "session_search", "skill_view")
+
 data class ConfirmationRequest(
     val toolName: String,
     val reason: String,
@@ -460,6 +527,16 @@ data class ConfirmationRequest(
 /**
  * Tool definition for AI prompts.
  */
+internal fun applyHostExecutionContext(
+    handlerName: String,
+    arguments: Map<String, Any?>,
+    workspacePath: String?
+): MutableMap<String, Any?> = arguments.toMutableMap().apply {
+    remove("cwd")
+    remove("working_dir")
+    if (handlerName == "run_shell" && !workspacePath.isNullOrBlank()) put("working_dir", workspacePath)
+}
+
 data class ToolDefinition(
     val name: String,
     val description: String,

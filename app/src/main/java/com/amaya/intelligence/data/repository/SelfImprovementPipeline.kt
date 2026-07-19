@@ -1,27 +1,13 @@
 package com.amaya.intelligence.data.repository
 
-import com.amaya.intelligence.data.remote.api.ProviderConnection
-import com.amaya.intelligence.data.remote.api.AiProvider
-import com.amaya.intelligence.data.remote.api.AiSettingsManager
-import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
-import com.amaya.intelligence.data.remote.api.AnthropicProvider
-import com.amaya.intelligence.data.remote.api.ChatMessage
-import com.amaya.intelligence.data.remote.api.ChatRequest
-import com.amaya.intelligence.data.remote.api.ChatResponse
-import com.amaya.intelligence.data.remote.api.GeminiProvider
-import com.amaya.intelligence.data.remote.api.MessageRole
-import com.amaya.intelligence.data.remote.api.OpenAiProvider
-import com.amaya.intelligence.data.remote.api.ProviderAdapter
-import com.amaya.intelligence.domain.memory.MemoryAction
 import com.amaya.intelligence.domain.memory.MemoryClassifier
-import com.amaya.intelligence.domain.memory.MemoryProposal
-import com.amaya.intelligence.domain.memory.MemoryType
 import com.amaya.intelligence.domain.memory.PendingProposal
 import com.amaya.intelligence.domain.memory.PendingProposalAction
 import com.amaya.intelligence.domain.memory.PendingProposalStatus
 import com.amaya.intelligence.domain.memory.PendingProposalType
-import com.amaya.intelligence.util.errorLog
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -31,374 +17,233 @@ data class CompletedInteractionContext(
     val assistantMessages: List<String>,
     val toolCalls: List<String>,
     val toolResults: List<String>,
-    val timestamp: Long
+    val timestamp: Long,
+    val workspacePath: String? = null,
+    val workspaceId: String? = null,
+    val successful: Boolean = true
 )
 
 data class SelfImprovementResult(
-    val memoryProposals: List<MemoryProposal>,
-    val dailyLogEntries: List<String>,
     val skillProposals: List<PendingProposal> = emptyList()
 )
 
-private data class DailyLogCandidate(
-    val title: String,
-    val content: String,
-    val reason: String
+internal data class WorkflowEvidence(
+    val sessionId: String,
+    val fingerprint: String,
+    val trigger: String,
+    val tools: List<String>,
+    val successful: Boolean,
+    val activeSkill: String? = null,
+    val timestamp: Long,
+    val workspacePath: String?
 )
 
 @Singleton
 class SelfImprovementPipeline @Inject constructor(
-    private val memoryRepository: MemoryRepository,
-    private val sessionMemoryRepository: SessionMemoryRepository,
-    private val brainSettingsRepository: BrainSettingsRepository,
     private val classifier: MemoryClassifier,
-    private val policy: SelfImprovementPolicy,
     private val pendingProposalRepository: PendingProposalRepository,
-    private val settingsManager: AiSettingsManager,
-    private val anthropicProvider: AnthropicProvider,
-    private val openAiProvider: OpenAiProvider,
-    private val geminiProvider: GeminiProvider
+    @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context
 ) {
+    private val evidenceFile: File get() = File(context.filesDir, "skills/workflow-evidence.jsonl")
+    private val evidenceLock = Any()
+
     suspend fun analyzeAndImprove(context: CompletedInteractionContext): SelfImprovementResult {
-        val settings = brainSettingsRepository.getBrainSettings()
-
-        val dailyCandidates = if (settings.memory.dailyNotesEnabled) buildDailyLogCandidates(context) else emptyList()
-        val dailyEntries = dailyCandidates.map { it.content }
-        val dailyProposals = dailyCandidates.map { entry ->
-            classifier.classify(
-                content = entry.content,
-                requestedType = MemoryType.DAILY_LOG,
-                requestedTitle = entry.title,
-                reason = entry.reason,
-                confidence = 0.8,
-                importance = 0.4
-            )
-        }
-        val memoryProposals = (if (settings.memory.suggestNewMemories) extractMemoryCandidates(context) else emptyList()) + dailyProposals
-
-        memoryProposals.forEach { proposal ->
-            when (policy.decideMemory(proposal, settings.memory).route) {
-                SelfImprovementRoute.APPLY_NOW -> memoryRepository.applyProposal(proposal)
-                SelfImprovementRoute.REQUIRE_APPROVAL -> pendingProposalRepository.addProposal(proposal.toPendingProposal(context.sessionId))
-                SelfImprovementRoute.IGNORE -> Unit
-            }
-        }
-
         val skillProposals = extractSkillCandidates(context)
         skillProposals.forEach { pendingProposalRepository.addProposal(it) }
-
-        if (dailyEntries.isNotEmpty()) {
-            sessionMemoryRepository.saveMessage(
-                SessionMessage(
-                    sessionId = context.sessionId,
-                    role = "summary",
-                    content = dailyCandidates.joinToString("\n") { "${it.title}: ${it.content}" },
-                    timestamp = context.timestamp,
-                    tags = listOf("reflection")
-                )
-            )
-        }
-
-        return SelfImprovementResult(
-            memoryProposals = memoryProposals,
-            dailyLogEntries = dailyEntries,
-            skillProposals = skillProposals
-        )
+        return SelfImprovementResult(skillProposals)
     }
 
-    private suspend fun buildDailyLogCandidates(context: CompletedInteractionContext): List<DailyLogCandidate> {
-        // Daily notes must be true model reflections, not deterministic/fake status lines.
-        // If no reflection model is available or the model returns a generic note, save nothing.
-        modelDailyLogCandidate(context)?.let { return listOf(it) }
-        return emptyList()
-    }
-
-    private suspend fun modelDailyLogCandidate(context: CompletedInteractionContext): DailyLogCandidate? = runCatching {
-        val userText = stripThinking(context.userMessages.takeLast(3).joinToString("\n---\n")).trim().take(2_000)
-        val assistantText = stripThinking(context.assistantMessages.takeLast(2).joinToString("\n---\n")).trim().take(2_000)
-        if (userText.isBlank() && assistantText.isBlank()) return@runCatching null
-        if (isTrivialGreeting(userText.lowercase()) && assistantText.isBlank()) return@runCatching null
-
-        val (provider, connection, model) = resolveReflectionModel() ?: return@runCatching null
-        val prompt = buildReflectionPrompt(userText, assistantText)
-        val output = StringBuilder()
-        provider.chat(
-            ChatRequest(
-                model = model,
-                messages = listOf(ChatMessage(role = MessageRole.USER, content = prompt)),
-                systemPrompt = DAILY_REFLECTION_SYSTEM_PROMPT,
-                tools = emptyList(),
-                maxTokens = 2_048,
-                temperature = 0.2f,
-                stream = false,
-                connectionId = connection.id
-            )
-        ).collect { response ->
-            when (response) {
-                is ChatResponse.TextDelta -> output.append(response.text)
-                is ChatResponse.Incomplete -> throw IllegalStateException(response.reason)
-                is ChatResponse.Error -> throw IllegalStateException(response.message)
-                else -> Unit
-            }
-        }
-        parseDailyReflection(output.toString(), userText)
-    }.onFailure { errorLog("SelfImprovementPipeline", "AI daily reflection failed", it) }.getOrNull()
-
-    private suspend fun resolveReflectionModel(): Triple<AiProvider, ProviderConnection, String>? {
-        val settings = settingsManager.getSettings()
-        val selection = settings.activeSelection ?: return null
-        val connection = settings.connections.firstOrNull { it.id == selection.connectionId }
-            ?: return null
-        val provider = when (AmayaProviderRegistry.require(connection.providerId).adapter) {
-            ProviderAdapter.ANTHROPIC -> anthropicProvider
-            ProviderAdapter.GEMINI -> geminiProvider
-            ProviderAdapter.OPENAI_RESPONSES, ProviderAdapter.OPENAI_COMPATIBLE, ProviderAdapter.CODEX -> openAiProvider
-        }
-
-        val model = selection.modelId
-        if (model.isBlank()) return null
-        return Triple(provider, connection, model)
-    }
-
-    private fun buildReflectionPrompt(
-        userText: String,
-        assistantText: String
-    ): String = buildString {
-        appendLine("Create one daily-note candidate for this completed Amaya session.")
-        appendLine("Return JSON only. Do not include markdown fences.")
-        appendLine()
-        appendLine("USER MESSAGES:")
-        appendLine(userText.ifBlank { "None" })
-        appendLine()
-        appendLine("ASSISTANT OUTCOME:")
-        appendLine(assistantText.ifBlank { "None" })
-
-    }
-
-    private fun parseDailyReflection(raw: String, userText: String): DailyLogCandidate? {
-        val jsonText = extractJsonObject(raw) ?: return null
-        val root = JSONObject(jsonText)
-        val note = root.optJSONObject("daily_note") ?: root
-        if (!note.optBoolean("should_save", true)) return null
-        val title = note.optString("title").cleanReflectionText().take(80)
-        val summary = note.optString("summary").cleanReflectionText().take(260)
-        val reason = note.optString("reason").cleanReflectionText().take(220)
-        if (title.isBlank() || summary.isBlank()) return null
-        if (isGenericDailyTitle(title) || isGenericDailySummary(summary)) return null
-        if (isInternalToolCentric(summary) || isInternalToolCentric(title)) return null
-        return DailyLogCandidate(
-            title = title,
-            content = summary,
-            reason = reason.ifBlank { "The session produced a specific outcome worth preserving as a daily note." }
-        )
-    }
-
-    private fun extractJsonObject(raw: String): String? {
-        val cleaned = raw.trim()
-            .removePrefix("```json")
-            .removePrefix("```")
-            .removeSuffix("```")
-            .trim()
-        val start = cleaned.indexOf('{')
-        val end = cleaned.lastIndexOf('}')
-        return if (start >= 0 && end > start) cleaned.substring(start, end + 1) else null
-    }
-
-    private fun String.cleanReflectionText(): String = replace(Regex("(?is)<think>.*?</think>"), "")
-        .replace(Regex("(?is)<think>.*"), "")
-        .replace(Regex("""(?i)^\s*(user asked|user discussed|outcome)\s*:\s*"""), "")
-        .replace(Regex("""\s+"""), " ")
-        .trim(' ', '\n', '\t', '.', ',', ';', ':')
-
-    private fun isGenericDailyTitle(title: String): Boolean {
-        val lower = title.lowercase().trim().removeSuffix(".")
-        return lower in setOf(
-            "daily summary", "interaction summary", "session summary", "chat task", "tool task",
-            "browser task", "memory activity", "completed interaction"
-        )
-    }
-
-    private fun isGenericDailySummary(summary: String): Boolean {
-        val lower = summary.lowercase().trim().removeSuffix(".")
-        return lower in setOf(
-            "user completed a chat task with amaya",
-            "user completed a tool-assisted task",
-            "user completed a browser/search task",
-            "interaction summarized",
-            "the session completed successfully",
-            "the session focused on a browser or search request from the user",
-            "the session focused on a browser or search request",
-            "the session handled a request to find and remove saved memory",
-            "the session reviewed saved memory and memory-management behavior"
-        ) || lower.startsWith("user asked/discussed") ||
-            lower.startsWith("the session focused on") ||
-            lower.startsWith("the session handled") ||
-            lower.startsWith("the session reviewed") ||
-            lower.startsWith("the session captured")
-    }
-
-    private fun isInternalToolCentric(summary: String): Boolean {
-        val lower = summary.lowercase()
-        return listOf(
-            "tool", "tools", "tool-assisted", "tools used", "tool used", "tool call", "toolcall", "internal tool",
-            "internal execution", "called the", "used the tool", "run_shell", "update_memory", "memory_manage", "skill_manage", "skill_view"
-        ).any { it in lower }
-    }
-
-    private fun extractMemoryCandidates(context: CompletedInteractionContext): List<MemoryProposal> {
-        val recentUserMessages = context.userMessages.takeLast(3)
-        val proposals = mutableListOf<MemoryProposal>()
-        recentUserMessages.forEach { userMessage ->
-            val lower = userMessage.lowercase()
-            val removeIntent = listOf(
-                "forget", "lupakan", "hapus memory", "hapus memori", "jangan ingat", "don't remember", "do not remember", "stop remembering"
-            ).any { it in lower }
-            val addIntent = listOf(
-                "mulai sekarang", "from now", "prefer", "preference", "jawab saya", "call me", "panggil", "remember", "ingat", "selalu", "project ini", "workspace ini",
-                "namaku", "nama ku", "nama saya", "my name is"
-            ).any { it in lower }
-
-            if (removeIntent) {
-                val target = cleanMemoryContent(userMessage, remove = true)
-                if (target.isNotBlank()) {
-                    proposals.add(classifier.classify(
-                        content = target,
-                        requestedType = inferCandidateType(target),
-                        requestedAction = MemoryAction.REMOVE,
-                        reason = "User explicitly asked Amaya to forget or remove this memory.",
-                        confidence = 0.86,
-                        importance = 0.55
-                    ))
-                }
-            } else if (addIntent) {
-                val type = inferCandidateType(userMessage)
-                val content = cleanMemoryContent(userMessage, remove = false)
-                if (content.isNotBlank()) {
-                    proposals.add(classifier.classify(
-                        content = content,
-                        requestedType = type,
-                        reason = "User explicitly stated a durable preference, stable fact, or workspace fact.",
-                        confidence = 0.82,
-                        importance = if (type == MemoryType.USER_PROFILE) 0.72 else 0.66
-                    ))
-                }
-            }
-        }
-        return proposals
-    }
-
-    private fun extractSkillCandidates(context: CompletedInteractionContext): List<PendingProposal> {
+    internal fun extractSkillCandidates(context: CompletedInteractionContext): List<PendingProposal> {
         val tools = context.toolCalls.map { it.substringBefore(':').trim() }
             .filter { it.isNotBlank() && it !in SELF_IMPROVEMENT_TOOLS }
-        val distinctTools = tools.distinct()
-        val assistantText = context.assistantMessages.joinToString(" ").lowercase()
-        val userText = context.userMessages.joinToString(" ").lowercase()
-        val completedSuccessfully = listOf("done", "completed", "fixed", "success", "berhasil", "selesai", "sudah").any { it in assistantText }
-        val failureCount = context.toolResults.count { result -> listOf("error", "failed", "timeout", "cancelled").any { it in result.lowercase() } }
-        val oneOffTask = listOf("sekali ini", "one time", "one-off", "cuma kali ini", "just this once").any { it in userText }
-        val repeatedToolUse = tools.groupingBy { it }.eachCount().values.any { it >= 3 }
-        val complexReusableFlow = tools.size >= 8 && distinctTools.size >= 3 && repeatedToolUse
-        if (!completedSuccessfully || failureCount > 1 || oneOffTask || !complexReusableFlow) return emptyList()
+        val explicitTeach = context.userMessages.any { message -> TEACH_TERMS.any { it in message.lowercase() } }
+        val successful = context.successful &&
+            context.toolResults.none { result -> FAILURE_TERMS.any { it in result.lowercase() } } &&
+            (explicitTeach || context.assistantMessages.isNotEmpty())
+        if (tools.isEmpty() && !explicitTeach) return emptyList()
 
-        val name = "learned-${distinctTools.take(3).joinToString("-")}".lowercase().replace(Regex("[^a-z0-9-]+"), "-").take(60)
-        val firstUser = context.userMessages.firstOrNull().orEmpty().take(220)
+        val trigger = sanitizeEvidence(context.userMessages.firstOrNull().orEmpty()).take(220)
+        val sequence = tools.distinct()
+        val fingerprint = if (sequence.isEmpty()) "explicit:${trigger.lowercase()}" else sequence.joinToString("|").lowercase()
+        val evidence = WorkflowEvidence(
+            sessionId = context.sessionId,
+            fingerprint = fingerprint,
+            trigger = trigger,
+            tools = sequence,
+            successful = successful,
+            activeSkill = viewedSkillName(context),
+            timestamp = context.timestamp,
+            workspacePath = context.workspacePath
+        )
+        val previousEvidence = readEvidence().filter { it.fingerprint == fingerprint }.distinctBy { it.sessionId }
+        saveEvidence(evidence)
+        if (!successful) return emptyList()
+
+        val viewedSkill = evidence.activeSkill
+        val failedSessions = previousEvidence.filter { !it.successful && it.activeSkill == viewedSkill }.map { it.sessionId }
+        if (viewedSkill != null && failedSessions.size >= REQUIRED_FAILURE_SESSIONS) {
+            val sourceSessions = (failedSessions.takeLast(REQUIRED_FAILURE_SESSIONS) + context.sessionId).distinct()
+            return listOf(buildSkillPatchProposal(viewedSkill, sequence, sourceSessions, context))
+        }
+
+        val matching = (previousEvidence + evidence).filter { it.successful }.distinctBy { it.sessionId }
+        if (!explicitTeach && matching.size < REQUIRED_SUCCESSFUL_SESSIONS) return emptyList()
+        val sourceSessions = matching.map { it.sessionId }.takeLast(REQUIRED_SUCCESSFUL_SESSIONS).ifEmpty { listOf(context.sessionId) }
+        val name = skillName(sequence, trigger)
         val content = buildString {
             appendLine("---")
             appendLine("name: $name")
-            appendLine("description: Candidate reusable workflow learned from a successful repeated tool sequence.")
+            appendLine("description: Reviewed workflow candidate based on verified successful sessions.")
             appendLine("version: 0.1.0")
             appendLine("createdBy: self-improvement")
             appendLine("---")
             appendLine()
-            appendLine("# Candidate Workflow")
-            appendLine()
-            appendLine("Use this only after review/approval. It was inferred from a completed task, not auto-activated.")
+            appendLine("# Workflow")
             appendLine()
             appendLine("## Trigger")
-            appendLine("- Similar user task: ${firstUser.ifBlank { "Repeated multi-tool workflow" }}")
+            appendLine("- $trigger")
             appendLine()
-            appendLine("## Observed Tool Sequence")
-            distinctTools.forEach { appendLine("- $it") }
+            appendLine(if (sequence.isEmpty()) "## Source Procedure" else "## Verified Sequence")
+            if (sequence.isEmpty()) appendLine("- $trigger") else sequence.forEach { appendLine("- $it") }
             appendLine()
-            appendLine("## Notes")
-            appendLine("- Review this candidate before applying. Remove task-specific details and secrets before approval.")
+            appendLine("## Evidence")
+            sourceSessions.forEach { appendLine("- Successful session $it") }
+            appendLine()
+            appendLine("Review scope, procedure details, and task-specific assumptions before activation.")
         }.trim()
         return listOf(PendingProposal(
-            id = "skill_${context.sessionId}_${name}".replace(Regex("[^A-Za-z0-9_-]"), "_"),
-            sourceSessionId = context.sessionId,
+            id = "skill_${name}_${sourceSessions.joinToString("_")}".replace(Regex("[^A-Za-z0-9_-]"), "_").take(180),
+            sourceSessionId = sourceSessions.last(),
             type = PendingProposalType.SKILL_CREATE,
             target = name,
             action = PendingProposalAction.CREATE,
             title = "Review reusable workflow: $name",
             content = content,
-            reason = "Successful repeated multi-tool flow detected; queued for review, not auto-created.",
-            confidence = 0.62,
-            importance = 0.45,
+            reason = if (explicitTeach) "User explicitly asked to save this successful workflow." else "Same workflow succeeded across ${sourceSessions.size} sessions.",
+            confidence = if (explicitTeach) 0.9 else 0.78,
             createdAt = context.timestamp,
-            status = PendingProposalStatus.PENDING
+            status = PendingProposalStatus.PENDING,
+            workspacePath = context.workspacePath,
+            workspaceId = context.workspaceId,
+            sourceSessionIds = sourceSessions,
+            evidence = sourceSessions.map {
+                if (sequence.isEmpty()) "Explicitly taught in session $it" else "Successful session $it with sequence: ${sequence.joinToString(" → ")}"
+            }
         ))
     }
 
-    private fun inferCandidateType(text: String): MemoryType {
-        val lower = text.lowercase()
-        return when {
-            listOf("project", "workspace", "repo", "repository", "kode", "codebase").any { it in lower } -> MemoryType.WORKSPACE_FACT
-            listOf("call me", "panggil", "namaku", "nama ku", "nama saya", "my name", "prefer", "preference", "jawab saya", "bahasa", "tone", "gaya").any { it in lower } -> MemoryType.USER_PROFILE
-            else -> MemoryType.LONG_TERM_MEMORY
-        }
-    }
-
-    private fun cleanMemoryContent(text: String, remove: Boolean): String {
-        var cleaned = text.trim()
-        val prefixes = if (remove) listOf(
-            "please forget", "forget", "lupakan", "hapus memory", "hapus memori", "jangan ingat", "don't remember", "do not remember", "stop remembering"
-        ) else listOf(
-            "please remember that", "remember that", "remember", "ingat bahwa", "ingat", "mulai sekarang", "from now on", "from now"
+    private fun buildSkillPatchProposal(
+        skillName: String,
+        sequence: List<String>,
+        sourceSessions: List<String>,
+        context: CompletedInteractionContext
+    ): PendingProposal {
+        val patch = buildString {
+            appendLine("# Verified Recovery")
+            appendLine()
+            appendLine("After repeated failures, this sequence completed successfully:")
+            sequence.forEach { appendLine("- $it") }
+            appendLine()
+            appendLine("Validate the recovery steps against the existing skill before applying.")
+        }.trim()
+        return PendingProposal(
+            id = "skill_patch_${skillName}_${sequence.joinToString("|").hashCode()}".replace(Regex("[^A-Za-z0-9_-]"), "_"),
+            sourceSessionId = context.sessionId,
+            type = PendingProposalType.SKILL_PATCH,
+            target = skillName,
+            action = PendingProposalAction.PATCH,
+            title = "Review recovery for $skillName",
+            content = patch,
+            reason = "The same skill workflow failed repeatedly, then completed successfully.",
+            confidence = 0.78,
+            createdAt = context.timestamp,
+            status = PendingProposalStatus.PENDING,
+            workspacePath = context.workspacePath,
+            workspaceId = context.workspaceId,
+            sourceSessionIds = sourceSessions,
+            evidence = sourceSessions.mapIndexed { index, session ->
+                if (index == sourceSessions.lastIndex) "Successful recovery session $session" else "Failed session $session"
+            }
         )
-        prefixes.forEach { prefix ->
-            cleaned = cleaned.replace(Regex("(?i)^\\s*${Regex.escape(prefix)}[:,]?\\s*"), "")
+    }
+
+    private fun viewedSkillName(context: CompletedInteractionContext): String? = context.toolCalls.firstNotNullOfOrNull { call ->
+        if (!call.startsWith("skill:")) return@firstNotNullOfOrNull null
+        Regex("(?:skill_id|name)=([^,}]+)").find(call)?.groupValues?.getOrNull(1)?.trim()?.takeIf(String::isNotBlank)
+    }
+
+    private fun saveEvidence(evidence: WorkflowEvidence) = synchronized(evidenceLock) {
+        val existing = readEvidence()
+        if (existing.any { it.sessionId == evidence.sessionId && it.fingerprint == evidence.fingerprint }) return@synchronized
+        evidenceFile.parentFile?.mkdirs()
+        evidenceFile.appendText(evidence.toJson().toString() + "\n")
+        compactEvidence(existing + evidence)
+    }
+
+    private fun compactEvidence(records: List<WorkflowEvidence>) {
+        val cutoff = System.currentTimeMillis() - EVIDENCE_MAX_AGE_MS
+        val kept = records.filter { it.timestamp >= cutoff }
+            .filter { it.trigger.isNotBlank() }
+            .distinctBy { "${it.sessionId}:${it.fingerprint}" }
+            .takeLast(MAX_EVIDENCE_RECORDS)
+        val tmp = File(evidenceFile.parentFile, "${evidenceFile.name}.tmp")
+        tmp.writeText(kept.joinToString("\n") { it.toJson().toString() } + if (kept.isEmpty()) "" else "\n")
+        if (!tmp.renameTo(evidenceFile)) {
+            evidenceFile.writeText(tmp.readText())
+            tmp.delete()
         }
-        return cleaned.trim().trim('.', ';')
     }
 
-    private fun isTrivialGreeting(text: String): Boolean {
-        val clean = text.lowercase().replace(Regex("[^a-z0-9\\p{L}]+"), " ").trim()
-        return clean in setOf("hai", "halo", "hello", "hi", "hey", "pagi", "siang", "malam")
+    private fun readEvidence(): List<WorkflowEvidence> = synchronized(evidenceLock) {
+        runCatching {
+            if (!evidenceFile.exists()) return@synchronized emptyList()
+            evidenceFile.readLines().mapNotNull { line -> runCatching { JSONObject(line).toWorkflowEvidence() }.getOrNull() }
+        }.getOrDefault(emptyList())
     }
 
-    private fun stripThinking(text: String): String = text
-        .replace(Regex("(?is)<think>.*?</think>"), "")
-        .replace(Regex("(?is)<think>.*"), "")
-        .replace(Regex("(?is)</think>"), "")
-        .trim()
+    private fun WorkflowEvidence.toJson(): JSONObject = JSONObject()
+        .put("sessionId", sessionId)
+        .put("fingerprint", fingerprint)
+        .put("trigger", trigger)
+        .put("tools", JSONArray(tools))
+        .put("successful", successful)
+        .put("activeSkill", activeSkill)
+        .put("timestamp", timestamp)
+        .put("workspacePath", workspacePath)
+
+    private fun JSONObject.toWorkflowEvidence(): WorkflowEvidence = WorkflowEvidence(
+        sessionId = optString("sessionId"),
+        fingerprint = optString("fingerprint"),
+        trigger = optString("trigger"),
+        tools = optJSONArray("tools")?.let { array -> List(array.length()) { array.optString(it) } } ?: emptyList(),
+        successful = optBoolean("successful"),
+        activeSkill = optString("activeSkill").takeIf(String::isNotBlank),
+        timestamp = optLong("timestamp"),
+        workspacePath = optString("workspacePath").takeIf(String::isNotBlank)
+    )
+
+    private fun sanitizeEvidence(text: String): String {
+        if (!classifier.checkSafety(text).safe) return ""
+        return text.replace(Regex("(?is)<think>.*?</think>"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun skillName(tools: List<String>, trigger: String): String =
+        (tools.take(3).joinToString("-") + "-" + trigger.split(Regex("\\s+")).take(3).joinToString("-"))
+            .lowercase()
+            .replace(Regex("[^a-z0-9-]+"), "-")
+            .trim('-')
+            .take(60)
+            .ifBlank { "learned-workflow" }
 
     companion object {
-        private val DAILY_REFLECTION_SYSTEM_PROMPT = """
-            You are Amaya's private post-chat reflection writer.
-            Produce a real daily note from the completed session, not a generic template.
-
-            Return strict JSON only:
-            {
-              "daily_note": {
-                "should_save": true,
-                "title": "3-7 word concrete title",
-                "summary": "One polished sentence summarizing the specific user-facing outcome or decision.",
-                "reason": "Why this session is worth keeping as a daily note."
-              }
-            }
-
-            Rules:
-            - If the session is only a greeting, empty, or has no meaningful outcome, set should_save=false.
-            - Summarize the user-facing interaction: what the user wanted, what was decided, and what changed.
-            - Never mention internal tools, tool names, tool calls, or "tool-assisted". Daily notes are about the conversation outcome, not implementation mechanics.
-            - Do not copy the user's raw wording.
-            - Do not write generic lines like "User completed a task" or "User asked/discussed".
-            - Do not include secrets, credentials, tokens, OTPs, cookies, or payment details.
-            - Prefer concrete wording: what setting, memory, skill, browser task, code change, or decision changed.
-        """.trimIndent()
-
-        private val SELF_IMPROVEMENT_TOOLS = setOf(
-            "update_memory", "memory_manage", "skill_view", "skill_manage", "session_search", "update_todo"
-        )
+        private const val REQUIRED_SUCCESSFUL_SESSIONS = 2
+        private const val REQUIRED_FAILURE_SESSIONS = 2
+        private const val MAX_EVIDENCE_RECORDS = 500
+        private const val EVIDENCE_MAX_AGE_MS = 90L * 24L * 60L * 60L * 1000L
+        private val TEACH_TERMS = listOf("save this workflow", "remember this workflow", "teach this workflow", "simpan workflow", "pelajari workflow", "jadikan skill")
+        private val FAILURE_TERMS = listOf("error", "failed", "timeout", "cancelled", "gagal")
+        private val SELF_IMPROVEMENT_TOOLS = setOf("memory", "skill", "update_memory", "memory_manage", "skill_view", "skill_manage", "session_search", "update_todo")
     }
 }

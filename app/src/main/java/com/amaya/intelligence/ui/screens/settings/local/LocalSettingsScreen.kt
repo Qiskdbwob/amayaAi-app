@@ -55,6 +55,7 @@ fun LocalSettingsScreen(
     val settingsColors = iosSettingsColors()
     val amayaViewModel: AmayaViewModel = hiltViewModel()
     val amayaState by amayaViewModel.uiState.collectAsState()
+    LaunchedEffect(currentWorkspace) { amayaViewModel.setWorkspace(currentWorkspace) }
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -108,7 +109,7 @@ fun LocalSettingsScreen(
                     IosSettingsRow(
                         icon = Icons.Default.Memory,
                         title = "Memory",
-                        subtitle = "${amayaState.totalMemoryCount} saved · ${if (amayaState.settings.memory.autoSaveSafeMemory) "auto-save" else "review"}",
+                        subtitle = "${amayaState.totalMemoryCount} saved · tool only",
                         isFirst = false,
                         isLast = false,
                         onClick = onNavigateToMemory

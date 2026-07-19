@@ -3,7 +3,7 @@ package com.amaya.intelligence.domain.security
 internal fun missingToolTarget(toolName: String, arguments: Map<String, Any?>): String? {
     val pathTools = setOf(
         "read_file", "write_file", "delete_file", "list_files", "create_directory",
-        "edit_file", "find_files", "undo_change"
+        "edit_file", "find_files"
     )
     if (toolName !in pathTools) return null
     val hasPath = (arguments["path"] as? String)?.isNotBlank() == true ||
@@ -11,5 +11,5 @@ internal fun missingToolTarget(toolName: String, arguments: Map<String, Any?>): 
             (it as? String)?.isNotBlank() == true
         } == true)
     return if (hasPath) null else
-        "No workspace/path is available. Select a workspace or provide an absolute path."
+        "No workspace is selected. Select a workspace before using file tools."
 }

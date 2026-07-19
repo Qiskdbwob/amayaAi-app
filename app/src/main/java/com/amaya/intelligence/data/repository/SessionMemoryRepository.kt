@@ -1,6 +1,7 @@
 package com.amaya.intelligence.data.repository
 
 import com.amaya.intelligence.data.local.files.FileSessionStore
+import com.amaya.intelligence.data.local.files.FileWorkspaceMemoryStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -17,6 +18,8 @@ data class SessionMessage(
     val sessionId: String,
     val role: String,
     val content: String,
+    val workspacePath: String? = null,
+    val workspaceId: String? = null,
     val timestamp: Long = System.currentTimeMillis(),
     val tags: List<String> = emptyList()
 )
@@ -30,7 +33,9 @@ data class SessionToolCall(
     val timestamp: Long = System.currentTimeMillis(),
     val toolCallId: String = id,
     val argumentsJson: String = input,
-    val resultJson: String? = output
+    val resultJson: String? = output,
+    val workspacePath: String? = null,
+    val workspaceId: String? = null
 )
 
 data class SessionSummary(
@@ -38,7 +43,9 @@ data class SessionSummary(
     val summary: String,
     val tags: List<String>,
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val workspacePath: String? = null,
+    val workspaceId: String? = null
 )
 
 data class SessionSearchResult(
@@ -54,25 +61,33 @@ interface SessionMemoryRepository {
     suspend fun saveMessage(message: SessionMessage)
     suspend fun saveToolCall(toolCall: SessionToolCall)
     suspend fun saveSummary(summary: SessionSummary)
-    suspend fun searchSessions(query: String, limit: Int = 10): List<SessionSearchResult>
+    suspend fun searchSessions(query: String, limit: Int = 10, workspacePath: String? = null): List<SessionSearchResult>
     suspend fun summarizeSession(sessionId: String, forceRebuild: Boolean = false): String
+    suspend fun sessionWorkspacePath(sessionId: String): String?
+    suspend fun sessionWorkspaceId(sessionId: String): String?
     suspend fun listSessionIds(limit: Int = 50): List<String>
     suspend fun listSessionsNeedingSummary(limit: Int = 50): List<String>
 }
 
 @Singleton
 class FileSessionMemoryRepository @Inject constructor(
-    private val store: FileSessionStore
+    private val store: FileSessionStore,
+    private val workspaceStore: FileWorkspaceMemoryStore,
+    private val memoryClassifier: com.amaya.intelligence.domain.memory.MemoryClassifier
 ) : SessionMemoryRepository {
     private val fileMutex = Mutex()
     override suspend fun saveMessage(message: SessionMessage) = withContext(Dispatchers.IO) {
         fileMutex.withLock {
+            val content = sanitizeStoredText(message.content)
+            if (content.isBlank()) return@withLock
             appendRecord(JSONObject()
                 .put("kind", "message")
                 .put("id", message.id)
                 .put("sessionId", message.sessionId)
                 .put("role", message.role)
-                .put("content", message.content.take(MAX_CONTENT_CHARS))
+                .put("content", content)
+                .put("workspacePath", message.workspacePath)
+                .put("workspaceId", message.workspaceId)
                 .put("timestamp", message.timestamp)
                 .put("tags", JSONArray(message.tags))
             )
@@ -81,16 +96,20 @@ class FileSessionMemoryRepository @Inject constructor(
 
     override suspend fun saveToolCall(toolCall: SessionToolCall) = withContext(Dispatchers.IO) {
         fileMutex.withLock {
+            val input = sanitizeStoredText(toolCall.input.ifBlank { toolCall.argumentsJson })
+            val output = sanitizeStoredText(toolCall.output.ifBlank { toolCall.resultJson.orEmpty() })
             appendRecord(JSONObject()
                 .put("kind", "tool_call")
                 .put("id", toolCall.id)
                 .put("sessionId", toolCall.sessionId)
                 .put("toolCallId", toolCall.toolCallId)
                 .put("toolName", toolCall.toolName)
-                .put("input", toolCall.input.take(MAX_CONTENT_CHARS))
-                .put("output", toolCall.output.take(MAX_CONTENT_CHARS))
-                .put("argumentsJson", toolCall.argumentsJson.take(MAX_CONTENT_CHARS))
-                .put("resultJson", toolCall.resultJson?.take(MAX_CONTENT_CHARS))
+                .put("input", input)
+                .put("output", output)
+                .put("argumentsJson", input)
+                .put("resultJson", output)
+                .put("workspacePath", toolCall.workspacePath)
+                .put("workspaceId", toolCall.workspaceId)
                 .put("timestamp", toolCall.timestamp)
             )
         }
@@ -104,7 +123,7 @@ class FileSessionMemoryRepository @Inject constructor(
         }
     }
 
-    override suspend fun searchSessions(query: String, limit: Int): List<SessionSearchResult> = withContext(Dispatchers.IO) {
+    override suspend fun searchSessions(query: String, limit: Int, workspacePath: String?): List<SessionSearchResult> = withContext(Dispatchers.IO) {
         fileMutex.withLock {
             val phrase = query.lowercase().trim()
             val terms = expandTerms(phrase).filter { it.length > 2 }
@@ -112,11 +131,18 @@ class FileSessionMemoryRepository @Inject constructor(
             val summaries = readSummaries()
             val records = readRecords().groupBy { it.optString("sessionId") }
             val allSessionIds = (records.keys + summaries.keys).filter { it.isNotBlank() }.toSet()
+            val canonicalWorkspace = workspacePath?.let(::canonicalWorkspacePath)
+            val targetWorkspaceId = canonicalWorkspace?.let { workspaceStore.resolve(it, create = false)?.id ?: return@withLock emptyList() }
             allSessionIds.mapNotNull { sessionId ->
                 val sessionRecords = records[sessionId].orEmpty()
                 val summary = summaries[sessionId]
-                scoreSession(sessionId, phrase, terms, summary, sessionRecords)
-            }.sortedByDescending { it.score }
+                val recordWorkspaceId = sessionWorkspaceId(summary, sessionRecords)
+                val matchesScope = if (targetWorkspaceId == null) {
+                    recordWorkspaceId == null && sessionWorkspacePath(summary, sessionRecords) == null
+                } else recordWorkspaceId == targetWorkspaceId
+                if (!matchesScope) null else scoreSession(sessionId, phrase, terms, summary, sessionRecords)
+            }.filter { it.score >= MIN_RECALL_SCORE }
+                .sortedByDescending { it.score }
                 .take(limit.coerceIn(1, 25))
         }
     }
@@ -125,6 +151,20 @@ class FileSessionMemoryRepository @Inject constructor(
         fileMutex.withLock {
             if (forceRebuild) buildDeterministicSummary(sessionId).summary
             else readSummaries()[sessionId]?.summary ?: buildDeterministicSummary(sessionId).summary
+        }
+    }
+
+    override suspend fun sessionWorkspacePath(sessionId: String): String? = withContext(Dispatchers.IO) {
+        fileMutex.withLock {
+            val records = readRecords().filter { it.optString("sessionId") == sessionId }
+            sessionWorkspacePath(readSummaries()[sessionId], records)
+        }
+    }
+
+    override suspend fun sessionWorkspaceId(sessionId: String): String? = withContext(Dispatchers.IO) {
+        fileMutex.withLock {
+            val records = readRecords().filter { it.optString("sessionId") == sessionId }
+            sessionWorkspaceId(readSummaries()[sessionId], records)
         }
     }
 
@@ -150,6 +190,17 @@ class FileSessionMemoryRepository @Inject constructor(
         }
     }
 
+    private fun sessionWorkspacePath(summary: SessionSummary?, records: List<JSONObject>): String? =
+        summary?.workspacePath ?: records.asReversed()
+            .firstNotNullOfOrNull { it.optString("workspacePath").takeIf(String::isNotBlank) }
+
+    private fun sessionWorkspaceId(summary: SessionSummary?, records: List<JSONObject>): String? =
+        summary?.workspaceId ?: records.asReversed()
+            .firstNotNullOfOrNull { it.optString("workspaceId").takeIf(String::isNotBlank) }
+            ?: sessionWorkspacePath(summary, records)?.let { workspaceStore.resolve(it, create = false)?.id }
+
+    private fun canonicalWorkspacePath(path: String): String = runCatching { java.io.File(path).canonicalPath }.getOrDefault(path)
+
     private fun scoreSession(
         sessionId: String,
         phrase: String,
@@ -158,15 +209,24 @@ class FileSessionMemoryRepository @Inject constructor(
         records: List<JSONObject>
     ): SessionSearchResult? {
         var score = 0.0
+        var phraseMatched = false
+        val matchedTerms = linkedSetOf<String>()
         val matches = mutableListOf<String>()
         val tags = linkedSetOf<String>()
         summary?.tags?.forEach { tags.add(it) }
         summary?.let {
             val text = it.summary.lowercase()
-            if (phrase in text) score += 5.0
+            if (phrase in text) {
+                phraseMatched = true
+                score += 5.0
+            }
             val tagText = it.tags.joinToString(" ").lowercase()
-            if (terms.any { term -> term in tagText }) score += 4.0
-            val hits = terms.count { term -> term in text }
+            val tagHits = terms.filter { term -> term in tagText }
+            matchedTerms.addAll(tagHits)
+            if (tagHits.isNotEmpty()) score += 4.0
+            val termHits = terms.filter { term -> term in text }
+            matchedTerms.addAll(termHits)
+            val hits = termHits.size
             if (hits > 0) {
                 score += hits * 2.5
                 matches.add(it.summary)
@@ -180,8 +240,13 @@ class FileSessionMemoryRepository @Inject constructor(
             val role = json.optString("role")
             val text = searchableText(json)
             val lower = text.lowercase()
-            if (phrase in lower) score += 5.0
-            val hits = terms.count { it in lower }
+            if (phrase in lower) {
+                phraseMatched = true
+                score += 5.0
+            }
+            val termHits = terms.filter { it in lower }
+            matchedTerms.addAll(termHits)
+            val hits = termHits.size
             if (hits > 0) {
                 score += hits * when {
                     kind == "message" && role == "user" -> 3.0
@@ -193,7 +258,8 @@ class FileSessionMemoryRepository @Inject constructor(
                 matches.add(text.take(500))
             }
         }
-        if (score <= 0.0) return null
+        val requiredTermHits = kotlin.math.ceil(terms.size * 0.6).toInt().coerceAtLeast(1)
+        if (score <= 0.0 || (!phraseMatched && matchedTerms.size < requiredTermHits)) return null
         val recencyBoost = if (latest > 0L) (1.0 / (1.0 + ((System.currentTimeMillis() - latest).coerceAtLeast(0L) / DAY_MS).toDouble())) else 0.0
         score += recencyBoost
         return SessionSearchResult(
@@ -204,6 +270,11 @@ class FileSessionMemoryRepository @Inject constructor(
             score = score,
             tags = tags.toList()
         )
+    }
+
+    private fun sanitizeStoredText(text: String): String {
+        val checked = memoryClassifier.checkSafety(text.take(MAX_CONTENT_CHARS))
+        return if (checked.safe) checked.redactedContent else "[REDACTED: sensitive content omitted]"
     }
 
     private fun appendRecord(json: JSONObject) {
@@ -223,8 +294,8 @@ class FileSessionMemoryRepository @Inject constructor(
     }.getOrDefault(emptyList())
 
     private fun searchableText(json: JSONObject): String = when (json.optString("kind")) {
-        "message" -> "${json.optString("role")}: ${json.optString("content")}" 
-        "tool_call" -> "${json.optString("toolName")} ${json.optString("input", json.optString("argumentsJson"))} ${json.optString("output", json.optString("resultJson"))}" 
+        "message" -> "${json.optString("role")}: ${json.optString("content")}"
+        "tool_call" -> "${json.optString("toolName")} ${json.optString("input", json.optString("argumentsJson"))} ${json.optString("output", json.optString("resultJson"))}"
         else -> json.toString()
     }
 
@@ -240,7 +311,15 @@ class FileSessionMemoryRepository @Inject constructor(
             if (user.isNotBlank()) append("User discussed $user. ")
             if (assistant.isNotBlank()) append("Assistant concluded $assistant. ")
         }.trim().ifBlank { "Session $sessionId at ${Instant.ofEpochMilli(latest)}." }
-        return SessionSummary(sessionId, summary, inferTags(summary + " " + tools.joinToString(" ")), created, latest)
+        return SessionSummary(
+            sessionId,
+            summary,
+            inferTags(summary + " " + tools.joinToString(" ")),
+            created,
+            latest,
+            sessionWorkspacePath(null, records),
+            sessionWorkspaceId(null, records)
+        )
     }
 
     private fun readSummaries(): Map<String, SessionSummary> = runCatching {
@@ -253,7 +332,9 @@ class FileSessionMemoryRepository @Inject constructor(
                     summary = json.optString("summary"),
                     tags = json.optJSONArray("tags")?.let { array -> List(array.length()) { idx -> array.optString(idx) } } ?: emptyList(),
                     createdAt = json.optLong("createdAt"),
-                    updatedAt = json.optLong("updatedAt")
+                    updatedAt = json.optLong("updatedAt"),
+                    workspacePath = json.optString("workspacePath").takeIf { it.isNotBlank() },
+                    workspaceId = json.optString("workspaceId").takeIf { it.isNotBlank() }
                 )
             }.getOrNull()
         }.toMap()
@@ -269,6 +350,8 @@ class FileSessionMemoryRepository @Inject constructor(
                 .put("tags", JSONArray(summary.tags))
                 .put("createdAt", summary.createdAt)
                 .put("updatedAt", summary.updatedAt)
+                .put("workspacePath", summary.workspacePath)
+                .put("workspaceId", summary.workspaceId)
                 .toString()
         } + if (summaries.isNotEmpty()) "\n" else "")
         if (!tmp.renameTo(store.summariesFile)) {
@@ -311,6 +394,7 @@ class FileSessionMemoryRepository @Inject constructor(
         )
 
         private const val MAX_CONTENT_CHARS = 8_000
+        private const val MIN_RECALL_SCORE = 2.5
         private const val DAY_MS = 24L * 60L * 60L * 1000L
     }
 }

@@ -18,7 +18,7 @@ class SkillManageTool @Inject constructor(
     private val memoryClassifier: MemoryClassifier
 ) : Tool, ContextAwareTool {
     override val name = "skill_manage"
-    override val description = "Create, update, patch, archive, delete, or record usage for reusable procedural skills when the user explicitly asks to manage skills. Never store credentials or trivial one-off notes."
+    override val description = "Create, update, patch, archive, or delete reusable procedural skills when the user explicitly asks to manage skills. Never store credentials or trivial one-off notes."
 
     override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
         execute(arguments, ToolExecutionContext())
@@ -44,10 +44,6 @@ class SkillManageTool @Inject constructor(
             "patch" -> updateSkill(name, arguments, patch = true)
             "archive" -> archiveSkill(name).map { basicPayload("archive", name) }
             "delete" -> skillRepository.deleteSkill(name).map { basicPayload("delete", name) }
-            "record_usage" -> runCatching {
-                skillRepository.recordSkillUsage(name, (arguments["success"] as? Boolean) ?: false)
-                basicPayload("record_usage", name)
-            }
             else -> Result.failure(IllegalArgumentException("Unsupported action: $action"))
         }
 

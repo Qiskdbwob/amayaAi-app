@@ -78,7 +78,7 @@ object UiStrings {
         const val REMINDER_MESSAGE_EXAMPLE = "What should Amaya remind you of?"
         const val STYLE_TONE_EXAMPLE = "e.g. Friendly, concise, professional"
         const val CHARACTERISTIC_EXAMPLE = "e.g. Analytical, patient, thorough"
-        const val CUSTOM_INSTRUCTION_EXAMPLE = "Any extra rules or preferences"
+        const val CUSTOM_INSTRUCTION_EXAMPLE = "Optional voice or conversational style guidance"
         const val NICKNAME_EXAMPLE = "How should Amaya call you?"
         const val ABOUT_YOU_EXAMPLE = "Context about you, preferences, timezone..."
     }
@@ -86,7 +86,7 @@ object UiStrings {
     object Persona {
         const val STYLE_TONE = "Style & Tone"
         const val CHARACTERISTIC = "Characteristic"
-        const val CUSTOM_INSTRUCTION = "Custom Instruction"
+        const val CUSTOM_INSTRUCTION = "Style Instruction"
         const val YOUR_NICKNAME = "Your Nickname"
         const val MORE_ABOUT_YOU = "More About You"
         const val PRO_MODE_WORKSPACE = "Pro Mode Workspace"

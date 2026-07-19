@@ -41,7 +41,7 @@ class InvokeSubagentsTool @Inject constructor(
     override val name = "invoke_subagents"
     override val description =
         "Spawn multiple independent AI subagents that run IN PARALLEL with staggered starts to avoid rate limits. " +
-        "Each subagent receives its own task description and has access to all file tools. " +
+        "Each subagent receives its own task description and read-only workspace research tools. " +
         "Use this when a task can be split into independent sub-tasks (e.g. reading multiple folders at once, " +
         "auditing different layers of the codebase simultaneously). " +
         "Subagents do NOT see conversation history — provide ALL context in the task description. " +
@@ -161,6 +161,17 @@ data class SubagentResult(
     val summary: String
 )
 
+internal fun completedSubagentResponse(
+    continueLoop: Boolean,
+    iterations: Int,
+    maxIterations: Int,
+    response: String
+): String = when {
+    continueLoop && iterations >= maxIterations -> "[INCOMPLETE] Iteration limit reached before a final response."
+    response.isBlank() -> "[INCOMPLETE] No final response."
+    else -> response.trim()
+}
+
 /**
  * Runs a single subagent — a full AI chat call with tool access.
  *
@@ -243,21 +254,20 @@ class SubagentRunner @Inject constructor(
 
         val systemPrompt = """
             You are a subagent — a focused AI assistant with a single task to complete.
-            You have access to file tools (read_file, write_file, list_files, search_files, run_shell, etc.)
-            Complete your task thoroughly and return a clear, structured summary of what you found or did.
-            Do NOT use invoke_subagents inside a subagent.
+            You have read-only research tools: read_file, workspace_search, web_search, memory(operation=recall_sessions), and skill(operation=view).
+            Do not modify files, run shell commands, manage memory/skills, schedule reminders, use browser, or invoke subagents.
+            Return only a final report with headings: Findings, Files inspected, Evidence, Verification, Blockers.
             ${if (isRetry) "NOTE: This is a retry after a rate limit error." else ""}
         """.trimIndent()
 
-        val tools = toolExecutor.getToolDefinitions()
-            .filter { it.name != "invoke_subagents" && it.name != "browser" }
+        val tools = toolExecutor.getReadOnlyToolDefinitions()
             .map { it.toAiToolDefinition(truncateDesc = true) }
 
         val messages = mutableListOf(
             ChatMessage(role = MessageRole.USER, content = task.task)
         )
 
-        val resultBuffer = StringBuilder()
+        var finalResponse = ""
         var continueLoop = true
         var iterations   = 0
         val maxIterations = 8
@@ -297,7 +307,7 @@ class SubagentRunner @Inject constructor(
                     is ChatResponse.ResponseItem -> responseItems.add(response.json)
                     is ChatResponse.Done  -> { /* no-op */ }
                     is ChatResponse.Incomplete -> {
-                        resultBuffer.appendLine("[ERROR] ${response.reason}")
+                        finalResponse = "[ERROR] ${response.reason}"
                         continueLoop = false
                     }
                     is ChatResponse.Error -> {
@@ -309,18 +319,17 @@ class SubagentRunner @Inject constructor(
                             val retryAfter = parseRetryAfter(msg)
                             throw RateLimitException(msg, retryAfter)
                         }
-                        resultBuffer.appendLine("[ERROR] $msg")
+                        finalResponse = "[ERROR] $msg"
                         continueLoop = false
                     }
                 }
             }
 
+            if (!continueLoop) break
             if (!hasToolCall) {
-                resultBuffer.append(textBuffer)
+                finalResponse = textBuffer.toString()
                 continueLoop = false
             } else {
-                if (textBuffer.isNotBlank()) resultBuffer.appendLine(textBuffer)
-
                 messages.add(
                     ChatMessage(
                         role      = MessageRole.ASSISTANT,
@@ -334,10 +343,9 @@ class SubagentRunner @Inject constructor(
                     val result = toolExecutor.execute(
                         toolName      = toolCall.name,
                         arguments     = toolCall.arguments,
-                        // FIX 2.11: Pass workspacePath so run_shell inside subagents
-                        // gets the correct working directory (git, gradle, etc.)
                         workspacePath = task.workspacePath,
-                        toolCallId = toolCall.id
+                        toolCallId = toolCall.id,
+                        readOnly = true
                     )
                     val resultContent = when (result) {
                         is ToolResult.Success              -> result.output
@@ -365,7 +373,7 @@ class SubagentRunner @Inject constructor(
 
         return SubagentResult(
             taskName = task.taskName,
-            summary  = resultBuffer.toString().trim().ifBlank { "No output." }
+            summary = completedSubagentResponse(continueLoop, iterations, maxIterations, finalResponse)
         )
     }
 

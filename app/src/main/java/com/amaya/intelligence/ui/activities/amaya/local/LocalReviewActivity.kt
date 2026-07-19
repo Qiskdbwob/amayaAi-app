@@ -26,6 +26,7 @@ class LocalReviewActivity : AppCompatActivity() {
             AmayaTheme {
                 val viewModel: AmayaViewModel = hiltViewModel()
                 val state by viewModel.uiState.collectAsState()
+                LaunchedEffect(Unit) { viewModel.setWorkspace(intent.getStringExtra(EXTRA_WORKSPACE)) }
                 val snackbarHostState = remember { SnackbarHostState() }
                 LaunchedEffect(state.message) { state.message?.let { snackbarHostState.showSnackbar(it); viewModel.clearMessage() } }
                 ReviewScreen(
@@ -40,6 +41,9 @@ class LocalReviewActivity : AppCompatActivity() {
     }
 
     companion object {
-        fun start(activity: Activity) { activity.startActivity(Intent(activity, LocalReviewActivity::class.java)) }
+        private const val EXTRA_WORKSPACE = "workspace_path"
+        fun start(activity: Activity, workspacePath: String? = null) {
+            activity.startActivity(Intent(activity, LocalReviewActivity::class.java).putExtra(EXTRA_WORKSPACE, workspacePath))
+        }
     }
 }

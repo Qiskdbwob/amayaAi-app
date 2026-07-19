@@ -1,4 +1,4 @@
-﻿package com.amaya.intelligence.domain.security
+package com.amaya.intelligence.domain.security
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -136,10 +136,10 @@ class CommandValidator @Inject constructor(
      * Validate a shell command before execution.
      */
     fun validateCommand(command: String): ValidationResult {
-        val argv = parseSafeCommandArguments(command) ?: return ValidationResult.Denied(
-            "Shell operators, substitutions, redirects, and unterminated quotes are not allowed",
-            command
-        )
+        val argv = when (val parsed = parseCommand(command)) {
+            is CommandParseResult.Success -> parsed.argv
+            is CommandParseResult.Error -> return ValidationResult.Denied(parsed.reason, command)
+        }
         if (argv.isEmpty()) return ValidationResult.Denied("Empty command", command)
         val executable = argv.first()
         if (executable.contains('/') && !java.io.File(executable).isAbsolute && !executable.startsWith("./")) {
@@ -153,11 +153,7 @@ class CommandValidator @Inject constructor(
             return ValidationResult.Denied("Command contains dangerous pattern: ${pattern.pattern}", command)
         }
         return when (baseCommand) {
-            in ALWAYS_ALLOWED -> ValidationResult.RequiresConfirmation(
-                "Run shell command '$baseCommand'",
-                command,
-                RiskLevel.LOW
-            )
+            in ALWAYS_ALLOWED -> ValidationResult.Allowed
             in CONDITIONALLY_ALLOWED -> validateConditionalCommand(baseCommand, argv, command)
             else -> ValidationResult.RequiresConfirmation(
                 "Unknown command '$baseCommand' requires confirmation",
@@ -176,7 +172,7 @@ class CommandValidator @Inject constructor(
     fun validatePath(path: String, isWrite: Boolean): ValidationResult {
         if (path.isBlank()) return ValidationResult.Denied("Path is required", path)
         if (!java.io.File(path).isAbsolute) {
-            return ValidationResult.Denied("Path must be absolute. Select a workspace or provide an absolute path.", path)
+            return ValidationResult.Denied("Path must be host-resolved inside the active workspace.", path)
         }
         if (containsPathTraversal(path)) return ValidationResult.Denied("Path traversal detected", path)
         val normalizedPath = normalizePath(path)
@@ -250,11 +246,12 @@ class CommandValidator @Inject constructor(
         missingToolTarget(toolName, arguments)?.let { return ValidationResult.Denied(it, "") }
         return when (toolName) {
             "run_shell" -> {
-                val commandResult = validateCommand(arguments["command"] as? String ?: "")
+                val command = arguments["command"] as? String ?: ""
+                val commandResult = validateCommand(command)
                 val workingDir = arguments["working_dir"] as? String
                 val pathResult = if (workingDir.isNullOrBlank()) ValidationResult.Allowed
                     else validatePath(workingDir, isWrite = false)
-                combineValidation(commandResult, pathResult)
+                combineValidation(commandResult, pathResult, validateSafeReadTargets(command, workingDir))
             }
 
             "read_file" -> {
@@ -320,6 +317,33 @@ class CommandValidator @Inject constructor(
     // ========================================================================
     // PRIVATE HELPERS
     // ========================================================================
+
+    private fun validateSafeReadTargets(command: String, workingDir: String?): ValidationResult {
+        val argv = parseSafeCommandArguments(command) ?: return ValidationResult.Denied("Unsafe shell syntax", command)
+        val executable = argv.firstOrNull()?.substringAfterLast('/') ?: return ValidationResult.Denied("Empty command", command)
+        val filesystemReads = setOf("cat", "head", "tail", "grep", "cut", "sort", "uniq", "wc", "tr", "diff", "ls", "which", "whereis", "file", "basename", "dirname", "realpath")
+        if (executable !in filesystemReads) return ValidationResult.Allowed
+        if (workingDir.isNullOrBlank()) return ValidationResult.RequiresConfirmation(
+            "Shell file reads require an active workspace", command, RiskLevel.LOW
+        )
+        val targets = argv.drop(1).filter { it.isNotBlank() && !it.startsWith("-") }
+        if (targets.isEmpty()) return ValidationResult.Allowed
+        val root = runCatching { java.io.File(workingDir).canonicalFile }.getOrNull() ?: return ValidationResult.RequiresConfirmation(
+            "Cannot verify shell working directory", command, RiskLevel.LOW
+        )
+        targets.forEach { raw ->
+            val target = runCatching {
+                val file = java.io.File(raw)
+                (if (file.isAbsolute) file else java.io.File(root, raw)).canonicalFile
+            }.getOrNull() ?: return ValidationResult.RequiresConfirmation("Cannot verify shell read target", command, RiskLevel.LOW)
+            if (!isWithinPath(target.path, root.path)) {
+                return ValidationResult.RequiresConfirmation(
+                    "Safe shell reads are limited to the active workspace", command, RiskLevel.LOW
+                )
+            }
+        }
+        return ValidationResult.Allowed
+    }
 
     private fun combinePathValidation(paths: List<String>, isWrite: Boolean): ValidationResult {
         var confirmation: ValidationResult.RequiresConfirmation? = null
@@ -396,8 +420,8 @@ class CommandValidator @Inject constructor(
     }
 
     private fun isWithinPath(candidate: String, root: String): Boolean {
-        val normalizedRoot = root.trimEnd('/')
-        return candidate == normalizedRoot || candidate.startsWith("$normalizedRoot/")
+        val normalizedRoot = root.trimEnd('/', '\\')
+        return candidate == normalizedRoot || candidate.startsWith("$normalizedRoot/") || candidate.startsWith("$normalizedRoot\\")
     }
 
     private fun normalizePath(path: String): String {

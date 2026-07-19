@@ -61,7 +61,14 @@ fun PendingProposalCard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 DetailPill("Destination", proposal.target, Modifier.weight(1f))
                 DetailPill("Confidence", "${(proposal.confidence * 100).toInt()}%", Modifier.weight(1f))
-                DetailPill("Importance", "${(proposal.importance * 100).toInt()}%", Modifier.weight(1f))
+                DetailPill("Evidence", proposal.sourceSessionIds.distinct().size.toString(), Modifier.weight(1f))
+            }
+            if (proposal.evidence.isNotEmpty()) {
+                Text(
+                    proposal.evidence.take(3).joinToString("\n") { "• $it" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             Text(
@@ -100,13 +107,10 @@ private fun DetailPill(label: String, value: String, modifier: Modifier = Modifi
 
 private fun PendingProposalType.friendlyType(): String = when (this) {
     PendingProposalType.USER_PROFILE -> "User memory"
-    PendingProposalType.LONG_TERM_MEMORY -> "Important memory"
-    PendingProposalType.DAILY_LOG -> "Daily note"
     PendingProposalType.WORKSPACE_FACT -> "Project memory"
     PendingProposalType.SKILL_CREATE -> "New skill"
     PendingProposalType.SKILL_PATCH -> "Skill update"
     PendingProposalType.SKILL_UPDATE -> "Skill rewrite"
-    PendingProposalType.REMINDER -> "Reminder"
 }
 
 private fun PendingProposalStatus.friendlyStatus(): String = when (this) {

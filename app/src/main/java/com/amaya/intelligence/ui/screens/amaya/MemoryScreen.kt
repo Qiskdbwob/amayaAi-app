@@ -2,10 +2,8 @@ package com.amaya.intelligence.ui.screens.amaya
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 
@@ -16,27 +14,29 @@ fun MemoryScreen(
     onNavigateBack: () -> Unit,
     onReview: () -> Unit,
     onToggleUseSavedMemory: (Boolean) -> Unit,
-    onToggleSuggestNewMemory: (Boolean) -> Unit,
-    onToggleAutoSaveSafeMemory: (Boolean) -> Unit,
-    onToggleDailyNotes: (Boolean) -> Unit,
-    onOpenArea: (MemoryArea) -> Unit
+    onOpenArea: (MemoryArea) -> Unit,
+    onReconnectWorkspace: (String) -> Unit
 ) {
     val memory = state.settings.memory
     AmayaScaffold("Memory", snackbarHostState, onNavigateBack) {
         AmayaSection("Memory") {
             AmayaSwitchRow("Use in chat", "Recall matching saved memory in future replies", memory.useSavedMemory, onToggleUseSavedMemory)
             AmayaDivider()
-            AmayaSwitchRow("Learn from chat", "Extract explicit durable facts after a chat", memory.suggestNewMemories, onToggleSuggestNewMemory)
-            AmayaDivider()
-            AmayaSwitchRow(
-                "Auto-save safe facts",
-                if (memory.suggestNewMemories) "High-confidence facts skip review" else "Enable Learn from chat first",
-                memory.autoSaveSafeMemory && memory.suggestNewMemories,
-                onToggleAutoSaveSafeMemory,
-                enabled = memory.suggestNewMemories
-            )
-            AmayaDivider()
-            AmayaSwitchRow("Daily notes", "Store compact chronological summaries", memory.dailyNotesEnabled, onToggleDailyNotes)
+            AmayaStatusRow("Memory writes", "Tool only")
+        }
+        val missingWorkspaceBindings = state.workspaceBindings.filter { !it.rootExists && it.recordCount > 0 }
+        if (missingWorkspaceBindings.isNotEmpty()) {
+            AmayaSection("Moved Workspace Memory") {
+                missingWorkspaceBindings.forEachIndexed { index, binding ->
+                    AmayaNavigationRow(
+                        Icons.Default.FolderSpecial,
+                        "Reconnect ${binding.root.substringAfterLast('/')}",
+                        if (state.workspacePath == null) "Select the moved workspace first" else "Attach ${binding.recordCount} saved item${if (binding.recordCount == 1) "" else "s"} to the current workspace",
+                        onClick = { onReconnectWorkspace(binding.id) }
+                    )
+                    if (index < missingWorkspaceBindings.lastIndex) AmayaDivider()
+                }
+            }
         }
         if (state.memorySuggestions > 0) {
             AmayaSection("Review") {
@@ -51,20 +51,19 @@ fun MemoryScreen(
         AmayaSection("Saved Areas") {
             AmayaNavigationRow(Icons.Default.Person, "About You", "${state.userMemoryCount} item${if (state.userMemoryCount == 1) "" else "s"} · ${state.userMemoryPreview.oneLine()}", onClick = { onOpenArea(MemoryArea.USER) })
             AmayaDivider()
-            AmayaNavigationRow(Icons.Default.Star, "Important Memory", "${state.importantMemoryCount} item${if (state.importantMemoryCount == 1) "" else "s"} · ${state.importantMemoryPreview.oneLine()}", onClick = { onOpenArea(MemoryArea.IMPORTANT) })
-            AmayaDivider()
-            AmayaNavigationRow(Icons.Default.FolderSpecial, "Project Memory", "${state.projectMemoryCount} item${if (state.projectMemoryCount == 1) "" else "s"} · ${state.projectMemoryPreview.oneLine()}", onClick = { onOpenArea(MemoryArea.PROJECT) })
-            AmayaDivider()
-            AmayaNavigationRow(Icons.Default.CalendarMonth, "Daily Notes", if (memory.dailyNotesEnabled) "${state.dailyMemoryRecords.size} item${if (state.dailyMemoryRecords.size == 1) "" else "s"} · ${state.dailyNotesPreview.oneLine()}" else "Off", onClick = { onOpenArea(MemoryArea.DAILY) })
+            AmayaNavigationRow(
+                Icons.Default.FolderSpecial,
+                "Project Memory",
+                if (state.workspacePath == null) "No workspace selected" else "${state.projectMemoryCount} item${if (state.projectMemoryCount == 1) "" else "s"} · ${state.projectMemoryPreview.oneLine()}",
+                onClick = { onOpenArea(MemoryArea.PROJECT) }
+            )
         }
     }
 }
 
 enum class MemoryArea(val key: String, val title: String) {
     USER("user", "About You"),
-    IMPORTANT("important", "Important Memory"),
-    PROJECT("project", "Project Memory"),
-    DAILY("daily", "Daily Notes");
+    PROJECT("project", "Project Memory");
 
     companion object {
         fun fromKey(key: String?): MemoryArea = entries.firstOrNull { it.key == key } ?: USER

@@ -41,7 +41,7 @@ impl/local/
 - `browser/DomInspector.kt`: safe DOM summaries, selector mapping, and interaction helpers.
 - `browser/BrowserResponseFormatter.kt`: compact browser JSON formatting for parent and sub-tool responses.
 - `browser/SafetyGuard.kt`: sensitive-input detection and user-decision gating.
-- `tools/LocalToolMapper.kt`: local tool normalization and UI metadata mapping.
+- `tools/LocalToolMapper.kt`: local tool normalization, capability display-name mapping, and UI metadata mapping.
 - `tools/BrowserUseToolset.kt`: parent browser tool wrapper and legacy alias compatibility.
 - `providers/`: local provider implementations and compatibility adapters.
 - `providers/LocalProviderFactory.kt` if present: provider registration and lookup for local mode.

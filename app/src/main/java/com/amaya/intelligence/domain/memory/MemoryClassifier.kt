@@ -16,11 +16,12 @@ class MemoryClassifier @Inject constructor(
         requestedTitle: String? = null,
         reason: String = "Requested by agent",
         confidence: Double = 0.8,
-        importance: Double = 0.5
+        workspacePath: String? = null,
+        workspaceId: String? = null,
+        sourceConversationId: String? = null
     ): MemoryProposal {
         val trimmed = content.trim()
         val safeConfidence = confidence.coerceIn(0.0, 1.0)
-        val safeImportance = importance.coerceIn(0.0, 1.0)
         val safety = safetyFilter.check(trimmed)
         val safeContent = safety.redactedContent.trim()
         val unsafe = safeContent.isBlank() || safeConfidence < MIN_CONFIDENCE || !safety.safe
@@ -33,15 +34,18 @@ class MemoryClassifier @Inject constructor(
             contentNormalizer.normalize(safeContent, type, action, reason, requestedTitle)
         }
 
+        val instructionLike = !unsafe && contentNormalizer.isInstructionLike(normalized.content)
         return MemoryProposal(
             type = type,
-            action = action,
+            action = if (instructionLike) MemoryAction.IGNORE else action,
             scope = scope,
             title = normalized.title,
             content = normalized.content,
-            reason = normalized.reason,
+            reason = if (instructionLike) "Rejected because memory must be a declarative fact, not an instruction." else normalized.reason,
             confidence = safeConfidence,
-            importance = safeImportance
+            workspacePath = workspacePath,
+            workspaceId = workspaceId,
+            sourceConversationId = sourceConversationId
         )
     }
 
@@ -53,17 +57,14 @@ class MemoryClassifier @Inject constructor(
         val lower = content.lowercase()
         return when {
             listOf("prefers", "preference", "call me", "nickname", "likes replies", "bahasa", "language").any { it in lower } -> MemoryType.USER_PROFILE
-            listOf("remind", "reminder", "ingatkan", "jadwalkan").any { it in lower } -> MemoryType.REMINDER
-            listOf("today", "session", "discussed", "completed", "decided", "hari ini").any { it in lower } -> MemoryType.DAILY_LOG
             listOf("workspace", "project", "repo", "repository", "environment").any { it in lower } -> MemoryType.WORKSPACE_FACT
-            else -> MemoryType.LONG_TERM_MEMORY
+            else -> MemoryType.USER_PROFILE
         }
     }
 
     private fun normalizeAction(action: MemoryAction, content: String): MemoryAction {
         return when {
             action == MemoryAction.REPLACE && !hasReplacementDelimiter(content) -> MemoryAction.ADD
-            action == MemoryAction.REMOVE && content.trim().isBlank() -> MemoryAction.IGNORE
             else -> action
         }
     }
@@ -78,10 +79,6 @@ class MemoryClassifier @Inject constructor(
     private fun defaultScope(type: MemoryType): MemoryScope = when (type) {
         MemoryType.USER_PROFILE -> MemoryScope.USER
         MemoryType.WORKSPACE_FACT -> MemoryScope.WORKSPACE
-        MemoryType.DAILY_LOG -> MemoryScope.SESSION
-        MemoryType.SKILL_CANDIDATE -> MemoryScope.GLOBAL
-        MemoryType.REMINDER -> MemoryScope.USER
-        MemoryType.LONG_TERM_MEMORY -> MemoryScope.GLOBAL
     }
 
     companion object {

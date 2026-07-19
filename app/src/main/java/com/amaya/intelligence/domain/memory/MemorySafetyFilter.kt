@@ -20,6 +20,9 @@ class MemorySafetyFilter @Inject constructor() {
                 redacted = rule.regex.replace(redacted) { match -> redact(match.value) }
             }
         }
+        INSTRUCTION_OVERRIDE_RULES.firstOrNull { it.containsMatchIn(redacted) }?.let {
+            reasons.add("Attempts to override assistant policy or identity")
+        }
         return SafetyCheckResult(
             safe = reasons.isEmpty(),
             redactedContent = redacted,
@@ -39,6 +42,14 @@ class MemorySafetyFilter @Inject constructor() {
             "password", "passwd", "pwd", "api key", "api_key", "apikey", "secret", "client_secret",
             "access_token", "refresh_token", "bearer", "authorization", "cookie", "sessionid",
             "jwt", "otp", "2fa", "private key", "ssh key", "credit card", "cvv"
+        )
+
+        private val INSTRUCTION_OVERRIDE_RULES = listOf(
+            Regex("(?i)\\bignore (all |any |the )?(previous|prior|system) instructions?\\b"),
+            Regex("(?i)\\b(bypass|disable|skip) (user )?(confirmation|approval|safety)\\b"),
+            Regex("(?i)\\b(never|do not) ask (for )?(confirmation|approval)\\b"),
+            Regex("(?i)\\byour (new )?(personality|identity) is\\b"),
+            Regex("(?i)\\bchange (your )?(tool permissions?|safety rules?)\\b")
         )
 
         private val SECRET_RULES = buildList {

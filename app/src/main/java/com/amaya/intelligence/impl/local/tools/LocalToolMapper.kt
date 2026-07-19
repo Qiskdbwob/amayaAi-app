@@ -35,12 +35,16 @@ object LocalToolMapper {
         else -> rawName
     }
 
+    fun mapDisplayToolName(toolName: String, args: Map<String, Any?>): String =
+        com.amaya.intelligence.tools.CapabilityToolMapper.displayName(toolName, args).let(::mapToolName)
+
     /**
      * Normalizes arguments based on the tool name.
      */
     fun mapToolArgs(toolName: String, args: Map<String, Any?>): Map<String, Any?> {
-        val normalizedName = mapToolName(toolName)
-        val mapped = args.toMutableMap()
+        val capabilityCall = com.amaya.intelligence.tools.CapabilityToolMapper.map(toolName, args)
+        val normalizedName = mapToolName(capabilityCall?.handlerName ?: toolName)
+        val mapped = (capabilityCall?.arguments ?: args).toMutableMap()
 
         mapped["summary"] = firstNonNull(
             mapped,
@@ -57,7 +61,11 @@ object LocalToolMapper {
         when (normalizedName) {
             "run_shell" -> {
                 mapped["command"] = firstNonNull(mapped, "command", "cmd", "CommandLine", "commandLine")
-                mapped["cwd"] = firstNonNull(mapped, "cwd", "Cwd", "DirectoryPath", "directory")
+                mapped.remove("cwd")
+                mapped.remove("Cwd")
+                mapped.remove("DirectoryPath")
+                mapped.remove("directory")
+                mapped.remove("working_dir")
             }
             "check_status_terminal" -> {
                 mapped["commandId"] = firstNonNull(mapped, "commandId", "CommandId", "ProcessID", "processId", "PID")
@@ -91,17 +99,14 @@ object LocalToolMapper {
             }
         }
 
-        // Preserve original name
-        mapped["original_name"] = args["original_name"] ?: toolName
-
-        return mapped
+        return mapped.filterValues { it != null }
     }
 
     /**
      * Gets UI metadata for rendering.
      */
     fun getUiMetadata(toolName: String, args: Map<String, Any?>, metadata: Map<String, String>? = null): ToolUiMetadata {
-        val normalizedName = mapToolName(toolName)
+        val normalizedName = mapDisplayToolName(toolName, args)
         val normalizedArgs = mapToolArgs(toolName, args)
         return ToolUiMapper.getToolUiMetadata(normalizedName, normalizedArgs, metadata)
     }

@@ -1,4 +1,4 @@
-﻿package com.amaya.intelligence.tools
+package com.amaya.intelligence.tools
 
 import android.content.Context
 import com.amaya.intelligence.domain.security.CommandValidator
@@ -36,7 +36,7 @@ class EditFileTool @Inject constructor(
 
     override val name = "edit_file"
 
-    override val description = "Edit a file by replacing specific text, or apply a unified diff/patch. Supports text files and document formats (DOCX, XLSX, PPTX, ODT, ODS, ODP). Use 'old_content'+'new_content' for text replacement, or 'diff' for patch mode (text files only). Set 'create_backup=false' to skip backup."
+    override val description = "Edit a file by replacing specific text, or apply a unified diff/patch. Supports text files and document formats (DOCX, XLSX, PPTX, ODT, ODS, ODP). Use 'old_content'+'new_content' for text replacement, or 'diff' for patch mode (text files only)."
 
     override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
         execute(arguments, ToolExecutionContext())
@@ -48,8 +48,6 @@ class EditFileTool @Inject constructor(
 
         val pathStr = arguments["path"] as? String
             ?: return@withContext ToolResult.Error("Missing required argument: path", ErrorType.VALIDATION_ERROR)
-
-        val createBackup = arguments["create_backup"] as? Boolean ?: true
 
         // ── Diff/patch mode (replaces apply_diff) ────────────────────────
         val diffStr = arguments["diff"] as? String
@@ -65,7 +63,7 @@ class EditFileTool @Inject constructor(
             if (!file.exists()) return@withContext ToolResult.Error("File not found: $pathStr", ErrorType.NOT_FOUND)
             val content = file.readText(Charsets.UTF_8)
             // Parse unified diff — apply @@ hunks
-            return@withContext applyUnifiedDiff(file, content, diffStr, createBackup)
+            return@withContext applyUnifiedDiff(file, content, diffStr)
         }
 
         val oldContent = arguments["old_content"] as? String
@@ -122,7 +120,7 @@ class EditFileTool @Inject constructor(
         // Check if this is a document format
         val ext = file.extension.lowercase()
         if (ext in DOCUMENT_EXTENSIONS) {
-            return@withContext editDocument(file, oldContent, newContent, ext, createBackup)
+            return@withContext editDocument(file, oldContent, newContent, ext)
         }
 
         val replaceAll = arguments["all_occurrences"] as? Boolean ?: false
@@ -184,14 +182,7 @@ class EditFileTool @Inject constructor(
                 )
             }
 
-            // Create backup only if requested
-            val backupFile = if (createBackup) {
-                File(file.parentFile ?: file, "${file.name}.bak.${System.currentTimeMillis()}").also {
-                    file.copyTo(it, overwrite = true)
-                }
-            } else null
-
-            // FIX #7: Atomic write — write to temp file first, then rename/copy to target
+            // FIX #7: Temp-file replacement prevents partial writes where rename is supported.
             // to prevent file corruption if the process is killed mid-write.
             val tempFile = File.createTempFile(".edit_", ".tmp", file.parentFile ?: File(context.cacheDir, "backups").also { it.mkdirs() })
             try {
@@ -203,15 +194,12 @@ class EditFileTool @Inject constructor(
                 }
             } catch (e: Exception) {
                 tempFile.delete()
-                // Restore from backup if available
-                backupFile?.copyTo(file, overwrite = true)
                 throw e
             }
 
             ToolResult.Success(
                 output = buildString {
                     append("Successfully replaced $replacementCount occurrence(s)\n")
-                    if (backupFile != null) append("Backup saved to: ${backupFile.name}\n")
                     appendLine()
                     if (occurrences > 1 && !replaceAll) {
                         append("Note: Found $occurrences total occurrences, replaced only first. ")
@@ -221,8 +209,7 @@ class EditFileTool @Inject constructor(
                 metadata = mapOf(
                     "path" to pathStr,
                     "replacements" to replacementCount,
-                    "total_occurrences" to occurrences,
-                    "backup" to (backupFile?.absolutePath ?: "none")
+                    "total_occurrences" to occurrences
                 )
             )
 
@@ -239,7 +226,7 @@ class EditFileTool @Inject constructor(
         }
     }
 
-    private fun applyUnifiedDiff(file: java.io.File, original: String, diff: String, createBackup: Boolean = true): ToolResult {
+    private fun applyUnifiedDiff(file: java.io.File, original: String, diff: String): ToolResult {
         return try {
             val lines = original.lines().toMutableList()
             val hunkRegex = Regex("""^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@""")
@@ -295,12 +282,7 @@ class EditFileTool @Inject constructor(
             // so joinToString("\n") would drop the final newline. Restore it explicitly.
             val hasTrailingNewline = original.endsWith("\n")
             val result = lines.joinToString("\n") + if (hasTrailingNewline) "\n" else ""
-            val backup = if (createBackup) {
-                java.io.File(file.parent, "${file.name}.bak.${System.currentTimeMillis()}").also {
-                    file.copyTo(it, overwrite = true)
-                }
-            } else null
-            // FIX #7: Atomic write for diff mode too — temp file + rename/fallback
+            // FIX #7: Temp-file replacement for diff mode too.
             val tempFile = java.io.File.createTempFile(".diff_", ".tmp", file.parentFile ?: file)
             try {
                 tempFile.writeText(result, Charsets.UTF_8)
@@ -310,12 +292,11 @@ class EditFileTool @Inject constructor(
                 }
             } catch (e: Exception) {
                 tempFile.delete()
-                backup?.copyTo(file, overwrite = true) // restore on failure if backup exists
                 throw e
             }
             ToolResult.Success(
-                "Diff applied to ${file.name}." + if (backup != null) " Backup: ${backup.name}" else "",
-                metadata = mapOf("path" to file.absolutePath, "backup" to (backup?.absolutePath ?: "none"))
+                "Diff applied to ${file.name}.",
+                metadata = mapOf("path" to file.absolutePath)
             )
         } catch (e: Exception) {
             ToolResult.Error("Failed to apply diff: ${e.message}", ErrorType.EXECUTION_ERROR)
@@ -325,14 +306,8 @@ class EditFileTool @Inject constructor(
     // ── Document Edit ───────────────────────────────────────────────────────────
     // Strategy: replace inside XML text nodes — match plain text, not raw XML markup.
     // This handles the case where oldContent spans a single XML <t> or <w:t> text node.
-    private fun editDocument(file: File, oldContent: String, newContent: String, ext: String, createBackup: Boolean = true): ToolResult {
+    private fun editDocument(file: File, oldContent: String, newContent: String, ext: String): ToolResult {
         return try {
-            // Create backup only if requested
-            val backup = if (createBackup) {
-                File(file.parent, "${file.name}.bak.${System.currentTimeMillis()}").also {
-                    file.copyTo(it, overwrite = true)
-                }
-            } else null
 
             val targetXmlPaths = when (ext) {
                 "docx" -> listOf("word/document.xml")
@@ -348,8 +323,6 @@ class EditFileTool @Inject constructor(
             val (changed, replacements) = editZipXmlTextNodes(file, targetXmlPaths, oldContent, newContent)
 
             if (!changed) {
-                // Remove backup since nothing changed
-                backup?.delete()
                 return ToolResult.Error(
                     "Text not found in document: \"${oldContent.take(80)}\".\n" +
                     "Make sure the text exists exactly as typed in the document.",
@@ -359,13 +332,11 @@ class EditFileTool @Inject constructor(
             }
 
             ToolResult.Success(
-                output = "Successfully edited document: ${file.name} ($replacements replacement(s))" +
-                        if (backup != null) "\nBackup: ${backup.name}" else "",
+                output = "Successfully edited document: ${file.name} ($replacements replacement(s))",
                 metadata = mapOf(
                     "path" to file.absolutePath,
                     "format" to ext,
-                    "replacements" to replacements,
-                    "backup" to (backup?.absolutePath ?: "none")
+                    "replacements" to replacements
                 )
             )
         } catch (e: Exception) {

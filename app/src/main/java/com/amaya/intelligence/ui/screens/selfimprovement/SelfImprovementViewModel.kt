@@ -20,7 +20,6 @@ import javax.inject.Inject
 
 data class PromptPreviewState(
     val userProfile: String = "",
-    val hotMemory: String = "",
     val agents: String = "",
     val mode: SelfImprovementMode = SelfImprovementMode.ASK_APPROVAL
 )
@@ -134,8 +133,7 @@ class SelfImprovementViewModel @Inject constructor(
     private suspend fun buildPromptPreview(mode: SelfImprovementMode): PromptPreviewState {
         return PromptPreviewState(
             userProfile = redactForPreview(memoryRepository.readUserProfile()),
-            hotMemory = redactForPreview(memoryRepository.readHotMemory()),
-            agents = redactForPreview(memoryRepository.readWorkspaceFacts()),
+            agents = "# Project Memory\n\nSelect a workspace in Local Settings to preview project memory.",
             mode = mode
         )
     }
@@ -145,5 +143,6 @@ class SelfImprovementViewModel @Inject constructor(
     }
 
     private fun PendingProposalType.isSelfImprovementType(): Boolean = this == PendingProposalType.USER_PROFILE ||
-        this == PendingProposalType.LONG_TERM_MEMORY || this == PendingProposalType.WORKSPACE_FACT || this == PendingProposalType.DAILY_LOG
+        this == PendingProposalType.WORKSPACE_FACT ||
+        this == PendingProposalType.SKILL_CREATE || this == PendingProposalType.SKILL_PATCH || this == PendingProposalType.SKILL_UPDATE
 }

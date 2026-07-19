@@ -27,6 +27,7 @@ class LocalAmayaActivity : AppCompatActivity() {
             AmayaTheme {
                 val viewModel: AmayaViewModel = hiltViewModel()
                 val state by viewModel.uiState.collectAsState()
+                LaunchedEffect(Unit) { viewModel.setWorkspace(intent.getStringExtra(EXTRA_WORKSPACE)) }
                 val snackbarHostState = remember { SnackbarHostState() }
                 LaunchedEffect(state.message) {
                     state.message?.takeIf { it.isNotBlank() }?.let {
@@ -39,8 +40,8 @@ class LocalAmayaActivity : AppCompatActivity() {
                     snackbarHostState = snackbarHostState,
                     onNavigateBack = { finish() },
                     onPersona = { LocalPersonaActivity.start(this) },
-                    onMemory = { LocalMemoryActivity.start(this) },
-                    onReview = { LocalReviewActivity.start(this) },
+                    onMemory = { LocalMemoryActivity.start(this, state.workspacePath) },
+                    onReview = { LocalReviewActivity.start(this, state.workspacePath) },
                     onSkills = { LocalSkillsActivity.start(this) },
                     onContext = { LocalContextRecallActivity.start(this) },
                     onPrivacy = { LocalPrivacySafetyActivity.start(this) }
@@ -50,8 +51,9 @@ class LocalAmayaActivity : AppCompatActivity() {
     }
 
     companion object {
-        fun start(activity: Activity) {
-            activity.startActivity(Intent(activity, LocalAmayaActivity::class.java))
+        private const val EXTRA_WORKSPACE = "workspace_path"
+        fun start(activity: Activity, workspacePath: String? = null) {
+            activity.startActivity(Intent(activity, LocalAmayaActivity::class.java).putExtra(EXTRA_WORKSPACE, workspacePath))
         }
     }
 }

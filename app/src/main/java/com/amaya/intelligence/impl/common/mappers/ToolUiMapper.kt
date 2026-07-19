@@ -233,7 +233,6 @@ object ToolUiMapper {
                 val action = safeArgs["action"]?.toString()?.lowercase().orEmpty()
                 val target = safeText(safeArgs["title"] ?: safeArgs["content"] ?: safeArgs["query"] ?: safeArgs["id"], 56)
                 val label = when (action) {
-                    "remove", "delete" -> "Delete: ${target ?: "memory"}"
                     "update", "replace" -> "Update: ${target ?: "memory"}"
                     "search" -> target ?: "Search memory"
                     "list" -> target ?: "Review memory"
@@ -265,7 +264,6 @@ object ToolUiMapper {
                     "patch" -> "Patch"
                     "archive" -> "Archive"
                     "delete" -> "Delete"
-                    "record_usage" -> "Record"
                     else -> "Skill"
                 }
                 ToolUiMetadata(

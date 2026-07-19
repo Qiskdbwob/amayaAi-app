@@ -22,7 +22,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -94,8 +93,7 @@ fun MemoryAreaListScreen(
     state: AmayaUiState,
     snackbarHostState: SnackbarHostState,
     onNavigateBack: () -> Unit,
-    onAdd: (String) -> Unit,
-    onDelete: (String) -> Unit
+    onAdd: (String) -> Unit
 ) {
     val colors = iosMemoryAreaColors()
     val gradients = LocalAmayaGradients.current
@@ -103,9 +101,7 @@ fun MemoryAreaListScreen(
 
     val records = when (area) {
         MemoryArea.USER -> state.userMemoryRecords
-        MemoryArea.IMPORTANT -> state.importantMemoryRecords
         MemoryArea.PROJECT -> state.projectMemoryRecords
-        MemoryArea.DAILY -> state.dailyMemoryRecords
     }
 
     Box(modifier = Modifier.fillMaxSize().background(colors.groupedBackground)) {
@@ -121,7 +117,7 @@ fun MemoryAreaListScreen(
             if (records.isNotEmpty()) {
                 AmayaSection("Saved") {
                     records.forEachIndexed { index, record ->
-                        MemoryRecordCard(record = record, onDelete = { onDelete(record.id) }, colors = colors)
+                        MemoryRecordCard(record = record, colors = colors)
                         if (index < records.lastIndex) AmayaDivider()
                     }
                 }
@@ -140,7 +136,7 @@ fun MemoryAreaListScreen(
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            "Tap + to add",
+                            if (area == MemoryArea.PROJECT && state.workspacePath == null) "Select a workspace first" else "Tap + to add",
                             style = MaterialTheme.typography.bodyMedium,
                             color = colors.secondaryText.copy(alpha = 0.7f)
                         )
@@ -177,12 +173,14 @@ fun MemoryAreaListScreen(
                 )
             },
             actions = {
-                com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
-                    icon = Icons.Default.Add,
-                    onClick = { showAddSheet = true },
-                    contentDescription = "Add Memory",
-                    modifier = Modifier.padding(end = 12.dp)
-                )
+                if (area != MemoryArea.PROJECT || state.workspacePath != null) {
+                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
+                        icon = Icons.Default.Add,
+                        onClick = { showAddSheet = true },
+                        contentDescription = "Add Memory",
+                        modifier = Modifier.padding(end = 12.dp)
+                    )
+                }
             },
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = Color.Transparent,
@@ -224,7 +222,7 @@ private fun AddMemorySheet(
             onValueChange = { text = it },
             modifier = Modifier.fillMaxWidth(),
             label = { Text(area.inputLabel()) },
-            minLines = if (area == MemoryArea.DAILY) 3 else 2,
+            minLines = 2,
             textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.primaryText)
         )
 
@@ -247,7 +245,7 @@ private fun AddMemorySheet(
 }
 
 @Composable
-private fun MemoryRecordCard(record: MemoryRecord, onDelete: () -> Unit, colors: IosMemoryAreaColors) {
+private fun MemoryRecordCard(record: MemoryRecord, colors: IosMemoryAreaColors) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
         verticalAlignment = Alignment.Top
@@ -266,16 +264,11 @@ private fun MemoryRecordCard(record: MemoryRecord, onDelete: () -> Unit, colors:
                 )
             }
         }
-        IconButton(onClick = onDelete) {
-            Icon(Icons.Default.DeleteOutline, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
-        }
     }
 }
 
 private fun MemoryArea.inputLabel(): String = when (this) {
     MemoryArea.USER -> "Preference or profile fact"
-    MemoryArea.IMPORTANT -> "Important durable fact"
     MemoryArea.PROJECT -> "Workspace or project fact"
-    MemoryArea.DAILY -> "Daily note summary"
 }
 

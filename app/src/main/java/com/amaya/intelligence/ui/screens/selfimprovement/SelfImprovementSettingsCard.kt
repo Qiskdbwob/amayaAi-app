@@ -109,14 +109,12 @@ private fun MetricPill(label: String, value: String, modifier: Modifier = Modifi
 
 fun modeLabel(mode: SelfImprovementMode): String = when (mode) {
     SelfImprovementMode.OFF -> "Off"
-    SelfImprovementMode.DAILY_LOG_ONLY -> "Daily log only"
     SelfImprovementMode.ASK_APPROVAL -> "Ask before saving"
     SelfImprovementMode.SAFE_AUTO -> "Safe auto-save"
 }
 
 fun modeDescription(mode: SelfImprovementMode): String = when (mode) {
     SelfImprovementMode.OFF -> "Amaya does not write memories or create memory suggestions."
-    SelfImprovementMode.DAILY_LOG_ONLY -> "Only chronological daily notes are saved; durable memory writes and removals stay off."
-    SelfImprovementMode.ASK_APPROVAL -> "Daily notes save automatically; durable memory saves/removals wait for review before future chats."
-    SelfImprovementMode.SAFE_AUTO -> "Daily notes and safe explicit memory saves/removals apply automatically; noisy items are ignored."
+    SelfImprovementMode.ASK_APPROVAL -> "Durable memory saves wait for review before future chats."
+    SelfImprovementMode.SAFE_AUTO -> "Safe explicit memory saves apply automatically; noisy items are ignored."
 }

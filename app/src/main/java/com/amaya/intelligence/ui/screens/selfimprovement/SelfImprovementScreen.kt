@@ -33,7 +33,7 @@ import com.amaya.intelligence.domain.memory.PendingProposalType
 
 private enum class LearningTab(val title: String) {
     OVERVIEW("Overview"),
-    REVIEW("Legacy Review"),
+    REVIEW("Review"),
     MEMORY("Memory"),
     PRIVACY("Privacy")
 }
@@ -95,7 +95,7 @@ fun SelfImprovementScreen(
                         item { ApplyResultsCard(results = lastApplyResults) }
                     }
                     if (pendingProposals.isEmpty()) {
-                        item { EmptyStateCard("No legacy suggestions waiting", "New self-improvement memory is auto-saved when safe and structured; noisy candidates are skipped.") }
+                        item { EmptyStateCard("No suggestions waiting", "Safe memory is auto-saved; reusable workflow candidates wait for review.") }
                     } else {
                         items(pendingProposals, key = { it.id }) { proposal ->
                             PendingProposalCard(
@@ -172,7 +172,7 @@ private fun FlowStep(number: String, title: String, body: String) {
 private fun ReviewHeaderCard(pendingCount: Int, approvedCount: Int, onApplyApproved: () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Legacy review queue", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text("Review queue", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
                 "$pendingCount needs review · $approvedCount approved but not applied",
                 style = MaterialTheme.typography.bodyMedium,
@@ -189,17 +189,17 @@ private fun ReviewHeaderCard(pendingCount: Int, approvedCount: Int, onApplyAppro
 @Composable
 private fun MemoryOverviewCard(proposals: List<PendingProposal>) {
     val memorySuggestions = proposals.count {
-        it.type == PendingProposalType.USER_PROFILE || it.type == PendingProposalType.LONG_TERM_MEMORY || it.type == PendingProposalType.WORKSPACE_FACT || it.type == PendingProposalType.DAILY_LOG
+        it.type == PendingProposalType.USER_PROFILE || it.type == PendingProposalType.WORKSPACE_FACT
     }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Memory", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
-                "This is what Amaya may remember across chats. User preferences, important facts, and project facts are separated from persona.",
+                "This is what Amaya may remember across chats. User preferences and project facts are separated from persona.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Text("$memorySuggestions legacy memory suggestion(s) still waiting. New safe memory is saved automatically.", style = MaterialTheme.typography.bodySmall)
+            Text("$memorySuggestions memory suggestion(s) waiting. New safe memory is saved automatically.", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -254,7 +254,6 @@ private fun PromptPreviewCard(promptPreview: PromptPreviewState, showMemoryOnly:
             Text("What affects future chats", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text("Read-only preview. This is shown in friendly groups instead of raw internal file names.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             PreviewSection("User profile", promptPreview.userProfile)
-            PreviewSection("Important memory", promptPreview.hotMemory)
             PreviewSection("Project rules", promptPreview.agents)
         }
     }

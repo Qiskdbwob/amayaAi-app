@@ -1,21 +1,19 @@
 package com.amaya.intelligence.data.repository
 
 import android.content.Context
+import com.amaya.intelligence.data.local.files.FileWorkspaceMemoryStore
 import com.amaya.intelligence.domain.memory.MemoryAction
 import com.amaya.intelligence.domain.memory.MemoryClassifier
-import com.amaya.intelligence.domain.memory.MemoryCompactor
 import com.amaya.intelligence.domain.memory.MemoryDeduper
 import com.amaya.intelligence.domain.memory.MemoryProposal
 import com.amaya.intelligence.domain.memory.MemoryScope
+import com.amaya.intelligence.domain.memory.MemoryStatus
 import com.amaya.intelligence.domain.memory.MemoryType
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
-import java.time.LocalDate
-import java.time.LocalTime
-import java.time.format.DateTimeFormatter
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -25,375 +23,439 @@ class FileMemoryRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val classifier: MemoryClassifier,
     private val deduper: MemoryDeduper,
-    private val compactor: MemoryCompactor
+    private val workspaceStore: FileWorkspaceMemoryStore
 ) : MemoryRepository {
     private val fileLock = Any()
 
     private val memoryDir: File
         get() = File(context.filesDir, "memory").also { it.mkdirs() }
-
-    private val legacyPersonaDir: File
-        get() = File(context.filesDir, "persona")
+    private val recordsFile: File get() = File(memoryDir, "records.jsonl")
+    private val migrationMarker: File get() = File(memoryDir, ".structured-memory-v1")
+    private val legacyPersonaDir: File get() = File(context.filesDir, "persona")
 
     override suspend fun applyProposal(proposal: MemoryProposal): Result<String> = withContext(Dispatchers.IO) {
         synchronized(fileLock) {
             runCatching {
-            migrateLegacyFilesIfNeeded()
-            if (proposal.action == MemoryAction.IGNORE) return@runCatching "Ignored: ${proposal.reason}"
-            require(proposal.confidence >= 0.55) { "Memory confidence is too low." }
-            require(!classifier.containsSecret(proposal.content)) { "Rejected because content appears to contain a secret." }
-            when (proposal.type) {
-                MemoryType.USER_PROFILE -> applyToMemoryFile(userProfileFile, "Learned Preferences", proposal, "User Profile")
-                MemoryType.LONG_TERM_MEMORY -> applyToMemoryFile(hotMemoryFile, "Important Facts", proposal, "Important Memory")
-                MemoryType.WORKSPACE_FACT -> applyToMemoryFile(workspaceFactsFile, "Workspace Facts", proposal, "Project Memory")
-                MemoryType.DAILY_LOG -> {
-                    appendDailyLogInternal(proposal.content)
-                    appendMemoryIndex(proposal, dailyLogTarget(), "daily_log")
-                    "Wrote daily note."
+                ensureMigrated()
+                if (proposal.action == MemoryAction.IGNORE) return@runCatching "Ignored: ${proposal.reason}"
+                require(proposal.confidence >= MIN_CONFIDENCE) { "Memory confidence is too low." }
+                require(!classifier.containsSecret(proposal.content)) { "Rejected because content appears to contain a secret." }
+                when (proposal.type) {
+                    MemoryType.USER_PROFILE -> applyStructuredMemory(proposal, "User Profile")
+                    MemoryType.WORKSPACE_FACT -> {
+                        require(!proposal.workspacePath.isNullOrBlank()) { "Workspace memory requires an active workspace." }
+                        applyStructuredMemory(proposal, "Project Memory")
+                    }
                 }
-                MemoryType.SKILL_CANDIDATE -> "Skipped: skills are managed by Skills, not Memory."
-                MemoryType.REMINDER -> "Skipped: reminders must be created with create_reminder, not memory."
-            }
             }
         }
     }
 
     override suspend fun readUserProfile(): String = withContext(Dispatchers.IO) {
         synchronized(fileLock) {
-            migrateLegacyFilesIfNeeded()
-            userProfileFile.readOrDefault(DEFAULT_USER_PROFILE_MD)
+            ensureMigrated()
+            renderMemory(MemoryType.USER_PROFILE, MemoryScope.USER, null, "User Profile", "Learned Preferences")
         }
     }
 
-    override suspend fun readHotMemory(): String = withContext(Dispatchers.IO) {
+    override suspend fun readWorkspaceFacts(workspacePath: String?): String = withContext(Dispatchers.IO) {
         synchronized(fileLock) {
-            migrateLegacyFilesIfNeeded()
-            compactor.compactHotMemory(hotMemoryFile.readOrDefault(DEFAULT_HOT_MEMORY_MD))
+            ensureMigrated()
+            val root = workspacePath?.takeIf(String::isNotBlank)?.let(::canonicalWorkspacePath)
+                ?: return@synchronized emptySnapshot("Project Memory", "Workspace Facts")
+            renderMemory(MemoryType.WORKSPACE_FACT, MemoryScope.WORKSPACE, root, "Project Memory", "Workspace Facts")
         }
     }
 
-    override suspend fun readWorkspaceFacts(): String = withContext(Dispatchers.IO) {
+    override suspend fun listWorkspaceBindings(): List<WorkspaceMemoryBinding> = withContext(Dispatchers.IO) {
         synchronized(fileLock) {
-            migrateLegacyFilesIfNeeded()
-            workspaceFactsFile.readOrDefault(DEFAULT_WORKSPACE_FACTS_MD)
-        }
-    }
-
-    override suspend fun readRecentDailyNotes(limit: Int): String = withContext(Dispatchers.IO) {
-        synchronized(fileLock) {
-            val logs = dailyLogFiles().take(limit.coerceIn(1, 14))
-            if (logs.isEmpty()) {
-                "No recent daily notes."
-            } else {
-                logs.joinToString("\n\n") { file -> sanitizeDailyNoteText(file.readText()).take(1_500).trim() }
-                    .ifBlank { "No recent daily notes." }
+            ensureMigrated()
+            workspaceStore.list().map { location ->
+                WorkspaceMemoryBinding(
+                    id = location.id,
+                    root = location.root,
+                    recordCount = activeMemoryRecords().count { it.workspaceId == location.id },
+                    rootExists = File(location.root).isDirectory
+                )
             }
+                .sortedBy { it.root }
         }
     }
 
-    override suspend fun appendDailyLog(content: String): Result<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun remapWorkspace(workspaceId: String, newRoot: String): Result<Unit> = withContext(Dispatchers.IO) {
         synchronized(fileLock) {
-            runCatching { appendDailyLogInternal(content) }
+            runCatching {
+                ensureMigrated()
+                require(UUID_REGEX.matches(workspaceId)) { "Invalid workspace id." }
+                val canonicalRoot = canonicalWorkspacePath(newRoot)
+                require(File(canonicalRoot).isDirectory) { "New workspace root is not a directory: $newRoot" }
+                val location = workspaceStore.remap(workspaceId, canonicalRoot)
+                writeRecords(location.recordsFile, readRecords(location.recordsFile).map {
+                    it.copy(workspacePath = location.root, workspaceId = location.id)
+                })
+            }
         }
     }
 
     override suspend fun compactStoredMemory(): Result<Unit> = withContext(Dispatchers.IO) {
         synchronized(fileLock) {
             runCatching {
-            migrateLegacyFilesIfNeeded()
-            atomicWrite(hotMemoryFile, compactor.compactHotMemory(hotMemoryFile.readOrDefault(DEFAULT_HOT_MEMORY_MD)))
-            atomicWrite(userProfileFile, compactor.compactHotMemory(userProfileFile.readOrDefault(DEFAULT_USER_PROFILE_MD)))
-            atomicWrite(workspaceFactsFile, compactor.compactHotMemory(workspaceFactsFile.readOrDefault(DEFAULT_WORKSPACE_FACTS_MD)))
-            ensureMemoryIndex()
+                ensureMigrated()
+                recordFiles().forEach { file ->
+                    val compacted = readRecords(file)
+                        .filter { it.type in DURABLE_TYPES }
+                        .distinctBy { listOf(it.id, it.version, it.status, it.content, it.updatedAt) }
+                        .groupBy { it.id }
+                        .flatMap { (_, revisions) -> revisions.sortedWith(compareByDescending<MemoryRecord> { it.version }.thenByDescending { it.updatedAt }).take(MAX_REVISIONS_PER_MEMORY) }
+                        .sortedWith(compareBy<MemoryRecord> { it.updatedAt }.thenBy { it.version })
+                    writeRecords(file, compacted)
+                }
             }
         }
     }
 
-    override suspend fun listMemoryRecords(type: MemoryType?, query: String?, limit: Int): List<MemoryRecord> = withContext(Dispatchers.IO) {
+    override suspend fun listMemoryRecords(
+        type: MemoryType?,
+        query: String?,
+        limit: Int,
+        workspacePath: String?
+    ): List<MemoryRecord> = withContext(Dispatchers.IO) {
         synchronized(fileLock) {
-            migrateLegacyFilesIfNeeded()
-            ensureMemoryIndex()
-            val records = activeMemoryRecords()
+            ensureMigrated()
+            val canonicalWorkspace = workspacePath?.takeIf(String::isNotBlank)?.let(::canonicalWorkspacePath)
+            val scoped = activeMemoryRecords()
                 .filter { type == null || it.type == type }
-            val filtered = if (query.isNullOrBlank()) {
-                records.sortedWith(compareByDescending<MemoryRecord> { it.importance }.thenByDescending { it.updatedAt })
+                .filter { it.type != MemoryType.WORKSPACE_FACT || it.workspacePath == canonicalWorkspace }
+            val ranked = if (query.isNullOrBlank()) {
+                scoped.sortedByDescending { it.updatedAt }
             } else {
-                records.map { it to scoreMemoryRecord(it, query) }
-                    .filter { it.second > 0.0 }
+                scoped.map { it to scoreMemoryRecord(it, query) }
+                    .filter { it.second >= MIN_SEARCH_SCORE }
                     .sortedByDescending { it.second }
                     .map { it.first }
             }
-            filtered.take(limit.coerceIn(1, 200))
+            ranked.take(limit.coerceIn(1, MAX_LIST_LIMIT))
         }
     }
 
-    override suspend fun removeMemoryById(id: String): Result<String> = withContext(Dispatchers.IO) {
+    override suspend fun updateMemoryById(
+        id: String,
+        content: String,
+        expectedVersion: Int,
+        workspacePath: String?
+    ): Result<String> = withContext(Dispatchers.IO) {
         synchronized(fileLock) {
             runCatching {
-            ensureMemoryIndex()
-            val record = activeMemoryRecords().firstOrNull { it.id == id } ?: throw IllegalArgumentException("Memory not found: $id")
-            val file = fileForTarget(record.target)
-            val current = if (record.type == MemoryType.DAILY_LOG) file.readTextIfExists() else file.readOrDefault(defaultContentFor(file))
-            val updated = if (record.type == MemoryType.DAILY_LOG) removeDailyLogBlock(current, record.content, record.label) else removeBullet(current, record.content, record.label)
-            atomicWrite(file, updated)
-            appendMemoryRecord(record.copy(action = MemoryAction.REMOVE, reason = "Removed by memory_manage.", updatedAt = System.currentTimeMillis()))
-            "Removed memory ${record.id}. This affects the next chat."
+                ensureMigrated()
+                val clean = content.trim()
+                require(clean.isNotBlank()) { "Content is required." }
+                require(!classifier.containsSecret(clean)) { "Rejected because content appears to contain a secret." }
+                val canonicalWorkspace = workspacePath?.takeIf(String::isNotBlank)?.let(::canonicalWorkspacePath)
+                val record = activeMemoryRecords().firstOrNull {
+                    it.id == id && (it.type != MemoryType.WORKSPACE_FACT || it.workspacePath == canonicalWorkspace)
+                } ?: throw IllegalArgumentException("Memory not found: $id")
+                require(record.version == expectedVersion) {
+                    "Memory conflict: expected version $expectedVersion, current version is ${record.version}. Refresh the memory before updating."
+                }
+                val now = System.currentTimeMillis()
+                supersedeMemoryRecord(record, now)
+                appendMemoryRecord(record.copy(
+                    action = MemoryAction.REPLACE,
+                    title = inferTitle(clean, record.type),
+                    content = clean,
+                    reason = "Updated by memory_manage.",
+                    updatedAt = now,
+                    version = record.version + 1,
+                    source = "structured",
+                    status = MemoryStatus.ACTIVE
+                ))
+                "Updated memory ${record.id} to version ${record.version + 1}. This affects the next chat."
             }
         }
     }
 
-    override suspend fun updateMemoryById(id: String, content: String): Result<String> = withContext(Dispatchers.IO) {
-        synchronized(fileLock) {
-            runCatching {
-            ensureMemoryIndex()
-            require(content.isNotBlank()) { "Content is required." }
-            require(!classifier.containsSecret(content)) { "Rejected because content appears to contain a secret." }
-            val record = activeMemoryRecords().firstOrNull { it.id == id } ?: throw IllegalArgumentException("Memory not found: $id")
-            if (record.type == MemoryType.DAILY_LOG) throw IllegalArgumentException("Daily logs cannot be updated by memory id.")
-            val file = fileForTarget(record.target)
-            val current = file.readOrDefault(defaultContentFor(file))
-            atomicWrite(file, replaceBullet(current, "${record.content} => $content", record.label))
-            appendMemoryRecord(record.copy(action = MemoryAction.REPLACE, title = inferTitle(content.trim(), record.type), content = content.trim(), reason = "Updated by memory_manage.", updatedAt = System.currentTimeMillis()))
-            "Updated memory ${record.id}. This affects the next chat."
-            }
-        }
-    }
+    private fun applyStructuredMemory(proposal: MemoryProposal, label: String): String {
+        val canonicalWorkspace = proposal.workspacePath?.takeIf(String::isNotBlank)?.let(::canonicalWorkspacePath)
+        val finalContent = replacementValue(proposal.content)
+        require(finalContent.isNotBlank()) { "Memory content is required." }
+        val candidate = MemoryRecord(
+            id = proposal.id,
+            type = proposal.type,
+            action = proposal.action,
+            scope = proposal.scope,
+            target = targetFor(proposal.type, canonicalWorkspace),
+            label = label,
+            title = proposal.title,
+            content = finalContent,
+            reason = proposal.reason,
+            confidence = proposal.confidence,
+            createdAt = proposal.createdAt,
+            updatedAt = proposal.createdAt,
+            expiresAt = proposal.expiresAt,
+            source = "structured",
+            workspacePath = canonicalWorkspace,
+            workspaceId = proposal.workspaceId ?: canonicalWorkspace?.let(::workspaceId),
+            subject = proposal.subject.ifBlank { defaultSubject(proposal.scope) },
+            attribute = proposal.attribute.ifBlank { inferAttribute(finalContent, proposal.title, proposal.type) },
+            sourceConversationId = proposal.sourceConversationId
+        ).withIdentity()
+        val existing = activeMemoryRecords().firstOrNull { memoryIdentity(it) == memoryIdentity(candidate) }
+        if (existing != null && deduper.isDuplicate(candidate.content, existing.content)) return "Skipped duplicate $label."
 
-    private val userProfileFile: File get() = File(memoryDir, "USER.md")
-    private val hotMemoryFile: File get() = File(memoryDir, "MEMORY.md")
-    private val workspaceFactsFile: File get() = File(memoryDir, "PROJECT.md")
-    private val memoryIndexFile: File get() = File(memoryDir, "index.jsonl")
-
-    private fun appendToMemoryFile(file: File, defaultContent: String, section: String, content: String): String {
-        val current = file.readOrDefault(defaultContent)
-        if (deduper.isDuplicate(content, current)) return current
-        val sectionHeader = "## $section"
-        val entry = "- $content"
-        return if (current.contains(sectionHeader)) {
-            current.replace(sectionHeader, "$sectionHeader\n$entry")
-        } else {
-            current.trimEnd() + "\n\n$sectionHeader\n$entry\n"
-        }
-    }
-
-    private fun applyToMemoryFile(file: File, section: String, proposal: MemoryProposal, label: String): String {
-        val defaultContent = defaultContentFor(file)
-        val current = file.readOrDefault(defaultContent)
-        val updated = when (proposal.action) {
-            MemoryAction.ADD -> appendOrReplaceConflictingMemory(file, defaultContent, section, proposal)
-            MemoryAction.REPLACE -> replaceBullet(current, proposal.content, label)
-            MemoryAction.REMOVE -> removeBullet(current, proposal.content, label)
-            MemoryAction.IGNORE -> return "Ignored: ${proposal.reason}"
-        }
-        if (updated == current && proposal.action == MemoryAction.ADD) {
-            return "Skipped duplicate $label."
-        }
-        atomicWrite(file, updated)
-        appendMemoryIndex(proposal, file.name, label)
-        return when (proposal.action) {
-            MemoryAction.ADD -> "Saved to $label."
-            MemoryAction.REPLACE -> "Replaced matching $label."
-            MemoryAction.REMOVE -> "Removed matching $label."
-            MemoryAction.IGNORE -> "Ignored: ${proposal.reason}"
-        }
-    }
-
-    private fun appendOrReplaceConflictingMemory(file: File, defaultContent: String, section: String, proposal: MemoryProposal): String {
-        val current = file.readOrDefault(defaultContent)
-        val conflictKey = conflictKey(proposal.content) ?: return appendToMemoryFile(file, defaultContent, section, proposal.content)
-        val lines = current.lines().toMutableList()
-        val conflictIndex = lines.indexOfFirst { line ->
-            val trimmed = line.trimStart()
-            (trimmed.startsWith("-") || trimmed.startsWith("*")) && conflictKey(trimmed.trimStart('-', '*').trim()) == conflictKey
-        }
-        return if (conflictIndex >= 0) {
-            lines[conflictIndex] = preserveBulletPrefix(lines[conflictIndex], proposal.content)
-            lines.joinToString("\n").trimEnd() + "\n"
-        } else appendToMemoryFile(file, defaultContent, section, proposal.content)
-    }
-
-    private fun conflictKey(content: String): String? {
-        val lower = content.lowercase()
-        return when {
-            listOf("call me", "panggil", "nama saya", "my name", "nickname").any { it in lower } -> "user_nickname"
-            listOf("bahasa", "language", "respond in", "jawab saya").any { it in lower } -> "response_language"
-            listOf("concise", "ringkas", "detail", "verbose", "panjang", "singkat").any { it in lower } -> "response_detail"
-            else -> null
-        }
-    }
-
-    private fun replaceBullet(current: String, content: String, label: String): String {
-        val (query, replacement) = parseReplacement(content)
-        val lines = current.lines().toMutableList()
-        val index = findMatchingBulletIndex(lines, query)
-        require(index >= 0) { "No matching item found in $label for replace." }
-        lines[index] = preserveBulletPrefix(lines[index], replacement)
-        return lines.joinToString("\n").trimEnd() + "\n"
-    }
-
-    private fun removeBullet(current: String, content: String, label: String): String {
-        val lines = current.lines().toMutableList()
-        val index = findMatchingBulletIndex(lines, content)
-        require(index >= 0) { "No matching item found in $label for remove." }
-        lines.removeAt(index)
-        return lines.joinToString("\n").trimEnd() + "\n"
-    }
-
-    private fun parseReplacement(content: String): Pair<String, String> {
-        listOf("=>", "->", "→").forEach { delimiter ->
-            val index = content.indexOf(delimiter)
-            if (index > 0 && index < content.lastIndex) {
-                val oldValue = content.substring(0, index).trim().trimStart('-', '*').trim()
-                val newValue = content.substring(index + delimiter.length).trim().trimStart('-', '*').trim()
-                if (oldValue.isNotBlank() && newValue.isNotBlank()) return oldValue to newValue
-            }
-        }
-        return content to content
-    }
-
-    private fun findMatchingBulletIndex(lines: List<String>, query: String): Int {
-        return lines.indexOfFirst { line ->
-            val trimmed = line.trimStart()
-            if (!trimmed.startsWith("-") && !trimmed.startsWith("*")) return@indexOfFirst false
-            deduper.isDuplicate(query, trimmed.trimStart('-', '*').trim())
-        }
-    }
-
-    private fun preserveBulletPrefix(existingLine: String, replacement: String): String {
-        val prefix = existingLine.takeWhile { it.isWhitespace() } + existingLine.trimStart().take(1)
-        return "$prefix ${replacement.trim().trimStart('-', '*').trim()}"
-    }
-
-    private fun appendMemoryIndex(proposal: MemoryProposal, target: String, label: String) {
-        appendMemoryRecord(
-            MemoryRecord(
-                id = proposal.id,
-                type = proposal.type,
-                action = proposal.action,
-                scope = proposal.scope,
-                target = target,
-                label = label,
-                title = proposal.title,
-                content = proposal.content,
-                reason = proposal.reason,
-                confidence = proposal.confidence,
-                importance = proposal.importance,
-                createdAt = proposal.createdAt,
-                updatedAt = proposal.createdAt,
-                expiresAt = proposal.expiresAt
-            )
-        )
-    }
-
-    private fun appendMemoryRecord(record: MemoryRecord) {
-        memoryIndexFile.parentFile?.mkdirs()
-        memoryIndexFile.appendText(record.toJson().toString() + "\n")
+        val now = System.currentTimeMillis()
+        if (existing != null) supersedeMemoryRecord(existing, now)
+        appendMemoryRecord(candidate.copy(
+            id = existing?.id ?: candidate.id,
+            version = existing?.version?.plus(1) ?: candidate.version,
+            createdAt = existing?.createdAt ?: candidate.createdAt,
+            updatedAt = now
+        ))
+        return if (existing == null) "Saved to $label." else "Updated $label."
     }
 
     private fun activeMemoryRecords(): List<MemoryRecord> {
-        val latestById = readMemoryIndex().associateBy { it.id }
-        val active = latestById.values
-            .filter { it.action != MemoryAction.REMOVE && it.action != MemoryAction.IGNORE }
+        val byIdentity = linkedMapOf<String, MemoryRecord>()
+        val latestById = readAllRecords().groupBy { it.id }.mapNotNull { (_, records) -> records.lastOrNull() }
+        latestById.asSequence()
+            .filter { it.status == MemoryStatus.ACTIVE }
             .filter { it.expiresAt == null || it.expiresAt > System.currentTimeMillis() }
-            .filterNot { it.type == MemoryType.DAILY_LOG && isGenericDailyNoteContent(it.content) }
-            .filter { it.type == MemoryType.DAILY_LOG || recordExistsInMarkdown(it) }
             .sortedBy { it.updatedAt }
-        val collapsed = linkedMapOf<String, MemoryRecord>()
-        active.forEach { record ->
-            val key = conflictKey(record.content)?.let { "${record.type.name}:${record.scope.name}:$it" } ?: record.id
-            collapsed[key] = record
-        }
-        return collapsed.values.toList()
+            .forEach { record ->
+                val key = memoryIdentity(record)
+                val current = byIdentity[key]
+                if (current == null || record.version > current.version || record.updatedAt >= current.updatedAt) byIdentity[key] = record
+            }
+        return byIdentity.values.toList()
     }
 
-    private fun readMemoryIndex(): List<MemoryRecord> = runCatching {
-        if (!memoryIndexFile.exists()) return emptyList()
-        memoryIndexFile.readLines().mapNotNull { line -> runCatching { JSONObject(line).toMemoryRecord() }.getOrNull() }
+    private fun renderMemory(
+        type: MemoryType,
+        scope: MemoryScope,
+        workspacePath: String?,
+        title: String,
+        section: String
+    ): String {
+        val records = activeMemoryRecords()
+            .filter { it.type == type && it.scope == scope }
+            .filter { type != MemoryType.WORKSPACE_FACT || it.workspacePath == workspacePath }
+            .sortedByDescending { it.updatedAt }
+        if (records.isEmpty()) return emptySnapshot(title, section)
+        return buildString {
+            appendLine("# $title")
+            appendLine()
+            appendLine("## $section")
+            records.forEach { appendLine("- ${it.content}") }
+        }.trimEnd() + "\n"
+    }
+
+    private fun emptySnapshot(title: String, section: String): String = "# $title\n\n## $section\n"
+
+    private fun appendMemoryRecord(record: MemoryRecord) {
+        val normalized = record.withIdentity()
+        val file = recordFile(normalized)
+        file.parentFile?.mkdirs()
+        file.appendText(normalized.toJson().toString() + "\n")
+    }
+
+    private fun supersedeMemoryRecord(record: MemoryRecord, updatedAt: Long) {
+        val file = recordFile(record)
+        val records = readRecords(file).toMutableList()
+        val index = records.indexOfLast { it.id == record.id && it.version == record.version && it.status == MemoryStatus.ACTIVE }
+        if (index >= 0) {
+            records[index] = records[index].copy(status = MemoryStatus.SUPERSEDED, updatedAt = updatedAt)
+            writeRecords(file, records)
+        } else {
+            appendMemoryRecord(record.copy(status = MemoryStatus.SUPERSEDED, updatedAt = updatedAt))
+        }
+    }
+
+    private fun recordFile(record: MemoryRecord): File = record.workspacePath
+        ?.takeIf { record.scope == MemoryScope.WORKSPACE }
+        ?.let(::workspaceRecordsFile)
+        ?: recordsFile
+
+    private fun readAllRecords(): List<MemoryRecord> = recordFiles().flatMap(::readRecords)
+
+    private fun recordFiles(): List<File> = buildList {
+        add(recordsFile)
+        val workspaceRoot = File(memoryDir, "workspaces")
+        if (workspaceRoot.exists()) addAll(workspaceRoot.walkTopDown().filter { it.isFile && it.name == "records.jsonl" })
+    }.distinct()
+
+    private fun readRecords(file: File): List<MemoryRecord> = runCatching {
+        if (!file.exists()) return emptyList()
+        val parent = file.parentFile
+        val metadataRoot = if (parent?.parentFile?.name == "workspaces") workspaceRootFromMetadata(parent) else null
+        file.readLines().mapNotNull { line ->
+            runCatching { JSONObject(line).toMemoryRecordOrNull() }.getOrNull()?.let { record ->
+                when {
+                    record.workspacePath == null && metadataRoot != null -> record.copy(workspacePath = metadataRoot, workspaceId = parent?.name)
+                    record.workspaceId == null && metadataRoot != null -> record.copy(workspaceId = parent?.name)
+                    else -> record
+                }
+            }
+        }
     }.getOrDefault(emptyList())
 
-    private fun ensureMemoryIndex() {
-        val existingKeys = readMemoryIndex()
-            .filter { it.action != MemoryAction.REMOVE && it.action != MemoryAction.IGNORE }
-            .map { memoryIdentityKey(it.target, it.content) }
-            .toMutableSet()
-        buildRecordsFromMarkdown(userProfileFile, MemoryType.USER_PROFILE, MemoryScope.USER, "User Profile")
-            .plus(buildRecordsFromMarkdown(hotMemoryFile, MemoryType.LONG_TERM_MEMORY, MemoryScope.GLOBAL, "Important Memory"))
-            .plus(buildRecordsFromMarkdown(workspaceFactsFile, MemoryType.WORKSPACE_FACT, MemoryScope.WORKSPACE, "Project Memory"))
-            .plus(buildRecordsFromDailyLogs())
-            .filter { existingKeys.add(memoryIdentityKey(it.target, it.content)) }
-            .forEach { appendMemoryRecord(it) }
+    private fun writeRecords(file: File, records: List<MemoryRecord>) {
+        val content = records.joinToString("\n") { it.withIdentity().toJson().toString() }
+        atomicWrite(file, content)
     }
 
-    private fun recordExistsInMarkdown(record: MemoryRecord): Boolean {
-        val file = fileForTarget(record.target)
-        if (!file.exists()) return false
-        return file.readText().lineSequence()
-            .map { it.trim() }
-            .filter { it.startsWith("-") || it.startsWith("*") }
-            .map { it.trimStart('-', '*').trim() }
-            .any { existing -> deduper.isDuplicate(record.content, existing) }
+    private fun ensureMigrated() {
+        deleteLegacyDailyLogs()
+        if (migrationMarker.exists()) {
+            purgeRemovedMemoryTypes()
+            return
+        }
+        val existingKeys = readAllRecords().map(::migrationKey).toMutableSet()
+        val imports = mutableListOf<MemoryRecord>()
+        imports += readLegacyIndex(File(memoryDir, "index.jsonl"))
+        imports += buildRecordsFromMarkdown(File(memoryDir, "USER.md"), MemoryType.USER_PROFILE, MemoryScope.USER, "User Profile")
+        imports += buildLegacyUserRecords(File(memoryDir, "MEMORY.md"))
+        imports += buildRecordsFromMarkdown(File(legacyPersonaDir, "USER.md"), MemoryType.USER_PROFILE, MemoryScope.USER, "User Profile")
+        imports += buildLegacyUserRecords(File(legacyPersonaDir, "MEMORY.md"))
+        val legacyProjectFiles = listOf(File(memoryDir, "PROJECT.md"), File(legacyPersonaDir, "AGENTS.md")).filter(File::isFile)
+        if (legacyProjectFiles.isNotEmpty()) {
+            val legacyWorkspace = workspaceStore.legacyUnmapped()
+            legacyProjectFiles.forEach { file ->
+                imports += buildRecordsFromMarkdown(file, MemoryType.WORKSPACE_FACT, MemoryScope.WORKSPACE, "Project Memory", legacyWorkspace.root)
+            }
+        }
+        File(memoryDir, "workspaces").listFiles().orEmpty().filter(File::isDirectory).forEach { directory ->
+            val root = workspaceRootFromMetadata(directory) ?: return@forEach
+            imports += buildRecordsFromMarkdown(File(directory, "MEMORY.md"), MemoryType.WORKSPACE_FACT, MemoryScope.WORKSPACE, "Project Memory", root)
+        }
+        imports.asSequence()
+            .filter { it.type in DURABLE_TYPES }
+            .filter { existingKeys.add(migrationKey(it)) }
+            .forEach { appendMemoryRecord(it.copy(source = "legacy-migration")) }
+        File(memoryDir, "pending-proposals.jsonl").takeIf(File::exists)?.let { file ->
+            val kept = file.readLines().filterNot { line -> runCatching { JSONObject(line).optString("type") == "DAILY_LOG" }.getOrDefault(false) }
+            atomicWrite(file, kept.joinToString("\n"))
+        }
+        atomicWrite(migrationMarker, "completed")
+        purgeRemovedMemoryTypes()
     }
 
-    private fun buildRecordsFromDailyLogs(): List<MemoryRecord> = dailyLogFiles().flatMap { file ->
-        parseDailyLogBlocks(file).map { (timestampLabel, content) ->
-            val now = file.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
-            MemoryRecord(
-                id = stableMemoryId(file.name, "$timestampLabel:$content"),
-                type = MemoryType.DAILY_LOG,
-                action = MemoryAction.ADD,
-                scope = MemoryScope.SESSION,
-                target = file.name,
-                label = timestampLabel,
-                title = inferTitle(content, MemoryType.DAILY_LOG),
-                content = content,
-                reason = "Backfilled from daily note.",
-                confidence = 0.75,
-                importance = 0.4,
-                createdAt = now,
-                updatedAt = now,
-                source = "daily-backfill"
-            )
+    private fun purgeRemovedMemoryTypes() {
+        recordFiles().forEach { file ->
+            val kept = if (!file.exists()) emptyList() else file.readLines().filter { line ->
+                runCatching { JSONObject(line).optString("type") in DURABLE_TYPES.map(MemoryType::name) }.getOrDefault(false)
+            }
+            if (file.exists()) atomicWrite(file, kept.joinToString("\n"))
+        }
+        File(memoryDir, "pending-proposals.jsonl").takeIf(File::exists)?.let { file ->
+            val kept = file.readLines().filter { line ->
+                runCatching { JSONObject(line).optString("type") != "LONG_TERM_MEMORY" }.getOrDefault(false)
+            }
+            atomicWrite(file, kept.joinToString("\n"))
         }
     }
 
-    private fun buildRecordsFromMarkdown(file: File, type: MemoryType, scope: MemoryScope, label: String): List<MemoryRecord> {
-        val defaultContent = defaultContentFor(file)
-        val text = file.readOrDefault(defaultContent)
-        return text.lineSequence()
-            .map { it.trim() }
+    private fun deleteLegacyDailyLogs() {
+        memoryDir.listFiles().orEmpty()
+            .filter { it.isFile && LEGACY_DAILY_FILE.matches(it.name) }
+            .forEach(File::delete)
+    }
+
+    private fun readLegacyIndex(file: File): List<MemoryRecord> = runCatching {
+        if (!file.exists()) return emptyList()
+        file.readLines().mapNotNull { line -> runCatching { JSONObject(line).toMemoryRecordOrNull() }.getOrNull() }
+    }.getOrDefault(emptyList())
+
+    private fun buildRecordsFromMarkdown(
+        file: File,
+        type: MemoryType,
+        scope: MemoryScope,
+        label: String,
+        workspacePath: String? = null
+    ): List<MemoryRecord> {
+        if (!file.exists() || file.readText().isBlank()) return emptyList()
+        val now = file.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
+        return file.readLines().asSequence()
+            .map(String::trim)
             .filter { it.startsWith("-") || it.startsWith("*") }
             .map { it.trimStart('-', '*').trim() }
-            .filter { it.isNotBlank() }
+            .filter(String::isNotBlank)
             .map { content ->
-                val now = file.lastModified().takeIf { it > 0L } ?: System.currentTimeMillis()
                 MemoryRecord(
-                    id = stableMemoryId(file.name, content),
+                    id = stableMemoryId(file.path, content),
                     type = type,
                     action = MemoryAction.ADD,
                     scope = scope,
-                    target = file.name,
+                    target = targetFor(type, workspacePath),
                     label = label,
                     title = inferTitle(content, type),
                     content = content,
-                    reason = "Backfilled from markdown memory.",
+                    reason = "Migrated from legacy markdown memory.",
                     confidence = 0.8,
-                    importance = if (type == MemoryType.USER_PROFILE) 0.7 else 0.6,
                     createdAt = now,
                     updatedAt = now,
-                    source = "markdown-backfill"
+                    source = "legacy-migration",
+                    workspacePath = workspacePath,
+                    workspaceId = workspacePath?.let(::workspaceId),
+                    subject = defaultSubject(scope),
+                    attribute = inferAttribute(content, inferTitle(content, type), type)
                 )
             }.toList()
     }
 
-    private fun stableMemoryId(target: String, content: String): String = "mem_" + UUID.nameUUIDFromBytes("$target:$content".toByteArray()).toString()
+    private fun buildLegacyUserRecords(file: File): List<MemoryRecord> =
+        buildRecordsFromMarkdown(file, MemoryType.USER_PROFILE, MemoryScope.USER, "User Profile")
+            .filter { record -> USER_FACT_TERMS.any { it in record.content.lowercase() } }
+
+    private fun workspaceRecordsFile(workspacePath: String): File =
+        requireNotNull(workspaceStore.resolve(workspacePath)).recordsFile
+
+    private fun workspaceId(workspacePath: String): String =
+        requireNotNull(workspaceStore.resolve(workspacePath)).id
+
+    private fun workspaceRootFromMetadata(directory: File): String? = File(directory, "workspace.json")
+        .takeIf(File::isFile)
+        ?.let { runCatching { JSONObject(it.readText()).optString("root") }.getOrNull() }
+        ?.takeIf(String::isNotBlank)
+        ?.let(::canonicalWorkspacePath)
+
+    private fun canonicalWorkspacePath(path: String): String = File(path).canonicalPath
+
+    private fun targetFor(type: MemoryType, workspacePath: String?): String = when (type) {
+        MemoryType.USER_PROFILE -> "records.jsonl#user"
+        MemoryType.WORKSPACE_FACT -> "workspaces/${workspacePath?.let(::workspaceId)}/records.jsonl"
+    }
+
+    private fun memoryIdentity(record: MemoryRecord): String {
+        val normalized = record.withIdentity()
+        return "${normalized.type}:${normalized.scope}:${normalized.workspacePath.orEmpty()}:${normalized.subject}:${normalized.attribute}"
+    }
+
+    private fun MemoryRecord.withIdentity(): MemoryRecord = copy(
+        subject = subject.ifBlank { defaultSubject(scope) },
+        attribute = attribute.ifBlank { inferAttribute(content, title, type) }
+    )
+
+    private fun defaultSubject(scope: MemoryScope): String = when (scope) {
+        MemoryScope.USER -> "user"
+        MemoryScope.WORKSPACE -> "workspace"
+    }
+
+    private fun inferAttribute(content: String, title: String, type: MemoryType): String {
+        val lower = content.lowercase()
+        return when {
+            listOf("call me", "panggil", "nama saya", "my name", "nickname").any { it in lower } -> "user_name"
+            listOf("concise", "ringkas", "detail", "verbose", "panjang", "singkat").any { it in lower } -> "response_detail"
+            listOf("bahasa", "language", "respond in", "jawab saya", "indonesian", "english").any { it in lower } -> "response_language"
+            type == MemoryType.WORKSPACE_FACT && listOf("build command", "assemble", "gradlew", "mvn ", "npm run build").any { it in lower } -> "build_command"
+            type == MemoryType.WORKSPACE_FACT && listOf("test command", "test task", "npm test", "pytest").any { it in lower } -> "test_command"
+            type == MemoryType.WORKSPACE_FACT && listOf("uses gradle", "uses maven", "build system").any { it in lower } -> "build_system"
+            title.isNotBlank() && title !in GENERIC_TITLES -> normalizeMemoryText(title).take(80)
+            else -> normalizeMemoryText(content).take(80)
+        }.ifBlank { stableMemoryId(type.name, content) }
+    }
 
     private fun inferTitle(content: String, type: MemoryType): String {
         val lower = content.lowercase()
         return when {
-            type == MemoryType.DAILY_LOG && "language" in lower -> "Communication preference update"
-            type == MemoryType.DAILY_LOG && "memory" in lower -> "Memory activity"
-            type == MemoryType.DAILY_LOG && ("browser" in lower || "search" in lower) -> "Browser task"
-            type == MemoryType.DAILY_LOG -> "Daily summary"
             "user's name" in lower -> "User name"
             "prefers" in lower && "responses" in lower -> "Response language preference"
             "works at" in lower -> "Workplace context"
@@ -403,13 +465,10 @@ class FileMemoryRepository @Inject constructor(
         }
     }
 
-    private fun memoryIdentityKey(target: String, content: String): String = "$target:${normalizeMemoryText(content)}"
-
-    private fun normalizeMemoryText(content: String): String = content
-        .lowercase()
-        .replace(Regex("[^a-z0-9\\p{L}]+"), " ")
-        .trim()
-        .replace(Regex("\\s+"), " ")
+    private fun conflictFreeStatus(raw: String): MemoryStatus = when (raw.uppercase()) {
+        MemoryStatus.ACTIVE.name -> MemoryStatus.ACTIVE
+        else -> MemoryStatus.SUPERSEDED
+    }
 
     private fun MemoryRecord.toJson(): JSONObject = JSONObject()
         .put("id", id)
@@ -422,217 +481,121 @@ class FileMemoryRepository @Inject constructor(
         .put("content", content)
         .put("reason", reason)
         .put("confidence", confidence)
-        .put("importance", importance)
         .put("createdAt", createdAt)
         .put("updatedAt", updatedAt)
         .put("expiresAt", expiresAt)
         .put("source", source)
+        .put("version", version)
+        .put("workspacePath", workspacePath)
+        .put("workspaceId", workspaceId)
+        .put("subject", subject)
+        .put("attribute", attribute)
+        .put("status", status.name)
+        .put("sourceConversationId", sourceConversationId)
 
-    private fun JSONObject.toMemoryRecord(): MemoryRecord = MemoryRecord(
-        id = optString("id"),
-        type = runCatching { MemoryType.valueOf(optString("type")) }.getOrDefault(MemoryType.LONG_TERM_MEMORY),
-        action = runCatching { MemoryAction.valueOf(optString("action")) }.getOrDefault(MemoryAction.ADD),
-        scope = runCatching { MemoryScope.valueOf(optString("scope")) }.getOrDefault(MemoryScope.GLOBAL),
-        target = optString("target"),
-        label = optString("label"),
-        title = optString("title").takeIf { it.isNotBlank() } ?: inferTitle(optString("content"), runCatching { MemoryType.valueOf(optString("type")) }.getOrDefault(MemoryType.LONG_TERM_MEMORY)),
-        content = optString("content"),
-        reason = optString("reason"),
-        confidence = optDouble("confidence", 0.0),
-        importance = optDouble("importance", 0.0),
-        createdAt = optLong("createdAt", 0L),
-        updatedAt = optLong("updatedAt", optLong("createdAt", 0L)),
-        expiresAt = if (has("expiresAt") && !isNull("expiresAt")) optLong("expiresAt") else null,
-        source = optString("source", "index")
-    )
-
-    private fun fileForTarget(target: String): File = when (target) {
-        "USER.md" -> userProfileFile
-        "MEMORY.md" -> hotMemoryFile
-        "PROJECT.md" -> workspaceFactsFile
-        else -> File(memoryDir, target)
+    private fun JSONObject.toMemoryRecordOrNull(): MemoryRecord? {
+        val type = runCatching { MemoryType.valueOf(optString("type")) }.getOrNull() ?: return null
+        if (type !in DURABLE_TYPES) return null
+        val rawAction = optString("action", MemoryAction.ADD.name)
+        if (rawAction.equals("IGNORE", true)) return null
+        return MemoryRecord(
+            id = optString("id").ifBlank { stableMemoryId(optString("target"), optString("content")) },
+            type = type,
+            action = runCatching { MemoryAction.valueOf(rawAction) }.getOrDefault(MemoryAction.ADD),
+            scope = runCatching { MemoryScope.valueOf(optString("scope")) }.getOrElse {
+                if (type == MemoryType.WORKSPACE_FACT) MemoryScope.WORKSPACE else MemoryScope.USER
+            },
+            target = optString("target"),
+            label = optString("label"),
+            title = optString("title").ifBlank { inferTitle(optString("content"), type) },
+            content = optString("content"),
+            reason = optString("reason"),
+            confidence = optDouble("confidence", 0.8),
+            createdAt = optLong("createdAt", 0L),
+            updatedAt = optLong("updatedAt", optLong("createdAt", 0L)),
+            expiresAt = if (has("expiresAt") && !isNull("expiresAt")) optLong("expiresAt") else null,
+            source = optString("source", "legacy"),
+            version = optInt("version", 1).coerceAtLeast(1),
+            workspacePath = optString("workspacePath").takeIf(String::isNotBlank),
+            workspaceId = optString("workspaceId").takeIf(String::isNotBlank),
+            subject = optString("subject"),
+            attribute = optString("attribute"),
+            status = if (rawAction.equals("REMOVE", true)) MemoryStatus.SUPERSEDED
+                else conflictFreeStatus(optString("status", MemoryStatus.ACTIVE.name)),
+            sourceConversationId = optString("sourceConversationId").takeIf(String::isNotBlank)
+        ).withIdentity()
     }
 
-    private fun parseDailyLogBlocks(file: File): List<Pair<String, String>> {
-        if (!file.exists()) return emptyList()
-        val blocks = mutableListOf<Pair<String, String>>()
-        var currentLabel: String? = null
-        val current = StringBuilder()
-        fun flush() {
-            val label = currentLabel ?: return
-            val content = cleanStoredSummary(current.toString())
-            if (content.isNotBlank() && !isGenericDailyNoteContent(content)) blocks.add(label to content)
-            currentLabel = null
-            current.clear()
+    private fun replacementValue(content: String): String {
+        listOf("=>", "->", "→").forEach { delimiter ->
+            val index = content.indexOf(delimiter)
+            if (index > 0 && index < content.lastIndex) return content.substring(index + delimiter.length).trim()
         }
-        file.readLines().forEach { line ->
-            val match = Regex("^[-*]\\s*\\[([^]]+)]\\s*(.*)$").find(line.trim())
-            if (match != null) {
-                flush()
-                currentLabel = match.groupValues[1]
-                current.append(match.groupValues[2].trim())
-            } else if (currentLabel != null && line.isNotBlank() && !line.trimStart().startsWith("#")) {
-                current.append(' ').append(line.trim())
-            }
-        }
-        flush()
-        return blocks
-    }
-
-    private fun removeDailyLogBlock(current: String, content: String, label: String): String {
-        val lines = current.lines().toMutableList()
-        val start = lines.indexOfFirst { line ->
-            val trimmed = line.trim()
-            trimmed.startsWith("-") && trimmed.contains("[$label]") && deduper.isDuplicate(content, trimmed)
-        }.takeIf { it >= 0 } ?: lines.indexOfFirst { line ->
-            val trimmed = line.trim().trimStart('-', '*').trim()
-            deduper.isDuplicate(content, trimmed)
-        }
-        require(start >= 0) { "No matching daily note found." }
-        var end = start + 1
-        while (end < lines.size) {
-            val trimmed = lines[end].trim()
-            if (trimmed.startsWith("- [") || trimmed.startsWith("* [") || trimmed.startsWith("## ")) break
-            end++
-        }
-        repeat(end - start) { lines.removeAt(start) }
-        return lines.joinToString("\n").trimEnd() + "\n"
-    }
-
-    private fun sanitizeDailyNoteText(text: String): String = text.lines()
-        .filterNot { line -> isGenericDailyNoteContent(line) }
-        .joinToString("\n")
-        .trim()
-
-    private fun isGenericDailyNoteContent(text: String): Boolean {
-        val lower = text.lowercase()
-            .replace(Regex("^[-*]\\s*(\\[[^]]+])?\\s*"), "")
-            .trim()
-            .removeSuffix(".")
-        if (lower.isBlank()) return true
-        return lower in setOf(
-            "user completed a chat task with amaya",
-            "user completed a tool-assisted task",
-            "user completed a browser/search task",
-            "interaction summarized",
-            "the session completed successfully",
-            "the session focused on a browser or search request from the user",
-            "the session focused on a browser or search request",
-            "the session handled a request to find and remove saved memory",
-            "the session reviewed saved memory and memory-management behavior",
-            "the session captured a user profile detail for follow-up memory handling"
-        ) || lower.startsWith("user asked/discussed") ||
-            lower.startsWith("the session focused on") ||
-            lower.startsWith("the session handled") ||
-            lower.startsWith("the session reviewed") ||
-            lower.startsWith("the session captured") ||
-            "tools used:" in lower ||
-            "tool-assisted" in lower
-    }
-
-    private fun cleanStoredSummary(text: String): String {
-        val clean = text
-            .replace(Regex("(?is)<think>.*?</think>"), "")
-            .replace(Regex("(?is)<think>.*"), "")
-            .replace(Regex("(?is)</think>"), "")
-            .replace(Regex("(?i)\\btools used:\\s*[^.]+\\.?"), "")
-            .replace(Regex("\\s+"), " ")
-            .trim()
-        if (clean.isBlank() || isGenericDailyNoteContent(clean)) return ""
-        val outcomePart = Regex("(?i)outcome:\\s*(.*?)(?:\\btools used:|$)").find(clean)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-        val source = outcomePart?.takeIf { it.isNotBlank() && !isGenericDailyNoteContent(it) } ?: clean
-        return source.take(220).trim().trim('.', ';').takeIf { it.isNotBlank() }?.let { "$it." }.orEmpty()
+        return content.trim()
     }
 
     private fun scoreMemoryRecord(record: MemoryRecord, query: String): Double {
         val terms = expandTerms(query)
         if (terms.isEmpty()) return 0.0
-        val haystack = expandTerms(record.content + " " + record.label + " " + record.type.name)
+        val haystack = expandTerms("${record.title} ${record.content} ${record.label} ${record.type}")
         var score = 0.0
         terms.forEach { term ->
             if (term in haystack) score += 2.0
             else if (haystack.any { it.contains(term) || term.contains(it) }) score += 0.75
         }
-        return score + record.importance
+        return score
     }
 
     private fun expandTerms(text: String): Set<String> {
-        val base = text.lowercase()
+        val terms = text.lowercase()
             .replace(Regex("[^a-z0-9\\p{L}]+"), " ")
             .trim()
             .split(Regex("\\s+"))
             .filter { it.length > 2 }
             .toMutableSet()
         SYNONYMS.forEach { (key, values) ->
-            if (key in base || values.any { it in base }) {
-                base.add(key)
-                base.addAll(values)
+            if (key in terms || values.any { it in terms }) {
+                terms += key
+                terms += values
             }
         }
-        return base
+        return terms
     }
 
-    private fun dailyLogTarget(): String = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE) + ".md"
+    private fun migrationKey(record: MemoryRecord): String =
+        "${record.type}:${record.scope}:${record.workspacePath.orEmpty()}:${normalizeMemoryText(record.content)}"
 
-    private fun appendDailyLogInternal(text: String) {
-        val today = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)
-        val file = File(memoryDir, "$today.md")
-        val timestamp = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm"))
-        if (!file.exists() || file.readText().isBlank()) {
-            atomicWrite(file, "# Daily Notes - $today\n\n## Events\n")
-        }
-        file.appendText("- [$timestamp] $text\n")
-    }
+    private fun normalizeMemoryText(text: String): String = text.lowercase()
+        .replace(Regex("[^a-z0-9\\p{L}]+"), " ")
+        .trim()
+        .replace(Regex("\\s+"), " ")
 
-    private fun dailyLogFiles(): List<File> = memoryDir.listFiles()
-        ?.filter { it.extension == "md" && Regex("\\d{4}-\\d{2}-\\d{2}\\.md").matches(it.name) }
-        ?.sortedByDescending { it.name }
-        ?: emptyList()
-
-    private fun migrateLegacyFilesIfNeeded() {
-        migrateLegacy("USER.md", userProfileFile)
-        migrateLegacy("MEMORY.md", hotMemoryFile)
-        migrateLegacy("AGENTS.md", workspaceFactsFile)
-    }
-
-    private fun migrateLegacy(name: String, target: File) {
-        if (target.exists() && target.readText().isNotBlank()) return
-        val legacy = File(legacyPersonaDir, name)
-        if (legacy.exists() && legacy.readText().isNotBlank()) {
-            atomicWrite(target, legacy.readText())
-        }
-    }
-
-    private fun File.readOrDefault(defaultContent: String): String {
-        if (!exists() || readText().isBlank()) {
-            atomicWrite(this, defaultContent)
-        }
-        return readText()
-    }
-
-    private fun File.readTextIfExists(): String = if (exists()) readText() else ""
-
-    private fun defaultContentFor(file: File): String = when (file.name) {
-        "USER.md" -> DEFAULT_USER_PROFILE_MD
-        "MEMORY.md" -> DEFAULT_HOT_MEMORY_MD
-        "PROJECT.md" -> DEFAULT_WORKSPACE_FACTS_MD
-        else -> ""
-    }
+    private fun stableMemoryId(target: String, content: String): String =
+        "mem_${UUID.nameUUIDFromBytes("$target:$content".toByteArray())}"
 
     private fun atomicWrite(file: File, content: String) {
         file.parentFile?.mkdirs()
-        val tmp = File(file.parentFile, file.name + ".tmp")
-        tmp.writeText(content.trimEnd() + "\n")
+        val tmp = File(file.parentFile, "${file.name}.tmp")
+        tmp.writeText(content.trimEnd() + if (content.isBlank()) "" else "\n")
         if (!tmp.renameTo(file)) {
-            file.writeText(content.trimEnd() + "\n")
+            file.writeText(tmp.readText())
             tmp.delete()
         }
     }
 
     companion object {
+        private const val MIN_CONFIDENCE = 0.55
+        private const val MIN_SEARCH_SCORE = 2.0
+        private const val MAX_LIST_LIMIT = 200
+        private const val MAX_REVISIONS_PER_MEMORY = 5
+        private val UUID_REGEX = Regex("[0-9a-fA-F-]{36}")
+        private val DURABLE_TYPES = setOf(MemoryType.USER_PROFILE, MemoryType.WORKSPACE_FACT)
+        private val LEGACY_DAILY_FILE = Regex("\\d{4}-\\d{2}-\\d{2}\\.md")
+        private val GENERIC_TITLES = setOf("User profile", "Workspace fact", "Memory")
+        private val USER_FACT_TERMS = setOf(
+            "the user", "user prefers", "nama saya", "my name", "call me", "panggil", "bahasa", "language",
+            "concise", "ringkas", "detailed", "detail", "works at", "bekerja di", "nickname"
+        )
         private val SYNONYMS = mapOf(
             "language" to setOf("bahasa", "jawab", "respond", "reply"),
             "tone" to setOf("gaya", "style", "nada", "cara"),
@@ -642,31 +605,5 @@ class FileMemoryRepository @Inject constructor(
             "project" to setOf("workspace", "repo", "repository", "codebase", "kode"),
             "memory" to setOf("ingat", "remember", "memori")
         )
-
-        private val DEFAULT_USER_PROFILE_MD = """
-            # User Profile
-
-            > Stable user preferences and profile facts only.
-
-            ## Learned Preferences
-        """.trimIndent() + "\n"
-
-        private val DEFAULT_HOT_MEMORY_MD = """
-            # Important Memory
-
-            > Durable important facts only. Do not store daily events, reminders, credentials, or temporary guesses here.
-
-            ## Important Facts
-
-            ## Ongoing Tasks & Goals
-        """.trimIndent() + "\n"
-
-        private val DEFAULT_WORKSPACE_FACTS_MD = """
-            # Project Memory
-
-            > Workspace-specific facts, rules, and environment notes.
-
-            ## Workspace Facts
-        """.trimIndent() + "\n"
     }
 }

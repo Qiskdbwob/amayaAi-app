@@ -10,26 +10,25 @@ data class PendingProposal(
     val content: String,
     val reason: String,
     val confidence: Double,
-    val importance: Double,
     val createdAt: Long,
-    val status: PendingProposalStatus
+    val status: PendingProposalStatus,
+    val workspacePath: String? = null,
+    val workspaceId: String? = null,
+    val sourceSessionIds: List<String> = listOf(sourceSessionId),
+    val evidence: List<String> = emptyList()
 )
 
 enum class PendingProposalType {
     USER_PROFILE,
-    LONG_TERM_MEMORY,
-    DAILY_LOG,
     SKILL_CREATE,
     SKILL_PATCH,
     SKILL_UPDATE,
-    REMINDER,
     WORKSPACE_FACT
 }
 
 enum class PendingProposalAction {
     ADD,
     REPLACE,
-    REMOVE,
     CREATE,
     PATCH,
     UPDATE,

@@ -73,7 +73,7 @@ class LocalSettingsActivity : AppCompatActivity() {
                         LocalPersonaActivity.start(this)
                     },
                     onNavigateToMemory = {
-                        LocalMemoryActivity.start(this)
+                        LocalMemoryActivity.start(this, currentWorkspace)
                     },
                     onNavigateToSkills = {
                         LocalSkillsActivity.start(this)
@@ -82,7 +82,7 @@ class LocalSettingsActivity : AppCompatActivity() {
                         LocalContextRecallActivity.start(this)
                     },
                     onNavigateToReview = {
-                        LocalReviewActivity.start(this)
+                        LocalReviewActivity.start(this, currentWorkspace)
                     },
                     onNavigateToPrivacy = {
                         LocalPrivacySafetyActivity.start(this)

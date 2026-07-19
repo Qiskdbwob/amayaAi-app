@@ -28,6 +28,7 @@ class LocalMemoryAreaActivity : AppCompatActivity() {
             AmayaTheme {
                 val viewModel: AmayaViewModel = hiltViewModel()
                 val state by viewModel.uiState.collectAsState()
+                LaunchedEffect(Unit) { viewModel.setWorkspace(intent.getStringExtra(EXTRA_WORKSPACE)) }
                 val snackbarHostState = remember { SnackbarHostState() }
                 LaunchedEffect(state.message) { state.message?.let { snackbarHostState.showSnackbar(it); viewModel.clearMessage() } }
                 MemoryAreaListScreen(
@@ -35,8 +36,7 @@ class LocalMemoryAreaActivity : AppCompatActivity() {
                     state = state,
                     snackbarHostState = snackbarHostState,
                     onNavigateBack = { finish() },
-                    onAdd = { content -> viewModel.addMemory(area, content) },
-                    onDelete = viewModel::deleteMemory
+                    onAdd = { content -> viewModel.addMemory(area, content) }
                 )
             }
         }
@@ -44,8 +44,11 @@ class LocalMemoryAreaActivity : AppCompatActivity() {
 
     companion object {
         private const val EXTRA_AREA = "memory_area"
-        fun start(activity: Activity, area: MemoryArea) {
-            activity.startActivity(Intent(activity, LocalMemoryAreaActivity::class.java).putExtra(EXTRA_AREA, area.key))
+        private const val EXTRA_WORKSPACE = "workspace_path"
+        fun start(activity: Activity, area: MemoryArea, workspacePath: String? = null) {
+            activity.startActivity(Intent(activity, LocalMemoryAreaActivity::class.java)
+                .putExtra(EXTRA_AREA, area.key)
+                .putExtra(EXTRA_WORKSPACE, workspacePath))
         }
     }
 }

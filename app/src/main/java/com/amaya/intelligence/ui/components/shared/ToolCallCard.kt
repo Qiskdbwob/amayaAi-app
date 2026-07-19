@@ -490,7 +490,7 @@ internal fun ToolCardContent(
                 ) {
                     ToolScrollableBlock(if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)) {
                         MarkdownText(
-                            text     = (execution.result ?: "").take(3000),
+                            text     = execution.result.orEmpty(),
                             color    = MaterialTheme.colorScheme.onSurface,
                             compact  = true,
                             modifier = Modifier.padding(10.dp),
@@ -656,12 +656,6 @@ internal fun SubagentChildCard(
                 enter = ToolCallMotion.enter,
                 exit = ToolCallMotion.exit
             ) {
-                var showFull by remember(child.index) { mutableStateOf(false) }
-                val truncateAt    = 2000
-                val isTruncatable = (child.result?.length ?: 0) > truncateAt
-                val displayText   = if (showFull || !isTruncatable) child.result ?: ""
-                                    else child.result!!.take(truncateAt)
-
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -681,24 +675,11 @@ internal fun SubagentChildCard(
                         ToolScrollableBlock(blockColor) {
                             Column(modifier = Modifier.padding(10.dp)) {
                                 MarkdownText(
-                                    text     = displayText,
+                                    text     = child.result.orEmpty(),
                                     color    = MaterialTheme.colorScheme.onSurface,
                                     compact  = true,
                                     modifier = Modifier.fillMaxWidth()
                                 )
-                                if (isTruncatable) {
-                                    Spacer(Modifier.height(6.dp))
-                                    Text(
-                                        text       = if (showFull) "Show less"
-                                                     else "\u2026 Show ${(child.result?.length ?: 0) - truncateAt} more chars",
-                                        style      = MaterialTheme.typography.labelSmall,
-                                        color      = iosBlue,
-                                        fontWeight = FontWeight.Medium,
-                                        modifier   = Modifier
-                                            .clickable { showFull = !showFull; onInteraction() }
-                                            .padding(vertical = 2.dp)
-                                    )
-                                }
                             }
                         }
                     }

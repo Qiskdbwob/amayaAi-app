@@ -1,4 +1,4 @@
-﻿package com.amaya.intelligence.tools
+package com.amaya.intelligence.tools
 
 import android.content.Context
 import com.amaya.intelligence.domain.security.CommandValidator
@@ -34,8 +34,6 @@ class WriteFileTool @Inject constructor(
 
     companion object {
         const val TAG = "WriteFileTool"
-        const val MAX_BACKUPS = 5
-
         val CODE_EXTENSIONS = setOf(
             "kt", "java", "py", "js", "ts", "jsx", "tsx",
             "c", "cpp", "h", "hpp", "cs", "go", "rs",
@@ -55,16 +53,12 @@ class WriteFileTool @Inject constructor(
     override val name = "write_file"
 
     override val description = """
-        Write content to a file with atomic operations and automatic backup.
+        Write content to a file using a best-effort temp-file replacement.
         Supports text files and document formats (DOCX, XLSX, PPTX, ODT, ODS, ODP).
 
-        SAFETY: Always creates a backup before writing. If write fails,
-        automatically restores from backup.
-
         Arguments:
-        - path (string, required): Absolute path to the file
+        - path (string, required): Host-resolved workspace path
         - content (string, required): Content to write (plain text for documents)
-        - create_backup (bool, optional): Create backup before write (default: true)
         - validate_syntax (bool, optional): Validate code syntax (default: false)
         - create_dirs (bool, optional): Create parent directories if needed (default: true)
         - append (bool, optional): Append instead of overwrite (default: false)
@@ -108,13 +102,10 @@ class WriteFileTool @Inject constructor(
         }
 
         val file = File(pathStr)
-        val createBackup = arguments["create_backup"] as? Boolean ?: true
         // Default false — AI-generated code is typically valid, validation causes false positives
         val validateSyntax = arguments["validate_syntax"] as? Boolean ?: false
         val createDirs = arguments["create_dirs"] as? Boolean ?: true
         val append = arguments["append"] as? Boolean ?: false
-
-        var backupFile: File? = null
 
         try {
             // 1. Create parent directories if needed
@@ -130,18 +121,13 @@ class WriteFileTool @Inject constructor(
                 }
             }
 
-            // 2. Create backup of existing file
-            if (createBackup && file.exists()) {
-                backupFile = createBackupFile(file)
-            }
-
-            // 3. Check if this is a document format
+            // 2. Check if this is a document format
             val ext = file.extension.lowercase()
             if (ext in DOCUMENT_EXTENSIONS) {
-                return@withContext writeDocument(file, content, ext, append, backupFile)
+                return@withContext writeDocument(file, content, ext, append)
             }
 
-            // 4. Validate syntax for code files
+            // 3. Validate syntax for code files
             if (validateSyntax && shouldValidateSyntax(file)) {
                 val syntaxResult = validateCodeSyntax(content, file.extension)
                 if (syntaxResult != null) {
@@ -154,7 +140,7 @@ class WriteFileTool @Inject constructor(
                 }
             }
 
-            // 5. Atomic write process for text files
+            // 4. Temp-file replacement for text files
             if (append && file.exists()) {
                 val existingContent = file.readText()
                 val newContent = existingContent + content
@@ -163,59 +149,22 @@ class WriteFileTool @Inject constructor(
                 atomicWrite(file, content)
             }
 
-            // 6. Clean up old backups
-            if (backupFile != null) {
-                cleanupOldBackups(file)
-            }
-
             val operation = if (append) "appended to" else "written to"
             ToolResult.Success(
-                output = "Successfully $operation: $pathStr (${content.length} chars)" +
-                        (if (backupFile != null) "\nBackup created: ${backupFile!!.name}" else ""),
+                output = "Successfully $operation: $pathStr (${content.length} chars)",
                 metadata = mapOf<String, Any>(
                     "path" to pathStr,
-                    "size" to content.length,
-                    "backup" to (backupFile?.absolutePath ?: "none")
+                    "size" to content.length
                 )
             )
 
         } catch (e: Exception) {
             Log.e(TAG, "FAILED: ${e.javaClass.simpleName}: ${e.message}", e)
-            // ROLLBACK: Restore from backup if we have one
-            if (backupFile != null && backupFile!!.exists()) {
-                try {
-                    backupFile!!.copyTo(file, overwrite = true)
-                } catch (restoreError: Exception) {
-                    Log.e(TAG, "rollback FAILED: ${restoreError.message}")
-                    return@withContext ToolResult.Error(
-                        "Write failed AND restore failed: ${e.message}. " +
-                        "Backup remains at: ${backupFile!!.absolutePath}",
-                        ErrorType.EXECUTION_ERROR
-                    )
-                }
-
-                return@withContext ToolResult.Error(
-                    "Write failed (${e.javaClass.simpleName}): ${e.message}",
-                    ErrorType.EXECUTION_ERROR,
-                    recoverable = true
-                )
-            }
-
             ToolResult.Error(
                 "Failed to write file (${e.javaClass.simpleName}): ${e.message}",
                 ErrorType.EXECUTION_ERROR
             )
         }
-    }
-
-    private fun createBackupFile(file: File): File {
-        val timestamp = System.currentTimeMillis()
-        val backupName = "${file.name}.bak.$timestamp"
-        val backupFile = File(file.parentFile, backupName)
-
-        file.copyTo(backupFile, overwrite = true)
-
-        return backupFile
     }
 
     private fun atomicWrite(targetFile: File, content: String) {
@@ -387,32 +336,12 @@ class WriteFileTool @Inject constructor(
         return null
     }
 
-    private fun cleanupOldBackups(originalFile: File) {
-        val parent = originalFile.parentFile ?: return
-        val baseName = originalFile.name
-        val pattern = Regex("""${Regex.escape(baseName)}\.bak\.(\d+)""")
-
-        val backups = try {
-            parent.listFiles()?.filter { pattern.matches(it.name) }
-                ?.sortedByDescending { file ->
-                    pattern.find(file.name)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
-                } ?: emptyList()
-        } catch (e: SecurityException) {
-            return
-        }
-
-        backups.drop(MAX_BACKUPS).forEach { backup ->
-            runCatching { backup.delete() }
-        }
-    }
-
     // ── Document Write ──────────────────────────────────────────────────────────
     private fun writeDocument(
         file: File,
         content: String,
         ext: String,
-        append: Boolean,
-        backupFile: File?
+        append: Boolean
     ): ToolResult {
         return try {
             when (ext) {
@@ -428,27 +357,17 @@ class WriteFileTool @Inject constructor(
                 )
             }
 
-            if (backupFile != null) {
-                cleanupOldBackups(file)
-            }
-
             val operation = if (append) "appended to" else "written to"
             ToolResult.Success(
-                output = "Successfully $operation document: ${file.name} (${content.length} chars)" +
-                        (if (backupFile != null) "\nBackup created: ${backupFile.name}" else ""),
+                output = "Successfully $operation document: ${file.name} (${content.length} chars)",
                 metadata = mapOf(
                     "path" to file.absolutePath,
                     "format" to ext,
-                    "size" to content.length,
-                    "backup" to (backupFile?.absolutePath ?: "none")
+                    "size" to content.length
                 )
             )
         } catch (e: Exception) {
             Log.e(TAG, "writeDocument failed: ext=$ext: ${e.javaClass.simpleName}: ${e.message}", e)
-            // Rollback from backup if available
-            if (backupFile != null && backupFile.exists()) {
-                runCatching { backupFile.copyTo(file, overwrite = true) }
-            }
             ToolResult.Error(
                 "Failed to write document (${e.javaClass.simpleName}): ${e.message}",
                 ErrorType.EXECUTION_ERROR

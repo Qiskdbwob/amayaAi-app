@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import javax.inject.Inject
@@ -49,12 +50,13 @@ class FilePendingProposalRepository @Inject constructor(
     private val fileMutex = Mutex()
 
     override suspend fun addProposal(proposal: PendingProposal): Result<Unit> = withContext(Dispatchers.IO) {
+        if (proposal.type.isUserProfileProposal()) {
+            return@withContext Result.failure(IllegalArgumentException("About You may only be written through the memory tool."))
+        }
         fileMutex.withLock {
             runCatching {
             val safety = classifier.checkSafety(proposal.content)
-            if (!safety.safe && proposal.type != PendingProposalType.DAILY_LOG) {
-                return@runCatching
-            }
+            if (!safety.safe) return@runCatching
             val safeProposal = proposal.copy(
                 content = safety.redactedContent,
                 action = normalizeActionForCreation(proposal.action, safety.redactedContent),
@@ -66,6 +68,7 @@ class FilePendingProposalRepository @Inject constructor(
                 it.status == PendingProposalStatus.PENDING &&
                     it.type == safeProposal.type &&
                     it.target == safeProposal.target &&
+                    it.workspacePath == safeProposal.workspacePath &&
                     normalize(it.content) == normalize(safeProposal.content)
             }
             if (!duplicate) {
@@ -79,6 +82,7 @@ class FilePendingProposalRepository @Inject constructor(
     override suspend fun listPending(limit: Int): List<PendingProposal> = withContext(Dispatchers.IO) {
         fileMutex.withLock {
             readAll()
+                .filterNot { it.type.isUserProfileProposal() }
                 .filter { it.status == PendingProposalStatus.PENDING || it.status == PendingProposalStatus.APPROVED }
                 .sortedByDescending { it.createdAt }
                 .take(limit.coerceIn(1, 200))
@@ -177,21 +181,26 @@ class FilePendingProposalRepository @Inject constructor(
     }
 
     private suspend fun apply(proposal: PendingProposal): Result<String> {
-        val safety = classifier.checkSafety(proposal.content)
-        if (!safety.safe && proposal.type != PendingProposalType.DAILY_LOG) {
-            return Result.failure(IllegalArgumentException("Unsafe proposal cannot be applied: ${safety.reasons.joinToString()}"))
+        if (proposal.type.isUserProfileProposal()) {
+            return Result.failure(IllegalArgumentException("About You may only be written through the memory tool."))
         }
-        return when (proposal.type) {
-            PendingProposalType.USER_PROFILE -> memoryRepository.applyProposal(proposal.toMemoryProposal())
-            PendingProposalType.LONG_TERM_MEMORY -> memoryRepository.applyProposal(proposal.toMemoryProposal())
-            PendingProposalType.DAILY_LOG -> memoryRepository.applyProposal(proposal.copy(content = safety.redactedContent).toMemoryProposal())
-            PendingProposalType.WORKSPACE_FACT -> memoryRepository.applyProposal(proposal.toMemoryProposal())
-            PendingProposalType.SKILL_CREATE -> createSkill(proposal).map { "Created skill ${proposal.target}" }
-            PendingProposalType.SKILL_PATCH -> skillRepository.patchSkill(proposal.target, proposal.content).map { "Patched skill ${proposal.target}" }
-            PendingProposalType.SKILL_UPDATE -> skillRepository.updateSkill(proposal.target, proposal.content).map { "Updated skill ${proposal.target}" }
-            PendingProposalType.REMINDER -> Result.failure(IllegalArgumentException("Reminder proposals must be handled by reminder tools."))
+        val currentProposal = if (proposal.type == PendingProposalType.WORKSPACE_FACT && proposal.workspaceId != null) {
+            val binding = memoryRepository.listWorkspaceBindings().firstOrNull { it.id == proposal.workspaceId }
+                ?: return Result.failure(IllegalArgumentException("Workspace memory binding not found: ${proposal.workspaceId}"))
+            proposal.copy(workspacePath = binding.root)
+        } else proposal
+        val safety = classifier.checkSafety(currentProposal.content)
+        if (!safety.safe) return Result.failure(IllegalArgumentException("Unsafe proposal cannot be applied: ${safety.reasons.joinToString()}"))
+        return when (currentProposal.type) {
+            PendingProposalType.USER_PROFILE -> memoryRepository.applyProposal(currentProposal.toMemoryProposal())
+            PendingProposalType.WORKSPACE_FACT -> memoryRepository.applyProposal(currentProposal.toMemoryProposal())
+            PendingProposalType.SKILL_CREATE -> createSkill(currentProposal).map { "Created skill ${currentProposal.target}" }
+            PendingProposalType.SKILL_PATCH -> skillRepository.patchSkill(currentProposal.target, currentProposal.content).map { "Patched skill ${currentProposal.target}" }
+            PendingProposalType.SKILL_UPDATE -> skillRepository.updateSkill(currentProposal.target, currentProposal.content).map { "Updated skill ${currentProposal.target}" }
         }
     }
+
+    private fun PendingProposalType.isUserProfileProposal(): Boolean = this == PendingProposalType.USER_PROFILE
 
     private suspend fun createSkill(proposal: PendingProposal): Result<Unit> {
         val now = System.currentTimeMillis()
@@ -219,7 +228,11 @@ class FilePendingProposalRepository @Inject constructor(
 
     private fun readAll(): List<PendingProposal> = runCatching {
         if (!file.exists()) return emptyList()
-        file.readLines().mapNotNull { line -> runCatching { JSONObject(line).toPendingProposal() }.getOrNull() }
+        file.readLines().mapNotNull { line ->
+            runCatching { JSONObject(line) }.getOrNull()
+                ?.takeUnless { it.optString("type") == "LONG_TERM_MEMORY" || it.optString("type") == "DAILY_LOG" }
+                ?.let { runCatching { it.toPendingProposal() }.getOrNull() }
+        }
     }.getOrDefault(emptyList())
 
     private fun writeAll(proposals: List<PendingProposal>) {
@@ -242,29 +255,36 @@ class FilePendingProposalRepository @Inject constructor(
         .put("content", content)
         .put("reason", reason)
         .put("confidence", confidence)
-        .put("importance", importance)
         .put("createdAt", createdAt)
         .put("status", status.name)
+        .put("workspacePath", workspacePath)
+        .put("workspaceId", workspaceId)
+        .put("sourceSessionIds", JSONArray(sourceSessionIds))
+        .put("evidence", JSONArray(evidence))
 
     private fun JSONObject.toPendingProposal(): PendingProposal = PendingProposal(
         id = optString("id"),
         sourceSessionId = optString("sourceSessionId"),
-        type = runCatching { PendingProposalType.valueOf(optString("type")) }.getOrDefault(PendingProposalType.LONG_TERM_MEMORY),
+        type = runCatching { PendingProposalType.valueOf(optString("type")) }.getOrNull()
+            ?: throw IllegalArgumentException("Unsupported legacy proposal type: ${optString("type")}"),
         target = optString("target"),
         action = runCatching { PendingProposalAction.valueOf(optString("action")) }.getOrDefault(PendingProposalAction.ADD),
         title = optString("title"),
         content = optString("content"),
         reason = optString("reason"),
         confidence = optDouble("confidence", 0.0),
-        importance = optDouble("importance", 0.0),
         createdAt = optLong("createdAt", 0L),
-        status = runCatching { PendingProposalStatus.valueOf(optString("status")) }.getOrDefault(PendingProposalStatus.PENDING)
+        status = runCatching { PendingProposalStatus.valueOf(optString("status")) }.getOrDefault(PendingProposalStatus.PENDING),
+        workspacePath = optString("workspacePath").takeIf { it.isNotBlank() },
+        workspaceId = optString("workspaceId").takeIf { it.isNotBlank() },
+        sourceSessionIds = optJSONArray("sourceSessionIds")?.let { array -> List(array.length()) { array.optString(it) } }?.filter(String::isNotBlank)
+            ?: listOf(optString("sourceSessionId")).filter(String::isNotBlank),
+        evidence = optJSONArray("evidence")?.let { array -> List(array.length()) { array.optString(it) } }?.filter(String::isNotBlank).orEmpty()
     )
 
     private fun normalizeActionForCreation(action: PendingProposalAction, content: String): PendingProposalAction {
         return when {
             action == PendingProposalAction.REPLACE && !hasReplacementDelimiter(content) -> PendingProposalAction.ADD
-            action == PendingProposalAction.REMOVE && content.trim().isBlank() -> PendingProposalAction.IGNORE
             else -> action
         }
     }

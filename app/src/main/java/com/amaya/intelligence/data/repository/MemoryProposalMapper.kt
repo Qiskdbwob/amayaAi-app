@@ -19,9 +19,12 @@ fun MemoryProposal.toPendingProposal(sessionId: String): PendingProposal = Pendi
     content = content,
     reason = reason,
     confidence = confidence,
-    importance = importance,
     createdAt = createdAt,
-    status = PendingProposalStatus.PENDING
+    status = PendingProposalStatus.PENDING,
+    workspacePath = workspacePath,
+    workspaceId = workspaceId,
+    sourceSessionIds = listOf(sessionId),
+    evidence = listOfNotNull(sourceConversationId?.let { "Explicit memory evidence from conversation $it" })
 )
 
 
@@ -34,50 +37,52 @@ fun PendingProposal.toMemoryProposal(): MemoryProposal = MemoryProposal(
     content = content,
     reason = reason,
     confidence = confidence,
-    importance = importance,
-    createdAt = createdAt
+    createdAt = createdAt,
+    workspacePath = workspacePath,
+    workspaceId = workspaceId,
+    sourceConversationId = sourceSessionId,
+    subject = when (type) {
+        PendingProposalType.USER_PROFILE -> "user"
+        PendingProposalType.WORKSPACE_FACT -> "workspace"
+        else -> "memory"
+    },
+    attribute = inferProposalAttribute(title, content)
 )
+
+private fun inferProposalAttribute(title: String, content: String): String = (title.ifBlank { content })
+    .lowercase()
+    .replace(Regex("[^a-z0-9\\p{L}]+"), " ")
+    .trim()
+    .replace(Regex("\\s+"), " ")
+    .take(80)
 
 private fun MemoryType.toPendingProposalType(): PendingProposalType = when (this) {
     MemoryType.USER_PROFILE -> PendingProposalType.USER_PROFILE
-    MemoryType.LONG_TERM_MEMORY -> PendingProposalType.LONG_TERM_MEMORY
-    MemoryType.DAILY_LOG -> PendingProposalType.DAILY_LOG
-    MemoryType.SKILL_CANDIDATE -> PendingProposalType.SKILL_CREATE
-    MemoryType.REMINDER -> PendingProposalType.REMINDER
     MemoryType.WORKSPACE_FACT -> PendingProposalType.WORKSPACE_FACT
 }
 
 private fun MemoryType.memoryTarget(): String = when (this) {
-    MemoryType.USER_PROFILE -> "USER.md"
-    MemoryType.LONG_TERM_MEMORY -> "MEMORY.md"
-    MemoryType.DAILY_LOG -> "memory/YYYY-MM-DD.md"
-    MemoryType.SKILL_CANDIDATE -> "agent-learned-skill"
-    MemoryType.REMINDER -> "reminder database"
-    MemoryType.WORKSPACE_FACT -> "PROJECT.md"
+    MemoryType.USER_PROFILE -> "records.jsonl#user"
+    MemoryType.WORKSPACE_FACT -> "workspaces/<workspace-id>/records.jsonl"
 }
 
 private fun MemoryAction.toPendingProposalAction(): PendingProposalAction = when (this) {
     MemoryAction.ADD -> PendingProposalAction.ADD
     MemoryAction.REPLACE -> PendingProposalAction.REPLACE
-    MemoryAction.REMOVE -> PendingProposalAction.REMOVE
     MemoryAction.IGNORE -> PendingProposalAction.IGNORE
 }
 
 private fun PendingProposalType.toMemoryType(): MemoryType = when (this) {
     PendingProposalType.USER_PROFILE -> MemoryType.USER_PROFILE
-    PendingProposalType.LONG_TERM_MEMORY -> MemoryType.LONG_TERM_MEMORY
-    PendingProposalType.DAILY_LOG -> MemoryType.DAILY_LOG
     PendingProposalType.WORKSPACE_FACT -> MemoryType.WORKSPACE_FACT
     PendingProposalType.SKILL_CREATE,
     PendingProposalType.SKILL_PATCH,
-    PendingProposalType.SKILL_UPDATE -> MemoryType.SKILL_CANDIDATE
-    PendingProposalType.REMINDER -> MemoryType.REMINDER
+    PendingProposalType.SKILL_UPDATE -> throw IllegalArgumentException("Skill proposals are not memory proposals.")
 }
 
 private fun PendingProposalAction.toMemoryAction(): MemoryAction = when (this) {
     PendingProposalAction.REPLACE,
     PendingProposalAction.UPDATE -> MemoryAction.REPLACE
-    PendingProposalAction.REMOVE -> MemoryAction.REMOVE
     PendingProposalAction.IGNORE -> MemoryAction.IGNORE
     PendingProposalAction.ADD,
     PendingProposalAction.CREATE,
@@ -87,10 +92,7 @@ private fun PendingProposalAction.toMemoryAction(): MemoryAction = when (this) {
 private fun PendingProposalType.toMemoryScope(): MemoryScope = when (this) {
     PendingProposalType.USER_PROFILE -> MemoryScope.USER
     PendingProposalType.WORKSPACE_FACT -> MemoryScope.WORKSPACE
-    PendingProposalType.DAILY_LOG -> MemoryScope.SESSION
-    PendingProposalType.REMINDER -> MemoryScope.USER
-    PendingProposalType.LONG_TERM_MEMORY,
     PendingProposalType.SKILL_CREATE,
     PendingProposalType.SKILL_PATCH,
-    PendingProposalType.SKILL_UPDATE -> MemoryScope.GLOBAL
+    PendingProposalType.SKILL_UPDATE -> throw IllegalArgumentException("Skill proposals have no memory scope.")
 }

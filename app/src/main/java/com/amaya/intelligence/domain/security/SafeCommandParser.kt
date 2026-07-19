@@ -1,7 +1,12 @@
 package com.amaya.intelligence.domain.security
 
-/** Parses one executable plus argv. Compound shell grammar is unsupported. */
-internal fun parseSafeCommandArguments(command: String): List<String>? {
+internal sealed interface CommandParseResult {
+    data class Success(val argv: List<String>) : CommandParseResult
+    data class Error(val reason: String) : CommandParseResult
+}
+
+/** Parses one executable plus argv. Shell interpretation is deliberately unsupported. */
+internal fun parseCommand(command: String): CommandParseResult {
     val args = mutableListOf<String>()
     val current = StringBuilder()
     var quote: Char? = null
@@ -28,14 +33,21 @@ internal fun parseSafeCommandArguments(command: String): List<String>? {
         }
         when {
             char == '\'' || char == '"' -> quote = char
-            char == '\n' || char == '\r' -> return null
+            char == '\n' || char == '\r' -> return CommandParseResult.Error("Multiple commands are not supported; run one executable per call")
             char.isWhitespace() -> flush()
-            char in setOf(';', '|', '&', '>', '<', '`') -> return null
-            char == '$' && command.getOrNull(index + 1) == '(' -> return null
+            char == ';' -> return CommandParseResult.Error("Command chaining with ';' is not supported; run each command separately")
+            char == '|' -> return CommandParseResult.Error("Pipes are not supported; run each command separately or use a native tool")
+            char == '&' -> return CommandParseResult.Error("Background or chained commands are not supported")
+            char == '>' || char == '<' -> return CommandParseResult.Error("Shell redirection is not supported; use workspace file tools")
+            char == '`' || char == '$' && command.getOrNull(index + 1) == '(' -> return CommandParseResult.Error("Command substitution is not supported")
             else -> current.append(char)
         }
     }
-    if (escaped || quote != null) return null
+    if (escaped) return CommandParseResult.Error("Command ends with an incomplete escape")
+    if (quote != null) return CommandParseResult.Error("Command has an unterminated quote")
     flush()
-    return args
+    return CommandParseResult.Success(args)
 }
+
+internal fun parseSafeCommandArguments(command: String): List<String>? =
+    (parseCommand(command) as? CommandParseResult.Success)?.argv

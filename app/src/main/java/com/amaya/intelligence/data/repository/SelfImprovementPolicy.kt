@@ -27,41 +27,18 @@ class SelfImprovementPolicy @Inject constructor(
             return SelfImprovementDecision(SelfImprovementRoute.IGNORE, proposal.reason)
         }
         return when (proposal.type) {
-            MemoryType.REMINDER -> SelfImprovementDecision(
-                SelfImprovementRoute.IGNORE,
-                "Reminder-like content must use create_reminder instead of memory."
-            )
-            MemoryType.SKILL_CANDIDATE -> SelfImprovementDecision(
-                SelfImprovementRoute.IGNORE,
-                "Skill suggestions are handled by Skills, not Memory."
-            )
-            MemoryType.DAILY_LOG -> {
-                if (settings.dailyNotesEnabled) {
-                    SelfImprovementDecision(SelfImprovementRoute.APPLY_NOW, "Daily note saved.")
-                } else {
-                    SelfImprovementDecision(SelfImprovementRoute.IGNORE, "Daily notes are disabled.")
-                }
-            }
             MemoryType.USER_PROFILE,
-            MemoryType.LONG_TERM_MEMORY,
             MemoryType.WORKSPACE_FACT -> decideDurableMemory(proposal, settings)
         }
     }
 
 
     private fun decideDurableMemory(proposal: MemoryProposal, settings: MemoryBehaviorSettings): SelfImprovementDecision {
-        if (!settings.suggestNewMemories && proposal.action != MemoryAction.REMOVE) {
+        if (!settings.suggestNewMemories) {
             return SelfImprovementDecision(SelfImprovementRoute.IGNORE, "New memory suggestions are disabled.")
         }
         if (!isSafeStructuredMemory(proposal)) {
             return SelfImprovementDecision(SelfImprovementRoute.IGNORE, "Skipped noisy, unsafe, or low-confidence memory candidate.")
-        }
-        if (proposal.action == MemoryAction.REMOVE) {
-            return if (settings.autoSaveSafeMemory) {
-                SelfImprovementDecision(SelfImprovementRoute.APPLY_NOW, "Safe memory removal was applied automatically.")
-            } else {
-                SelfImprovementDecision(SelfImprovementRoute.REQUIRE_APPROVAL, "Safe memory removal is waiting for approval.")
-            }
         }
         return if (settings.autoSaveSafeMemory) {
             SelfImprovementDecision(SelfImprovementRoute.APPLY_NOW, "Safe structured memory was saved automatically.")
@@ -74,10 +51,8 @@ class SelfImprovementPolicy @Inject constructor(
         val safety = classifier.checkSafety(proposal.content)
         val content = proposal.content.trim()
         val looksLikeRawTranscript = content.lines().size > 6 || content.length > 600
-        val minImportance = if (proposal.action == MemoryAction.REMOVE) 0.40 else 0.60
         return safety.safe &&
             !looksLikeRawTranscript &&
-            proposal.confidence >= 0.75 &&
-            proposal.importance >= minImportance
+            proposal.confidence >= 0.75
     }
 }

@@ -1,4 +1,4 @@
-﻿package com.amaya.intelligence.tools
+package com.amaya.intelligence.tools
 
 import com.squareup.moshi.JsonClass
 
@@ -55,7 +55,10 @@ data class ToolExecutionContext(
     val onEvent: (suspend (Any) -> Unit)? = null,
     val providerConnection: com.amaya.intelligence.data.remote.api.ProviderConnection? = null,
     val selectedModelId: String? = null,
-    val confirmed: Boolean = false
+    val conversationId: String? = null,
+    val confirmed: Boolean = false,
+    /** Host-enforced subagent mode. Model arguments cannot change this. */
+    val readOnly: Boolean = false
 )
 
 /** Implement only when a tool needs host-owned execution context. */

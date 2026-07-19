@@ -8,6 +8,7 @@ import com.amaya.intelligence.data.repository.ContextRecallSettings
 import com.amaya.intelligence.data.repository.MemoryBehaviorSettings
 import com.amaya.intelligence.data.repository.MemoryRecord
 import com.amaya.intelligence.data.repository.MemoryRepository
+import com.amaya.intelligence.data.repository.WorkspaceMemoryBinding
 import com.amaya.intelligence.data.repository.PendingProposalRepository
 import com.amaya.intelligence.data.repository.ProposalApplyResult
 import com.amaya.intelligence.data.repository.SkillBehaviorSettings
@@ -37,40 +38,42 @@ class AmayaViewModel @Inject constructor(
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(AmayaUiState())
     val uiState: StateFlow<AmayaUiState> = _uiState.asStateFlow()
+    private var workspacePath: String? = null
 
     init { refresh() }
+
+    fun setWorkspace(path: String?) {
+        workspacePath = path?.takeIf(String::isNotBlank)
+        refresh()
+    }
 
     fun refresh() {
         viewModelScope.launch {
             val settings = brainSettingsRepository.getBrainSettings()
-            val proposals = pendingProposalRepository.listPending(100)
+            val canonicalWorkspace = workspacePath?.let { runCatching { java.io.File(it).canonicalPath }.getOrDefault(it) }
+            val proposals = pendingProposalRepository.listPending(100).filter { proposal ->
+                proposal.workspacePath == null || canonicalWorkspace != null &&
+                    runCatching { java.io.File(proposal.workspacePath).canonicalPath }.getOrDefault(proposal.workspacePath) == canonicalWorkspace
+            }
             val skills = skillRepository.listSkills()
             val userRecords = memoryRepository.listMemoryRecords(type = com.amaya.intelligence.domain.memory.MemoryType.USER_PROFILE, limit = 100)
-            val importantRecords = memoryRepository.listMemoryRecords(type = com.amaya.intelligence.domain.memory.MemoryType.LONG_TERM_MEMORY, limit = 100)
-            val projectRecords = memoryRepository.listMemoryRecords(type = com.amaya.intelligence.domain.memory.MemoryType.WORKSPACE_FACT, limit = 100)
-            val dailyRecords = memoryRepository.listMemoryRecords(type = com.amaya.intelligence.domain.memory.MemoryType.DAILY_LOG, limit = 100)
+            val projectRecords = memoryRepository.listMemoryRecords(type = com.amaya.intelligence.domain.memory.MemoryType.WORKSPACE_FACT, limit = 100, workspacePath = workspacePath)
             val rawUserMemory = memoryRepository.readUserProfile()
-            val rawImportantMemory = memoryRepository.readHotMemory()
-            val rawProjectMemory = memoryRepository.readWorkspaceFacts()
-            val rawDailyNotes = memoryRepository.readRecentDailyNotes()
+            val rawProjectMemory = memoryRepository.readWorkspaceFacts(workspacePath)
+            val workspaceBindings = memoryRepository.listWorkspaceBindings()
             _uiState.value = _uiState.value.copy(
                 settings = settings,
                 pendingProposals = proposals,
                 skills = skills,
                 userMemoryPreview = rawUserMemory.toFriendlyPreview(),
-                importantMemoryPreview = rawImportantMemory.toFriendlyPreview(),
                 projectMemoryPreview = rawProjectMemory.toFriendlyPreview(),
-                dailyNotesPreview = rawDailyNotes.toFriendlyPreview(),
                 userMemoryRaw = rawUserMemory,
-                importantMemoryRaw = rawImportantMemory,
                 projectMemoryRaw = rawProjectMemory,
-                dailyNotesRaw = rawDailyNotes,
                 userMemoryRecords = userRecords,
-                importantMemoryRecords = importantRecords,
                 projectMemoryRecords = projectRecords,
-                dailyMemoryRecords = dailyRecords,
+                workspaceBindings = workspaceBindings,
+                workspacePath = workspacePath,
                 userMemoryCount = userRecords.size,
-                importantMemoryCount = importantRecords.size,
                 projectMemoryCount = projectRecords.size,
                 isLoading = false
             )
@@ -142,7 +145,7 @@ class AmayaViewModel @Inject constructor(
                 requestedScope = area.memoryScope(),
                 reason = "The user manually added this memory in Settings.",
                 confidence = 0.95,
-                importance = if (area == MemoryArea.USER) 0.75 else 0.65
+                workspacePath = workspacePath
             )
             val result = memoryRepository.applyProposal(proposal)
             _uiState.value = _uiState.value.copy(message = result.fold({ "Saved" }, { "Save failed: ${it.message}" }))
@@ -150,10 +153,15 @@ class AmayaViewModel @Inject constructor(
         }
     }
 
-    fun deleteMemory(id: String) {
+    fun reconnectWorkspaceMemory(workspaceId: String) {
+        val root = workspacePath
+        if (root == null) {
+            _uiState.value = _uiState.value.copy(message = "Select the moved workspace first")
+            return
+        }
         viewModelScope.launch {
-            val result = memoryRepository.removeMemoryById(id)
-            _uiState.value = _uiState.value.copy(message = result.fold({ "Deleted" }, { "Delete failed: ${it.message}" }))
+            val result = memoryRepository.remapWorkspace(workspaceId, root)
+            _uiState.value = _uiState.value.copy(message = result.fold({ "Workspace memory reconnected" }, { "Reconnect failed: ${it.message}" }))
             refresh()
         }
     }
@@ -176,19 +184,14 @@ data class AmayaUiState(
     val pendingProposals: List<PendingProposal> = emptyList(),
     val skills: List<SkillMetadata> = emptyList(),
     val userMemoryPreview: String = "",
-    val importantMemoryPreview: String = "",
     val projectMemoryPreview: String = "",
-    val dailyNotesPreview: String = "",
     val userMemoryRaw: String = "",
-    val importantMemoryRaw: String = "",
     val projectMemoryRaw: String = "",
-    val dailyNotesRaw: String = "",
     val userMemoryRecords: List<MemoryRecord> = emptyList(),
-    val importantMemoryRecords: List<MemoryRecord> = emptyList(),
     val projectMemoryRecords: List<MemoryRecord> = emptyList(),
-    val dailyMemoryRecords: List<MemoryRecord> = emptyList(),
+    val workspaceBindings: List<WorkspaceMemoryBinding> = emptyList(),
+    val workspacePath: String? = null,
     val userMemoryCount: Int = 0,
-    val importantMemoryCount: Int = 0,
     val projectMemoryCount: Int = 0,
     val lastApplyResults: List<ProposalApplyResult> = emptyList(),
     val isLoading: Boolean = true,
@@ -199,27 +202,23 @@ data class AmayaUiState(
     val reviewSkills: Int get() = skills.count { it.needsReview }
     val memorySuggestions: Int get() = pendingProposals.count { it.type.isMemoryType() }
     val skillSuggestions: Int get() = pendingProposals.count { it.type.isSkillType() }
-    val totalMemoryCount: Int get() = userMemoryCount + importantMemoryCount + projectMemoryCount
+    val totalMemoryCount: Int get() = userMemoryCount + projectMemoryCount
 }
 
 fun PendingProposalType.isMemoryType(): Boolean = this == PendingProposalType.USER_PROFILE ||
-    this == PendingProposalType.LONG_TERM_MEMORY || this == PendingProposalType.WORKSPACE_FACT || this == PendingProposalType.DAILY_LOG
+    this == PendingProposalType.WORKSPACE_FACT
 
 fun PendingProposalType.isSkillType(): Boolean = this == PendingProposalType.SKILL_CREATE ||
     this == PendingProposalType.SKILL_PATCH || this == PendingProposalType.SKILL_UPDATE
 
 private fun MemoryArea.memoryType(): MemoryType = when (this) {
     MemoryArea.USER -> MemoryType.USER_PROFILE
-    MemoryArea.IMPORTANT -> MemoryType.LONG_TERM_MEMORY
     MemoryArea.PROJECT -> MemoryType.WORKSPACE_FACT
-    MemoryArea.DAILY -> MemoryType.DAILY_LOG
 }
 
 private fun MemoryArea.memoryScope(): MemoryScope = when (this) {
     MemoryArea.USER -> MemoryScope.USER
     MemoryArea.PROJECT -> MemoryScope.WORKSPACE
-    MemoryArea.DAILY -> MemoryScope.SESSION
-    MemoryArea.IMPORTANT -> MemoryScope.GLOBAL
 }
 
 private fun String.toFriendlyPreview(): String = lines()

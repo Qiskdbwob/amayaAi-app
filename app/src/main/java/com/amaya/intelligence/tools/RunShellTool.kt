@@ -1,4 +1,4 @@
-﻿package com.amaya.intelligence.tools
+package com.amaya.intelligence.tools
 
 import android.content.Context
 import com.amaya.intelligence.domain.security.CommandValidator
@@ -90,9 +90,8 @@ class RunShellTool @Inject constructor(
 
         Arguments:
         - command (string, required): The shell command to run. Must not be empty.
-        - working_dir (string, optional): Working directory for the command
+        - working_dir: Host-owned; never supplied by the model
         - timeout_ms (int, optional): Timeout in milliseconds (default: ${DEFAULT_TIMEOUT_MS}, max: ${MAX_TIMEOUT_MS})
-        - env (object, optional): Environment variables to set
     """.trimIndent()
 
     override suspend fun execute(arguments: Map<String, Any?>): ToolResult =

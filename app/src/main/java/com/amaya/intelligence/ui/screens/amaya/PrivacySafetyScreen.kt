@@ -20,12 +20,9 @@ fun PrivacySafetyScreen(
             AmayaStatusRow("Payment data", "Blocked")
         }
         AmayaSection("Confirmations") {
-            AmayaStatusRow(
-                "Memory writes",
-                if (state.settings.memory.autoSaveSafeMemory) "Auto-safe" else "Review"
-            )
+            AmayaStatusRow("Memory writes", "Tool only")
             AmayaDivider()
-            AmayaStatusRow("Memory update/remove", "Confirm")
+            AmayaStatusRow("Memory update", "Confirm")
             AmayaDivider()
             AmayaStatusRow("Sensitive browser pages", "Pause")
         }

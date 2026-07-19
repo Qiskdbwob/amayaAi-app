@@ -25,7 +25,8 @@ data/local/
 ├─ entity/
 ├─ files/
 │	├─ FileSessionStore.kt
-│	└─ FileSkillStore.kt
+│	├─ FileSkillStore.kt
+│	└─ FileWorkspaceMemoryStore.kt
 └─ db/
 	├─ migrations/
 	└─ AppDatabase.kt
@@ -40,6 +41,7 @@ data/local/
 - `app/schemas/`: exported Room schema snapshots that must stay aligned with migration updates.
 - `files/FileSessionStore.kt`: file locations for session recall records and summaries.
 - `files/FileSkillStore.kt`: file locations and safe names for local reusable skill documents.
+- `files/FileWorkspaceMemoryStore.kt`: stable workspace UUID metadata, canonical-root resolution, and explicit moved-root remapping for memory/session scoping.
 
 ## Key Source Code
 - `entity/ProjectEntity.kt`: persisted project metadata.
