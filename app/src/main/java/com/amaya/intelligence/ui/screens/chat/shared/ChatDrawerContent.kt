@@ -5,8 +5,14 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
@@ -20,10 +26,13 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Assignment
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -36,6 +45,11 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.TextStyle
@@ -117,7 +131,7 @@ private fun IosGroupSurface(
 ) {
     val isDark = isSystemInDarkTheme()
     val colors = iosDrawerColors(isDark)
-    
+
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = colors.groupSurface,
@@ -141,7 +155,7 @@ private fun IosRowIcon(
 ) {
     val isDark = isSystemInDarkTheme()
     val colors = iosDrawerColors(isDark)
-    
+
     Box(
         modifier = modifier
             .size(32.dp)
@@ -162,20 +176,23 @@ private fun IosRowIcon(
 // Row with Chevron
 // =============================================================================
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun IosRowWithChevron(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     title: String,
     subtitle: String? = null,
     showChevron: Boolean = true,
+    expanded: Boolean? = null,
+    selected: Boolean = false,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val isDark = isSystemInDarkTheme()
     val colors = iosDrawerColors(isDark)
-    
+
     Surface(
-        onClick = onClick,
         color = Color.Transparent,
         shape = RoundedCornerShape(0.dp),
         modifier = modifier.fillMaxWidth()
@@ -183,30 +200,71 @@ private fun IosRowWithChevron(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .then(
+                    if (onLongClick != null) Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                    else Modifier.clickable(onClick = onClick)
+                )
+                .heightIn(min = 48.dp)
+                .drawBehind {
+                    if (expanded == true) {
+                        val strokeWidth = 1.dp.toPx()
+                        val color = colors.border
+                        val iconCenterX = 32.dp.toPx()
+                        val centerY = size.height / 2
+                        drawLine(
+                            color = color,
+                            start = androidx.compose.ui.geometry.Offset(iconCenterX, centerY),
+                            end = androidx.compose.ui.geometry.Offset(iconCenterX, size.height),
+                            strokeWidth = strokeWidth
+                        )
+                    }
+                }
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IosRowIcon(icon = icon)
-            
-            Spacer(Modifier.width(12.dp))
-            
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyLarge.copy(
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 15.sp,
-                    lineHeight = 19.sp
-                ),
-                color = colors.primaryText,
-                modifier = Modifier.weight(1f)
-            )
-            
+            if (icon != null) {
+                IosRowIcon(icon = icon)
+                Spacer(Modifier.width(12.dp))
+            }
+
+            Column(Modifier.weight(1f).fadingEdge()) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 15.sp,
+                        lineHeight = 19.sp
+                    ),
+                    color = colors.primaryText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Clip
+                )
+                subtitle?.takeIf(String::isNotBlank)?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.secondaryText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            if (selected) {
+                ActiveDot()
+                Spacer(Modifier.width(8.dp))
+            }
             if (showChevron) {
+                val rotation by animateFloatAsState(
+                    targetValue = if (expanded == true) 90f else 0f,
+                    animationSpec = spring(),
+                    label = "chevron_rotation"
+                )
                 Icon(
                     imageVector = Icons.Default.ChevronRight,
                     contentDescription = null,
                     tint = colors.chevronTint,
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(18.dp).rotate(rotation)
                 )
             }
         }
@@ -219,17 +277,120 @@ private fun IosRowWithChevron(
 
 @Composable
 private fun IosRowSeparator(
+    modifier: Modifier = Modifier,
+    startIndent: androidx.compose.ui.unit.Dp = 0.dp
+) {
+    val isDark = isSystemInDarkTheme()
+    val colors = iosDrawerColors(isDark)
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(start = startIndent)
+            .height(0.5.dp)
+            .background(colors.separator)
+    )
+}
+
+@Composable
+private fun IosChildRow(
+    title: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    subtitle: String? = null,
+    selected: Boolean = false,
+    isLastChild: Boolean = false,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val isDark = isSystemInDarkTheme()
     val colors = iosDrawerColors(isDark)
-    
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(0.5.dp)
-            .background(colors.separator)
-    )
+
+    Surface(
+        onClick = onClick,
+        color = Color.Transparent,
+        shape = RoundedCornerShape(0.dp),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .drawBehind {
+                    drawLine(
+                        color = colors.separator,
+                        start = androidx.compose.ui.geometry.Offset(60.dp.toPx(), 0f),
+                        end = androidx.compose.ui.geometry.Offset(size.width, 0f),
+                        strokeWidth = 0.5.dp.toPx()
+                    )
+
+                    val strokeWidth = 1.dp.toPx()
+                    val color = colors.border
+                    val parentIconCenterX = 32.dp.toPx()
+                    val childIconLeftEdge = 44.dp.toPx()
+                    val centerY = size.height / 2
+                    val cornerRadius = 12.dp.toPx()
+
+                    val path = androidx.compose.ui.graphics.Path().apply {
+                        if (isLastChild) {
+                            moveTo(parentIconCenterX, 0f)
+                            lineTo(parentIconCenterX, centerY - cornerRadius)
+                            quadraticTo(
+                                parentIconCenterX, centerY,
+                                parentIconCenterX + cornerRadius, centerY
+                            )
+                            lineTo(childIconLeftEdge, centerY)
+                        } else {
+                            moveTo(parentIconCenterX, 0f)
+                            lineTo(parentIconCenterX, size.height)
+                            moveTo(parentIconCenterX, centerY)
+                            lineTo(childIconLeftEdge, centerY)
+                        }
+                    }
+                    drawPath(
+                        path = path,
+                        color = color,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(
+                            width = strokeWidth,
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                            join = androidx.compose.ui.graphics.StrokeJoin.Round
+                        )
+                    )
+                }
+                .padding(start = 44.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (icon != null) {
+                IosRowIcon(icon = icon)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f).fadingEdge()) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyLarge.copy(
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 15.sp,
+                        lineHeight = 19.sp
+                    ),
+                    color = colors.primaryText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Clip
+                )
+                subtitle?.takeIf(String::isNotBlank)?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.secondaryText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            if (selected) {
+                ActiveDot()
+                Spacer(Modifier.width(8.dp))
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -242,7 +403,7 @@ private fun ActiveDot(
 ) {
     val isDark = isSystemInDarkTheme()
     val colors = iosDrawerColors(isDark)
-    
+
     Box(
         modifier = modifier
             .size(6.dp)
@@ -265,6 +426,14 @@ fun ChatDrawerContent(
     isRemoteMode: Boolean,
     sessionMode: IntelligenceSessionManager.SessionMode,
     workspacePath: String?,
+    assistantMode: com.amaya.intelligence.domain.models.AssistantMode,
+    ownerLabel: String,
+    agentMembers: List<com.amaya.intelligence.data.local.entity.AgentEntity>,
+    delegationTasks: List<com.amaya.intelligence.data.local.entity.DelegationTaskEntity>,
+    projects: List<com.amaya.intelligence.data.local.entity.ProjectEntity>,
+    agentGroups: List<com.amaya.intelligence.data.local.entity.AgentGroupEntity>,
+    allAgents: List<com.amaya.intelligence.data.local.entity.AgentEntity>,
+    allLocalConversations: List<ConversationEntity>,
     isLoadingConversations: Boolean,
     connectionState: ConnectionState,
     conversations: List<ConversationEntity>,
@@ -273,6 +442,10 @@ fun ChatDrawerContent(
     onClearConversation: () -> Unit,
     onNavigateToSettings: () -> Unit,
     onNavigateToWorkspace: () -> Unit,
+    onNavigateToAgents: () -> Unit = {},
+    onOpenChat: () -> Unit = onClearConversation,
+    onOpenProject: (com.amaya.intelligence.data.local.entity.ProjectEntity, Long?) -> Unit = { _, _ -> },
+    onOpenAgent: (com.amaya.intelligence.data.local.entity.AgentGroupEntity, com.amaya.intelligence.data.local.entity.AgentEntity, Long?) -> Unit = { _, _, _ -> },
     onNavigateToRemoteSession: () -> Unit,
     onNavigateToOpencode: (() -> Unit)? = null,
     onExit: () -> Unit,
@@ -321,9 +494,10 @@ fun ChatDrawerContent(
         scope.launch { drawerState.close() }
     }
 
-    val filteredConversations = remember(conversations, searchQuery) {
-        if (searchQuery.isBlank()) conversations
-        else conversations.filter { it.title.contains(searchQuery, ignoreCase = true) }
+    val filteredConversations = remember(conversations, allLocalConversations, searchQuery, isRemoteMode) {
+        val source = if (isRemoteMode) conversations else allLocalConversations
+        if (searchQuery.isBlank()) source
+        else source.filter { it.title.contains(searchQuery, ignoreCase = true) }
     }
     val isDark = isSystemInDarkTheme()
     val colors = iosDrawerColors(isDark)
@@ -375,12 +549,24 @@ fun ChatDrawerContent(
                     isRemoteMode = isRemoteMode,
                     sessionMode = sessionMode,
                     workspacePath = workspacePath,
+                    assistantMode = assistantMode,
+                    ownerLabel = ownerLabel,
+                    agentMembers = agentMembers,
+                    delegationTasks = delegationTasks,
+                    projects = projects,
+                    agentGroups = agentGroups,
+                    allAgents = allAgents,
+                    allLocalConversations = allLocalConversations,
                     isLoadingConversations = isLoadingConversations,
                     conversations = filteredConversations,
                     activeConversationId = activeConversationId,
                     conversationListState = conversationListState,
                     onClearConversation = { closeDrawerThen(onClearConversation) },
+                    onOpenChat = { closeDrawerThen(onOpenChat) },
+                    onOpenProject = { project, conversationId -> closeDrawerThen { onOpenProject(project, conversationId) } },
+                    onOpenAgent = { group, agent, conversationId -> closeDrawerThen { onOpenAgent(group, agent, conversationId) } },
                     onNavigateToWorkspace = { closeDrawerThen(onNavigateToWorkspace) },
+                    onNavigateToAgents = { closeDrawerThen(onNavigateToAgents) },
                     onNavigateToRemoteSession = { closeDrawerThen(onNavigateToRemoteSession) },
                     onNavigateToOpencode = onNavigateToOpencode?.let { callback ->
                         { closeDrawerThen(callback) }
@@ -415,7 +601,7 @@ fun ChatDrawerContent(
                         )
                     }
                 }
-                ExtendedFloatingActionButton(
+                if (assistantMode != com.amaya.intelligence.domain.models.AssistantMode.AGENT) ExtendedFloatingActionButton(
                     onClick = { closeDrawerThen(onClearConversation) },
                     containerColor = Color(0xFF0A84FF),
                     contentColor = Color.White,
@@ -431,14 +617,18 @@ fun ChatDrawerContent(
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        text = "Chat",
+                        text = when (assistantMode) {
+                            com.amaya.intelligence.domain.models.AssistantMode.CHAT -> "Chat"
+                            com.amaya.intelligence.domain.models.AssistantMode.PROJECT -> "Project Chat"
+                            com.amaya.intelligence.domain.models.AssistantMode.AGENT -> "Agent"
+                        },
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.SemiBold
                         )
                     )
                 }
             }
-            
+
             // Right outline
             Box(
                 modifier = Modifier
@@ -492,7 +682,7 @@ private fun DrawerSearchContent(
 ) {
     val isDark = isSystemInDarkTheme()
     val colors = iosDrawerColors(isDark)
-    
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -607,7 +797,8 @@ private fun DrawerSearchContent(
                             HyperText(
                                 text = conv.title.ifEmpty { "New Chat" },
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = colors.primaryText.copy(alpha = 0.85f)
+                                color = colors.primaryText.copy(alpha = 0.85f),
+                                modifier = Modifier.fillMaxWidth().fadingEdge()
                             )
                         }
                     }
@@ -631,12 +822,24 @@ private fun DrawerNormalContent(
     isRemoteMode: Boolean,
     sessionMode: IntelligenceSessionManager.SessionMode,
     workspacePath: String?,
+    assistantMode: com.amaya.intelligence.domain.models.AssistantMode,
+    ownerLabel: String,
+    agentMembers: List<com.amaya.intelligence.data.local.entity.AgentEntity>,
+    delegationTasks: List<com.amaya.intelligence.data.local.entity.DelegationTaskEntity>,
+    projects: List<com.amaya.intelligence.data.local.entity.ProjectEntity>,
+    agentGroups: List<com.amaya.intelligence.data.local.entity.AgentGroupEntity>,
+    allAgents: List<com.amaya.intelligence.data.local.entity.AgentEntity>,
+    allLocalConversations: List<ConversationEntity>,
     isLoadingConversations: Boolean,
     conversations: List<ConversationEntity>,
     activeConversationId: String?,
     conversationListState: androidx.compose.foundation.lazy.LazyListState,
     onClearConversation: () -> Unit,
+    onOpenChat: () -> Unit,
+    onOpenProject: (com.amaya.intelligence.data.local.entity.ProjectEntity, Long?) -> Unit,
+    onOpenAgent: (com.amaya.intelligence.data.local.entity.AgentGroupEntity, com.amaya.intelligence.data.local.entity.AgentEntity, Long?) -> Unit,
     onNavigateToWorkspace: () -> Unit,
+    onNavigateToAgents: () -> Unit,
     onNavigateToRemoteSession: () -> Unit,
     onNavigateToOpencode: (() -> Unit)?,
     onNavigateToSettings: () -> Unit,
@@ -649,6 +852,18 @@ private fun DrawerNormalContent(
 ) {
     val isDark = isSystemInDarkTheme()
     val colors = iosDrawerColors(isDark)
+
+    var expandedGroupId by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<Long?>(null) }
+    var expandedProjectId by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<Long?>(null) }
+
+    androidx.compose.runtime.LaunchedEffect(assistantMode, ownerLabel, agentGroups, projects) {
+        if (assistantMode == com.amaya.intelligence.domain.models.AssistantMode.AGENT) {
+            expandedGroupId = agentGroups.firstOrNull { it.name == ownerLabel }?.id
+        }
+        if (assistantMode == com.amaya.intelligence.domain.models.AssistantMode.PROJECT) {
+            expandedProjectId = projects.firstOrNull { it.name == ownerLabel }?.id
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -670,7 +885,7 @@ private fun DrawerNormalContent(
                 color = colors.primaryText,
                 modifier = Modifier.weight(1f)
             )
-            
+
             // Search button
             Surface(
                 onClick = onSearchClick,
@@ -690,9 +905,9 @@ private fun DrawerNormalContent(
                     )
                 }
             }
-            
+
             Spacer(Modifier.width(8.dp))
-            
+
             // Settings button
             Surface(
                 onClick = onNavigateToSettings,
@@ -714,118 +929,224 @@ private fun DrawerNormalContent(
             }
         }
 
-        // Quick Access card
-        val showProjects = sessionMode != IntelligenceSessionManager.SessionMode.WINDOWS_BRIDGE
+        val showLocalHierarchy = !isRemoteMode && sessionMode != IntelligenceSessionManager.SessionMode.WINDOWS_BRIDGE
         val showRemoteSessionRow = !isRemoteMode
         val showOpencodeRow = onNavigateToOpencode != null
-        if (showProjects || showRemoteSessionRow || showOpencodeRow) {
-            IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
-                if (showProjects) {
-                    IosRowWithChevron(
-                        icon = Icons.Default.FolderOpen,
-                        title = "Projects",
-                        onClick = onNavigateToWorkspace
-                    )
+
+        // Upper Section (Scrollable if too many projects/agents)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState())
+        ) {
+            if (showLocalHierarchy) {
+                Text(
+                    "AGENTS",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.secondaryText,
+                    modifier = Modifier.padding(start = 16.dp, bottom = 8.dp)
+                )
+                IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
+                    agentGroups.forEachIndexed { index, group ->
+                        val members = allAgents.filter { it.groupId == group.id }
+                            val expanded = expandedGroupId == group.id
+                            IosRowWithChevron(
+                                icon = Icons.Default.Groups,
+                                title = group.name,
+                                subtitle = "${members.size} agents",
+                                expanded = expanded,
+                                selected = assistantMode == com.amaya.intelligence.domain.models.AssistantMode.AGENT && group.name == ownerLabel && !expanded,
+                                onClick = { expandedGroupId = if (expanded) null else group.id }
+                            )
+                            AnimatedVisibility(
+                                visible = expanded,
+                                enter = expandVertically(animationSpec = spring()),
+                                exit = shrinkVertically(animationSpec = spring())
+                            ) {
+                                Column {
+                                    members.forEachIndexed { mIndex, agent ->
+                                        val session = allLocalConversations.firstOrNull {
+                                            it.assistantMode == "AGENT" && it.ownerId == group.id.toString() && it.agentId == agent.id
+                                        }
+                                        IosChildRow(
+                                            icon = Icons.Default.SmartToy,
+                                            title = agent.name,
+                                            subtitle = agent.role.ifBlank { "Agent" },
+                                            selected = assistantMode == com.amaya.intelligence.domain.models.AssistantMode.AGENT && session?.id?.toString() == activeConversationId,
+                                            isLastChild = mIndex == members.lastIndex,
+                                            onClick = { onOpenAgent(group, agent, session?.id) }
+                                        )
+                                    }
+                                }
+                            }
+                            if (index != agentGroups.lastIndex) IosRowSeparator()
+                        }
                 }
 
-                if (showOpencodeRow) {
-                    if (showProjects) IosRowSeparator()
-                    IosRowWithChevron(
-                        icon = Icons.Default.Terminal,
-                        title = "Opencode",
-                        onClick = { onNavigateToOpencode?.invoke() }
-                    )
-                }
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "PROJECTS",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.secondaryText,
+                    modifier = Modifier.padding(start = 16.dp, bottom = 8.dp)
+                )
+                IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
+                    projects.forEachIndexed { index, project ->
+                            val sessions = allLocalConversations.filter { it.assistantMode == "PROJECT" && it.ownerId == project.id.toString() }
+                                .sortedByDescending { it.updatedAt }
+                            val expanded = expandedProjectId == project.id
+                            IosRowWithChevron(
+                                icon = Icons.Default.FolderOpen,
+                                title = project.name,
+                                subtitle = "${sessions.size} chats",
+                                expanded = expanded,
+                                selected = assistantMode == com.amaya.intelligence.domain.models.AssistantMode.PROJECT && project.name == ownerLabel && !expanded,
+                                onClick = { expandedProjectId = if (expanded) null else project.id }
+                            )
+                            AnimatedVisibility(
+                                visible = expanded,
+                                enter = expandVertically(animationSpec = spring()),
+                                exit = shrinkVertically(animationSpec = spring())
+                            ) {
+                                Column {
+                                    // New Chat for this Project
+                                    IosChildRow(
+                                        icon = Icons.Default.Add,
+                                        title = "New Chat",
+                                        selected = false,
+                                        isLastChild = sessions.isEmpty(),
+                                        onClick = { onOpenProject(project, null) }
+                                    )
+                                    sessions.forEachIndexed { sIndex, session ->
+                                        IosChildRow(
+                                            title = session.title.ifBlank { "New chat" },
+                                            selected = session.id.toString() == activeConversationId,
+                                            isLastChild = sIndex == sessions.lastIndex,
+                                            onClick = { onOpenProject(project, session.id) }
+                                        )
+                                    }
+                                }
+                            }
+                            if (index != projects.lastIndex) IosRowSeparator()
+                        }
+                    }
 
-                if (showRemoteSessionRow) {
-                    if (showProjects || showOpencodeRow) IosRowSeparator()
+                // CHATS
+                val localChats = allLocalConversations.filter { it.assistantMode == "CHAT" && (it.ownerId.isNullOrEmpty() || it.ownerId == "null") }
+                    .sortedByDescending { it.updatedAt }
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "CHATS",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.secondaryText,
+                    modifier = Modifier.padding(start = 16.dp, bottom = 8.dp)
+                )
+                IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
                     IosRowWithChevron(
-                        icon = Icons.Default.Devices,
-                        title = "Remote Session",
-                        onClick = onNavigateToRemoteSession
+                        icon = Icons.Default.Add,
+                        title = "New Chat",
+                        showChevron = false,
+                        onClick = onOpenChat
                     )
-                }
-            }
-        }
-
-        // Recent Conversations card
-        if (conversations.isNotEmpty()) {
-            Spacer(Modifier.height(16.dp))
-            IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
-                LazyColumn(
-                    state = conversationListState,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    items(items = conversations, key = { it.id }) { conv ->
+                    localChats.forEach { conv ->
+                        IosRowSeparator()
                         val isActive = conv.id.toString() == activeConversationId
-                        ConversationDrawerItem(
-                            conv = conv,
-                            isActive = isActive,
-                            isLast = conv == conversations.lastOrNull(),
+                        IosRowWithChevron(
+                            icon = null,
+                            title = conv.title.ifBlank { "New chat" },
+                            showChevron = false,
+                            selected = isActive,
                             onClick = { onLoadConversation(conv.id) },
                             onLongClick = { onConversationLongClick(conv) }
                         )
                     }
                 }
-            }
-        }
-
-        // Loading state
-        if (isLoadingConversations && conversations.isEmpty()) {
-            Spacer(Modifier.height(16.dp))
-            IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                    repeat(3) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(0.7f)
-                                        .height(14.dp)
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(colors.iconBackground)
-                                )
-                                Spacer(Modifier.height(6.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(0.4f)
-                                        .height(10.dp)
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(colors.iconBackground.copy(alpha = 0.5f))
-                                )
-                            }
-                        }
-                        if (it < 2) IosRowSeparator()
-                    }
+            } else if (showRemoteSessionRow || showOpencodeRow) {
+                IosGroupSurface(Modifier.fillMaxWidth()) {
+                    if (showOpencodeRow) IosRowWithChevron(Icons.Default.Terminal, "Opencode", onClick = { onNavigateToOpencode?.invoke() })
+                    if (showOpencodeRow && showRemoteSessionRow) IosRowSeparator()
+                    if (showRemoteSessionRow) IosRowWithChevron(Icons.Default.Devices, "Remote Session", onClick = onNavigateToRemoteSession)
                 }
             }
-        }
+        } // End Upper Section
 
-        // Empty state
-        if (!isLoadingConversations && conversations.isEmpty()) {
-            Spacer(Modifier.height(16.dp))
-            IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 32.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "No conversations yet",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = colors.secondaryText
-                    )
+        // Lower Section: Chats (LazyColumn with remaining weight)
+        if (!showLocalHierarchy) {
+            val chats = conversations
+            if (chats.isNotEmpty()) {
+                Spacer(Modifier.height(16.dp))
+                IosGroupSurface(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    LazyColumn(
+                        state = conversationListState,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        items(items = chats, key = { it.id }) { conv ->
+                            val isActive = conv.id.toString() == activeConversationId
+                            ConversationDrawerItem(
+                                conv = conv,
+                                isActive = isActive,
+                                isLast = conv == chats.lastOrNull(),
+                                onClick = { onLoadConversation(conv.id) },
+                                onLongClick = { onConversationLongClick(conv) }
+                            )
+                        }
+                    }
+                }
+            } else if (isLoadingConversations) {
+                Spacer(Modifier.height(16.dp))
+                IosGroupSurface(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                        repeat(3) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth(0.7f)
+                                            .height(14.dp)
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(colors.iconBackground)
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth(0.4f)
+                                            .height(10.dp)
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(colors.iconBackground.copy(alpha = 0.5f))
+                                    )
+                                }
+                            }
+                            if (it < 2) IosRowSeparator()
+                        }
+                    }
+                }
+            } else if (!isLoadingConversations && conversations.isEmpty()) {
+                Spacer(Modifier.height(16.dp))
+                IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "No conversations yet",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.secondaryText
+                        )
+                    }
                 }
             }
         }
     }
 }
+
 
 // =============================================================================
 // Conversation Item
@@ -839,15 +1160,17 @@ internal fun hyperTextFrame(from: String, to: String, progress: Float): String {
     if (fraction == 0f) return from
     if (fraction == 1f) return to
 
-    val maxLength = maxOf(from.length, to.length)
-    val visibleLength = (maxLength + (to.length - maxLength) * fraction).roundToInt()
-    val resolvedLength = (to.length * fraction).toInt()
+    val targetLen = to.length
     val frame = (fraction * 24).toInt()
-    return buildString(visibleLength) {
-        repeat(visibleLength) { index ->
+    return buildString(targetLen) {
+        repeat(targetLen) { index ->
+            // Each character has its own resolve threshold, staggered evenly across the animation.
+            // This makes characters lock in left-to-right smoothly, with the last one finishing
+            // at fraction ~0.92 instead of 1.0, eliminating the "last char lag".
+            val charThreshold = (index + 1).toFloat() / (targetLen + 1).toFloat()
             append(when {
-                index < resolvedLength -> to[index]
-                index < to.length && to[index].isWhitespace() -> to[index]
+                fraction >= charThreshold -> to[index]
+                to[index].isWhitespace() -> to[index]
                 index < from.length && from[index].isWhitespace() -> ' '
                 else -> HYPER_TEXT_GLYPHS[Math.floorMod(to.hashCode() + index * 31 + frame * 17, HYPER_TEXT_GLYPHS.length)]
             })
@@ -886,7 +1209,7 @@ private fun HyperText(
     Text(
         text = rendered,
         maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
+        overflow = TextOverflow.Clip,
         style = style,
         color = color,
         modifier = modifier.clearAndSetSemantics { contentDescription = text }
@@ -928,13 +1251,14 @@ private fun ConversationDrawerItem(
                     lineHeight = 19.sp
                 ),
                 color = colors.primaryText,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f).fadingEdge()
             )
-            
+
             if (isActive) {
                 Spacer(Modifier.width(8.dp))
                 ActiveDot()
             }
+
         }
     }
 
@@ -943,3 +1267,16 @@ private fun ConversationDrawerItem(
         IosRowSeparator()
     }
 }
+
+private fun Modifier.fadingEdge(): Modifier = this
+    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    .drawWithContent {
+        drawContent()
+        drawRect(
+            brush = Brush.horizontalGradient(
+                0.85f to Color.Black,
+                1.0f to Color.Transparent
+            ),
+            blendMode = BlendMode.DstIn
+        )
+    }

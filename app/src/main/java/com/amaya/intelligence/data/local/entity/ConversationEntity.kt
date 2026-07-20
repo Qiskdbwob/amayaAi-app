@@ -3,6 +3,7 @@ package com.amaya.intelligence.data.local.entity
 import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import com.amaya.intelligence.domain.models.AssistantMode
 
 enum class ConversationScope(val wireName: String) {
     LOCAL("local"),
@@ -37,5 +38,14 @@ data class ConversationEntity(
     val messagesJson: String,
 
     @ColumnInfo(name = "scope")
-    val scope: String = ConversationScope.LOCAL.wireName
+    val scope: String = ConversationScope.LOCAL.wireName,
+
+    @ColumnInfo(name = "assistant_mode")
+    val assistantMode: String = AssistantMode.CHAT.name,
+
+    @ColumnInfo(name = "owner_id")
+    val ownerId: String? = null,
+
+    @ColumnInfo(name = "agent_id")
+    val agentId: Long? = null
 )

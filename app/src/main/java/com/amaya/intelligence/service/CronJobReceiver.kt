@@ -30,6 +30,7 @@ class CronJobReceiver : BroadcastReceiver() {
         val title          = intent.getStringExtra("title") ?: "Reminder"
         val prompt         = intent.getStringExtra("prompt") ?: title
         val sessionMode    = intent.getStringExtra("session_mode") ?: "CONTINUE"
+        val agentId         = intent.getLongExtra("agent_id", -1L)
 
         debugLog(TAG) { "onReceive: jobId=$jobId, convId=$conversationId, mode=$sessionMode, title=$title" }
 
@@ -44,6 +45,7 @@ class CronJobReceiver : BroadcastReceiver() {
             .putString(ReminderWorker.KEY_TITLE, title)
             .putString(ReminderWorker.KEY_PROMPT, prompt)
             .putString(ReminderWorker.KEY_SESSION_MODE, sessionMode)
+            .putLong(ReminderWorker.KEY_AGENT_ID, agentId)
             .build()
 
         val request = OneTimeWorkRequestBuilder<ReminderWorker>()

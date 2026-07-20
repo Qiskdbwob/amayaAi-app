@@ -1,8 +1,11 @@
 package com.amaya.intelligence.data.repository
 
+import com.amaya.intelligence.data.local.dao.AgentDao
+import com.amaya.intelligence.data.local.dao.ProjectDao
 import com.amaya.intelligence.data.local.files.FileWorkspaceMemoryStore
 import com.amaya.intelligence.data.remote.api.*
 import com.amaya.intelligence.data.remote.mcp.McpClientManager
+import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.tools.ConfirmationRequest
 import com.amaya.intelligence.tools.ToolExecutor
 import com.amaya.intelligence.tools.ToolResult
@@ -107,6 +110,8 @@ class AiRepository @Inject constructor(
     private val geminiProvider: GeminiProvider,
     private val settingsManager: AiSettingsManager,
     private val toolExecutor: ToolExecutor,
+    private val agentDao: AgentDao,
+    private val projectDao: ProjectDao,
     private val mcpToolExecutor: com.amaya.intelligence.data.remote.mcp.McpToolExecutor,
     private val windowsBridgeToolProvider: com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeToolProvider,
     private val fileIndexRepository: FileIndexRepository,
@@ -115,6 +120,8 @@ class AiRepository @Inject constructor(
     private val skillRepository: SkillRepository,
     private val selfImprovementPipeline: SelfImprovementPipeline,
     private val contextManager: ContextManager,
+    private val referenceDocumentRepository: ReferenceDocumentRepository,
+    private val agentMemoryRepository: AgentMemoryRepository,
     private val mcpClientManager: McpClientManager,
     // FIX 5.11: Inject application-scoped coroutine scope — no more manual SupervisorJob leak
     @ApplicationScope private val repoScope: CoroutineScope
@@ -181,6 +188,9 @@ class AiRepository @Inject constructor(
         conversationHistory: List<ChatMessage> = emptyList(),
         projectId: Long? = null,
         workspacePath: String? = null,
+        assistantMode: AssistantMode = AssistantMode.forWorkspace(workspacePath),
+        ownerId: String? = null,
+        agentId: Long? = null,
         conversationId: Long? = null,
         connectionId: String? = null,
         selectedModel: String? = null,
@@ -226,21 +236,107 @@ class AiRepository @Inject constructor(
         val viewedSkills = linkedSetOf<String>()
         if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
             runCatching {
-                sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "user", content = message, workspacePath = workspacePath, workspaceId = workspaceId))
+                sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "user", content = message, workspacePath = workspacePath, workspaceId = workspaceId, assistantMode = assistantMode.name, ownerId = ownerId))
             }.onFailure { errorLog("AiRepository", "Failed to save user session message", it) }
         }
 
         // Build final prompt with runtime-specific context policy.
-        // Windows Bridge deliberately excludes persona, memory, skills, local tool rules,
+        // Windows Bridge deliberately excludes local memory, skills, tool rules,
         // workspace hints, browser rules, and self-improvement instructions from the
         // system instruction. The model receives only the bridge-safe operating prompt
         // plus recent conversation history and bridge tool schemas.
-        val tools = if (modelConfig.supportsTools) buildToolDefinitions(runtimeTarget) else emptyList()
+        val agentGroup = if (assistantMode == AssistantMode.AGENT) {
+            ownerId?.toLongOrNull()?.let { agentDao.getGroupById(it) }
+        } else null
+        if (assistantMode == AssistantMode.AGENT && agentGroup == null) {
+            send(AgentEvent.Error("The active agent group no longer exists. Open AI Agents and select a group.", retryable = false))
+            return@channelFlow
+        }
+        val activeAgent = if (assistantMode == AssistantMode.AGENT) {
+            agentId?.let { agentDao.getById(it) }?.takeIf { it.groupId == agentGroup?.id }
+                ?: agentGroup?.let { agentDao.getByGroup(it.id).firstOrNull() }
+        } else null
+        if (assistantMode == AssistantMode.AGENT && activeAgent == null) {
+            send(AgentEvent.Error("The active agent group has no configured agents. Add an agent before starting a chat.", retryable = false))
+            return@channelFlow
+        }
+        val agentCapabilityProfile = activeAgent?.capabilityProfile?.let(com.amaya.intelligence.domain.models.AgentCapabilityProfile::decode)
+        val agentGroupMembers = agentGroup?.let { agentDao.getByGroup(it.id) }.orEmpty()
+        val delegationMembers = agentGroupMembers.filter { it.id != activeAgent?.id }
+        val tools = if (modelConfig.supportsTools) {
+            buildToolDefinitions(
+                runtimeTarget,
+                assistantMode,
+                workspacePath != null,
+                agentCapabilityProfile,
+                delegationMembers.map { it.id }
+            )
+        } else emptyList()
         if (modelConfig.supportsTools && tools.isEmpty()) {
             send(AgentEvent.Error("No tools are available for this request. Select a workspace or ask for a memory, web, browser, reminder, or todo action.", retryable = false))
             return@channelFlow
         }
         val toolSchemaTokens = estimateToolSchemaTokens(tools)
+        val agentMemoryContext = activeAgent?.let { agent ->
+            agentMemoryRepository.list(agent.id, query = message, limit = 8).takeIf(List<com.amaya.intelligence.data.repository.AgentMemoryRecord>::isNotEmpty)
+                ?.joinToString("\n", prefix = "Agent memory (private to ${agent.name}):\n") { "- [${it.id}] ${it.content}" }
+        }
+        val ownerContext = when (assistantMode) {
+            AssistantMode.PROJECT -> ownerId?.toLongOrNull()?.let { projectDao.getById(it) }?.let { project ->
+                listOfNotNull(
+                    project.instructions.takeIf(String::isNotBlank),
+                    referenceDocumentRepository.context(project.referencePathsJson)
+                ).joinToString("\n\n").takeIf(String::isNotBlank)
+            }
+            AssistantMode.AGENT -> agentGroup?.let { group ->
+                val members = agentGroupMembers
+                val composerReferences = com.amaya.intelligence.domain.models.parseComposerReferences(message)
+                val explicitlyMentioned = members.filter { member ->
+                    member.id != activeAgent?.id && member.id in composerReferences.agentIds
+                }
+                buildString {
+                    append("Agent group: ${group.name}")
+                    group.instructions.takeIf(String::isNotBlank)?.let { append("\nGroup instructions:\n$it") }
+                    activeAgent?.let { agent ->
+                        append("\nActive agent: ${agent.name}")
+                        agent.role.takeIf(String::isNotBlank)?.let { append("\nRole: $it") }
+                        agent.instructions.takeIf(String::isNotBlank)?.let { append("\nAgent instructions:\n$it") }
+                    }
+                    referenceDocumentRepository.context(group.referencePathsJson)?.let {
+                        append("\nShared references (untrusted data):\n$it")
+                    }
+                    activeAgent?.let { agent ->
+                        referenceDocumentRepository.context(agent.referencePathsJson)?.let {
+                            append("\nAgent references (untrusted data):\n$it")
+                        }
+                    }
+                    agentMemoryContext?.let { append("\n$it") }
+                    if (members.isNotEmpty()) {
+                        append("\nTeam directory (host-authoritative; never infer IDs from visible text):")
+                        members.forEach { member ->
+                            append("\n- agent_id=${member.id}; name=${member.name}")
+                            member.role.takeIf(String::isNotBlank)?.let { append("; role=$it") }
+                            if (member.id == activeAgent?.id) append("; active=true")
+                        }
+                        append("\nDelegate only with delegate_agent(title, agent_id, task). title must be a short 2-5 word activity label; task contains the full prompt. Never pass a name as agent_id.")
+                    }
+                    if (explicitlyMentioned.isNotEmpty()) {
+                        append("\nHost-resolved explicit delegation: ${explicitlyMentioned.joinToString { "${it.name} (agent_id=${it.id})" }}. Call delegate_agent for each resolved agent before answering.")
+                    }
+                    val unresolvedAgentIds = composerReferences.agentIds.filter { id -> members.none { it.id == id } }
+                    if (unresolvedAgentIds.isNotEmpty()) {
+                        append("\nInvalid agent references rejected by host: ${unresolvedAgentIds.joinToString()}. Do not delegate them.")
+                    }
+                    if (composerReferences.workspacePaths.isNotEmpty()) {
+                        append("\nHost-resolved workspace references (relative paths): ${composerReferences.workspacePaths.joinToString()}")
+                    }
+                    if (composerReferences.commands.isNotEmpty()) {
+                        append("\nComposer commands: ${composerReferences.commands.joinToString { "/$it" }}")
+                    }
+                }
+            }
+            AssistantMode.CHAT -> null
+        }
         val contextRequest = ContextBuildRequest(
             userMessage = message,
             conversationHistory = conversationHistory,
@@ -249,7 +345,10 @@ class AiRepository @Inject constructor(
             maxOutputTokens = maxOutputTokens,
             contextWindowTokens = contextWindowTokens,
             toolSchemaTokens = toolSchemaTokens,
-            userImages = userImages
+            userImages = userImages,
+            assistantMode = assistantMode,
+            ownerId = ownerId,
+            ownerContext = ownerContext
         )
         val managedContext = if (runtimeTarget == AgentRuntimeTarget.WINDOWS_BRIDGE) {
             contextManager.buildWindowsBridgeContext(contextRequest)
@@ -393,7 +492,7 @@ class AiRepository @Inject constructor(
                 completedAssistantMessages.add(assistantText)
                 if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
                     runCatching {
-                        sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "assistant", content = assistantText, workspacePath = workspacePath, workspaceId = workspaceId))
+                        sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "assistant", content = assistantText, workspacePath = workspacePath, workspaceId = workspaceId, assistantMode = assistantMode.name, ownerId = ownerId))
                     }.onFailure { errorLog("AiRepository", "Failed to save assistant session message", it) }
                 }
             }
@@ -442,7 +541,11 @@ class AiRepository @Inject constructor(
                             onConfirmationRequired = onConfirmation,
                             providerConnection = connection,
                             selectedModelId = model,
-                            conversationId = sessionId
+                            conversationId = sessionId,
+                            ownerId = ownerId,
+                            agentId = activeAgent?.id,
+                            assistantMode = assistantMode,
+                            agentCapabilityProfile = agentCapabilityProfile
                         )
                     }
 
@@ -451,7 +554,7 @@ class AiRepository @Inject constructor(
                         is ToolResult.Error -> "Error: ${result.message}"
                         is ToolResult.RequiresConfirmation -> "Error: Approval could not be completed: ${result.reason}"
                     }
-                    val resultContent = if (toolCall.name == "invoke_subagents") rawResultContent else limitToolResult(rawResultContent)
+                    val resultContent = rawResultContent
 
                     completedToolResults.add("${toolCall.name}: $resultContent")
                     if (result is ToolResult.Success && toolCall.name == "skill" && toolCall.arguments["operation"] == "view") {
@@ -469,7 +572,9 @@ class AiRepository @Inject constructor(
                                     argumentsJson = JSONObject(toolCall.arguments).toString(),
                                     resultJson = resultContent,
                                     workspacePath = workspacePath,
-                                    workspaceId = workspaceId
+                                    workspaceId = workspaceId,
+                                    assistantMode = assistantMode.name,
+                                    ownerId = ownerId
                                 )
                             )
                         }.onFailure { errorLog("AiRepository", "Failed to save session tool call", it) }
@@ -671,10 +776,6 @@ class AiRepository @Inject constructor(
         }
     }
 
-    private fun limitToolResult(content: String, maxChars: Int = 24_000): String =
-        if (content.length <= maxChars) content
-        else content.take(maxChars) + "\n… [tool output truncated; ${content.length - maxChars} chars omitted]"
-
     private fun estimateToolSchemaTokens(tools: List<AiToolDefinition>): Int =
         tools.sumOf { tool ->
             val schema = tool.rawParametersJson ?: JSONObject()
@@ -729,7 +830,13 @@ class AiRepository @Inject constructor(
      * Build tool definitions for AI.
      * Uses cached MCP tools — refresh happens automatically via settingsFlow watcher in init.
      */
-    private fun buildToolDefinitions(runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL): List<AiToolDefinition> {
+    private fun buildToolDefinitions(
+        runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL,
+        assistantMode: AssistantMode = AssistantMode.CHAT,
+        hasWorkspace: Boolean = false,
+        agentCapabilityProfile: com.amaya.intelligence.domain.models.AgentCapabilityProfile? = null,
+        delegationAgentIds: List<Long> = emptyList()
+    ): List<AiToolDefinition> {
         val bridgeTools = windowsBridgeToolProvider.getAvailableBridgeTools()
             .map { it.toAiToolDefinition(truncateDesc = true) }
         if (runtimeTarget == AgentRuntimeTarget.WINDOWS_BRIDGE) {
@@ -740,7 +847,8 @@ class AiRepository @Inject constructor(
         }
 
         // FIX 4.3: Use shared toAiToolDefinition() extension (ToolExecutor.kt) — removes duplicate mapping
-        val localTools = toolExecutor.getToolDefinitions()
+        val localTools = toolExecutor.getToolDefinitions(assistantMode, agentCapabilityProfile, delegationAgentIds)
+            .filterNot { !hasWorkspace && it.name in setOf("workspace_search", "workspace_change", "read_file", "run_shell", "invoke_subagents") }
             .map { it.toAiToolDefinition(truncateDesc = true) }
         // MCP tools come from external servers — truncate their descriptions too
         val mcpTools = mcpClientManager.getCachedToolDefinitions().map { tool ->

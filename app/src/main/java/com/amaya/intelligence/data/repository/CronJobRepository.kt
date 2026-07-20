@@ -30,6 +30,7 @@ class CronJobRepository @Inject constructor(
 
     val allJobs: Flow<List<CronJobEntity>> = dao.getAllJobs()
     val activeJobCount: Flow<Int> = dao.getActiveJobCount()
+    fun jobsForAgent(agentId: Long?): Flow<List<CronJobEntity>> = dao.getJobsForAgent(agentId)
 
     /** Add a new cron job and schedule its alarm. */
     suspend fun addJob(job: CronJobEntity): Long {
@@ -128,7 +129,8 @@ class CronJobRepository @Inject constructor(
             prompt = "",
             triggerTimeMillis = 0,
             recurringType = CronRecurringType.ONCE,
-            sessionMode = CronSessionMode.CONTINUE
+            sessionMode = CronSessionMode.CONTINUE,
+            agentId = null
         )
         makePendingIntent(stubJob)?.let { alarmManager.cancel(it) }
     }
@@ -141,6 +143,7 @@ class CronJobRepository @Inject constructor(
             putExtra("title", job.title)
             putExtra("prompt", job.prompt)
             putExtra("session_mode", job.sessionMode.name)  // "CONTINUE" | "NEW"
+            putExtra("agent_id", job.agentId ?: -1L)
         }
         // FIX 1: job.id.toInt() overflows for large IDs (Long > Int.MAX_VALUE).
         // Use stable hash that preserves uniqueness within Int range.

@@ -614,7 +614,9 @@ private fun parseInlineToBuilder(
                         if (closeParens > closeBracket) {
                             val label = src.substring(i + 1, closeBracket)
                             val url = src.substring(closeBracket + 2, closeParens)
-                            pushStringAnnotation(tag = "URL", annotation = url)
+                            val internalReference = url.startsWith("agent:") ||
+                                url.startsWith("workspace:") || url.startsWith("command:")
+                            if (!internalReference) pushStringAnnotation(tag = "URL", annotation = url)
                             withStyle(SpanStyle(
                                 color = linkColor,
                                 textDecoration = TextDecoration.None,
@@ -622,7 +624,7 @@ private fun parseInlineToBuilder(
                             )) {
                                 append(label)
                             }
-                            pop()
+                            if (!internalReference) pop()
                             i = closeParens + 1
                         } else { append(src[i]); i++ }
                     } else { append(src[i]); i++ }

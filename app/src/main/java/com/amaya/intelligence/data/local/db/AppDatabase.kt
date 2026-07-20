@@ -13,6 +13,12 @@ import com.amaya.intelligence.data.local.db.migrations.MIGRATION_5_6
 import com.amaya.intelligence.data.local.db.migrations.MIGRATION_6_7
 import com.amaya.intelligence.data.local.db.migrations.MIGRATION_7_8
 import com.amaya.intelligence.data.local.db.migrations.MIGRATION_8_9
+import com.amaya.intelligence.data.local.db.migrations.MIGRATION_9_10
+import com.amaya.intelligence.data.local.db.migrations.MIGRATION_10_11
+import com.amaya.intelligence.data.local.db.migrations.MIGRATION_11_12
+import com.amaya.intelligence.data.local.db.migrations.MIGRATION_12_13
+import com.amaya.intelligence.data.local.db.migrations.MIGRATION_13_14
+import com.amaya.intelligence.data.local.db.migrations.MIGRATION_14_15
 
 @TypeConverters(CronJobTypeConverters::class)
 @Database(
@@ -22,7 +28,10 @@ import com.amaya.intelligence.data.local.db.migrations.MIGRATION_8_9
         FileFtsEntity::class,
         FileMetadataEntity::class,
         ConversationEntity::class,
-        CronJobEntity::class
+        CronJobEntity::class,
+        AgentGroupEntity::class,
+        AgentEntity::class,
+        DelegationTaskEntity::class
     ],
     version = AppDatabase.DATABASE_VERSION,
     exportSchema = true
@@ -34,9 +43,11 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun fileMetadataDao(): FileMetadataDao
     abstract fun conversationDao(): ConversationDao
     abstract fun cronJobDao(): CronJobDao
+    abstract fun agentDao(): AgentDao
+    abstract fun delegationTaskDao(): DelegationTaskDao
 
     companion object {
-        const val DATABASE_VERSION = 9
+        const val DATABASE_VERSION = 15
         private const val DATABASE_NAME = "Amaya_db"
         private const val TAG = "AppDatabase"
 
@@ -67,7 +78,7 @@ abstract class AppDatabase : RoomDatabase() {
                         Log.d(TAG, "Database opened: version ${db.version}")
                     }
                 })
-                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15)
                 .build()
         }
     }

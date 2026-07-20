@@ -50,9 +50,6 @@ class FilePendingProposalRepository @Inject constructor(
     private val fileMutex = Mutex()
 
     override suspend fun addProposal(proposal: PendingProposal): Result<Unit> = withContext(Dispatchers.IO) {
-        if (proposal.type.isUserProfileProposal()) {
-            return@withContext Result.failure(IllegalArgumentException("About You may only be written through the memory tool."))
-        }
         fileMutex.withLock {
             runCatching {
             val safety = classifier.checkSafety(proposal.content)
@@ -82,7 +79,6 @@ class FilePendingProposalRepository @Inject constructor(
     override suspend fun listPending(limit: Int): List<PendingProposal> = withContext(Dispatchers.IO) {
         fileMutex.withLock {
             readAll()
-                .filterNot { it.type.isUserProfileProposal() }
                 .filter { it.status == PendingProposalStatus.PENDING || it.status == PendingProposalStatus.APPROVED }
                 .sortedByDescending { it.createdAt }
                 .take(limit.coerceIn(1, 200))
@@ -181,9 +177,6 @@ class FilePendingProposalRepository @Inject constructor(
     }
 
     private suspend fun apply(proposal: PendingProposal): Result<String> {
-        if (proposal.type.isUserProfileProposal()) {
-            return Result.failure(IllegalArgumentException("About You may only be written through the memory tool."))
-        }
         val currentProposal = if (proposal.type == PendingProposalType.WORKSPACE_FACT && proposal.workspaceId != null) {
             val binding = memoryRepository.listWorkspaceBindings().firstOrNull { it.id == proposal.workspaceId }
                 ?: return Result.failure(IllegalArgumentException("Workspace memory binding not found: ${proposal.workspaceId}"))
@@ -192,15 +185,12 @@ class FilePendingProposalRepository @Inject constructor(
         val safety = classifier.checkSafety(currentProposal.content)
         if (!safety.safe) return Result.failure(IllegalArgumentException("Unsafe proposal cannot be applied: ${safety.reasons.joinToString()}"))
         return when (currentProposal.type) {
-            PendingProposalType.USER_PROFILE -> memoryRepository.applyProposal(currentProposal.toMemoryProposal())
             PendingProposalType.WORKSPACE_FACT -> memoryRepository.applyProposal(currentProposal.toMemoryProposal())
             PendingProposalType.SKILL_CREATE -> createSkill(currentProposal).map { "Created skill ${currentProposal.target}" }
             PendingProposalType.SKILL_PATCH -> skillRepository.patchSkill(currentProposal.target, currentProposal.content).map { "Patched skill ${currentProposal.target}" }
             PendingProposalType.SKILL_UPDATE -> skillRepository.updateSkill(currentProposal.target, currentProposal.content).map { "Updated skill ${currentProposal.target}" }
         }
     }
-
-    private fun PendingProposalType.isUserProfileProposal(): Boolean = this == PendingProposalType.USER_PROFILE
 
     private suspend fun createSkill(proposal: PendingProposal): Result<Unit> {
         val now = System.currentTimeMillis()
@@ -230,7 +220,7 @@ class FilePendingProposalRepository @Inject constructor(
         if (!file.exists()) return emptyList()
         file.readLines().mapNotNull { line ->
             runCatching { JSONObject(line) }.getOrNull()
-                ?.takeUnless { it.optString("type") == "LONG_TERM_MEMORY" || it.optString("type") == "DAILY_LOG" }
+                ?.takeUnless { it.optString("type") in setOf("USER_PROFILE", "LONG_TERM_MEMORY", "DAILY_LOG") }
                 ?.let { runCatching { it.toPendingProposal() }.getOrNull() }
         }
     }.getOrDefault(emptyList())

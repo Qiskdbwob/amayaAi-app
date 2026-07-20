@@ -19,7 +19,6 @@ data class PendingProposal(
 )
 
 enum class PendingProposalType {
-    USER_PROFILE,
     SKILL_CREATE,
     SKILL_PATCH,
     SKILL_UPDATE,

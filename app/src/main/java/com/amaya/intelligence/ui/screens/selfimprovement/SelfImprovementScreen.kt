@@ -27,25 +27,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.repository.ProposalApplyResult
-import com.amaya.intelligence.data.repository.SelfImprovementMode
 import com.amaya.intelligence.domain.memory.PendingProposal
 import com.amaya.intelligence.domain.memory.PendingProposalType
 
 private enum class LearningTab(val title: String) {
     OVERVIEW("Overview"),
     REVIEW("Review"),
-    MEMORY("Memory"),
-    PRIVACY("Privacy")
+    MEMORY("Memory")
 }
 
 @Composable
 fun SelfImprovementScreen(
-    mode: SelfImprovementMode,
     pendingProposals: List<PendingProposal>,
     lastMaintenanceRun: String,
     promptPreview: PromptPreviewState,
     lastApplyResults: List<ProposalApplyResult>,
-    onModeChange: (SelfImprovementMode) -> Unit,
     onApprove: (String) -> Unit,
     onReject: (String) -> Unit,
     onApply: (String) -> Unit,
@@ -73,14 +69,6 @@ fun SelfImprovementScreen(
             when (selectedTab) {
                 LearningTab.OVERVIEW -> {
                     item { LearningIntroCard() }
-                    item {
-                        SelfImprovementSettingsCard(
-                            mode = mode,
-                            pendingCount = pendingProposals.size,
-                            lastMaintenanceRun = lastMaintenanceRun,
-                            onModeChange = onModeChange
-                        )
-                    }
                     item { FlowExplanationCard() }
                 }
                 LearningTab.REVIEW -> {
@@ -95,7 +83,7 @@ fun SelfImprovementScreen(
                         item { ApplyResultsCard(results = lastApplyResults) }
                     }
                     if (pendingProposals.isEmpty()) {
-                        item { EmptyStateCard("No suggestions waiting", "Safe memory is auto-saved; reusable workflow candidates wait for review.") }
+                        item { EmptyStateCard("No suggestions waiting", "Project-memory and reusable workflow candidates appear here for review.") }
                     } else {
                         items(pendingProposals, key = { it.id }) { proposal ->
                             PendingProposalCard(
@@ -111,10 +99,6 @@ fun SelfImprovementScreen(
                     item { MemoryOverviewCard(pendingProposals) }
                     item { PromptPreviewCard(promptPreview = promptPreview, showMemoryOnly = true) }
                 }
-                LearningTab.PRIVACY -> {
-                    item { PrivacySafetyCard(mode) }
-                    item { PromptPreviewCard(promptPreview = promptPreview, showMemoryOnly = false) }
-                }
             }
         }
     }
@@ -124,7 +108,6 @@ private fun String.toLearningTab(): LearningTab = when (lowercase()) {
     "review", "learning" -> LearningTab.REVIEW
     "memory", "context" -> LearningTab.MEMORY
     "skills" -> LearningTab.OVERVIEW
-    "privacy", "safety" -> LearningTab.PRIVACY
     else -> LearningTab.OVERVIEW
 }
 
@@ -134,7 +117,7 @@ private fun LearningIntroCard() {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Amaya Brain", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(
-                "Persona controls how Amaya talks. Memory and context recall control what she can remember after a chat.",
+                "Memory, context recall, and skills provide reusable context across chats.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -148,8 +131,8 @@ private fun FlowExplanationCard() {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Real flow", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             FlowStep("1", "Chat", "Amaya helps normally and does not interrupt you with memory decisions.")
-            FlowStep("2", "Reflect", "After the chat, she extracts possible memory and context-recall notes.")
-            FlowStep("3", "Save or skip", "Safe structured memory is saved automatically; noisy or uncertain candidates are ignored.")
+            FlowStep("2", "Observe", "Completed workflows produce evidence for reusable skill suggestions.")
+            FlowStep("3", "Review", "Project-memory and skill suggestions wait for explicit review.")
             FlowStep("4", "Recall", "Saved memory affects future chats only when relevant.")
         }
     }
@@ -188,37 +171,20 @@ private fun ReviewHeaderCard(pendingCount: Int, approvedCount: Int, onApplyAppro
 
 @Composable
 private fun MemoryOverviewCard(proposals: List<PendingProposal>) {
-    val memorySuggestions = proposals.count {
-        it.type == PendingProposalType.USER_PROFILE || it.type == PendingProposalType.WORKSPACE_FACT
-    }
+    val memorySuggestions = proposals.count { it.type == PendingProposalType.WORKSPACE_FACT }
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Memory", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
-                "This is what Amaya may remember across chats. User preferences and project facts are separated from persona.",
+                "Saved user preferences and project facts provide scoped context across chats.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            Text("$memorySuggestions memory suggestion(s) waiting. New safe memory is saved automatically.", style = MaterialTheme.typography.bodySmall)
+            Text("$memorySuggestions project-memory suggestion(s) waiting for review.", style = MaterialTheme.typography.bodySmall)
         }
     }
 }
 
-
-@Composable
-private fun PrivacySafetyCard(mode: SelfImprovementMode) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Privacy & safety", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text("Current mode: ${modeLabel(mode)}", style = MaterialTheme.typography.bodyMedium)
-            Text(
-                "Amaya should never save passwords, API keys, tokens, OTPs, cookies, payment data, or temporary guesses. Reminder requests should go to Reminders, not Memory.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
 
 
 @Composable

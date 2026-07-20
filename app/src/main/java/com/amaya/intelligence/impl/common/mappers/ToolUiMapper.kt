@@ -79,6 +79,13 @@ object ToolUiMapper {
                 targetIcon = ToolInfoIcon.PERSON,
                 badges = listOf("SUBAGENTS")
             )
+            "delegate_agent" -> ToolUiMetadata(
+                category = ToolCategory.TASK_MANAGEMENT,
+                label = safeText(safeArgs["title"], 80) ?: "Delegation",
+                actionIcon = ToolInfoIcon.ROCKET,
+                targetIcon = ToolInfoIcon.PERSON,
+                badges = listOf("DELEGATE")
+            )
             "create_reminder" -> ToolUiMetadata(
                 category = ToolCategory.TASK_MANAGEMENT,
                 label = safeText(safeArgs["title"], 120) ?: "Reminder",

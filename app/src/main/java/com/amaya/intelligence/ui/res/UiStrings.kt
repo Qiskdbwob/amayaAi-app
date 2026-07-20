@@ -47,7 +47,6 @@ object UiStrings {
     
     object Actions {
         const val SAVE = "Save"
-        const val SAVE_PERSONA = "Save Persona"
         const val CANCEL = "Cancel"
         const val DELETE = "Delete"
         const val RESET = "Reset"
@@ -76,20 +75,6 @@ object UiStrings {
         const val MAX_TOKENS_EXAMPLE = "Enter max tokens"
         const val SERVER_URL_EXAMPLE = "Enter server URL"
         const val REMINDER_MESSAGE_EXAMPLE = "What should Amaya remind you of?"
-        const val STYLE_TONE_EXAMPLE = "e.g. Friendly, concise, professional"
-        const val CHARACTERISTIC_EXAMPLE = "e.g. Analytical, patient, thorough"
-        const val CUSTOM_INSTRUCTION_EXAMPLE = "Optional voice or conversational style guidance"
-        const val NICKNAME_EXAMPLE = "How should Amaya call you?"
-        const val ABOUT_YOU_EXAMPLE = "Context about you, preferences, timezone..."
-    }
-    
-    object Persona {
-        const val STYLE_TONE = "Style & Tone"
-        const val CHARACTERISTIC = "Characteristic"
-        const val CUSTOM_INSTRUCTION = "Style Instruction"
-        const val YOUR_NICKNAME = "Your Nickname"
-        const val MORE_ABOUT_YOU = "More About You"
-        const val PRO_MODE_WORKSPACE = "Pro Mode Workspace"
     }
     
     object Dialogs {
@@ -100,8 +85,6 @@ object UiStrings {
         const val CURRENT_WORKSPACE = "Current Workspace"
         const val NOT_SELECTED = "Not selected"
         const val MANAGE_MODELS = "Manage Models"
-        const val PERSONALITY_MEMORY = "Persona"
-        const val PERSONALITY_MEMORY_SUBTITLE = "Style, tone, identity, and behavior"
         const val REMINDERS_JOBS = "Reminders & Jobs"
         const val REMINDERS_JOBS_SUBTITLE = "Schedule periodic tasks and reminders"
         const val MCP_SERVERS = "MCP Servers"

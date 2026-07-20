@@ -33,10 +33,8 @@ class LocalMemoryActivity : AppCompatActivity() {
                     state = state,
                     snackbarHostState = snackbarHostState,
                     onNavigateBack = { finish() },
-                    onReview = { LocalReviewActivity.start(this, state.workspacePath) },
                     onToggleUseSavedMemory = { value -> viewModel.updateMemorySettings { it.copy(useSavedMemory = value) } },
-                    onOpenArea = { area -> LocalMemoryAreaActivity.start(this, area, state.workspacePath) },
-                    onReconnectWorkspace = viewModel::reconnectWorkspaceMemory
+                    onOpenAboutYou = { LocalMemoryAreaActivity.start(this, com.amaya.intelligence.ui.screens.amaya.MemoryArea.USER) }
                 )
             }
         }

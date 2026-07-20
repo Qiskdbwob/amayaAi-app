@@ -9,6 +9,9 @@ interface CronJobDao {
     @Query("SELECT * FROM cron_jobs")
     fun getAllJobs(): Flow<List<CronJobEntity>>
 
+    @Query("SELECT * FROM cron_jobs WHERE (:agentId IS NULL AND agent_id IS NULL) OR agent_id = :agentId")
+    fun getJobsForAgent(agentId: Long?): Flow<List<CronJobEntity>>
+
     @Query("SELECT * FROM cron_jobs WHERE is_active = 1")
     fun getActiveCronJobs(): Flow<List<CronJobEntity>>
 

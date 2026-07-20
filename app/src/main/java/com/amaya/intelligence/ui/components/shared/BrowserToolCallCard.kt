@@ -640,7 +640,7 @@ private fun BrowserSubToolResponseBody(
             modifier = modifier
         ) {
             Text(
-                text = if (scriptOutput != null) scriptOutput.take(6000) else result.toString(2).take(6000),
+                text = scriptOutput ?: result.toString(2),
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 260.dp)

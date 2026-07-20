@@ -1,11 +1,22 @@
 package com.amaya.intelligence.ui.components.shared
 
+import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.domain.models.ConversationMode
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -18,17 +29,31 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.input.OffsetMapping
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.zIndex
 import kotlin.math.roundToInt
+
+data class ChatMentionAgent(val id: Long, val name: String, val role: String, val groupName: String)
 
 @Composable
 fun ChatInput(
@@ -49,7 +74,12 @@ fun ChatInput(
     showConversationModeSelector: Boolean = false,
     onShowConversationModeSelector: () -> Unit = {},
     workspacePath: String? = null,
+    assistantMode: AssistantMode = AssistantMode.CHAT,
+    ownerLabel: String = "Chat",
+    showWorkspaceCard: Boolean = true,
     onWorkspaceClick: () -> Unit = {},
+    mentionAgents: List<ChatMentionAgent> = emptyList(),
+    onSearchWorkspaceFiles: suspend (String) -> List<com.amaya.intelligence.domain.models.ProjectFileEntry> = { emptyList() },
     modelLabel: String = "Select Model",
     modelId: String = "",
     modelProviderId: String? = null,
@@ -64,6 +94,8 @@ fun ChatInput(
     val hasAttachment = attachedFilePath != null || attachedImageBase64 != null
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val referenceColor = MaterialTheme.colorScheme.primary
+    val referenceTransformation = remember(referenceColor) { ComposerReferenceTransformation(referenceColor) }
     val expansion = imeAnimationProgress()
     val composerCornerRadius = lerp(28.dp, 24.dp, expansion)
     val composerHorizontalPadding = lerp(8.dp, 12.dp, expansion)
@@ -75,6 +107,31 @@ fun ChatInput(
         workspacePath?.substringAfterLast("/").orEmpty()
     }
     val hasWorkspace = remember(workspacePath) { !workspacePath.isNullOrBlank() }
+    var commandMode by remember(resetKey) { mutableStateOf<ComposerCommand?>(null) }
+    var commandQuery by remember(resetKey) { mutableStateOf("") }
+    var fileResults by remember(resetKey) { mutableStateOf(emptyList<com.amaya.intelligence.domain.models.ProjectFileEntry>()) }
+    var isSearchingFiles by remember(resetKey) { mutableStateOf(false) }
+    var commandPillHeightPx by remember(resetKey) { mutableIntStateOf(36) }
+    val density = LocalDensity.current
+
+    LaunchedEffect(text, hasWorkspace) {
+        val token = text.substringAfterLast(' ')
+        val trigger = token.firstOrNull().takeIf { it == '@' || it == '/' }
+        commandMode = when (trigger) {
+            '@' -> ComposerCommand.MENTIONS
+            '/' -> ComposerCommand.ACTIONS
+            else -> null
+        }
+        commandQuery = trigger?.let { token.drop(1).trim() }.orEmpty()
+        if (commandMode == ComposerCommand.MENTIONS && hasWorkspace) {
+            isSearchingFiles = true
+            fileResults = runCatching { onSearchWorkspaceFiles(commandQuery) }.getOrDefault(emptyList())
+            isSearchingFiles = false
+        } else if (commandMode != ComposerCommand.MENTIONS) {
+            fileResults = emptyList()
+            isSearchingFiles = false
+        }
+    }
 
     val pillColor = remember(isDark) {
         if (isDark) Color(0xFF1F2126).copy(alpha = 0.94f)
@@ -192,8 +249,12 @@ fun ChatInput(
             }
         }
 
-        val placeholderText = remember(hasWorkspace, wsName) {
-            if (hasWorkspace) "Ask anything on $wsName" else "Ask anything"
+        val placeholderText = remember(assistantMode, hasWorkspace, wsName) {
+            when (assistantMode) {
+                AssistantMode.CHAT -> "Ask anything"
+                AssistantMode.PROJECT -> "Ask about $wsName"
+                AssistantMode.AGENT -> "Message the agent group"
+            }
         }
         val placeholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.46f)
         val canSend = text.isNotBlank() || hasAttachment
@@ -208,67 +269,79 @@ fun ChatInput(
         }
 
 
-        // Card + Input — precisely stacked to hide border gap
-        val cardHeight = 36.dp
-        val overlap = 1.dp
-        Box(modifier = Modifier.fillMaxWidth()) {
-            // Workspace card — narrower, bottom corners flat
-            Surface(
-                shape = RoundedCornerShape(
-                    topStart = 16.dp,
-                    topEnd = 16.dp,
-                    bottomStart = 0.dp,
-                    bottomEnd = 0.dp
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.Bottom
+        ) {
+            val displayCommandMode = remember { mutableStateOf(commandMode) }
+            val displayQuery = remember { mutableStateOf(commandQuery) }
+            val displayAgents = remember { mutableStateOf(mentionAgents) }
+            val displayFiles = remember { mutableStateOf(fileResults) }
+
+            if (commandMode != null) {
+                displayCommandMode.value = commandMode
+                displayQuery.value = commandQuery
+                displayAgents.value = mentionAgents
+                displayFiles.value = fileResults
+            }
+
+            val pillListState = androidx.compose.foundation.lazy.rememberLazyListState()
+
+            val topShadowAlpha by derivedStateOf {
+                if (pillListState.firstVisibleItemIndex > 0) {
+                    0.35f
+                } else {
+                    val offset = pillListState.firstVisibleItemScrollOffset.toFloat()
+                    val maxOffset = 60f
+                    val fraction = (offset / maxOffset).coerceIn(0f, 1f)
+                    0.35f * fraction
+                }
+            }
+
+            androidx.compose.animation.AnimatedVisibility(
+                visible = commandMode != null,
+                enter = androidx.compose.animation.expandVertically(
+                    expandFrom = Alignment.Bottom,
+                    animationSpec = androidx.compose.animation.core.spring(stiffness = 400f, dampingRatio = 0.85f)
+                ) + androidx.compose.animation.slideInVertically(
+                    initialOffsetY = { it },
+                    animationSpec = androidx.compose.animation.core.spring(stiffness = 400f, dampingRatio = 0.85f)
+                ) + androidx.compose.animation.fadeIn(
+                    animationSpec = androidx.compose.animation.core.tween(200)
                 ),
-                color = pillColor,
-                border = BorderStroke(
-                    0.7.dp,
-                    MaterialTheme.colorScheme.onSurface.copy(alpha = if (isDark) 0.15f else 0.10f)
+                exit = androidx.compose.animation.shrinkVertically(
+                    shrinkTowards = Alignment.Bottom,
+                    animationSpec = androidx.compose.animation.core.spring(stiffness = 400f, dampingRatio = 0.85f)
+                ) + androidx.compose.animation.slideOutVertically(
+                    targetOffsetY = { it },
+                    animationSpec = androidx.compose.animation.core.spring(stiffness = 400f, dampingRatio = 0.85f)
+                ) + androidx.compose.animation.fadeOut(
+                    animationSpec = androidx.compose.animation.core.tween(150)
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
-                    .height(cardHeight)
-                    .align(Alignment.TopCenter)
-                    .zIndex(0f),
-                tonalElevation = 0.dp,
-                shadowElevation = 0.dp
+                    .offset(y = 1.dp)
+                    .zIndex(0f)
+                    .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 0.dp, bottomEnd = 0.dp))
+                    .pillShadowOverlay(topShadowAlpha = topShadowAlpha)
             ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Surface(
-                        onClick = onWorkspaceClick,
-                        color = Color.Transparent,
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.Folder,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (hasWorkspace) wsName else "No Project",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                ComposerCommandPill(
+                    mode = displayCommandMode.value,
+                    query = displayQuery.value,
+                    agents = displayAgents.value,
+                    files = displayFiles.value,
+                    isSearching = isSearchingFiles,
+                    listState = pillListState,
+                    onSelect = { value ->
+                        val token = text.substringAfterLast(' ')
+                        onTextChange(text.dropLast(token.length) + value + " ")
+                        commandMode = null
                     }
-                }
+                )
             }
 
-            // Main input — full width, placed precisely to overlap 1dp and hide the seam
             Surface(
                 shape = RoundedCornerShape(composerCornerRadius),
                 color = pillColor,
@@ -278,7 +351,6 @@ fun ChatInput(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = cardHeight - overlap)
                     .zIndex(1f),
                 tonalElevation = 0.dp,
                 shadowElevation = 0.dp
@@ -306,6 +378,7 @@ fun ChatInput(
                             BasicTextField(
                                 value = text,
                                 onValueChange = onTextChange,
+                                visualTransformation = referenceTransformation,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .focusRequester(focusRequester),
@@ -605,6 +678,193 @@ private fun ComposerSendButton(
     }
 }
 
+private class ComposerReferenceTransformation(private val referenceColor: Color) : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val matches = COMPOSER_REFERENCE_LINK.findAll(text.text).toList()
+        if (matches.isEmpty()) return TransformedText(text, OffsetMapping.Identity)
+        val rendered = AnnotatedString.Builder()
+        val originalToTransformed = IntArray(text.length + 1)
+        val transformedToOriginal = mutableListOf<Int>()
+        var originalIndex = 0
+        var transformedIndex = 0
+        matches.forEach { match ->
+            while (originalIndex < match.range.first) {
+                originalToTransformed[originalIndex] = transformedIndex
+                rendered.append(text[originalIndex])
+                transformedToOriginal += originalIndex
+                originalIndex++
+                transformedIndex++
+            }
+            val label = match.groupValues[1]
+            val labelStart = match.range.first
+            val labelContentStart = labelStart + 1
+            val transformedStart = transformedIndex
+            rendered.pushStyle(SpanStyle(color = referenceColor, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium))
+            label.forEachIndexed { offset, char ->
+                rendered.append(char)
+                transformedToOriginal += labelContentStart + offset
+                transformedIndex++
+            }
+            rendered.pop()
+            for (index in match.range) originalToTransformed[index] = transformedStart
+            originalToTransformed[labelContentStart.coerceAtMost(text.length)] = transformedStart
+            originalToTransformed[(labelContentStart + label.length).coerceAtMost(text.length)] = transformedIndex
+            originalIndex = match.range.last + 1
+        }
+        while (originalIndex < text.length) {
+            originalToTransformed[originalIndex] = transformedIndex
+            rendered.append(text[originalIndex])
+            transformedToOriginal += originalIndex
+            originalIndex++
+            transformedIndex++
+        }
+        originalToTransformed[text.length] = transformedIndex
+        transformedToOriginal += text.length
+        return TransformedText(rendered.toAnnotatedString(), object : OffsetMapping {
+            override fun originalToTransformed(offset: Int): Int =
+                originalToTransformed[offset.coerceIn(0, text.length)].coerceIn(0, transformedIndex)
+
+            override fun transformedToOriginal(offset: Int): Int =
+                transformedToOriginal[offset.coerceIn(0, transformedToOriginal.lastIndex)].coerceIn(0, text.length)
+        })
+    }
+}
+
+private val COMPOSER_REFERENCE_LINK = Regex("\\[([^]\\n]+)]\\((?:agent|workspace|command):[^)]+\\)")
+
+private enum class ComposerCommand { MENTIONS, ACTIONS }
+
+private data class ComposerSuggestion(val label: String, val detail: String, val value: String)
+
+@Composable
+private fun ComposerCommandPill(
+    mode: ComposerCommand?,
+    query: String,
+    agents: List<ChatMentionAgent>,
+    files: List<com.amaya.intelligence.domain.models.ProjectFileEntry>,
+    isSearching: Boolean,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    listState: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState()
+) {
+    if (mode == null) return
+    val actions = remember {
+        listOf(
+            ComposerSuggestion("Explain", "Explain selected context", "/explain"),
+            ComposerSuggestion("Review", "Review code or text", "/review"),
+            ComposerSuggestion("Plan", "Draft a concise implementation plan", "/plan")
+        )
+    }
+    val filteredActions = actions.filter { query.isBlank() || it.label.contains(query, ignoreCase = true) }
+    val filteredAgents = agents.filter {
+        query.isBlank() || it.name.contains(query, ignoreCase = true) || it.role.contains(query, ignoreCase = true)
+    }
+    Surface(
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+        tonalElevation = 0.dp,
+        shadowElevation = 0.dp,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Box {
+            Column(Modifier.animateContentSize().heightIn(max = 240.dp)) {
+                val isEmpty = mode == ComposerCommand.MENTIONS && filteredAgents.isEmpty() && files.isEmpty() && !isSearching
+                androidx.compose.animation.Crossfade(targetState = isEmpty, label = "pillCrossfade") { showEmpty ->
+                    if (showEmpty) {
+                        Text(
+                            if (query.isBlank()) "No agents or workspace files" else "No matching agents or files",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+                        )
+                    } else {
+                        LazyColumn(Modifier.heightIn(max = 230.dp), state = listState, contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp)) {
+                    if (mode == ComposerCommand.MENTIONS) {
+                        if (filteredAgents.isNotEmpty()) {
+                            items(filteredAgents, key = { "agent:${it.groupName}:${it.name}" }) { agent ->
+                                ComposerSuggestionRow(
+                                    icon = Icons.Default.SmartToy,
+                                    label = agent.name,
+                                    detail = listOf(agent.groupName, agent.role).filter(String::isNotBlank).joinToString(" · "),
+                                    onClick = { onSelect(com.amaya.intelligence.domain.models.agentMentionMarkdown(agent.id, agent.name)) }
+                                )
+                            }
+                        }
+                        if (files.isNotEmpty()) {
+                            items(files, key = { "file:${it.path}" }) { file ->
+                                ComposerSuggestionRow(
+                                    icon = if (file.type == "directory") Icons.Default.Folder else Icons.Default.Description,
+                                    label = file.name,
+                                    detail = file.path,
+                                    onClick = { onSelect(com.amaya.intelligence.domain.models.workspaceMentionMarkdown(file.path)) }
+                                )
+                            }
+                        }
+                        if (isSearching) item {
+                            Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            }
+                        }
+                    } else {
+                        items(filteredActions, key = { it.value }) { action ->
+                            ComposerSuggestionRow(Icons.Default.Terminal, action.label, action.detail) {
+                                onSelect(com.amaya.intelligence.domain.models.commandMarkdown(action.value))
+                            }
+                        }
+                    }
+                    }
+                }
+            }
+        }
+    }
+}
+}
+
+@Composable
+private fun ComposerSectionLabel(label: String) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+    )
+}
+
+@Composable
+private fun ComposerSuggestionRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    detail: String,
+    onClick: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+            modifier = Modifier.size(36.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(icon, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+            }
+        }
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (detail.isNotBlank()) {
+                Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
 @Composable
 private fun ReasoningEffortButton(
     effort: com.amaya.intelligence.data.remote.api.ThinkingEffort,
@@ -613,7 +873,7 @@ private fun ReasoningEffortButton(
 ) {
     var expanded by remember { mutableStateOf(false) }
     val isActive = effort != com.amaya.intelligence.data.remote.api.ThinkingEffort.NONE
-    
+
     Box {
         Surface(
             onClick = { if (enabled) expanded = true },
@@ -682,3 +942,31 @@ private fun com.amaya.intelligence.data.remote.api.ThinkingEffort.label(): Strin
     com.amaya.intelligence.data.remote.api.ThinkingEffort.MEDIUM -> "Medium"
     com.amaya.intelligence.data.remote.api.ThinkingEffort.HIGH -> "High"
 }
+
+private fun Modifier.pillShadowOverlay(topShadowAlpha: Float = 0.35f): Modifier = this
+    .drawWithContent {
+        drawContent()
+        val gradientHeight = 16.dp.toPx()
+
+        if (topShadowAlpha > 0f) {
+            drawRect(
+                brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                    0.0f to androidx.compose.ui.graphics.Color.Black.copy(alpha = topShadowAlpha),
+                    1.0f to androidx.compose.ui.graphics.Color.Transparent,
+                    startY = 0f,
+                    endY = gradientHeight
+                ),
+                blendMode = androidx.compose.ui.graphics.BlendMode.SrcAtop
+            )
+        }
+
+        drawRect(
+            brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                0.0f to androidx.compose.ui.graphics.Color.Transparent,
+                1.0f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.35f),
+                startY = (size.height - gradientHeight).coerceAtLeast(0f),
+                endY = size.height
+            ),
+            blendMode = androidx.compose.ui.graphics.BlendMode.SrcAtop
+        )
+    }

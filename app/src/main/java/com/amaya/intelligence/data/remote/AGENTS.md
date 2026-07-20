@@ -49,4 +49,3 @@ data/remote/
 - `mcp/McpClientManager.kt`: lifecycle for remote MCP connectivity.
 - `mcp/McpToolExecutor.kt`: execution bridge for MCP tools.
 - `repository/AiRepository.kt`: repository orchestration for remote-backed chat flows.
-- `repository/PersonaRepository.kt`: AGENTS template storage and persona-related defaults.

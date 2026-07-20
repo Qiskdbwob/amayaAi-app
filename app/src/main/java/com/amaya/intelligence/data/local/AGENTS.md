@@ -48,12 +48,17 @@ data/local/
 - `entity/FileEntity.kt`: local file index entries.
 - `entity/FileFtsEntity.kt`: full-text-search support for local files.
 - `entity/FileMetadataEntity.kt`: detailed file information.
-- `entity/ConversationEntity.kt`: stored conversation records.
-- `entity/CronJobEntity.kt`: scheduled local job records.
+- `entity/ConversationEntity.kt`: stored conversation records with explicit Chat/Project/Agent owner scope plus active Agent member ID.
+- `entity/AgentGroupEntity.kt`: persisted shared group workspace, instructions, and references.
+- `entity/AgentEntity.kt`: many named roles, instructions, per-agent capability profiles, and private reference paths belonging to one agent group.
+- `entity/DelegationTaskEntity.kt`: persisted intra-group task status and result.
+- `dao/AgentDao.kt`: agent-group/member list, create, update, and delete persistence.
+- `dao/DelegationTaskDao.kt`: group-scoped delegation history.
+- `entity/CronJobEntity.kt`: scheduled local job records, optionally owned by one Agent.
 - `dao/ProjectDao.kt`: project persistence access.
 - `dao/FileDao.kt`: file index and FTS access.
 - `dao/ConversationDao.kt`: conversation persistence access.
-- `dao/CronJobDao.kt`: cron job persistence access.
+- `dao/CronJobDao.kt`: cron job persistence access, including Agent-scoped lists.
 - `db/AppDatabase.kt`: database configuration and migration wiring.
 - `files/FileSessionStore.kt`: file-backed session recall root, JSONL record file, summary file, and legacy `sessions.db` migration.
 - `files/FileSkillStore.kt`: file-backed skill root, `SKILL.md`, metadata file, and skill-name sanitization.

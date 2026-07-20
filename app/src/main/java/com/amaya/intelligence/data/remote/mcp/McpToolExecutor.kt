@@ -1,5 +1,6 @@
 package com.amaya.intelligence.data.remote.mcp
 
+import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeToolProvider
 import com.amaya.intelligence.tools.ConfirmationRequest
 import com.amaya.intelligence.tools.ToolExecutor
@@ -24,7 +25,11 @@ class McpToolExecutor @Inject constructor(
         onConfirmationRequired: suspend (ConfirmationRequest) -> Boolean,
         providerConnection: com.amaya.intelligence.data.remote.api.ProviderConnection? = null,
         selectedModelId: String? = null,
-        conversationId: String? = null
+        conversationId: String? = null,
+        ownerId: String? = null,
+        agentId: Long? = null,
+        assistantMode: AssistantMode = AssistantMode.PROJECT,
+        agentCapabilityProfile: com.amaya.intelligence.domain.models.AgentCapabilityProfile? = null
     ): ToolResult {
         // Reverse-map sanitized bridge tool names (e.g. "screen_capture" → "screen.capture").
         // The model receives sanitized names (dots replaced with underscores) because OpenAI
@@ -73,7 +78,11 @@ class McpToolExecutor @Inject constructor(
                     onConfirmationRequired,
                     providerConnection,
                     selectedModelId,
-                    conversationId = conversationId
+                    conversationId = conversationId,
+                    ownerId = ownerId,
+                    agentId = agentId,
+                    assistantMode = assistantMode,
+                    agentCapabilityProfile = agentCapabilityProfile
                 )
         }
     }

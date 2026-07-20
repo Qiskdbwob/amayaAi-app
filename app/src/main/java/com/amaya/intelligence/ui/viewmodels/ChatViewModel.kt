@@ -8,6 +8,9 @@ import androidx.lifecycle.viewModelScope
 import com.amaya.intelligence.domain.ai.IntelligenceService
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.domain.models.ConversationMode as DomainConversationMode
+import com.amaya.intelligence.data.local.dao.AgentDao
+import com.amaya.intelligence.data.local.dao.ProjectDao
+import com.amaya.intelligence.data.local.dao.DelegationTaskDao
 import com.amaya.intelligence.data.repository.CronJobRepository
 import com.amaya.intelligence.tools.TodoRepository
 import com.amaya.intelligence.tools.TodoItem
@@ -15,12 +18,21 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val intelligenceService: IntelligenceService,
     private val sessionManager: IntelligenceSessionManager,
+    private val agentDao: AgentDao,
+    private val projectDao: ProjectDao,
+    private val delegationTaskDao: DelegationTaskDao,
     private val cronJobRepository: CronJobRepository,
     private val todoRepository: TodoRepository
 ) : ViewModel() {
@@ -46,6 +58,45 @@ class ChatViewModel @Inject constructor(
     // Conversations derived from service
     val conversations: StateFlow<List<com.amaya.intelligence.data.local.entity.ConversationEntity>> = intelligenceService.conversations
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val projects = projectDao.observeAll()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val agentGroups = agentDao.observeGroups()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val allAgents = agentDao.observeAll()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val allLocalConversations = intelligenceService.allLocalConversations
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val activeAgentMembers = uiState.flatMapLatest { state ->
+        if (state.assistantMode == com.amaya.intelligence.domain.models.AssistantMode.AGENT) {
+            state.ownerId?.toLongOrNull()?.let(agentDao::observeByGroup) ?: flowOf(emptyList())
+        } else flowOf(emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val activeDelegationTasks = uiState.flatMapLatest { state ->
+        if (state.assistantMode == com.amaya.intelligence.domain.models.AssistantMode.AGENT) {
+            state.ownerId?.toLongOrNull()?.let(delegationTaskDao::observeByGroup) ?: flowOf(emptyList())
+        } else flowOf(emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val ownerLabel = uiState.mapLatest { state ->
+        when (state.assistantMode) {
+            com.amaya.intelligence.domain.models.AssistantMode.CHAT -> "Chat"
+            com.amaya.intelligence.domain.models.AssistantMode.PROJECT ->
+                state.ownerId?.toLongOrNull()?.let { projectDao.getById(it)?.name } ?: "Project"
+            com.amaya.intelligence.domain.models.AssistantMode.AGENT ->
+                state.agentId?.let { agentDao.getById(it)?.name } ?: "Agent"
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "Chat")
+
+    val activeAgentGroupLabel = uiState.mapLatest { state ->
+        if (state.assistantMode != com.amaya.intelligence.domain.models.AssistantMode.AGENT) return@mapLatest ""
+        state.ownerId?.toLongOrNull()?.let { agentDao.getGroupById(it)?.name }.orEmpty()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "")
 
     // Workspace & Projects
     val projectFiles: StateFlow<List<ProjectFileEntry>> = intelligenceService.projectFiles
@@ -103,10 +154,55 @@ class ChatViewModel @Inject constructor(
         intelligenceService.setWorkspace(path)
     }
 
+    fun setAssistantOwner(
+        mode: com.amaya.intelligence.domain.models.AssistantMode,
+        ownerId: String? = null,
+        workspacePath: String? = null,
+        agentId: Long? = null
+    ) = selectChatTarget(mode, ownerId, workspacePath, agentId)
+
+    fun selectChatTarget(
+        mode: com.amaya.intelligence.domain.models.AssistantMode,
+        ownerId: String? = null,
+        workspacePath: String? = null,
+        agentId: Long? = null,
+        conversationId: Long? = null
+    ) {
+        todoRepository.clear()
+        intelligenceService.setAssistantOwner(mode, ownerId, workspacePath, agentId)
+        if (mode != com.amaya.intelligence.domain.models.AssistantMode.AGENT) {
+            conversationId?.let { intelligenceService.loadConversation(it.toString()) }
+        }
+    }
+
 
 
     fun clearError() {
         intelligenceService.clearError()
+    }
+
+    suspend fun searchWorkspaceFiles(query: String, limit: Int = 24): List<ProjectFileEntry> = withContext(Dispatchers.IO) {
+        val needle = query.trim()
+        val delegated = projectFiles.value.filter {
+            needle.isBlank() || it.name.contains(needle, ignoreCase = true) || it.path.contains(needle, ignoreCase = true)
+        }.take(limit)
+        if (delegated.isNotEmpty()) return@withContext delegated
+
+        val root = uiState.value.workspacePath?.takeIf(String::isNotBlank)?.let { java.io.File(it) }
+            ?.takeIf { it.isDirectory } ?: return@withContext emptyList()
+        root.walkTopDown()
+            .onEnter { it.name !in setOf(".git", ".gradle", "build", "node_modules") }
+            .drop(1)
+            .filter { needle.isBlank() || it.name.contains(needle, ignoreCase = true) }
+            .take(limit)
+            .map { file ->
+                ProjectFileEntry(
+                    name = file.name,
+                    path = file.relativeTo(root).path.replace(java.io.File.separatorChar, '/'),
+                    type = if (file.isDirectory) "directory" else "file",
+                    size = if (file.isFile) file.length() else 0L
+                )
+            }.toList()
     }
 
     fun getProjectFiles(path: String) {

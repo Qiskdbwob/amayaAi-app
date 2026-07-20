@@ -1,6 +1,7 @@
 package com.amaya.intelligence.tools
 
 import android.content.Context
+import com.amaya.intelligence.data.repository.TerminalSettingsRepository
 import com.amaya.intelligence.domain.security.CommandValidator
 import com.amaya.intelligence.domain.security.ValidationResult
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -46,12 +47,13 @@ import javax.inject.Singleton
  * - All commands go through CommandValidator
  * - Timeout enforcement prevents hanging
  * - Output size limiting prevents memory issues
- * - No shell interpolation (uses ProcessBuilder)
+ * - Android's system shell provides standard terminal grammar
  */
 @Singleton
 class RunShellTool @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val commandValidator: CommandValidator
+    private val commandValidator: CommandValidator,
+    private val terminalSettingsRepository: TerminalSettingsRepository
 ) : Tool, ContextAwareTool {
 
     companion object {
@@ -109,7 +111,7 @@ class RunShellTool @Inject constructor(
                 )
             }
 
-            when (val validation = commandValidator.validateCommand(command)) {
+            when (val validation = commandValidator.validateCommand(command, terminalSettingsRepository.getSettings())) {
                 is ValidationResult.Denied -> return@withContext ToolResult.Error(
                     "Command blocked by security policy: ${validation.reason}",
                     ErrorType.SECURITY_VIOLATION
@@ -137,13 +139,7 @@ class RunShellTool @Inject constructor(
                 // process to not be destroyed immediately on coroutine cancellation.
                 // runCommand() uses process.waitFor(timeoutMs) + destroyForcibly() internally,
                 // which is the correct mechanism for subprocess timeout handling.
-                val argv = commandValidator.parseCommandArguments(command)
-                    ?: return@withContext ToolResult.Error(
-                        "Compound shell syntax is not supported; run one executable per call",
-                        ErrorType.SECURITY_VIOLATION
-                    )
-                val result = runCommand(argv, command, workingDir, timeoutMs)
-                result
+                runCommand(command, workingDir, timeoutMs)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (e: TimeoutCancellationException) {
@@ -160,13 +156,12 @@ class RunShellTool @Inject constructor(
         }
 
     private suspend fun runCommand(
-        argv: List<String>,
-        originalCommand: String,
+        command: String,
         workingDir: String?,
         timeoutMs: Long
     ): ToolResult = withContext(Dispatchers.IO) {
 
-        val processBuilder = ProcessBuilder(argv)
+        val processBuilder = ProcessBuilder("/system/bin/sh", "-c", command)
 
         // Set working directory if specified
         if (workingDir != null) {
@@ -262,7 +257,7 @@ class RunShellTool @Inject constructor(
             metadata = mapOf(
                 "exit_code" to exitCode,
                 "truncated" to truncated,
-                "command" to originalCommand
+                "command" to command
             )
         )
     }

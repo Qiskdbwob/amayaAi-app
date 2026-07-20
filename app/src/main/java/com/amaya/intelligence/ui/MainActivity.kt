@@ -19,13 +19,16 @@ import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.amaya.intelligence.data.local.dao.ConversationDao
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.ui.screens.chat.shared.ChatScreen
 import com.amaya.intelligence.ui.viewmodels.ChatViewModel
 import com.amaya.intelligence.ui.viewmodels.AppViewModel
 import com.amaya.intelligence.ui.activities.settings.local.LocalSettingsActivity
+import com.amaya.intelligence.ui.activities.agent.local.LocalAgentListActivity
 import com.amaya.intelligence.ui.activities.project.local.LocalProjectActivity
+import com.amaya.intelligence.ui.activities.project.local.LocalProjectListActivity
 import com.amaya.intelligence.ui.theme.AmayaTheme
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -43,8 +46,8 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class MainActivity : androidx.appcompat.app.AppCompatActivity() {
 
-    @Inject
-    lateinit var aiSettingsManager: AiSettingsManager
+    @Inject lateinit var aiSettingsManager: AiSettingsManager
+    @Inject lateinit var conversationDao: ConversationDao
 
     /** Scoped to Activity process — survives all conversation switches. */
     private val appViewModel: AppViewModel by viewModels()
@@ -88,13 +91,14 @@ class MainActivity : androidx.appcompat.app.AppCompatActivity() {
                     appViewModel = appViewModel,
                     initialIntent = intent,
                     onChatViewModelReady = { vm -> chatViewModel = vm },
-                    onNavigateToSettings = { workspacePath ->
-                        LocalSettingsActivity.start(this@MainActivity, workspacePath)
+                    onNavigateToSettings = { mode, ownerId, workspacePath ->
+                        LocalSettingsActivity.start(this@MainActivity, mode, ownerId, workspacePath)
                     },
-                    onNavigateToWorkspace = {
+                    onNavigateToProjects = {
                         @Suppress("DEPRECATION")
-                        LocalProjectActivity.startForResult(this@MainActivity)
-                    }
+                        LocalProjectListActivity.startForResult(this@MainActivity)
+                    },
+                    onNavigateToAgents = { LocalAgentListActivity.startForResult(this@MainActivity) }
                 )
             }
         }
@@ -107,20 +111,6 @@ class MainActivity : androidx.appcompat.app.AppCompatActivity() {
         if (id > 0) chatViewModel?.loadConversation(id)
     }
 
-    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == LocalProjectActivity.REQUEST_CODE && resultCode == RESULT_OK) {
-            data?.getStringExtra(LocalProjectActivity.RESULT_KEY)?.let { path ->
-                chatViewModel?.setWorkspace(path)
-            }
-        } else if (requestCode == LocalSettingsActivity.REQUEST_CODE && resultCode == RESULT_OK) {
-            data?.getStringExtra(LocalProjectActivity.RESULT_KEY)?.let { path ->
-                chatViewModel?.setWorkspace(path)
-            }
-        }
-    }
-
 }
 
 // ── Root composable ──────────────────────────────────────────────────────────
@@ -130,8 +120,9 @@ private fun AppContent(
     appViewModel: AppViewModel,
     initialIntent: Intent?,
     onChatViewModelReady: (ChatViewModel) -> Unit,
-    onNavigateToSettings: (workspacePath: String?) -> Unit,
-    onNavigateToWorkspace: () -> Unit
+    onNavigateToSettings: (com.amaya.intelligence.domain.models.AssistantMode, String?, String?) -> Unit,
+    onNavigateToProjects: () -> Unit,
+    onNavigateToAgents: () -> Unit
 ) {
     val navController = rememberNavController()
     val viewModel: ChatViewModel = hiltViewModel()
@@ -160,7 +151,9 @@ private fun AppContent(
                 val context = androidx.compose.ui.platform.LocalContext.current
                 val config = com.amaya.intelligence.ui.screens.chat.shared.localChatScreenConfig(
                     onClearConversation = { viewModel.clearConversation() },
-                    onNavigateToSettings = { onNavigateToSettings(viewModel.uiState.value.workspacePath) },
+                    onNavigateToSettings = {
+                        viewModel.uiState.value.let { onNavigateToSettings(it.assistantMode, it.ownerId, it.workspacePath) }
+                    },
                     onNavigateToRemoteSession = {
                         context.startActivity(android.content.Intent(context, com.amaya.intelligence.ui.activities.remote.RemoteSessionActivity::class.java))
                     }
@@ -169,8 +162,11 @@ private fun AppContent(
                     viewModel = viewModel,
                     activeReminderCount = activeReminderCount,
                     config = config,
-                    onNavigateToSettings = { onNavigateToSettings(viewModel.uiState.value.workspacePath) },
-                    onNavigateToWorkspace = onNavigateToWorkspace,
+                    onNavigateToSettings = {
+                        viewModel.uiState.value.let { onNavigateToSettings(it.assistantMode, it.ownerId, it.workspacePath) }
+                    },
+                    onNavigateToWorkspace = onNavigateToProjects,
+                    onNavigateToAgents = onNavigateToAgents,
                     onNavigateToRemoteSession = {
                         context.startActivity(android.content.Intent(context, com.amaya.intelligence.ui.activities.remote.RemoteSessionActivity::class.java))
                     }

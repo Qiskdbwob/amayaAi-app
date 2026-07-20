@@ -13,6 +13,7 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.amaya.intelligence.R
+import com.amaya.intelligence.data.local.dao.AgentDao
 import com.amaya.intelligence.data.local.dao.ConversationDao
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
@@ -21,6 +22,7 @@ import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.data.repository.AiRepository
 import com.amaya.intelligence.data.repository.AgentEvent
 import com.amaya.intelligence.data.repository.CronJobRepository
+import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.ui.MainActivity
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -31,6 +33,7 @@ class ReminderWorker @AssistedInject constructor(
     @Assisted private val context: Context,
     @Assisted params: WorkerParameters,
     private val conversationDao: ConversationDao,
+    private val agentDao: AgentDao,
     private val cronJobRepository: CronJobRepository,
     private val aiRepository: AiRepository,
     private val aiSettingsManager: AiSettingsManager
@@ -43,6 +46,7 @@ class ReminderWorker @AssistedInject constructor(
         const val KEY_TITLE            = "title"
         const val KEY_PROMPT           = "prompt"
         const val KEY_SESSION_MODE     = "session_mode"   // "CONTINUE" | "NEW"
+        const val KEY_AGENT_ID         = "agent_id"
         private const val CHANNEL_ID   = "amaya_reminders"
         private const val CHANNEL_NAME = "Amaya Reminders"
     }
@@ -53,6 +57,9 @@ class ReminderWorker @AssistedInject constructor(
         val title          = inputData.getString(KEY_TITLE) ?: "Reminder"
         val prompt         = inputData.getString(KEY_PROMPT) ?: title
         val sessionMode    = inputData.getString(KEY_SESSION_MODE) ?: "CONTINUE"
+        val agentId         = inputData.getLong(KEY_AGENT_ID, -1L).takeIf { it > 0 }
+        val agent           = agentId?.let { agentDao.getById(it) }
+        val group           = agent?.let { agentDao.getGroupById(it.groupId) }
 
         debugLog(TAG) { "doWork: START jobId=$jobId, convId=$conversationId, mode=$sessionMode, title=$title" }
 
@@ -63,17 +70,20 @@ class ReminderWorker @AssistedInject constructor(
             // For CONTINUE mode: find existing or fall back to new.
             val now = System.currentTimeMillis()
 
-            val targetConversationId: Long = when (sessionMode) {
+            val targetConversationId: Long = when (if (agent != null) "CONTINUE" else sessionMode) {
                 "NEW" -> {
                     // Always create a fresh conversation — AI reply will be appended after
                     val newId = conversationDao.insertConversation(
                         ConversationEntity(
                             id            = 0,
                             title         = title.take(50),
-                            workspacePath = null,
+                            workspacePath = group?.workspacePath,
                             messagesJson  = "[]",
                             createdAt     = now,
-                            updatedAt     = now
+                            updatedAt     = now,
+                            assistantMode = if (agent != null) AssistantMode.AGENT.name else AssistantMode.CHAT.name,
+                            ownerId       = group?.id?.toString(),
+                            agentId       = agent?.id
                         )
                     )
                     debugLog(TAG) { "doWork: NEW mode — created conversation $newId" }
@@ -82,6 +92,8 @@ class ReminderWorker @AssistedInject constructor(
                 else -> {
                     // CONTINUE: use existing conversationId if found, else create new
                     val existing = conversationId?.let { conversationDao.getConversationById(it) }
+                        ?.takeIf { agent == null || it.agentId == agent.id }
+                        ?: agent?.let { conversationDao.getAgentConversation(it.id) }
                     if (existing != null) {
                         debugLog(TAG) { "doWork: CONTINUE mode — using existing conversation $conversationId" }
                         existing.id
@@ -90,10 +102,13 @@ class ReminderWorker @AssistedInject constructor(
                             ConversationEntity(
                                 id            = 0,
                                 title         = title.take(50),
-                                workspacePath = null,
+                                workspacePath = group?.workspacePath,
                                 messagesJson  = "[]",
                                 createdAt     = now,
-                                updatedAt     = now
+                                updatedAt     = now,
+                                assistantMode = if (agent != null) AssistantMode.AGENT.name else AssistantMode.CHAT.name,
+                                ownerId       = group?.id?.toString(),
+                                agentId       = agent?.id
                             )
                         )
                         debugLog(TAG) { "doWork: CONTINUE mode — no existing conversation, created $newId" }
@@ -105,7 +120,7 @@ class ReminderWorker @AssistedInject constructor(
             // ── Build conversation history for AI context ────────────────
             // For CONTINUE mode: load existing messages so AI has full context
             // For NEW mode: no history (fresh start)
-            val history: List<ChatMessage> = if (sessionMode != "NEW") {
+            val history: List<ChatMessage> = if (agent != null || sessionMode != "NEW") {
                 conversationDao.getConversationById(targetConversationId)
                     ?.let { parseHistory(it) }
                     ?: emptyList()
@@ -124,7 +139,11 @@ class ReminderWorker @AssistedInject constructor(
                 message             = reminderTriggerMsg,
                 conversationHistory = history,
                 projectId           = null,
-                workspacePath       = null,
+                workspacePath       = group?.workspacePath,
+                assistantMode       = if (agent != null) AssistantMode.AGENT else AssistantMode.CHAT,
+                ownerId             = group?.id?.toString(),
+                agentId             = agent?.id,
+                conversationId      = targetConversationId,
                 onConfirmation      = { false }   // auto-deny confirmations from background
             ).collect { event ->
                 when (event) {

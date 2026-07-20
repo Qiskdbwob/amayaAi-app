@@ -96,17 +96,37 @@ fun MessageBubble(
                 }
             }
             
+            val delegationSource = message.metadata["sourceAgentName"]
+                ?.takeIf { message.metadata["delegation"] == "incoming" }
+            val bubbleColor = if (delegationSource == null) Color(0xFF0A84FF) else Color(0xFF6D5BD0)
             Surface(
-                color = Color(0xFF0A84FF),
+                color = bubbleColor,
                 shape = RoundedCornerShape(21.dp, 21.dp, 6.dp, 21.dp),
                 modifier = Modifier.widthIn(max = maxBubbleWidthDp)
             ) {
-                Text(
-                    message.content,
-                    color = Color.White,
-                    modifier = Modifier.padding(horizontal = hPad, vertical = vPad),
-                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 16.sp, lineHeight = 24.sp)
-                )
+                Column {
+                    if (delegationSource != null) {
+                        Text(
+                            text = "Delegation from $delegationSource",
+                            color = Color.White.copy(alpha = 0.78f),
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(start = hPad, top = 9.dp, end = hPad, bottom = 7.dp)
+                        )
+                        HorizontalDivider(color = Color.White.copy(alpha = 0.22f), thickness = 1.dp)
+                    }
+                    MarkdownText(
+                        text = message.formattedContent ?: message.content,
+                        color = Color.White,
+                        modifier = Modifier.padding(
+                            start = hPad,
+                            top = if (delegationSource == null) vPad else 9.dp,
+                            end = hPad,
+                            bottom = vPad
+                        ),
+                        fontSize = 16.sp,
+                        lineHeight = 24.sp
+                    )
+                }
             }
         }
     } else {

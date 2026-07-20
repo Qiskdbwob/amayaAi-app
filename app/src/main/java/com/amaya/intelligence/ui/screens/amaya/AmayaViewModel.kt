@@ -200,13 +200,11 @@ data class AmayaUiState(
     val activeSkills: Int get() = skills.count { it.status == SkillStatus.ACTIVE }
     val enabledSkills: Int get() = skills.count { it.status == SkillStatus.ACTIVE && it.enabled }
     val reviewSkills: Int get() = skills.count { it.needsReview }
-    val memorySuggestions: Int get() = pendingProposals.count { it.type.isMemoryType() }
     val skillSuggestions: Int get() = pendingProposals.count { it.type.isSkillType() }
     val totalMemoryCount: Int get() = userMemoryCount + projectMemoryCount
 }
 
-fun PendingProposalType.isMemoryType(): Boolean = this == PendingProposalType.USER_PROFILE ||
-    this == PendingProposalType.WORKSPACE_FACT
+fun PendingProposalType.isMemoryType(): Boolean = this == PendingProposalType.WORKSPACE_FACT
 
 fun PendingProposalType.isSkillType(): Boolean = this == PendingProposalType.SKILL_CREATE ||
     this == PendingProposalType.SKILL_PATCH || this == PendingProposalType.SKILL_UPDATE

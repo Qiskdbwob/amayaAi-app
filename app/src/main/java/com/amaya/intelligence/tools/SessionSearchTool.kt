@@ -30,7 +30,7 @@ class SessionSearchTool @Inject constructor(
         }
         val requestedLimit = (arguments["limit"] as? Number)?.toInt() ?: settings.context.maxRecallItems
         val limit = requestedLimit.coerceIn(1, settings.context.maxRecallItems.coerceIn(1, 20))
-        val results = sessionMemoryRepository.searchSessions(query, limit, context.workspacePath)
+        val results = sessionMemoryRepository.searchSessions(query, limit, context.workspacePath, context.assistantMode, context.ownerId)
         ToolResult.Success(
             output = JSONObject()
                 .put("results", JSONArray(results.map { result ->

@@ -61,6 +61,7 @@ fun ToolArgumentsPreview(
     @Suppress("UNCHECKED_CAST")
     val args = arguments
     val effectiveCategory = when (toolName) {
+        "delegate_agent" -> ToolCategory.TASK_MANAGEMENT
         "update_memory", "memory_manage" -> ToolCategory.MEMORY
         "skill_manage", "skill_view" -> ToolCategory.SKILL
         else -> category
@@ -162,6 +163,10 @@ fun ToolArgumentsPreview(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (toolName == "delegate_agent") {
+            CodePreviewBlock("Prompt", argText("task"), maxChars = 4000)
+            return@Column
+        }
         when (effectiveCategory) {
             ToolCategory.SHELL -> {
                 val command = args["command"]?.toString().orEmpty()

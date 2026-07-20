@@ -1,7 +1,7 @@
 package com.amaya.intelligence.di
 
 import com.amaya.intelligence.data.repository.BrainSettingsRepository
-import com.amaya.intelligence.data.repository.DataStoreSelfImprovementSettingsRepository
+import com.amaya.intelligence.data.repository.DataStoreBrainSettingsRepository
 import com.amaya.intelligence.data.repository.FileMemoryRepository
 import com.amaya.intelligence.data.repository.FilePendingProposalRepository
 import com.amaya.intelligence.data.repository.FileSessionMemoryRepository
@@ -10,10 +10,11 @@ import com.amaya.intelligence.data.repository.MaintenanceScheduler
 import com.amaya.intelligence.data.repository.ManualMaintenanceScheduler
 import com.amaya.intelligence.data.repository.MemoryRepository
 import com.amaya.intelligence.data.repository.PendingProposalRepository
-import com.amaya.intelligence.data.repository.SelfImprovementSettingsRepository
 import com.amaya.intelligence.data.repository.SessionMemoryRepository
 import com.amaya.intelligence.data.repository.SessionSummarizer
 import com.amaya.intelligence.data.repository.SkillRepository
+import com.amaya.intelligence.data.repository.DataStoreTerminalSettingsRepository
+import com.amaya.intelligence.data.repository.TerminalSettingsRepository
 import com.amaya.intelligence.data.repository.DeterministicSessionSummarizer
 import dagger.Binds
 import dagger.Module
@@ -42,11 +43,11 @@ abstract class RepositoryModule {
 
     @Binds
     @Singleton
-    abstract fun bindSelfImprovementSettingsRepository(impl: DataStoreSelfImprovementSettingsRepository): SelfImprovementSettingsRepository
+    abstract fun bindBrainSettingsRepository(impl: DataStoreBrainSettingsRepository): BrainSettingsRepository
 
     @Binds
     @Singleton
-    abstract fun bindBrainSettingsRepository(impl: DataStoreSelfImprovementSettingsRepository): BrainSettingsRepository
+    abstract fun bindTerminalSettingsRepository(impl: DataStoreTerminalSettingsRepository): TerminalSettingsRepository
 
     @Binds
     @Singleton

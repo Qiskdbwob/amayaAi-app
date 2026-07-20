@@ -8,6 +8,7 @@ import com.amaya.intelligence.data.remote.api.ChatMessage
 import com.amaya.intelligence.data.remote.api.MessageRole
 
 import com.amaya.intelligence.data.local.dao.ConversationDao
+import com.amaya.intelligence.data.local.dao.AgentDao
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.data.repository.AiRepository
 import com.amaya.intelligence.data.repository.AgentEvent
@@ -39,6 +40,7 @@ import javax.inject.Singleton
 class LocalIntelligenceService @Inject constructor(
     private val aiRepository: AiRepository,
     private val conversationDao: ConversationDao,
+    private val agentDao: AgentDao,
     private val settingsManager: AiSettingsManager,
     private val browserSessionManager: BrowserSessionManager,
     @ApplicationScope appScope: CoroutineScope
@@ -54,6 +56,8 @@ class LocalIntelligenceService @Inject constructor(
 
     private val _conversations = MutableStateFlow<List<ConversationEntity>>(emptyList())
     override val conversations: StateFlow<List<ConversationEntity>> = _conversations.asStateFlow()
+    override val allLocalConversations: StateFlow<List<ConversationEntity>> = conversationDao.observeAllConversations()
+        .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     private val _workspaces = MutableStateFlow<List<RemoteWorkspace>>(emptyList())
     override val workspaces: StateFlow<List<RemoteWorkspace>> = _workspaces.asStateFlow()
@@ -77,11 +81,19 @@ class LocalIntelligenceService @Inject constructor(
     init {
 
 
-        // Observe conversations from DB
+        // Keep the drawer scoped to Chat/Project. An Agent owns exactly one conversation.
         scope.launch {
-            conversationDao.getAllConversations().collect { list ->
-                _conversations.value = list
-            }
+            _uiState
+                .map { Triple(it.assistantMode, it.ownerId, it.agentId) }
+                .distinctUntilChanged()
+                .collectLatest { (mode, ownerId, agentId) ->
+                    val source = if (mode == AssistantMode.AGENT && agentId != null) {
+                        conversationDao.observeAgentConversation(agentId)
+                    } else {
+                        conversationDao.observeOwnedConversations(mode.name, ownerId)
+                    }
+                    source.collect { list -> _conversations.value = list }
+                }
         }
         scope.launch {
             settingsManager.settingsFlow.collect { settings ->
@@ -184,6 +196,9 @@ class LocalIntelligenceService @Inject constructor(
                     userImages = images,
                     conversationHistory = history.dropLast(1), // Exclude the one we just added
                     workspacePath = currentState.workspacePath,
+                    assistantMode = currentState.assistantMode,
+                    ownerId = currentState.ownerId,
+                    agentId = currentState.agentId,
                     connectionId = currentState.activeModelKey
                         .takeIf { it.startsWith("model|") }
                         ?.split('|', limit = 3)
@@ -731,6 +746,9 @@ class LocalIntelligenceService @Inject constructor(
                 _uiState.update { it.copy(
                     conversationId = conv.id.toString(),
                     workspacePath = conv.workspacePath,
+                        assistantMode = runCatching { AssistantMode.valueOf(conv.assistantMode) }.getOrDefault(AssistantMode.forWorkspace(conv.workspacePath)),
+                    ownerId = conv.ownerId,
+                    agentId = conv.agentId,
                     messages = messages,
                     totalInputTokens = 0,
                     totalOutputTokens = 0,
@@ -764,6 +782,20 @@ class LocalIntelligenceService @Inject constructor(
         }
     }
 
+    private fun applyModelToUi(modelKey: String) {
+        val parts = modelKey.split('|', limit = 3)
+        if (parts.size != 3 || parts[0] != "model") return
+        val settings = settingsManager.getSettings()
+        val model = settings.connections.firstOrNull { it.id == parts[1] }?.visibleModels?.firstOrNull { it.id == parts[2] } ?: return
+        _uiState.update {
+            it.copy(
+                activeModelKey = modelKey,
+                selectedModel = model.id,
+                effort = settingsManager.getThinkingEffort(parts[1], parts[2])
+            )
+        }
+    }
+
     override fun setEffort(effort: com.amaya.intelligence.data.remote.api.ThinkingEffort) {
         _uiState.update { it.copy(effort = effort) }
         // Persist per-model so it survives restart and model switches.
@@ -774,8 +806,35 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     override fun setWorkspace(path: String?) {
-        _uiState.update { it.copy(workspacePath = path) }
-        scope.launch { persistCurrentConversation() }
+        setAssistantOwner(AssistantMode.forWorkspace(path), ownerId = path, workspacePath = path)
+    }
+
+    override fun setAssistantOwner(mode: AssistantMode, ownerId: String?, workspacePath: String?, agentId: Long?) {
+        clearConversation()
+        _uiState.update {
+            it.copy(
+                assistantMode = mode,
+                ownerId = ownerId,
+                agentId = if (mode == AssistantMode.AGENT) agentId else null,
+                workspacePath = if (mode == AssistantMode.CHAT) null else workspacePath
+            )
+        }
+        if (mode == AssistantMode.AGENT && agentId != null) {
+            val targetOwnerId = ownerId
+            scope.launch {
+                val active = agentDao.getById(agentId)?.defaultModelKeysJson.orEmpty()
+                    .let { runCatching { org.json.JSONArray(it) }.getOrNull() }
+                    ?.let { array -> (0 until array.length()).map { array.optString(it) }.firstOrNull() }
+                val global = settingsManager.getSettings().activeSelection?.key
+                val selected = active ?: global
+                if (selected != null) applyModelToUi(selected)
+                val conversation = conversationDao.getAgentConversation(agentId) ?: return@launch
+                val state = _uiState.value
+                if (state.assistantMode == AssistantMode.AGENT && state.agentId == agentId && state.ownerId == targetOwnerId) {
+                    loadConversation(conversation.id.toString())
+                }
+            }
+        }
     }
 
     override fun clearError() {
@@ -909,6 +968,7 @@ class LocalIntelligenceService @Inject constructor(
                         id = obj.optString("id", UUID.randomUUID().toString()),
                         role = role,
                         content = obj.optString("content"),
+                        formattedContent = obj.optString("formattedContent").takeIf { it.isNotBlank() },
                         timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
                         thinking = obj.optString("thinking").takeIf { it.isNotBlank() },
                         thinkingStartedAt = obj.optLong("thinkingStartedAt", 0L).takeIf { it > 0 },
@@ -995,6 +1055,9 @@ class LocalIntelligenceService @Inject constructor(
                     conversationDao.updateConversation(
                         existing.copy(
                             workspacePath = _uiState.value.workspacePath,
+                            assistantMode = _uiState.value.assistantMode.name,
+                            ownerId = _uiState.value.ownerId,
+                            agentId = _uiState.value.agentId,
                             messagesJson = messagesJson,
                             updatedAt = now
                         )
@@ -1014,11 +1077,31 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     private suspend fun insertConversationLocked(title: String, messagesJson: String, now: Long): Long {
+        val agentId = _uiState.value.agentId.takeIf { _uiState.value.assistantMode == AssistantMode.AGENT }
+        if (agentId != null) {
+            conversationDao.getAgentConversation(agentId)?.let { existing ->
+                conversationDao.updateConversation(
+                    existing.copy(
+                        title = title,
+                        workspacePath = _uiState.value.workspacePath,
+                        ownerId = _uiState.value.ownerId,
+                        messagesJson = messagesJson,
+                        updatedAt = now
+                    )
+                )
+                currentConversationId = existing.id
+                _uiState.update { it.copy(conversationId = existing.id.toString()) }
+                return existing.id
+            }
+        }
         val newId = conversationDao.insertConversation(
             ConversationEntity(
                 id = 0,
                 title = title,
                 workspacePath = _uiState.value.workspacePath,
+                assistantMode = _uiState.value.assistantMode.name,
+                ownerId = _uiState.value.ownerId,
+                agentId = _uiState.value.agentId,
                 messagesJson = messagesJson,
                 createdAt = now,
                 updatedAt = now
@@ -1036,6 +1119,7 @@ class LocalIntelligenceService @Inject constructor(
                 put("id", msg.id)
                 put("role", msg.role.name)
                 put("content", msg.content)
+                msg.formattedContent?.let { put("formattedContent", it) }
                 put("timestamp", msg.timestamp)
                 if (!msg.thinking.isNullOrBlank()) put("thinking", msg.thinking)
                 msg.thinkingStartedAt?.let { put("thinkingStartedAt", it) }

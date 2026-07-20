@@ -12,7 +12,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.amaya.intelligence.ui.activities.persona.local.LocalPersonaActivity
 import com.amaya.intelligence.ui.screens.amaya.AmayaHomeScreen
 import com.amaya.intelligence.ui.screens.amaya.AmayaViewModel
 import com.amaya.intelligence.ui.theme.AmayaTheme
@@ -39,12 +38,9 @@ class LocalAmayaActivity : AppCompatActivity() {
                     state = state,
                     snackbarHostState = snackbarHostState,
                     onNavigateBack = { finish() },
-                    onPersona = { LocalPersonaActivity.start(this) },
                     onMemory = { LocalMemoryActivity.start(this, state.workspacePath) },
                     onReview = { LocalReviewActivity.start(this, state.workspacePath) },
                     onSkills = { LocalSkillsActivity.start(this) },
-                    onContext = { LocalContextRecallActivity.start(this) },
-                    onPrivacy = { LocalPrivacySafetyActivity.start(this) }
                 )
             }
         }

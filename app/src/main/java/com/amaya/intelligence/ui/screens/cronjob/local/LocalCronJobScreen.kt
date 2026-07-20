@@ -61,6 +61,8 @@ private fun iosCronJobScreenColors(): IosCronJobScreenColors {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LocalCronJobScreen(
+    title: String = "Reminders",
+    ownerAgentId: Long? = null,
     onNavigateBack: () -> Unit,
     cronJobRepository: CronJobRepository
 ) {
@@ -68,7 +70,7 @@ fun LocalCronJobScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    val jobs by cronJobRepository.allJobs.collectAsState(initial = emptyList())
+    val jobs by cronJobRepository.jobsForAgent(ownerAgentId).collectAsState(initial = emptyList())
 
     val topPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 72.dp
 
@@ -120,7 +122,7 @@ fun LocalCronJobScreen(
             TopAppBar(
                 title = {
                     Text(
-                        "Reminders",
+                        title,
                         style = MaterialTheme.typography.titleLarge,
                         modifier = Modifier.padding(start = 12.dp),
                         fontWeight = FontWeight.SemiBold
@@ -175,6 +177,7 @@ fun LocalCronJobScreen(
 
     if (showAddSheet) {
         CronJobEditSheet(
+            ownerAgentId = ownerAgentId,
             onDismiss = { showAddSheet = false },
             onAdd = { job ->
                 showAddSheet = false

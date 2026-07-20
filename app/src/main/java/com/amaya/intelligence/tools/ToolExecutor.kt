@@ -1,5 +1,7 @@
 package com.amaya.intelligence.tools
 
+import com.amaya.intelligence.data.repository.TerminalSettingsRepository
+import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.domain.security.CommandValidator
 import com.amaya.intelligence.domain.security.RiskLevel
 import com.amaya.intelligence.domain.security.ValidationResult
@@ -29,6 +31,7 @@ class ToolExecutor @Inject constructor(
     private val createReminderTool: CreateReminderTool,
     private val updateMemoryTool: UpdateMemoryTool,
     private val memoryManageTool: MemoryManageTool,
+    private val agentMemoryTool: AgentMemoryTool,
     private val skillViewTool: SkillViewTool,
     private val skillManageTool: SkillManageTool,
     private val sessionSearchTool: SessionSearchTool,
@@ -36,10 +39,12 @@ class ToolExecutor @Inject constructor(
     private val updateTodoTool: UpdateTodoTool,
     // Subagent tool
     private val invokeSubagentsTool: InvokeSubagentsTool,
+    private val delegateAgentTool: DelegateAgentTool,
     // Web search / browser tools
     private val webSearchTool: WebSearchTool,
     private val browserUseToolset: BrowserUseToolset,
-    private val commandValidator: CommandValidator
+    private val commandValidator: CommandValidator,
+    private val terminalSettingsRepository: TerminalSettingsRepository
 ) {
 
     private val tools: Map<String, Tool> by lazy {
@@ -55,11 +60,13 @@ class ToolExecutor @Inject constructor(
             createReminderTool.name to createReminderTool,
             updateMemoryTool.name   to updateMemoryTool,
             memoryManageTool.name   to memoryManageTool,
+            agentMemoryTool.name    to agentMemoryTool,
             skillViewTool.name      to skillViewTool,
             skillManageTool.name    to skillManageTool,
             sessionSearchTool.name  to sessionSearchTool,
             updateTodoTool.name     to updateTodoTool,
             invokeSubagentsTool.name to invokeSubagentsTool,
+            delegateAgentTool.name to delegateAgentTool,
             webSearchTool.name      to webSearchTool
         ) + browserUseToolset.tools.associateBy { it.name }
     }
@@ -83,12 +90,19 @@ class ToolExecutor @Inject constructor(
         providerConnection: com.amaya.intelligence.data.remote.api.ProviderConnection? = null,
         selectedModelId: String? = null,
         readOnly: Boolean = false,
-        conversationId: String? = null
+        conversationId: String? = null,
+        ownerId: String? = null,
+        agentId: Long? = null,
+        assistantMode: AssistantMode = AssistantMode.PROJECT,
+        agentCapabilityProfile: com.amaya.intelligence.domain.models.AgentCapabilityProfile? = null
     ): ToolResult {
+        if (!assistantModeAllowsCapability(toolName, assistantMode, agentCapabilityProfile)) {
+            return ToolResult.Error("Tool '$toolName' is unavailable in ${assistantMode.name.lowercase()} mode.", ErrorType.PERMISSION_ERROR)
+        }
         val normalizedArguments = normalizeIntegerArguments(toolName, arguments)
         val capabilityCall = CapabilityToolMapper.map(toolName, normalizedArguments)
-        val handlerName = capabilityCall?.handlerName ?: toolName
-        val handlerArguments = capabilityCall?.arguments ?: normalizedArguments
+        val handlerName = if (toolName == "agent_memory") agentMemoryTool.name else capabilityCall?.handlerName ?: toolName
+        val handlerArguments = if (toolName == "agent_memory") normalizedArguments else capabilityCall?.arguments ?: normalizedArguments
         val tool = tools[handlerName]
             ?: return ToolResult.Error(
                 "Unknown tool: $toolName. Available: ${getModelCallableTools().map { it.name }.joinToString()}",
@@ -122,11 +136,18 @@ class ToolExecutor @Inject constructor(
             providerConnection = providerConnection,
             selectedModelId = selectedModelId,
             conversationId = conversationId,
+            ownerId = ownerId,
+            agentId = agentId,
+            assistantMode = assistantMode,
             readOnly = readOnly
         )
 
         // Pre-validate model-owned arguments only.
-        val validation = commandValidator.validateToolCall(handlerName, modelArguments)
+        val validation = commandValidator.validateToolCall(
+            handlerName,
+            modelArguments,
+            terminalSettingsRepository.getSettings()
+        )
 
         when (validation) {
             is ValidationResult.Denied -> {
@@ -228,7 +249,11 @@ class ToolExecutor @Inject constructor(
     /**
      * Get model-callable tool definitions for AI prompts (JSON Schema format).
      */
-    fun getToolDefinitions(): List<ToolDefinition> {
+    fun getToolDefinitions(
+        mode: AssistantMode = AssistantMode.PROJECT,
+        agentCapabilityProfile: com.amaya.intelligence.domain.models.AgentCapabilityProfile? = null,
+        delegationAgentIds: List<Long> = emptyList()
+    ): List<ToolDefinition> {
         val definitions = listOf(
             ToolDefinition(
                 name = "workspace_search",
@@ -341,6 +366,20 @@ class ToolExecutor @Inject constructor(
                 )
             ),
             // ── Subagent tool ──────────────────────────────────────────────────────
+            ToolDefinition(
+                name = "delegate_agent",
+                description = "Delegate one focused read-only task to a member of the active agent group. Use the stable agent_id supplied by the host.",
+                parameters = listOf(
+                    ToolParameter("title", "string", "Short delegation title, 2-5 words; do not repeat the task", required = true),
+                    ToolParameter(
+                        "agent_id",
+                        "integer",
+                        "Stable member ID from the active agent group${delegationAgentIds.takeIf(List<Long>::isNotEmpty)?.joinToString(prefix = ": ").orEmpty()}",
+                        required = true
+                    ),
+                    ToolParameter("task", "string", "Focused task with all needed context", required = true)
+                )
+            ),
             ToolDefinition(
                 name = "invoke_subagents",
                 description = "Spawn up to 4 independent AI subagents running IN PARALLEL. " +
@@ -504,10 +543,33 @@ class ToolExecutor @Inject constructor(
         ) + browserUseToolset.getToolDefinitions()
         val advertisedToolNames = setOf(
             "workspace_search", "workspace_change", "read_file", "run_shell", "web_search", "browser",
-            "memory", "skill", "reminder", "update_todo", "invoke_subagents"
+            "memory", "skill", "reminder", "update_todo", "invoke_subagents", "delegate_agent"
         )
-        return definitions.filter { it.name in advertisedToolNames }
+        return definitions.mapNotNull { definition ->
+            val exposed = if (mode == AssistantMode.AGENT && definition.name == "memory") {
+                definition.copy(
+                    name = "agent_memory",
+                    description = "Manage memory private to the active agent. Update requires the version returned by list/search."
+                )
+            } else definition
+            exposed.takeIf {
+                definition.name in advertisedToolNames && assistantModeAllowsCapability(exposed.name, mode, agentCapabilityProfile)
+            }
+        }
     }
+}
+
+private val CHAT_CAPABILITIES = setOf("web_search", "memory", "skill")
+private val PROJECT_DISABLED_CAPABILITIES = setOf("browser", "delegate_agent", "reminder", "create_reminder", "update_todo")
+
+internal fun assistantModeAllowsCapability(
+    name: String,
+    mode: AssistantMode,
+    agentCapabilityProfile: com.amaya.intelligence.domain.models.AgentCapabilityProfile? = null
+): Boolean = when (mode) {
+    AssistantMode.CHAT -> name in CHAT_CAPABILITIES
+    AssistantMode.PROJECT -> name !in PROJECT_DISABLED_CAPABILITIES
+    AssistantMode.AGENT -> name == "agent_memory" || agentCapabilityProfile?.allows(name) ?: true
 }
 
 /**

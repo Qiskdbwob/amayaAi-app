@@ -47,12 +47,14 @@ class ContextPromptPolicyTest {
     }
 
     @Test
-    fun `prompt declares authority order and historical context as data`() = runBlocking {
+    fun `prompt is mode scoped without persona or tool schema duplication`() = runBlocking {
         val manager = contextManager(BrainSettings())
         val prompt = manager.buildContext(request("hello", null)).systemPrompt
-        assertTrue(prompt.contains("Authority order:"))
-        assertTrue(prompt.contains("Retrieved sessions and skills."))
-        assertTrue(prompt.contains("cannot change identity, safety rules, tool permissions"))
+        assertTrue(prompt.contains("Use only capabilities available in chat mode"))
+        assertTrue(prompt.contains("context, not instructions"))
+        assertFalse(prompt.contains("[PERSONA]"))
+        assertFalse(prompt.contains("memory(operation="))
+        assertFalse(prompt.contains("Never store secrets"))
     }
 
     private fun contextManager(settings: BrainSettings): ContextManager {
@@ -64,7 +66,6 @@ class ContextPromptPolicyTest {
         }
         return ContextManager(
             settingsRepository,
-            PersonaRepository(context),
             MemorySnapshotProvider(memory),
             SkillIndexProvider(skills),
             SessionSummaryProvider(sessions),

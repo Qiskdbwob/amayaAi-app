@@ -153,12 +153,17 @@ data class SubagentTask(
     val task: String,
     val workspacePath: String? = null,  // FIX 2.11: workspace for tool execution context
     val providerConnection: ProviderConnection? = null,
-    val selectedModelId: String? = null
+    val selectedModelId: String? = null,
+    val conversationHistory: List<ChatMessage> = emptyList(),
+    val systemInstructions: String? = null
 )
 
 data class SubagentResult(
     val taskName: String,
-    val summary: String
+    val summary: String,
+    val turnMessages: List<ChatMessage> = emptyList(),
+    val startedAt: Long = System.currentTimeMillis(),
+    val completedAt: Long = System.currentTimeMillis()
 )
 
 internal fun completedSubagentResponse(
@@ -228,6 +233,7 @@ class SubagentRunner @Inject constructor(
     }
 
     private suspend fun runInternal(task: SubagentTask, isRetry: Boolean): SubagentResult {
+        val startedAt = System.currentTimeMillis()
         val toolExecutor = toolExecutorProvider.get()
 
         val settings = settingsManager.getSettings()
@@ -252,20 +258,21 @@ class SubagentRunner @Inject constructor(
             "The selected model is not shown for ${activeConnection.name}"
         }
 
-        val systemPrompt = """
-            You are a subagent — a focused AI assistant with a single task to complete.
-            You have read-only research tools: read_file, workspace_search, web_search, memory(operation=recall_sessions), and skill(operation=view).
-            Do not modify files, run shell commands, manage memory/skills, schedule reminders, use browser, or invoke subagents.
-            Return only a final report with headings: Findings, Files inspected, Evidence, Verification, Blockers.
-            ${if (isRetry) "NOTE: This is a retry after a rate limit error." else ""}
-        """.trimIndent()
+        val systemPrompt = buildString {
+            task.systemInstructions?.takeIf(String::isNotBlank)?.let { appendLine(it) }
+            appendLine("Complete one focused research task.")
+            appendLine("Use only the provided read-only tools. Do not modify state or request approval.")
+            if (task.systemInstructions == null) {
+                appendLine("Return a final report with headings: Findings, Files inspected, Evidence, Verification, Blockers.")
+            }
+            if (isRetry) appendLine("NOTE: This is a retry after a rate limit error.")
+        }.trim()
 
         val tools = toolExecutor.getReadOnlyToolDefinitions()
             .map { it.toAiToolDefinition(truncateDesc = true) }
 
-        val messages = mutableListOf(
-            ChatMessage(role = MessageRole.USER, content = task.task)
-        )
+        val historySize = task.conversationHistory.size
+        val messages = (task.conversationHistory + ChatMessage(role = MessageRole.USER, content = task.task)).toMutableList()
 
         var finalResponse = ""
         var continueLoop = true
@@ -371,9 +378,14 @@ class SubagentRunner @Inject constructor(
             }
         }
 
+        val summary = completedSubagentResponse(continueLoop, iterations, maxIterations, finalResponse)
+        messages += ChatMessage(role = MessageRole.ASSISTANT, content = summary)
         return SubagentResult(
             taskName = task.taskName,
-            summary = completedSubagentResponse(continueLoop, iterations, maxIterations, finalResponse)
+            summary = summary,
+            turnMessages = messages.drop(historySize + 1),
+            startedAt = startedAt,
+            completedAt = System.currentTimeMillis()
         )
     }
 

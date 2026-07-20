@@ -24,7 +24,6 @@
 - Prefer existing patterns over introducing new abstractions.
 - If a task spans extension and Android, inspect both module-level instruction files before editing.
 - If a task spans Android and the Windows bridge, inspect the shared bridge contract plus the relevant workspace instructions before editing.
-- For browser automation changes, review `docs/android-browser-use-toolcall.md` and `docs/browser-toolcall-schema.ts` first.
 - When implementing code, prefer standard OOP structure and align with the existing architecture.
 - Do not introduce redundancy, duplicate logic, or dead code.
 - Before building a feature or adding new code paths, inspect the codebase structure first and choose the most natural placement for the change.
@@ -75,7 +74,7 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/data/remote/`: remote API clients, provider presets/discovery, settings, and transport-facing models.
 - `app/src/main/java/com/amaya/intelligence/data/local/`: local entities, DAOs, Room database, file-backed stores, and stable workspace-memory UUID metadata.
 - `app/schemas/`: exported Room schema snapshots and versioning notes.
-- `app/src/main/java/com/amaya/intelligence/data/repository/`: repositories and orchestration for AI, persona, memory, skills, session recall, and maintenance.
+- `app/src/main/java/com/amaya/intelligence/data/repository/`: repositories and orchestration for AI, Chat/Project/Agent-group-owned sessions, owner-scoped recall, imported references, memory, skills, terminal policy, and maintenance.
 - `app/src/main/java/com/amaya/intelligence/domain/memory/`: user/workspace memory classification, safety, normalization, proposals, dedupe, and compaction domain logic; no global catch-all or model-owned importance score.
 - `app/src/main/java/com/amaya/intelligence/domain/skills/`: reusable skill domain models and patch/usage helpers.
 - `app/src/main/java/com/amaya/intelligence/impl/ide/antigravity/`: Antigravity provider, protocol, client, and event mapping.
@@ -85,6 +84,8 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/ui/activities/browser/`: fullscreen browser operator entry point.
 - `app/src/main/java/com/amaya/intelligence/ui/activities/models/`: Manage Models entry point for provider connections and chat-visible models.
 - `app/src/main/java/com/amaya/intelligence/ui/activities/opencode/`: activities for Opencode landing, chat, and settings screens.
+- `app/src/main/java/com/amaya/intelligence/ui/activities/project/local/`: Project picker, named-project list, and dedicated project configuration screen.
+- `app/src/main/java/com/amaya/intelligence/ui/activities/agent/local/`: Agent-group list, group detail, and per-agent instructions/tool configuration screens.
 - `app/src/main/java/com/amaya/intelligence/ui/screens/browser/`: browser operator Compose screen and control dock.
 - `app/src/main/java/com/amaya/intelligence/ui/screens/opencode/`: Opencode landing and settings Compose screens.
 - `app/src/main/java/com/amaya/intelligence/ui/screens/chat/opencode/`: Opencode chat Compose wrapper reusing the shared ChatScreen.
@@ -94,7 +95,7 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/tools/ToolExecutor.kt`: local capability dispatcher, host-owned workspace context, approval, and legacy display mapping boundary.
 - `app/src/main/java/com/amaya/intelligence/tools/WorkspacePathResolver.kt`: host-side relative workspace-path resolution and boundary enforcement.
 - `app/src/main/java/com/amaya/intelligence/tools/CapabilityToolMapper.kt`: canonical capability-operation mapping to existing handlers.
-- `app/src/main/java/com/amaya/intelligence/tools/MemoryManageTool.kt`: active user/workspace saved-memory list/search/update tool with optimistic version checks. `About You` writes require explicit model tool invocation; chat text, reflection, and pending proposals cannot write it. Daily-log, global Important Memory, model-owned importance, and memory archive/delete/restore capabilities are removed.
+- `app/src/main/java/com/amaya/intelligence/tools/MemoryManageTool.kt`: active user/workspace saved-memory list/search/update tool with optimistic version checks. User-memory proposals are removed; direct tool/manual writes remain. Daily-log, global Important Memory, model-owned importance, and memory archive/delete/restore capabilities are removed.
 - `app/src/main/java/com/amaya/intelligence/tools/SkillManageTool.kt`: explicit reusable-skill management tool.
 - `app/src/main/java/com/amaya/intelligence/utils/LocalStreamPerfLog.kt`: temporary local streaming profiler.
 - `app/src/main/java/com/amaya/intelligence/impl/local/browser/`: WebView controller, session manager, DOM inspection, and safety guard.

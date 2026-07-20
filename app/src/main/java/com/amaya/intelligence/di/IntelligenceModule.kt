@@ -3,6 +3,7 @@ package com.amaya.intelligence.di
 import com.amaya.intelligence.domain.ai.IntelligenceService
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.domain.models.ConversationMode
+import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.domain.models.ChatUiState
 import com.amaya.intelligence.domain.models.ProjectFileEntry
 import com.amaya.intelligence.domain.models.RemoteWorkspace
@@ -97,6 +98,7 @@ object IntelligenceModule {
                 selector = { it.conversations },
                 initial = emptyList()
             )
+            override val allLocalConversations = localService.allLocalConversations
             override val projectFiles: StateFlow<List<ProjectFileEntry>> = switchedFlow(
                 selector = { it.projectFiles },
                 initial = emptyList()
@@ -120,6 +122,8 @@ object IntelligenceModule {
             override fun getProjectFiles(path: String) = active.getProjectFiles(path)
             override fun selectModel(modelKey: String) = active.selectModel(modelKey)
             override fun setWorkspace(path: String?) = active.setWorkspace(path)
+            override fun setAssistantOwner(mode: AssistantMode, ownerId: String?, workspacePath: String?, agentId: Long?) =
+                active.setAssistantOwner(mode, ownerId, workspacePath, agentId)
             override fun clearError() = active.clearError()
             override fun loadMoreConversations() = active.loadMoreConversations()
             override fun hasMoreConversations() = active.hasMoreConversations()

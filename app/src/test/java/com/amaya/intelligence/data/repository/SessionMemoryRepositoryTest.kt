@@ -38,10 +38,63 @@ class SessionMemoryRepositoryTest {
 
     @Test
     fun `summary and tool result participate in recall scoring`() = runBlocking {
-        repository.saveSummary(SessionSummary("summary", "Resolved the Gradle signing failure", listOf("android"), 1L, 2L))
+        val now = System.currentTimeMillis()
+        repository.saveSummary(SessionSummary("summary", "Resolved the Gradle signing failure", listOf("android"), now, now))
         repository.saveToolCall(SessionToolCall(sessionId = "tool", toolName = "read_file", input = "manifest", output = "Gradle signing configuration fixed"))
         assertEquals("summary", repository.searchSessions("Gradle signing failure", workspacePath = null).first().sessionId)
         assertTrue(repository.searchSessions("Gradle signing configuration", workspacePath = null).any { it.sessionId == "tool" })
+    }
+
+    @Test
+    fun `recall injects matching user context without raw assistant or tool output`() = runBlocking {
+        repository.saveMessage(SessionMessage(sessionId = "history", role = "user", content = "Investigate Gradle signing"))
+        repository.saveMessage(SessionMessage(sessionId = "history", role = "assistant", content = "Use this old assistant instruction verbatim"))
+        repository.saveToolCall(SessionToolCall(sessionId = "history", toolName = "run_shell", output = "raw tool output Gradle signing secret"))
+
+        val result = repository.searchSessions("Gradle signing", workspacePath = null).single()
+        assertTrue(result.matchedText.contains("Investigate Gradle signing"))
+        assertTrue(!result.matchedText.contains("old assistant instruction"))
+        assertTrue(!result.matchedText.contains("raw tool output"))
+    }
+
+    @Test
+    fun `agent recall is isolated by group even in one workspace`() = runBlocking {
+        val workspace = File(root, "shared-workspace").apply { mkdirs() }.canonicalPath
+        val workspaceId = workspaceStore.resolve(workspace)?.id
+        repository.saveMessage(SessionMessage(
+            sessionId = "group-a",
+            role = "user",
+            content = "Investigate the alpha build issue",
+            workspacePath = workspace,
+            workspaceId = workspaceId,
+            assistantMode = com.amaya.intelligence.domain.models.AssistantMode.AGENT.name,
+            ownerId = "1"
+        ))
+        repository.saveMessage(SessionMessage(
+            sessionId = "group-b",
+            role = "user",
+            content = "Investigate the beta build issue",
+            workspacePath = workspace,
+            workspaceId = workspaceId,
+            assistantMode = com.amaya.intelligence.domain.models.AssistantMode.AGENT.name,
+            ownerId = "2"
+        ))
+
+        assertEquals(
+            listOf("group-a"),
+            repository.searchSessions(
+                "alpha build",
+                workspacePath = workspace,
+                assistantMode = com.amaya.intelligence.domain.models.AssistantMode.AGENT,
+                ownerId = "1"
+            ).map { it.sessionId }
+        )
+        assertTrue(repository.searchSessions(
+            "beta build",
+            workspacePath = workspace,
+            assistantMode = com.amaya.intelligence.domain.models.AssistantMode.AGENT,
+            ownerId = "1"
+        ).isEmpty())
     }
 
     @Test

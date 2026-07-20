@@ -15,15 +15,25 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import com.amaya.intelligence.data.local.dao.ProjectDao
+import com.amaya.intelligence.data.local.entity.ProjectEntity
+import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
+import javax.inject.Inject
 import com.amaya.intelligence.ui.components.shared.PermissionRequirementSheet
 import com.amaya.intelligence.ui.components.shared.PermissionType
 import com.amaya.intelligence.ui.screens.project.local.LocalProjectBrowserScreen
 import com.amaya.intelligence.ui.theme.AmayaTheme
 
+@AndroidEntryPoint
 class LocalProjectActivity : AppCompatActivity() {
+
+    @Inject lateinit var projectDao: ProjectDao
 
     private var hasStoragePermission by mutableStateOf(false)
     private var showStoragePermissionSheet by mutableStateOf(false)
+    private val workspaceOnly by lazy { intent.getBooleanExtra(EXTRA_WORKSPACE_ONLY, false) }
 
     private val legacyStoragePermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
@@ -44,8 +54,18 @@ class LocalProjectActivity : AppCompatActivity() {
             AmayaTheme {
                 LocalProjectBrowserScreen(
                     onWorkspaceSelected = { workspacePath ->
-                        setResult(RESULT_OK, Intent().putExtra(RESULT_KEY, workspacePath))
-                        finish()
+                        val canonical = runCatching { java.io.File(workspacePath).canonicalPath }.getOrDefault(workspacePath)
+                        if (workspaceOnly) {
+                            setResult(RESULT_OK, Intent().putExtra(RESULT_KEY, canonical))
+                            finish()
+                        } else lifecycleScope.launch {
+                            val existing = projectDao.getByRootPath(canonical)
+                            if (existing != null) finishWithProject(existing.id, canonical)
+                            else {
+                                setResult(RESULT_OK, Intent().putExtra(RESULT_KEY, canonical))
+                                finish()
+                            }
+                        }
                     },
                     onDismiss = {
                         setResult(RESULT_CANCELED)
@@ -70,6 +90,14 @@ class LocalProjectActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    private fun finishWithProject(projectId: Long, workspacePath: String) {
+        setResult(
+            RESULT_OK,
+            Intent().putExtra(RESULT_KEY, workspacePath).putExtra(RESULT_PROJECT_ID, projectId)
+        )
+        finish()
     }
 
     override fun onResume() {
@@ -115,6 +143,15 @@ class LocalProjectActivity : AppCompatActivity() {
     companion object {
         const val REQUEST_CODE = 1001
         const val RESULT_KEY = "workspace_path"
+        const val RESULT_PROJECT_ID = "project_id"
+        private const val EXTRA_WORKSPACE_ONLY = "workspace_only"
+
+        fun workspacePickerIntent(context: android.content.Context): Intent =
+            Intent(context, LocalProjectActivity::class.java).putExtra(EXTRA_WORKSPACE_ONLY, true)
+
+        fun startWorkspacePickerForResult(activity: android.app.Activity) {
+            activity.startActivityForResult(workspacePickerIntent(activity), REQUEST_CODE)
+        }
 
         fun start(context: android.content.Context) {
             val intent = android.content.Intent(context, LocalProjectActivity::class.java).apply {

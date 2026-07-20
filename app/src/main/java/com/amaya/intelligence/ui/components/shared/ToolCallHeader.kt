@@ -90,6 +90,7 @@ internal fun localToolHeader(execution: ToolExecution): String? {
         "skill_view", "skill_manage" -> execution.uiMetadata?.label
         "session_search" -> if (execution.status == ToolStatus.SUCCESS) "Previous chats" else "Search previous chats"
         "invoke_subagents" -> arg("title") ?: "Parallel work"
+        "delegate_agent" -> arg("title") ?: "Delegation"
         else -> null
     }
 }

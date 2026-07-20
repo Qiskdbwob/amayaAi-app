@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 interface IntelligenceService {
     val uiState: StateFlow<ChatUiState>
     val conversations: StateFlow<List<ConversationEntity>>
+    val allLocalConversations: StateFlow<List<ConversationEntity>> get() = MutableStateFlow(emptyList())
 
     // Actions
     fun sendMessage(content: String)
@@ -35,6 +36,7 @@ interface IntelligenceService {
 
     fun selectModel(modelKey: String)
     fun setWorkspace(path: String?) {}
+    fun setAssistantOwner(mode: AssistantMode, ownerId: String? = null, workspacePath: String? = null, agentId: Long? = null) {}
     fun clearError() {}
     fun loadMoreConversations() {}
     fun hasMoreConversations(): Boolean = false

@@ -6,8 +6,6 @@ import com.amaya.intelligence.data.repository.MaintenanceScheduler
 import com.amaya.intelligence.data.repository.PendingProposalRepository
 import com.amaya.intelligence.data.repository.MemoryRepository
 import com.amaya.intelligence.data.repository.ProposalApplyResult
-import com.amaya.intelligence.data.repository.SelfImprovementMode
-import com.amaya.intelligence.data.repository.SelfImprovementSettingsRepository
 import com.amaya.intelligence.domain.memory.MemoryClassifier
 import com.amaya.intelligence.domain.memory.PendingProposal
 import com.amaya.intelligence.domain.memory.PendingProposalType
@@ -20,12 +18,10 @@ import javax.inject.Inject
 
 data class PromptPreviewState(
     val userProfile: String = "",
-    val agents: String = "",
-    val mode: SelfImprovementMode = SelfImprovementMode.ASK_APPROVAL
+    val agents: String = ""
 )
 
 data class SelfImprovementUiState(
-    val mode: SelfImprovementMode = SelfImprovementMode.ASK_APPROVAL,
     val pendingProposals: List<PendingProposal> = emptyList(),
     val lastMaintenanceRun: String = "Never",
     val promptPreview: PromptPreviewState = PromptPreviewState(),
@@ -36,7 +32,6 @@ data class SelfImprovementUiState(
 
 @HiltViewModel
 class SelfImprovementViewModel @Inject constructor(
-    private val settingsRepository: SelfImprovementSettingsRepository,
     private val pendingProposalRepository: PendingProposalRepository,
     private val memoryRepository: MemoryRepository,
     private val memoryClassifier: MemoryClassifier,
@@ -51,21 +46,12 @@ class SelfImprovementViewModel @Inject constructor(
 
     fun refresh() {
         viewModelScope.launch {
-            val mode = settingsRepository.getMode()
             val proposals = pendingProposalRepository.listPending().filter { it.type.isSelfImprovementType() }
             _uiState.value = _uiState.value.copy(
-                mode = mode,
                 pendingProposals = proposals,
-                promptPreview = buildPromptPreview(mode),
+                promptPreview = buildPromptPreview(),
                 isLoading = false
             )
-        }
-    }
-
-    fun setMode(mode: SelfImprovementMode) {
-        viewModelScope.launch {
-            settingsRepository.setMode(mode)
-            _uiState.value = _uiState.value.copy(mode = mode, message = "Self-improvement mode set to $mode")
         }
     }
 
@@ -130,11 +116,10 @@ class SelfImprovementViewModel @Inject constructor(
         _uiState.value = _uiState.value.copy(message = null)
     }
 
-    private suspend fun buildPromptPreview(mode: SelfImprovementMode): PromptPreviewState {
+    private suspend fun buildPromptPreview(): PromptPreviewState {
         return PromptPreviewState(
             userProfile = redactForPreview(memoryRepository.readUserProfile()),
-            agents = "# Project Memory\n\nSelect a workspace in Local Settings to preview project memory.",
-            mode = mode
+            agents = "# Project Memory\n\nSelect a workspace in Local Settings to preview project memory."
         )
     }
 
@@ -142,7 +127,6 @@ class SelfImprovementViewModel @Inject constructor(
         return memoryClassifier.checkSafety(content).redactedContent.take(6_000)
     }
 
-    private fun PendingProposalType.isSelfImprovementType(): Boolean = this == PendingProposalType.USER_PROFILE ||
-        this == PendingProposalType.WORKSPACE_FACT ||
+    private fun PendingProposalType.isSelfImprovementType(): Boolean = this == PendingProposalType.WORKSPACE_FACT ||
         this == PendingProposalType.SKILL_CREATE || this == PendingProposalType.SKILL_PATCH || this == PendingProposalType.SKILL_UPDATE
 }

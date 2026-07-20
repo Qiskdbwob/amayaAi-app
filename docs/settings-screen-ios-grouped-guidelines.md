@@ -49,7 +49,6 @@ Panduan ini mendokumentasikan arah polish `LocalSettingsScreen`: iOS-inspired gr
 │  │ ●  Agents                         ›   │  │
 │  │    Models & providers                 │  │
 │  ├───────────────────────────────────────┤  │
-│  │ ●  Persona                        ›   │  │
 │  │    Voice & behavior                   │  │
 │  ├───────────────────────────────────────┤  │
 │  │ ●  Memory                         ›   │  │
@@ -193,7 +192,6 @@ Keep subtitles short.
 | Row | Preferred Subtitle |
 | --- | --- |
 | Agents | `Models & providers` |
-| Persona | `Voice & behavior` |
 | Memory | `12 saved · review` |
 | Skills | `3 enabled · 1 active` |
 | Context & Recall | `2 sources` |
@@ -230,7 +228,6 @@ Workspace
 
 AI
 - Agents
-- Persona
 - Memory
 - Skills
 - Context & Recall

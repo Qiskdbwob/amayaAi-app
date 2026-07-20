@@ -197,7 +197,7 @@ object BrowserResponseFormatter {
             "get_dom", "analyze_page" -> normalizeDom(metadata["dom"]?.toString() ?: response.output)
             "get_visible_text" -> JSONObject().apply {
                 put("mode", "visible_text")
-                put("text", response.output.take(6000))
+                put("text", response.output)
                 put("truncated", response.output.length > 6000)
                 put("length", response.output.length)
             }

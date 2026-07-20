@@ -23,7 +23,7 @@ import javax.inject.Singleton
 class CreateReminderTool @Inject constructor(
     @ApplicationContext private val context: Context,
     private val cronJobRepository: CronJobRepository
-) : Tool {
+) : Tool, ContextAwareTool {
 
     override val name = "create_reminder"
 
@@ -43,6 +43,9 @@ class CreateReminderTool @Inject constructor(
     """.trimIndent()
 
     override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
+        execute(arguments, ToolExecutionContext())
+
+    override suspend fun execute(arguments: Map<String, Any?>, context: ToolExecutionContext): ToolResult =
         withContext(Dispatchers.IO) {
             val title = arguments["title"] as? String
                 ?: return@withContext ToolResult.Error("Missing required: title", ErrorType.VALIDATION_ERROR)
@@ -75,7 +78,7 @@ class CreateReminderTool @Inject constructor(
                 else     -> CronRecurringType.ONCE
             }
 
-            val sessionMode = if (sessionModeStr == "new") CronSessionMode.NEW else CronSessionMode.CONTINUE
+            val sessionMode = if (context.agentId == null && sessionModeStr == "new") CronSessionMode.NEW else CronSessionMode.CONTINUE
 
             val job = CronJobEntity(
                 title             = title.trim(),
@@ -84,7 +87,8 @@ class CreateReminderTool @Inject constructor(
                 recurringType     = recurringType,
                 isActive          = true,
                 conversationId    = conversationId,
-                sessionMode       = sessionMode
+                sessionMode       = sessionMode,
+                agentId           = context.agentId
             )
 
             val id = try {

@@ -1,106 +1,129 @@
 package com.amaya.intelligence.ui.activities.settings.local
 
+import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import com.amaya.intelligence.data.local.dao.AgentDao
+import com.amaya.intelligence.data.local.dao.ProjectDao
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
+import com.amaya.intelligence.data.local.entity.ProjectEntity
+import com.amaya.intelligence.data.local.entity.AgentGroupEntity
+import com.amaya.intelligence.domain.models.AssistantMode
+import com.amaya.intelligence.ui.activities.agent.local.LocalAgentDetailActivity
+import com.amaya.intelligence.ui.activities.agent.local.LocalAgentListActivity
+import com.amaya.intelligence.ui.activities.amaya.local.LocalMemoryAreaActivity
+import com.amaya.intelligence.ui.activities.amaya.local.LocalSkillsActivity
+import com.amaya.intelligence.ui.activities.mcp.local.LocalMcpActivity
+import com.amaya.intelligence.ui.activities.models.ManageModelsActivity
+import com.amaya.intelligence.ui.activities.project.local.LocalProjectActivity
+import com.amaya.intelligence.ui.activities.project.local.LocalProjectDetailActivity
+import com.amaya.intelligence.ui.screens.amaya.MemoryArea
 import com.amaya.intelligence.ui.screens.settings.local.LocalSettingsScreen
+import com.amaya.intelligence.ui.screens.settings.local.SettingsScope
 import com.amaya.intelligence.ui.theme.AmayaTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
-import com.amaya.intelligence.ui.activities.models.ManageModelsActivity
-import com.amaya.intelligence.ui.activities.mcp.local.LocalMcpActivity
-import com.amaya.intelligence.ui.activities.cronjob.local.LocalCronJobActivity
-import com.amaya.intelligence.ui.activities.project.local.LocalProjectActivity
-import com.amaya.intelligence.ui.activities.amaya.local.LocalContextRecallActivity
-import com.amaya.intelligence.ui.activities.amaya.local.LocalMemoryActivity
-import com.amaya.intelligence.ui.activities.amaya.local.LocalPrivacySafetyActivity
-import com.amaya.intelligence.ui.activities.amaya.local.LocalReviewActivity
-import com.amaya.intelligence.ui.activities.amaya.local.LocalSkillsActivity
-import com.amaya.intelligence.ui.activities.persona.local.LocalPersonaActivity
 
 @AndroidEntryPoint
 class LocalSettingsActivity : AppCompatActivity() {
+    @Inject lateinit var aiSettingsManager: AiSettingsManager
+    @Inject lateinit var projectDao: ProjectDao
+    @Inject lateinit var agentDao: AgentDao
+    private var pendingWorkspaceTarget by mutableStateOf<SettingsScope?>(null)
+    private var projectWorkspace by mutableStateOf<String?>(null)
+    private var agentWorkspace by mutableStateOf<String?>(null)
+    private val workspacePicker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode != RESULT_OK) return@registerForActivityResult
+        val path = result.data?.getStringExtra(LocalProjectActivity.RESULT_KEY) ?: return@registerForActivityResult
+        if (pendingWorkspaceTarget == SettingsScope.PROJECT) projectWorkspace = path else agentWorkspace = path
+    }
 
-    @Inject
-    lateinit var aiSettingsManager: AiSettingsManager
-
-    private var currentWorkspace: String? = null
+    private val mode by lazy {
+        runCatching { AssistantMode.valueOf(intent.getStringExtra(EXTRA_MODE).orEmpty()) }.getOrDefault(AssistantMode.CHAT)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        currentWorkspace = intent.getStringExtra("current_workspace")
         enableEdgeToEdge()
-    }
-
-    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == LocalProjectActivity.REQUEST_CODE && resultCode == RESULT_OK) {
-            val path = data?.getStringExtra(LocalProjectActivity.RESULT_KEY)
-            if (path != null) {
-                setResult(RESULT_OK, android.content.Intent().apply {
-                    putExtra(LocalProjectActivity.RESULT_KEY, path)
-                    putExtra("navigate_to_chat", true)
-                })
-                finish()
-            }
-        }
-    }
-
-    override fun onResume() {
-        super.onResume()
         setContent {
             AmayaTheme {
+                val projects by projectDao.observeAll().collectAsState(initial = emptyList())
+                val groups by agentDao.observeGroups().collectAsState(initial = emptyList())
+                val agents by agentDao.observeAll().collectAsState(initial = emptyList())
                 LocalSettingsScreen(
                     onNavigateBack = { finish() },
-                    currentWorkspace = currentWorkspace,
-                    onNavigateToWorkspace = { 
-                        LocalProjectActivity.startForResult(this)
+                    initialScope = when (mode) {
+                        AssistantMode.PROJECT -> SettingsScope.PROJECT
+                        AssistantMode.AGENT -> SettingsScope.AGENT
+                        AssistantMode.CHAT -> SettingsScope.GLOBAL
                     },
+                    projects = projects,
+                    agentGroups = groups,
+                    agents = agents,
                     aiSettingsManager = aiSettingsManager,
-                    onNavigateToModels = {
-                        ManageModelsActivity.start(this)
+                    onNavigateToModels = { ManageModelsActivity.start(this) },
+                    onNavigateToMcp = { LocalMcpActivity.start(this) },
+                    onNavigateToTerminal = { LocalTerminalSettingsActivity.start(this) },
+                    onNavigateToAboutYou = { LocalMemoryAreaActivity.start(this, MemoryArea.USER) },
+                    onNavigateToSkills = { LocalSkillsActivity.start(this) },
+                    onOpenProject = { LocalProjectDetailActivity.startForResult(this, it.id) },
+                    onCreateProject = { name, instructions, workspace ->
+                        lifecycleScope.launch {
+                            val existing = projectDao.getByRootPath(workspace)
+                            if (existing == null) projectDao.insert(ProjectEntity(name = name, instructions = instructions, rootPath = workspace))
+                        }
+                        projectWorkspace = null
                     },
-                    onNavigateToReminders = {
-                        LocalCronJobActivity.start(this)
+                    onSelectProjectWorkspace = {
+                        pendingWorkspaceTarget = SettingsScope.PROJECT
+                        workspacePicker.launch(LocalProjectActivity.workspacePickerIntent(this))
                     },
-                    onNavigateToMcp = {
-                        LocalMcpActivity.start(this)
+                    selectedProjectWorkspace = projectWorkspace,
+                    onOpenAgentGroup = { LocalAgentDetailActivity.startForResult(this, it.id) },
+                    onCreateAgentGroup = { name, instructions, workspace ->
+                        lifecycleScope.launch { agentDao.insertGroup(AgentGroupEntity(name = name, instructions = instructions, workspacePath = workspace)) }
+                        agentWorkspace = null
                     },
-                    onNavigateToPersona = {
-                        LocalPersonaActivity.start(this)
+                    onSelectAgentWorkspace = {
+                        pendingWorkspaceTarget = SettingsScope.AGENT
+                        workspacePicker.launch(LocalProjectActivity.workspacePickerIntent(this))
                     },
-                    onNavigateToMemory = {
-                        LocalMemoryActivity.start(this, currentWorkspace)
-                    },
-                    onNavigateToSkills = {
-                        LocalSkillsActivity.start(this)
-                    },
-                    onNavigateToContextRecall = {
-                        LocalContextRecallActivity.start(this)
-                    },
-                    onNavigateToReview = {
-                        LocalReviewActivity.start(this, currentWorkspace)
-                    },
-                    onNavigateToPrivacy = {
-                        LocalPrivacySafetyActivity.start(this)
-                    }
+                    selectedAgentWorkspace = agentWorkspace
                 )
             }
         }
     }
 
     companion object {
-        fun start(activity: android.app.Activity, currentWorkspace: String? = null) {
+        private const val EXTRA_MODE = "assistant_mode"
+        private const val EXTRA_OWNER_ID = "owner_id"
+        private const val EXTRA_WORKSPACE = "current_workspace"
+        const val EXTRA_DELETED_OWNER = "deleted_owner"
+        const val REQUEST_CODE = 1002
+
+        fun start(
+            activity: Activity,
+            mode: AssistantMode = AssistantMode.CHAT,
+            ownerId: String? = null,
+            workspacePath: String? = null
+        ) {
             activity.startActivityForResult(
-                android.content.Intent(activity, LocalSettingsActivity::class.java)
-                    .putExtra("current_workspace", currentWorkspace),
+                Intent(activity, LocalSettingsActivity::class.java)
+                    .putExtra(EXTRA_MODE, mode.name)
+                    .putExtra(EXTRA_OWNER_ID, ownerId)
+                    .putExtra(EXTRA_WORKSPACE, workspacePath),
                 REQUEST_CODE
             )
         }
-
-        const val REQUEST_CODE = 1002
     }
 }

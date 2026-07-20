@@ -4,6 +4,9 @@ package com.amaya.intelligence.domain.models
 import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.data.remote.api.ThinkingEffort
 import com.amaya.intelligence.tools.TodoItem
+import java.net.URLDecoder
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 // ── UI State ─────────────────────────────────────────────────────────────────
@@ -16,6 +19,9 @@ data class ChatUiState(
     val selectedModel:    String          = "",
     val activeProjectId:  Long?           = null,
     val workspacePath:    String?         = null,
+    val assistantMode:    AssistantMode   = AssistantMode.CHAT,
+    val ownerId:          String?         = null,
+    val agentId:          Long?           = null,
     val totalInputTokens:  Int            = 0,
     val totalOutputTokens: Int            = 0,
     val isLoadingConversations: Boolean   = false,
@@ -32,6 +38,43 @@ data class ChatUiState(
 )
 
 
+
+data class ComposerReferences(
+    val agentIds: List<Long> = emptyList(),
+    val workspacePaths: List<String> = emptyList(),
+    val commands: List<String> = emptyList()
+)
+
+fun agentMentionMarkdown(agentId: Long, name: String): String =
+    "[@${name.replace("[", "").replace("]", "")}](agent:$agentId)"
+
+fun workspaceMentionMarkdown(path: String): String {
+    val normalized = path.replace('\\', '/')
+    val label = normalized.substringAfterLast('/').ifBlank { normalized }
+    return "[@${label.replace("[", "").replace("]", "")}](workspace:${encodeComposerReference(normalized)})"
+}
+
+fun commandMarkdown(command: String): String {
+    val normalized = command.trim().removePrefix("/")
+    return "[/$normalized](command:$normalized)"
+}
+
+fun parseComposerReferences(text: String): ComposerReferences = ComposerReferences(
+    agentIds = AGENT_REFERENCE.findAll(text).mapNotNull { it.groupValues[1].toLongOrNull() }.distinct().toList(),
+    workspacePaths = WORKSPACE_REFERENCE.findAll(text).mapNotNull { decodeComposerReference(it.groupValues[1]) }.distinct().toList(),
+    commands = COMMAND_REFERENCE.findAll(text).map { it.groupValues[1] }.distinct().toList()
+)
+
+private fun encodeComposerReference(value: String): String =
+    URLEncoder.encode(value, StandardCharsets.UTF_8.name()).replace("+", "%20").replace("%2F", "/")
+
+private fun decodeComposerReference(value: String): String? = runCatching {
+    URLDecoder.decode(value, StandardCharsets.UTF_8.name())
+}.getOrNull()?.takeIf(String::isNotBlank)
+
+private val AGENT_REFERENCE = Regex("""\]\(agent:(\d+)\)""")
+private val WORKSPACE_REFERENCE = Regex("""\]\(workspace:([^)]+)\)""")
+private val COMMAND_REFERENCE = Regex("""\]\(command:([a-zA-Z0-9_-]+)\)""")
 
 enum class ConversationMode(val wireValue: String) {
     PLANNING("planning"),

@@ -1,9 +1,11 @@
-﻿package com.amaya.intelligence.di
+package com.amaya.intelligence.di
 
 import android.content.Context
 import com.amaya.intelligence.data.local.db.AppDatabase
+import com.amaya.intelligence.data.local.dao.AgentDao
 import com.amaya.intelligence.data.local.dao.ConversationDao
 import com.amaya.intelligence.data.local.dao.CronJobDao
+import com.amaya.intelligence.data.local.dao.DelegationTaskDao
 import com.amaya.intelligence.data.local.dao.FileDao
 import com.amaya.intelligence.data.local.dao.FileMetadataDao
 
@@ -21,7 +23,7 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
-    
+
     @Provides
     @Singleton
     fun provideAppDatabase(
@@ -29,7 +31,7 @@ object DatabaseModule {
     ): AppDatabase {
         return AppDatabase.getInstance(context)
     }
-    
+
     @Provides
     @Singleton
     fun provideProjectDao(database: AppDatabase): ProjectDao {
@@ -47,6 +49,14 @@ object DatabaseModule {
     fun provideFileMetadataDao(database: AppDatabase): FileMetadataDao {
         return database.fileMetadataDao()
     }
+
+    @Provides
+    @Singleton
+    fun provideAgentDao(database: AppDatabase): AgentDao = database.agentDao()
+
+    @Provides
+    @Singleton
+    fun provideDelegationTaskDao(database: AppDatabase): DelegationTaskDao = database.delegationTaskDao()
 
     @Provides
     @Singleton

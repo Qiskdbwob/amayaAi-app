@@ -1,6 +1,8 @@
 package com.amaya.intelligence.domain.security
 
 import android.content.Context
+import com.amaya.intelligence.data.repository.TerminalSettings
+import com.amaya.intelligence.data.repository.commandMatchesWildcard
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -23,82 +25,15 @@ class CommandValidator @Inject constructor(
 ) {
 
     companion object {
-        // ====================================================================
-        // COMMAND WHITELIST
-        // ====================================================================
-
-        /**
-         * Commands that are always allowed.
-         * These are safe, read-only or low-impact commands.
-         */
-        private val ALWAYS_ALLOWED = setOf(
-            "echo", "printf", "cat", "head", "tail",
-            "grep", "cut", "sort", "uniq",
-            "wc", "tr", "diff",
-            "ls", "which", "whereis", "file",
-            "pwd", "basename", "dirname", "realpath",
-            "date", "cal", "uptime",
-            // Build and package tools can execute project-controlled code; require confirmation below.
-            // Read-only Android inspection remains allowed.
-            "aapt", "apksigner",
-            // FIX 1.10: Removed "task_status" and "task_stop" — no tool/service/script defines them.
-            // Adding unimplemented commands to the whitelist expands attack surface for no benefit.
-        )
-
-        /**
-         * Commands allowed but may require confirmation for certain args.
-         */
-        private val CONDITIONALLY_ALLOWED = setOf(
-            "git", "logcat", "am", "pm", "adb",
-            "gradle", "gradlew", "npm", "node", "npx",
-            "awk", "sed", "find", "patch",
-            "mkdir", "touch", "cp", "mv",
-            "chmod", "chown",
-            "curl", "wget",
-            "tar", "zip", "unzip", "gzip", "gunzip"
-            // Note: adb, gradle, gradlew moved to ALWAYS_ALLOWED (FIX #16)
-        )
-
-        // ====================================================================
-        // COMMAND BLACKLIST
-        // ====================================================================
-
-        /**
-         * Commands that are NEVER allowed.
-         * These can cause irreversible system damage.
-         */
-        private val ALWAYS_BLOCKED = setOf(
-            "rm", "rmdir",              // Use our safe delete instead
-            "dd",                       // Can destroy disk
-            "mkfs", "format",           // Filesystem destruction
-            "reboot", "shutdown", "poweroff",
-            "su", "sudo",               // Blocked here, handled separately
-            "mount", "umount",          // Filesystem operations
-            "insmod", "rmmod", "modprobe", // Kernel modules
-            "iptables", "ip6tables",    // Network manipulation
-            "init", "systemctl",        // System services
-            "setenforce",               // SELinux
-            "factory_reset"             // Factory reset
-        )
-
-        /**
-         * Dangerous argument patterns that block even allowed commands.
-         */
-        private val DANGEROUS_PATTERNS = listOf(
-            Regex("""-rf\s+/"""),                    // rm -rf /
-            Regex("""--no-preserve-root"""),         // Bypass root protection
-            Regex(""">\s*/dev/(sd|hd|nvme)"""),     // Write to disk device
-            Regex("""\|\s*sh\b"""),                  // Pipe to shell
-            Regex("""\|\s*bash\b"""),                // Pipe to bash
-            Regex("""`[^`]+`"""),                    // Command substitution
-            Regex("""\$\([^)]+\)"""),                // Command substitution
-            Regex(""";\s*rm\b"""),                   // Chained rm
-            Regex("""&&\s*rm\b"""),                  // Chained rm
-            Regex("""\|\|\s*rm\b"""),                // Chained rm
-            Regex("""chmod\s+777"""),                // Overly permissive
-            Regex("""chmod\s+\+s"""),                // Setuid bit
-            Regex(""">\s*/etc/"""),                  // Write to /etc
-            Regex(""">\s*/system/""")                // Write to /system
+        /** Commands that remain blocked even when a wildcard marks them trusted. */
+        private val HARD_BLOCK_PATTERNS = listOf(
+            Regex("(?i)(^|[;&|]\\s*)rm\\s+-[^\\n]*r[^\\n]*f[^\\n]*\\s+/(?:\\s|$|\\*)"),
+            Regex("(?i)\\b--no-preserve-root\\b"),
+            Regex("(?i)(^|[;&|]\\s*)(mkfs(?:\\.[a-z0-9]+)?|factory_reset)\\b"),
+            Regex("(?i)>\\s*/(?:dev/(?:sd|hd|nvme)|system/|vendor/|proc/|sys/)"),
+            Regex("(?i)\\bdd\\b[^\\n]*(?:of=/dev/|if=/dev/(?:zero|random))"),
+            Regex("(?i)\\|\\s*(?:sh|bash|dash|zsh|ash)\\b"),
+            Regex("(?i)\\bchmod\\s+(?:777|\\+s)\\b")
         )
 
         // ====================================================================
@@ -135,36 +70,24 @@ class CommandValidator @Inject constructor(
     /**
      * Validate a shell command before execution.
      */
-    fun validateCommand(command: String): ValidationResult {
-        val argv = when (val parsed = parseCommand(command)) {
-            is CommandParseResult.Success -> parsed.argv
-            is CommandParseResult.Error -> return ValidationResult.Denied(parsed.reason, command)
+    fun validateCommand(command: String, settings: TerminalSettings = TerminalSettings()): ValidationResult {
+        val normalized = command.trim()
+        if (normalized.isEmpty()) return ValidationResult.Denied("Empty command", command)
+        HARD_BLOCK_PATTERNS.firstOrNull { it.containsMatchIn(normalized) }?.let {
+            return ValidationResult.Denied("Command is blocked by the host safety boundary", command)
         }
-        if (argv.isEmpty()) return ValidationResult.Denied("Empty command", command)
-        val executable = argv.first()
-        if (executable.contains('/') && !java.io.File(executable).isAbsolute && !executable.startsWith("./")) {
-            return ValidationResult.Denied("Executable path must be absolute, relative to the workspace, or resolved from PATH", command)
+        if (settings.declinedCommands.any { commandMatchesWildcard(normalized, it) }) {
+            return ValidationResult.Denied("Command matches a declined terminal pattern", command)
         }
-        val baseCommand = executable.substringAfterLast('/')
-        if (baseCommand in ALWAYS_BLOCKED || baseCommand in setOf("sh", "bash", "dash", "zsh", "ash", "su", "sudo")) {
-            return ValidationResult.Denied("Command '$baseCommand' is blocked for safety", command)
+        if (settings.trustedCommands.any { commandMatchesWildcard(normalized, it) }) {
+            return ValidationResult.Allowed
         }
-        DANGEROUS_PATTERNS.firstOrNull { it.containsMatchIn(command) }?.let { pattern ->
-            return ValidationResult.Denied("Command contains dangerous pattern: ${pattern.pattern}", command)
-        }
-        return when (baseCommand) {
-            in ALWAYS_ALLOWED -> ValidationResult.Allowed
-            in CONDITIONALLY_ALLOWED -> validateConditionalCommand(baseCommand, argv, command)
-            else -> ValidationResult.RequiresConfirmation(
-                "Unknown command '$baseCommand' requires confirmation",
-                command,
-                RiskLevel.MEDIUM
-            )
-        }
+        return ValidationResult.RequiresConfirmation(
+            "Shell command is not in Trusted Commands",
+            command,
+            RiskLevel.MEDIUM
+        )
     }
-
-    /** Parse one executable plus argv. Compound shell grammar is deliberately unsupported. */
-    fun parseCommandArguments(command: String): List<String>? = parseSafeCommandArguments(command)
 
     /**
      * Validate a file path for read or write access.
@@ -241,17 +164,18 @@ class CommandValidator @Inject constructor(
      */
     fun validateToolCall(
         toolName: String,
-        arguments: Map<String, Any?>
+        arguments: Map<String, Any?>,
+        terminalSettings: TerminalSettings = TerminalSettings()
     ): ValidationResult {
         missingToolTarget(toolName, arguments)?.let { return ValidationResult.Denied(it, "") }
         return when (toolName) {
             "run_shell" -> {
                 val command = arguments["command"] as? String ?: ""
-                val commandResult = validateCommand(command)
+                val commandResult = validateCommand(command, terminalSettings)
                 val workingDir = arguments["working_dir"] as? String
                 val pathResult = if (workingDir.isNullOrBlank()) ValidationResult.Allowed
                     else validatePath(workingDir, isWrite = false)
-                combineValidation(commandResult, pathResult, validateSafeReadTargets(command, workingDir))
+                combineValidation(commandResult, pathResult)
             }
 
             "read_file" -> {
@@ -318,33 +242,6 @@ class CommandValidator @Inject constructor(
     // PRIVATE HELPERS
     // ========================================================================
 
-    private fun validateSafeReadTargets(command: String, workingDir: String?): ValidationResult {
-        val argv = parseSafeCommandArguments(command) ?: return ValidationResult.Denied("Unsafe shell syntax", command)
-        val executable = argv.firstOrNull()?.substringAfterLast('/') ?: return ValidationResult.Denied("Empty command", command)
-        val filesystemReads = setOf("cat", "head", "tail", "grep", "cut", "sort", "uniq", "wc", "tr", "diff", "ls", "which", "whereis", "file", "basename", "dirname", "realpath")
-        if (executable !in filesystemReads) return ValidationResult.Allowed
-        if (workingDir.isNullOrBlank()) return ValidationResult.RequiresConfirmation(
-            "Shell file reads require an active workspace", command, RiskLevel.LOW
-        )
-        val targets = argv.drop(1).filter { it.isNotBlank() && !it.startsWith("-") }
-        if (targets.isEmpty()) return ValidationResult.Allowed
-        val root = runCatching { java.io.File(workingDir).canonicalFile }.getOrNull() ?: return ValidationResult.RequiresConfirmation(
-            "Cannot verify shell working directory", command, RiskLevel.LOW
-        )
-        targets.forEach { raw ->
-            val target = runCatching {
-                val file = java.io.File(raw)
-                (if (file.isAbsolute) file else java.io.File(root, raw)).canonicalFile
-            }.getOrNull() ?: return ValidationResult.RequiresConfirmation("Cannot verify shell read target", command, RiskLevel.LOW)
-            if (!isWithinPath(target.path, root.path)) {
-                return ValidationResult.RequiresConfirmation(
-                    "Safe shell reads are limited to the active workspace", command, RiskLevel.LOW
-                )
-            }
-        }
-        return ValidationResult.Allowed
-    }
-
     private fun combinePathValidation(paths: List<String>, isWrite: Boolean): ValidationResult {
         var confirmation: ValidationResult.RequiresConfirmation? = null
         for (path in paths) {
@@ -355,62 +252,6 @@ class CommandValidator @Inject constructor(
             }
         }
         return confirmation ?: ValidationResult.Allowed
-    }
-
-    private fun validateConditionalCommand(
-        baseCommand: String,
-        argv: List<String>,
-        fullCommand: String
-    ): ValidationResult {
-        return when (baseCommand) {
-            "git" -> ValidationResult.RequiresConfirmation(
-                "Git commands can execute configured aliases or modify the repository",
-                fullCommand,
-                if ("reset" in argv || "clean" in argv) RiskLevel.HIGH else RiskLevel.MEDIUM
-            )
-
-            "mv", "cp" -> {
-                val destination = argv.lastOrNull() ?: ""
-                combineValidation(
-                    validatePath(destination, isWrite = true),
-                    ValidationResult.RequiresConfirmation(
-                        "File copy or move can overwrite data",
-                        fullCommand,
-                        RiskLevel.MEDIUM
-                    )
-                )
-            }
-
-            "awk", "sed", "find", "patch" -> ValidationResult.RequiresConfirmation(
-                "Command can write files or execute external programs",
-                fullCommand,
-                RiskLevel.MEDIUM
-            )
-
-            "gradle", "gradlew", "npm", "node", "npx", "adb", "am", "pm" -> ValidationResult.RequiresConfirmation(
-                "Command can execute code or modify device/project state",
-                fullCommand,
-                RiskLevel.MEDIUM
-            )
-
-            "curl", "wget" -> ValidationResult.RequiresConfirmation(
-                "Network request to external URL",
-                fullCommand,
-                RiskLevel.MEDIUM
-            )
-
-            "chmod", "chown" -> ValidationResult.RequiresConfirmation(
-                "Changing file permissions",
-                fullCommand,
-                RiskLevel.HIGH
-            )
-
-            else -> ValidationResult.RequiresConfirmation(
-                "Run shell command '$baseCommand'",
-                fullCommand,
-                RiskLevel.MEDIUM
-            )
-        }
     }
 
     private fun combineValidation(vararg results: ValidationResult): ValidationResult {

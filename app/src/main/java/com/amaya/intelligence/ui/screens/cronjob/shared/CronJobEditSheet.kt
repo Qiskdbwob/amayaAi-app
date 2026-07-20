@@ -37,6 +37,7 @@ import java.util.*
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CronJobEditSheet(
+    ownerAgentId: Long? = null,
     onDismiss: () -> Unit,
     onAdd: (CronJobEntity) -> Unit,
     modifier: Modifier = Modifier
@@ -135,32 +136,40 @@ fun CronJobEditSheet(
         }
 
         Text("When reminder fires", style = MaterialTheme.typography.labelLarge)
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            SegmentedButton(
-                selected = sessionMode == CronSessionMode.CONTINUE,
-                onClick = { sessionMode = CronSessionMode.CONTINUE },
-                shape = SegmentedButtonDefaults.itemShape(0, 2),
-                icon = { Icon(Icons.Default.Forum, null, modifier = Modifier.size(14.dp)) }
-            ) {
-                Text("Continue session")
+        if (ownerAgentId != null) {
+            Text(
+                "AI reply continues this agent's persistent conversation",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                SegmentedButton(
+                    selected = sessionMode == CronSessionMode.CONTINUE,
+                    onClick = { sessionMode = CronSessionMode.CONTINUE },
+                    shape = SegmentedButtonDefaults.itemShape(0, 2),
+                    icon = { Icon(Icons.Default.Forum, null, modifier = Modifier.size(14.dp)) }
+                ) {
+                    Text("Continue session")
+                }
+                SegmentedButton(
+                    selected = sessionMode == CronSessionMode.NEW,
+                    onClick = { sessionMode = CronSessionMode.NEW },
+                    shape = SegmentedButtonDefaults.itemShape(1, 2),
+                    icon = { Icon(Icons.Default.AddComment, null, modifier = Modifier.size(14.dp)) }
+                ) {
+                    Text("New session")
+                }
             }
-            SegmentedButton(
-                selected = sessionMode == CronSessionMode.NEW,
-                onClick = { sessionMode = CronSessionMode.NEW },
-                shape = SegmentedButtonDefaults.itemShape(1, 2),
-                icon = { Icon(Icons.Default.AddComment, null, modifier = Modifier.size(14.dp)) }
-            ) {
-                Text("New session")
-            }
+            Text(
+                if (sessionMode == CronSessionMode.CONTINUE)
+                    "AI reply will be added to the current chat session"
+                else
+                    "AI reply will open a fresh conversation each time",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
-        Text(
-            if (sessionMode == CronSessionMode.CONTINUE)
-                "AI reply will be added to the current chat session"
-            else
-                "AI reply will open a fresh conversation each time",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
 
         Button(
             onClick = {
@@ -170,7 +179,8 @@ fun CronJobEditSheet(
                     triggerTimeMillis = selectedCalendar.timeInMillis,
                     recurringType = recurringType,
                     isActive = true,
-                    sessionMode = sessionMode
+                    sessionMode = sessionMode,
+                    agentId = ownerAgentId
                 )
                 dismiss { onAdd(job) }
             },

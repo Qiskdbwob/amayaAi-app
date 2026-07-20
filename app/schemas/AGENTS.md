@@ -8,7 +8,7 @@
 - When a schema version changes, update this file and the generated JSON snapshots in the same pass.
 - Crosscheck recent commits touching Room schema, DAO, or migration code before finalizing schema updates.
 
-# 🧱 DESAIN VERSIONING (v1 → v10)
+# 🧱 DESAIN VERSIONING (v1 → v15)
 
 ## ✅ V1 (Initial Release — Foundation)
 
@@ -164,11 +164,47 @@ Provider/model settings now use DataStore plus encrypted credential storage.
 
 ---
 
-## 🔼 V10 (Optimization + reindex)
+## ✅ V10 (Mode ownership foundation)
 
-* Rebuild index
-* Vacuum DB
-* Rebuild FTS
+Migration `9 → 10` adds:
+
+* `conversations.assistant_mode`
+* `conversations.owner_id`
+* legacy `agents` foundation
+
+Existing local conversations with a workspace migrate to `PROJECT`; other local conversations remain `CHAT`.
+
+---
+
+## ✅ V11 (Projects and multi-agent groups)
+
+Migration `10 → 11` adds:
+
+* project instructions and reference paths;
+* normalized `agent_groups` with workspace, instructions, references, and compatibility capability profile;
+* many `agents` per group with a foreign key;
+* persisted `delegation_tasks`;
+* Agent conversation owners remapped from legacy agent IDs to group IDs.
+
+## ✅ V12 (Per-agent runtime configuration)
+
+Migration `11 → 12` adds:
+
+* `agents.capability_profile` for per-agent tool configuration;
+* `conversations.agent_id` so Agent sessions reopen with the correct member;
+* legacy Agent sessions assigned to the first member in their group when available.
+
+## ✅ V13 (Per-agent references)
+
+Migration `12 → 13` adds `agents.reference_paths_json`; group references remain shared, member references become private to each agent context.
+
+## ✅ V14 (Agent-owned reminders and jobs)
+
+Migration `13 → 14` adds nullable `cron_jobs.agent_id` plus its lookup index. Legacy jobs remain unowned; new Agent jobs stay scoped to their Agent.
+
+## ✅ V15 (Agent default models)
+
+Migration `14 → 15` adds `agents.default_model_keys_json`. Keys reference active Manage Models entries; an empty list inherits the global active model.
 
 ---
 
@@ -215,7 +251,7 @@ Simulasi real:
 
 1. Install app v1
 2. Insert data
-3. Upgrade ke v10
+3. Upgrade ke v11
 4. Verify:
 
    * data utuh

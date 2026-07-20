@@ -73,12 +73,10 @@ class LocalSelfImprovementActivity : AppCompatActivity() {
                 ) { padding ->
                     Column(Modifier.fillMaxSize().padding(padding)) {
                         SelfImprovementScreen(
-                            mode = state.mode,
                             pendingProposals = state.pendingProposals,
                             lastMaintenanceRun = state.lastMaintenanceRun,
                             promptPreview = state.promptPreview,
                             lastApplyResults = state.lastApplyResults,
-                            onModeChange = viewModel::setMode,
                             onApprove = viewModel::approve,
                             onReject = viewModel::reject,
                             onApply = viewModel::applyApproved,

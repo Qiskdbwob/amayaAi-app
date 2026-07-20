@@ -31,6 +31,12 @@ data class ProjectEntity(
     @ColumnInfo(name = "file_count")
     val fileCount: Int = 0,
 
+    @ColumnInfo(name = "instructions", defaultValue = "''")
+    val instructions: String = "",
+
+    @ColumnInfo(name = "reference_paths_json", defaultValue = "'[]'")
+    val referencePathsJson: String = "[]",
+
     @ColumnInfo(name = "created_at")
     val createdAt: Long = System.currentTimeMillis(),
 

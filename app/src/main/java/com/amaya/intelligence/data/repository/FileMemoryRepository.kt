@@ -31,7 +31,6 @@ class FileMemoryRepository @Inject constructor(
         get() = File(context.filesDir, "memory").also { it.mkdirs() }
     private val recordsFile: File get() = File(memoryDir, "records.jsonl")
     private val migrationMarker: File get() = File(memoryDir, ".structured-memory-v1")
-    private val legacyPersonaDir: File get() = File(context.filesDir, "persona")
 
     override suspend fun applyProposal(proposal: MemoryProposal): Result<String> = withContext(Dispatchers.IO) {
         synchronized(fileLock) {
@@ -313,9 +312,7 @@ class FileMemoryRepository @Inject constructor(
         imports += readLegacyIndex(File(memoryDir, "index.jsonl"))
         imports += buildRecordsFromMarkdown(File(memoryDir, "USER.md"), MemoryType.USER_PROFILE, MemoryScope.USER, "User Profile")
         imports += buildLegacyUserRecords(File(memoryDir, "MEMORY.md"))
-        imports += buildRecordsFromMarkdown(File(legacyPersonaDir, "USER.md"), MemoryType.USER_PROFILE, MemoryScope.USER, "User Profile")
-        imports += buildLegacyUserRecords(File(legacyPersonaDir, "MEMORY.md"))
-        val legacyProjectFiles = listOf(File(memoryDir, "PROJECT.md"), File(legacyPersonaDir, "AGENTS.md")).filter(File::isFile)
+        val legacyProjectFiles = listOf(File(memoryDir, "PROJECT.md")).filter(File::isFile)
         if (legacyProjectFiles.isNotEmpty()) {
             val legacyWorkspace = workspaceStore.legacyUnmapped()
             legacyProjectFiles.forEach { file ->
@@ -331,7 +328,7 @@ class FileMemoryRepository @Inject constructor(
             .filter { existingKeys.add(migrationKey(it)) }
             .forEach { appendMemoryRecord(it.copy(source = "legacy-migration")) }
         File(memoryDir, "pending-proposals.jsonl").takeIf(File::exists)?.let { file ->
-            val kept = file.readLines().filterNot { line -> runCatching { JSONObject(line).optString("type") == "DAILY_LOG" }.getOrDefault(false) }
+            val kept = file.readLines().filterNot { line -> runCatching { JSONObject(line).optString("type") in setOf("USER_PROFILE", "DAILY_LOG") }.getOrDefault(false) }
             atomicWrite(file, kept.joinToString("\n"))
         }
         atomicWrite(migrationMarker, "completed")
@@ -347,7 +344,7 @@ class FileMemoryRepository @Inject constructor(
         }
         File(memoryDir, "pending-proposals.jsonl").takeIf(File::exists)?.let { file ->
             val kept = file.readLines().filter { line ->
-                runCatching { JSONObject(line).optString("type") != "LONG_TERM_MEMORY" }.getOrDefault(false)
+                runCatching { JSONObject(line).optString("type") !in setOf("USER_PROFILE", "LONG_TERM_MEMORY") }.getOrDefault(false)
             }
             atomicWrite(file, kept.joinToString("\n"))
         }

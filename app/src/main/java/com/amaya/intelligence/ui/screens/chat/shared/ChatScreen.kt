@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.collectAsState
@@ -37,6 +38,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.BlendMode
 
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -75,6 +78,7 @@ fun ChatScreen(
     config: ChatScreenConfig? = null,
     onNavigateToSettings: () -> Unit = {},
     onNavigateToWorkspace: () -> Unit = {},
+    onNavigateToAgents: () -> Unit = {},
     onNavigateToRemoteSession: () -> Unit = {},
     onNavigateToOpencode: (() -> Unit)? = null,
     onExit: () -> Unit = {},
@@ -95,6 +99,14 @@ fun ChatScreen(
     val effectiveReminderCount = if (activeReminderCount >= 0) activeReminderCount else localReminderCount
     val scrollEventFlow = viewModel.scrollEvent
     val conversationsFlow = viewModel.conversations
+    val ownerLabel by viewModel.ownerLabel.collectAsState()
+    val activeAgentGroupLabel by viewModel.activeAgentGroupLabel.collectAsState()
+    val activeAgentMembers by viewModel.activeAgentMembers.collectAsState()
+    val activeDelegationTasks by viewModel.activeDelegationTasks.collectAsState()
+    val projects by viewModel.projects.collectAsState()
+    val agentGroups by viewModel.agentGroups.collectAsState()
+    val allAgents by viewModel.allAgents.collectAsState()
+    val allLocalConversations by viewModel.allLocalConversations.collectAsState()
 
     val isRemoteMode = isRemoteModeOverride ?: uiState.sessionMode.isRemote()
     val isBridgeMode = uiState.sessionMode ==
@@ -383,12 +395,20 @@ fun ChatScreen(
 
     val conversations by conversationsFlow.collectAsState()
     val selectedModelLabel = (selectedModelItem?.name ?: selectedModel).ifBlank { selectedModelFallbackLabel }
-    val activeConversationTitle = remember(conversations, uiState.conversationId) {
-        conversations.firstOrNull { it.id.toString() == uiState.conversationId }?.title
+    val activeConversationTitle = remember(conversations, allLocalConversations, uiState.conversationId) {
+        (conversations + allLocalConversations).firstOrNull { it.id.toString() == uiState.conversationId }?.title
     }
-    val topBarTitle = activeConversationTitle
-        ?.takeIf { uiState.messages.isNotEmpty() }
-        ?: ""
+    val activeAgentName = allAgents.firstOrNull { it.id == uiState.agentId }?.name
+    val topBarTitle = when (uiState.assistantMode) {
+        com.amaya.intelligence.domain.models.AssistantMode.CHAT -> activeConversationTitle?.takeIf { uiState.messages.isNotEmpty() }.orEmpty()
+        com.amaya.intelligence.domain.models.AssistantMode.PROJECT -> activeConversationTitle?.takeIf { uiState.messages.isNotEmpty() } ?: "New Chat"
+        com.amaya.intelligence.domain.models.AssistantMode.AGENT -> activeAgentName ?: ownerLabel
+    }
+    val topBarSubtitle = if (isRemoteMode) null else when (uiState.assistantMode) {
+        com.amaya.intelligence.domain.models.AssistantMode.CHAT -> null
+        com.amaya.intelligence.domain.models.AssistantMode.PROJECT -> uiState.workspacePath.orEmpty()
+        com.amaya.intelligence.domain.models.AssistantMode.AGENT -> activeAgentGroupLabel
+    }
 
     // WindowInsets
     val statusBarInsets = WindowInsets.statusBars.asPaddingValues()
@@ -415,6 +435,14 @@ fun ChatScreen(
                     isRemoteMode = isRemoteMode,
                     sessionMode = uiState.sessionMode,
                     workspacePath = uiState.workspacePath,
+                    assistantMode = uiState.assistantMode,
+                    ownerLabel = ownerLabel,
+                    agentMembers = activeAgentMembers,
+                    delegationTasks = activeDelegationTasks,
+                    projects = projects,
+                    agentGroups = agentGroups,
+                    allAgents = allAgents,
+                    allLocalConversations = allLocalConversations,
                     isLoadingConversations = uiState.isLoadingConversations,
                     connectionState = connectionState,
                     conversations = conversations,
@@ -423,6 +451,26 @@ fun ChatScreen(
                     onClearConversation = doClearConversation,
                     onNavigateToSettings = onNavigateToSettings,
                     onNavigateToWorkspace = onNavigateToWorkspace,
+                    onNavigateToAgents = onNavigateToAgents,
+                    onOpenChat = {
+                        viewModel.selectChatTarget(com.amaya.intelligence.domain.models.AssistantMode.CHAT)
+                    },
+                    onOpenProject = { project, conversationId ->
+                        viewModel.selectChatTarget(
+                            mode = com.amaya.intelligence.domain.models.AssistantMode.PROJECT,
+                            ownerId = project.id.toString(),
+                            workspacePath = project.rootPath,
+                            conversationId = conversationId
+                        )
+                    },
+                    onOpenAgent = { group, agent, _ ->
+                        viewModel.selectChatTarget(
+                            mode = com.amaya.intelligence.domain.models.AssistantMode.AGENT,
+                            ownerId = group.id.toString(),
+                            workspacePath = group.workspacePath,
+                            agentId = agent.id
+                        )
+                    },
                     onNavigateToRemoteSession = onNavigateToRemoteSession,
                     onNavigateToOpencode = onNavigateToOpencode,
                     onExit = onExit,
@@ -515,6 +563,7 @@ fun ChatScreen(
 
             ChatFloatingTopBar(
                 title = topBarTitle,
+                subtitle = topBarSubtitle,
                 isRemoteMode = isRemoteMode,
                 isBridgeMode = isBridgeMode,
                 onMenuClick = {
@@ -529,6 +578,7 @@ fun ChatScreen(
                         else -> showSessionInfo = true
                     }
                 },
+                showNewChat = uiState.assistantMode != com.amaya.intelligence.domain.models.AssistantMode.AGENT,
                 onNewChatClick = {
                     keyboardController?.hide()
                     doClearConversation()
@@ -564,6 +614,13 @@ fun ChatScreen(
                 },
                 onStopGeneration = doStopGeneration,
                 onNavigateToWorkspace = onNavigateToWorkspace,
+                ownerLabel = ownerLabel,
+                mentionAgents = if (uiState.assistantMode == com.amaya.intelligence.domain.models.AssistantMode.AGENT) {
+                    activeAgentMembers.filter { it.id != uiState.agentId }.map {
+                        com.amaya.intelligence.ui.components.shared.ChatMentionAgent(it.id, it.name, it.role, activeAgentGroupLabel)
+                    }
+                } else emptyList(),
+                onSearchWorkspaceFiles = { query -> viewModel.searchWorkspaceFiles(query) },
                 showConversationModeSelector = config?.showConversationModeSelector ?: isRemoteMode,
                 onShowConversationModeSheet = { showConversationModeSheet = true },
                 modelLabel = selectedModelLabel,
@@ -687,10 +744,12 @@ fun ChatScreen(
 @Composable
 private fun ChatFloatingTopBar(
     title: String,
+    subtitle: String?,
     isRemoteMode: Boolean,
     isBridgeMode: Boolean,
     onMenuClick: () -> Unit,
     onTitleClick: () -> Unit,
+    showNewChat: Boolean,
     onNewChatClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -717,9 +776,10 @@ private fun ChatFloatingTopBar(
 
         Spacer(modifier = Modifier.width(12.dp))
 
-        if (title.isNotEmpty()) {
+        if (title.isNotEmpty() || !subtitle.isNullOrBlank()) {
             FadingTitleLayout(
                 title = title,
+                subtitle = subtitle,
                 modifier = Modifier
                     .weight(1f)
                     .clickable(
@@ -734,19 +794,36 @@ private fun ChatFloatingTopBar(
 
         Spacer(modifier = Modifier.width(18.dp))
 
-        LiquidOrbButton(
-            icon = Icons.Default.Add,
-            contentDescription = "New Chat",
-            color = orbColor,
-            borderColor = borderColor,
-            onClick = onNewChatClick
-        )
+        if (showNewChat) {
+            LiquidOrbButton(
+                icon = Icons.Default.Add,
+                contentDescription = "New Chat",
+                color = orbColor,
+                borderColor = borderColor,
+                onClick = onNewChatClick
+            )
+        } else {
+            Spacer(Modifier.size(48.dp))
+        }
     }
+}
+
+@Composable
+private fun HyperTextTitle(title: String, style: androidx.compose.ui.text.TextStyle) {
+    Text(
+        text = rememberHyperText(title),
+        style = style,
+        color = MaterialTheme.colorScheme.onSurface,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.clearAndSetSemantics { contentDescription = title }
+    )
 }
 
 @Composable
 private fun FadingTitleLayout(
     title: String,
+    subtitle: String?,
     modifier: Modifier = Modifier
 ) {
     var isOverflowing by remember { mutableStateOf(false) }
@@ -755,12 +832,7 @@ private fun FadingTitleLayout(
     androidx.compose.ui.layout.Layout(
         modifier = modifier,
         content = {
-            Text(
-                text = renderedTitle,
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Normal),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Visible,
+            Column(
                 modifier = Modifier
                     .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
                     .drawWithContent {
@@ -785,9 +857,30 @@ private fun FadingTitleLayout(
                             )
                         }
                     }
-            )
+            ) {
+                if (title.isNotEmpty()) {
+                    Text(
+                        text = renderedTitle,
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Normal),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Visible
+                    )
+                }
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Normal),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Visible
+                    )
+                }
+            }
             Icon(
-                imageVector = Icons.Default.KeyboardArrowRight,
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 contentDescription = "Session Info",
                 tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                 modifier = Modifier.padding(start = 4.dp).size(20.dp)

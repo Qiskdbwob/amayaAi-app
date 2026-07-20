@@ -15,7 +15,7 @@ enum class CronSessionMode {
     NEW
 }
 
-@Entity(tableName = "cron_jobs")
+@Entity(tableName = "cron_jobs", indices = [androidx.room.Index(value = ["agent_id"])])
 data class CronJobEntity(
     @PrimaryKey(autoGenerate = true)
     @ColumnInfo(name = "id")
@@ -46,5 +46,8 @@ data class CronJobEntity(
     val fireCount: Int = 0,
 
     @ColumnInfo(name = "session_mode")
-    val sessionMode: CronSessionMode
+    val sessionMode: CronSessionMode,
+
+    @ColumnInfo(name = "agent_id")
+    val agentId: Long? = null
 )

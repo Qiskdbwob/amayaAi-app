@@ -9,24 +9,6 @@ import com.amaya.intelligence.domain.memory.PendingProposalAction
 import com.amaya.intelligence.domain.memory.PendingProposalStatus
 import com.amaya.intelligence.domain.memory.PendingProposalType
 
-fun MemoryProposal.toPendingProposal(sessionId: String): PendingProposal = PendingProposal(
-    id = id,
-    sourceSessionId = sessionId,
-    type = type.toPendingProposalType(),
-    target = type.memoryTarget(),
-    action = action.toPendingProposalAction(),
-    title = title,
-    content = content,
-    reason = reason,
-    confidence = confidence,
-    createdAt = createdAt,
-    status = PendingProposalStatus.PENDING,
-    workspacePath = workspacePath,
-    workspaceId = workspaceId,
-    sourceSessionIds = listOf(sessionId),
-    evidence = listOfNotNull(sourceConversationId?.let { "Explicit memory evidence from conversation $it" })
-)
-
 
 fun PendingProposal.toMemoryProposal(): MemoryProposal = MemoryProposal(
     id = id,
@@ -41,11 +23,7 @@ fun PendingProposal.toMemoryProposal(): MemoryProposal = MemoryProposal(
     workspacePath = workspacePath,
     workspaceId = workspaceId,
     sourceConversationId = sourceSessionId,
-    subject = when (type) {
-        PendingProposalType.USER_PROFILE -> "user"
-        PendingProposalType.WORKSPACE_FACT -> "workspace"
-        else -> "memory"
-    },
+    subject = if (type == PendingProposalType.WORKSPACE_FACT) "workspace" else "memory",
     attribute = inferProposalAttribute(title, content)
 )
 
@@ -56,24 +34,7 @@ private fun inferProposalAttribute(title: String, content: String): String = (ti
     .replace(Regex("\\s+"), " ")
     .take(80)
 
-private fun MemoryType.toPendingProposalType(): PendingProposalType = when (this) {
-    MemoryType.USER_PROFILE -> PendingProposalType.USER_PROFILE
-    MemoryType.WORKSPACE_FACT -> PendingProposalType.WORKSPACE_FACT
-}
-
-private fun MemoryType.memoryTarget(): String = when (this) {
-    MemoryType.USER_PROFILE -> "records.jsonl#user"
-    MemoryType.WORKSPACE_FACT -> "workspaces/<workspace-id>/records.jsonl"
-}
-
-private fun MemoryAction.toPendingProposalAction(): PendingProposalAction = when (this) {
-    MemoryAction.ADD -> PendingProposalAction.ADD
-    MemoryAction.REPLACE -> PendingProposalAction.REPLACE
-    MemoryAction.IGNORE -> PendingProposalAction.IGNORE
-}
-
 private fun PendingProposalType.toMemoryType(): MemoryType = when (this) {
-    PendingProposalType.USER_PROFILE -> MemoryType.USER_PROFILE
     PendingProposalType.WORKSPACE_FACT -> MemoryType.WORKSPACE_FACT
     PendingProposalType.SKILL_CREATE,
     PendingProposalType.SKILL_PATCH,
@@ -90,7 +51,6 @@ private fun PendingProposalAction.toMemoryAction(): MemoryAction = when (this) {
 }
 
 private fun PendingProposalType.toMemoryScope(): MemoryScope = when (this) {
-    PendingProposalType.USER_PROFILE -> MemoryScope.USER
     PendingProposalType.WORKSPACE_FACT -> MemoryScope.WORKSPACE
     PendingProposalType.SKILL_CREATE,
     PendingProposalType.SKILL_PATCH,

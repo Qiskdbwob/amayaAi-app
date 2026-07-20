@@ -21,7 +21,9 @@ class DeterministicSessionSummarizer @Inject constructor(
             createdAt = now,
             updatedAt = now,
             workspacePath = sessionMemoryRepository.sessionWorkspacePath(sessionId),
-            workspaceId = sessionMemoryRepository.sessionWorkspaceId(sessionId)
+            workspaceId = sessionMemoryRepository.sessionWorkspaceId(sessionId),
+            assistantMode = sessionMemoryRepository.sessionAssistantMode(sessionId) ?: com.amaya.intelligence.domain.models.AssistantMode.CHAT.name,
+            ownerId = sessionMemoryRepository.sessionOwnerId(sessionId)
         )
         sessionMemoryRepository.saveSummary(summary)
         summary
@@ -29,7 +31,7 @@ class DeterministicSessionSummarizer @Inject constructor(
 
     private fun inferTags(text: String): List<String> {
         val lower = text.lowercase()
-        return listOf("android", "webview", "oauth", "browser", "skill", "memory", "persona", "reminder", "kotlin", "gradle")
+        return listOf("android", "webview", "oauth", "browser", "skill", "memory", "reminder", "kotlin", "gradle")
             .filter { it in lower }
     }
 }

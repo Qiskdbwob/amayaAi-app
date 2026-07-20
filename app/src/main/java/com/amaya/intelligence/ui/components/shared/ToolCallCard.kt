@@ -126,7 +126,7 @@ internal fun ToolCardContent(
         localToolPath(execution.arguments) != null ||
         when (execution.name) {
             "read_file", "list_files", "find_files", "run_shell", "web_search", "update_memory",
-            "memory_manage", "skill_view", "skill_manage", "session_search", "invoke_subagents" ->
+            "memory_manage", "skill_view", "skill_manage", "session_search", "invoke_subagents", "delegate_agent" ->
                 !execution.result.isNullOrBlank()
             "edit_file" -> execution.hasCanonicalFileDiff() || !execution.result.isNullOrBlank()
             "write_file", "create_directory", "delete_file", "undo_change" ->
@@ -297,7 +297,7 @@ internal fun ToolCardContent(
                 ) {
                     ToolScrollableBlock(if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)) {
                         MarkdownText(
-                            text = execution.result.orEmpty().take(1500),
+                            text = execution.result.orEmpty(),
                             color = MaterialTheme.colorScheme.onSurface,
                             compact = true,
                             modifier = Modifier.padding(10.dp),
@@ -409,6 +409,22 @@ internal fun ToolCardContent(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f),
                                 softWrap = true
+                            )
+                        }
+                        if (execution.name == "delegate_agent") {
+                            ToolScrollableBlock(MaterialTheme.colorScheme.surfaceContainerLow) {
+                                ToolArgumentsPreview(
+                                    toolName = execution.name,
+                                    arguments = execution.arguments,
+                                    isDark = isDark,
+                                    category = execution.uiMetadata?.category ?: ToolCategory.UNKNOWN,
+                                    uiMetadata = execution.uiMetadata,
+                                    result = execution.result
+                                )
+                            }
+                            HorizontalDivider(
+                                color = if (isDark) Color.White.copy(alpha = 0.15f) else Color.Black.copy(alpha = 0.12f),
+                                thickness = 0.8.dp
                             )
                         }
                         ToolScrollableBlock(MaterialTheme.colorScheme.surfaceContainerLow) {
