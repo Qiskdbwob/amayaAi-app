@@ -16,13 +16,16 @@ import androidx.room.PrimaryKey
     )],
     indices = [
         Index(value = ["group_id"]),
-        Index(value = ["group_id", "name"], unique = true)
+        Index(value = ["group_id", "name"], unique = true),
+        Index(value = ["group_id", "local_id"], unique = true)
     ]
 )
 data class AgentEntity(
     @PrimaryKey(autoGenerate = true)
     @ColumnInfo(name = "id") val id: Long = 0,
     @ColumnInfo(name = "group_id") val groupId: Long,
+    /** Stable only within group; exposed to models and UI. [id] remains the DB identity. */
+    @ColumnInfo(name = "local_id", defaultValue = "0") val localId: Long = 0,
     @ColumnInfo(name = "name") val name: String,
     @ColumnInfo(name = "role") val role: String = "",
     @ColumnInfo(name = "instructions") val instructions: String = "",

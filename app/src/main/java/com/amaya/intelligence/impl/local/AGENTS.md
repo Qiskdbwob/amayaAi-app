@@ -35,7 +35,7 @@ impl/local/
 - `providers/`: local provider adapters and implementation-specific helpers.
 
 ## Key Source Code
-- `LocalIntelligenceService.kt`: local conversation flow, stable conversation-id persistence before model turns, and repository integration.
+- `LocalIntelligenceService.kt`: local conversation flow, stable conversation-id persistence before model turns, repository integration, concurrent per-conversation turns, and target-switch-safe UI projection.
 - `browser/AndroidBrowserController.kt`: WebView interaction, navigation, and DOM-safe browser actions.
 - `browser/BrowserSessionManager.kt`: parent browser task state, pause/resume/cancel flow, and shared WebView ownership.
 - `browser/DomInspector.kt`: safe DOM summaries, selector mapping, and interaction helpers.
@@ -44,5 +44,6 @@ impl/local/
 - `tools/LocalToolMapper.kt`: local tool normalization, capability display-name mapping, and UI metadata mapping.
 - `tools/BrowserUseToolset.kt`: parent browser tool wrapper and legacy alias compatibility.
 - `providers/`: local provider implementations and compatibility adapters.
+- Background session status is projected by `service/AiSessionNotificationService`; the local service must persist turn state before streaming and never cancel a turn merely because the visible target changes. Activity, completed messages, approvals, and issues use separate notification channels. Completed message history keys by Chat conversation, Project owner, or Agent group; Agent sender names remain distinct within the shared group thread. Completed messages are suppressed only while their exact source conversation is resumed, while approval remains alerting. Notification inline replies start directly from the persisted target conversation and must not mutate visible ChatScreen selection. Any host-authorized tool confirmation uses `tools/LocalToolMapper.displayLabel`; notification actions appear only while that request is pending, remain turn-bound, and fail closed when stale. `delegate_agent` emits named start/completion progress; only one stable active named delegation requests Live Update promotion.
 - `providers/LocalProviderFactory.kt` if present: provider registration and lookup for local mode.
 - `services/` if added in this subtree: local background orchestration and execution helpers.

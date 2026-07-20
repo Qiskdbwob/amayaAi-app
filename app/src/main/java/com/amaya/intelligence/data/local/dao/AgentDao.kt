@@ -19,7 +19,7 @@ interface AgentDao {
     @Query("SELECT * FROM agents ORDER BY name")
     fun observeAll(): Flow<List<AgentEntity>>
 
-    @Query("SELECT * FROM agents WHERE group_id = :groupId ORDER BY name")
+    @Query("SELECT * FROM agents WHERE group_id = :groupId ORDER BY local_id, name")
     fun observeByGroup(groupId: Long): Flow<List<AgentEntity>>
 
     @Query("SELECT * FROM agent_groups WHERE id = :id")
@@ -28,14 +28,24 @@ interface AgentDao {
     @Query("SELECT * FROM agents WHERE id = :id")
     suspend fun getById(id: Long): AgentEntity?
 
-    @Query("SELECT * FROM agents WHERE group_id = :groupId ORDER BY name")
+    @Query("SELECT * FROM agents WHERE group_id = :groupId ORDER BY local_id, name")
     suspend fun getByGroup(groupId: Long): List<AgentEntity>
+
+    @Query("SELECT * FROM agents WHERE group_id = :groupId AND local_id = :localId LIMIT 1")
+    suspend fun getByLocalId(groupId: Long, localId: Long): AgentEntity?
+
+    @Query("SELECT COALESCE(MAX(local_id), 0) + 1 FROM agents WHERE group_id = :groupId")
+    suspend fun nextLocalId(groupId: Long): Long
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertGroup(group: AgentGroupEntity): Long
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
-    suspend fun insert(agent: AgentEntity): Long
+    suspend fun insertRaw(agent: AgentEntity): Long
+
+    @Transaction
+    suspend fun insert(agent: AgentEntity): Long =
+        insertRaw(agent.copy(localId = agent.localId.takeIf { it > 0 } ?: nextLocalId(agent.groupId)))
 
     @Update
     suspend fun updateGroup(group: AgentGroupEntity)
@@ -52,7 +62,9 @@ interface AgentDao {
     @Transaction
     suspend fun createGroup(group: AgentGroupEntity, members: List<AgentEntity>): Long {
         val groupId = insertGroup(group)
-        members.forEach { insert(it.copy(groupId = groupId)) }
+        members.forEachIndexed { index, member ->
+            insertRaw(member.copy(groupId = groupId, localId = (index + 1).toLong()))
+        }
         return groupId
     }
 }

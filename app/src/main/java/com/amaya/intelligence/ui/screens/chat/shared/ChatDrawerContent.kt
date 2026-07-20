@@ -15,6 +15,11 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -84,6 +89,7 @@ private data class IosDrawerColors(
     val secondaryText: Color,
     val headerText: Color,
     val activeIndicator: Color,
+    val activeBackground: Color,
     val chevronTint: Color
 )
 
@@ -101,6 +107,7 @@ private fun iosDrawerColors(isDark: Boolean): IosDrawerColors {
             secondaryText = Color(0xFFEBEBF5).copy(alpha = 0.60f),
             headerText = Color(0xFFEBEBF5).copy(alpha = 0.48f),
             activeIndicator = Color(0xFF0A84FF),
+            activeBackground = Color.White.copy(alpha = 0.10f),
             chevronTint = Color(0xFFC7C7CC).copy(alpha = 0.5f)
         )
     } else {
@@ -115,9 +122,47 @@ private fun iosDrawerColors(isDark: Boolean): IosDrawerColors {
             secondaryText = Color(0xFF3C3C43).copy(alpha = 0.62f),
             headerText = Color(0xFF3C3C43).copy(alpha = 0.52f),
             activeIndicator = Color(0xFF0A84FF),
+            activeBackground = Color.Black.copy(alpha = 0.06f),
             chevronTint = Color(0xFFC7C7CC)
         )
     }
+}
+
+@Composable
+internal fun Modifier.shimmeringText(
+    shimmering: Boolean,
+    baseColor: Color,
+    shimmerColor: Color = if (isSystemInDarkTheme()) Color.White else Color.Black
+): Modifier {
+    if (!shimmering) return this
+    val transition = rememberInfiniteTransition(label = "text_shimmer")
+    val shimmerProgress by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1500, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shimmer_x"
+    )
+
+    return this
+        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithContent {
+            drawContent()
+            val w = size.width
+            val peakX = (shimmerProgress * (w * 3f)) - w
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    0f to baseColor.copy(alpha = 0.5f),
+                    0.5f to shimmerColor,
+                    1f to baseColor.copy(alpha = 0.5f),
+                    startX = peakX - (w * 0.5f),
+                    endX = peakX + (w * 0.5f)
+                ),
+                blendMode = BlendMode.SrcIn
+            )
+        }
 }
 
 // =============================================================================
@@ -185,6 +230,8 @@ private fun IosRowWithChevron(
     showChevron: Boolean = true,
     expanded: Boolean? = null,
     selected: Boolean = false,
+    trailingProgress: Boolean = false,
+    unread: Boolean = false,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
@@ -193,7 +240,7 @@ private fun IosRowWithChevron(
     val colors = iosDrawerColors(isDark)
 
     Surface(
-        color = Color.Transparent,
+        color = if (selected) colors.activeBackground else Color.Transparent,
         shape = RoundedCornerShape(0.dp),
         modifier = modifier.fillMaxWidth()
     ) {
@@ -237,7 +284,8 @@ private fun IosRowWithChevron(
                     ),
                     color = colors.primaryText,
                     maxLines = 1,
-                    overflow = TextOverflow.Clip
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier.shimmeringText(trailingProgress, colors.primaryText)
                 )
                 subtitle?.takeIf(String::isNotBlank)?.let {
                     Text(
@@ -250,8 +298,12 @@ private fun IosRowWithChevron(
                 }
             }
 
-            if (selected) {
-                ActiveDot()
+            if (trailingProgress) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+            }
+            if (unread) {
+                UnreadDot()
                 Spacer(Modifier.width(8.dp))
             }
             if (showChevron) {
@@ -298,6 +350,8 @@ private fun IosChildRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
     subtitle: String? = null,
     selected: Boolean = false,
+    streaming: Boolean = false,
+    unread: Boolean = false,
     isLastChild: Boolean = false,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
@@ -307,7 +361,7 @@ private fun IosChildRow(
 
     Surface(
         onClick = onClick,
-        color = Color.Transparent,
+        color = if (selected) colors.activeBackground else Color.Transparent,
         shape = RoundedCornerShape(0.dp),
         modifier = modifier.fillMaxWidth()
     ) {
@@ -373,7 +427,8 @@ private fun IosChildRow(
                     ),
                     color = colors.primaryText,
                     maxLines = 1,
-                    overflow = TextOverflow.Clip
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier.shimmeringText(streaming, colors.primaryText)
                 )
                 subtitle?.takeIf(String::isNotBlank)?.let {
                     Text(
@@ -385,8 +440,12 @@ private fun IosChildRow(
                     )
                 }
             }
-            if (selected) {
-                ActiveDot()
+            if (streaming) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(8.dp))
+            }
+            if (unread) {
+                UnreadDot()
                 Spacer(Modifier.width(8.dp))
             }
         }
@@ -394,11 +453,11 @@ private fun IosChildRow(
 }
 
 // =============================================================================
-// Active Indicator Dot
+// Unread Indicator Dot
 // =============================================================================
 
 @Composable
-private fun ActiveDot(
+private fun UnreadDot(
     modifier: Modifier = Modifier
 ) {
     val isDark = isSystemInDarkTheme()
@@ -434,6 +493,7 @@ fun ChatDrawerContent(
     agentGroups: List<com.amaya.intelligence.data.local.entity.AgentGroupEntity>,
     allAgents: List<com.amaya.intelligence.data.local.entity.AgentEntity>,
     allLocalConversations: List<ConversationEntity>,
+    runningSessions: List<com.amaya.intelligence.domain.models.RunningSession>,
     isLoadingConversations: Boolean,
     connectionState: ConnectionState,
     conversations: List<ConversationEntity>,
@@ -455,6 +515,33 @@ fun ChatDrawerContent(
     sessionDisconnectVisible: Boolean = false,
     onRequestSessionDisconnect: () -> Unit = {}
 ) {
+    var unreadSet by remember { mutableStateOf(setOf<Long>()) }
+    var lastUpdatedMap by remember { mutableStateOf(mapOf<Long, Long>()) }
+
+    LaunchedEffect(allLocalConversations) {
+        val newMap = mutableMapOf<Long, Long>()
+        val newUnread = unreadSet.toMutableSet()
+        for (conv in allLocalConversations) {
+            val oldTime = lastUpdatedMap[conv.id]
+            if (oldTime != null && conv.updatedAt > oldTime && conv.id.toString() != activeConversationId) {
+                newUnread.add(conv.id)
+            }
+            newMap[conv.id] = conv.updatedAt
+        }
+        activeConversationId?.toLongOrNull()?.let { newUnread.remove(it) }
+
+        lastUpdatedMap = newMap
+        unreadSet = newUnread
+    }
+
+    LaunchedEffect(activeConversationId) {
+        activeConversationId?.toLongOrNull()?.let { activeId ->
+            val newUnread = unreadSet.toMutableSet()
+            newUnread.remove(activeId)
+            unreadSet = newUnread
+        }
+    }
+
     var searchQuery by remember { mutableStateOf("") }
     var isSearchExpanded by remember { mutableStateOf(false) }
     val searchFocusRequester = remember { FocusRequester() }
@@ -557,8 +644,10 @@ fun ChatDrawerContent(
                     agentGroups = agentGroups,
                     allAgents = allAgents,
                     allLocalConversations = allLocalConversations,
+                    runningSessions = runningSessions,
                     isLoadingConversations = isLoadingConversations,
                     conversations = filteredConversations,
+                    unreadSet = unreadSet,
                     activeConversationId = activeConversationId,
                     conversationListState = conversationListState,
                     onClearConversation = { closeDrawerThen(onClearConversation) },
@@ -830,8 +919,10 @@ private fun DrawerNormalContent(
     agentGroups: List<com.amaya.intelligence.data.local.entity.AgentGroupEntity>,
     allAgents: List<com.amaya.intelligence.data.local.entity.AgentEntity>,
     allLocalConversations: List<ConversationEntity>,
+    runningSessions: List<com.amaya.intelligence.domain.models.RunningSession>,
     isLoadingConversations: Boolean,
     conversations: List<ConversationEntity>,
+    unreadSet: Set<Long>,
     activeConversationId: String?,
     conversationListState: androidx.compose.foundation.lazy.LazyListState,
     onClearConversation: () -> Unit,
@@ -974,6 +1065,8 @@ private fun DrawerNormalContent(
                                             title = agent.name,
                                             subtitle = agent.role.ifBlank { "Agent" },
                                             selected = assistantMode == com.amaya.intelligence.domain.models.AssistantMode.AGENT && session?.id?.toString() == activeConversationId,
+                                            streaming = session?.id?.let { id -> runningSessions.any { it.conversationId == id } } == true,
+                                            unread = session?.id?.let { id -> unreadSet.contains(id) } == true,
                                             isLastChild = mIndex == members.lastIndex,
                                             onClick = { onOpenAgent(group, agent, session?.id) }
                                         )
@@ -1022,6 +1115,8 @@ private fun DrawerNormalContent(
                                         IosChildRow(
                                             title = session.title.ifBlank { "New chat" },
                                             selected = session.id.toString() == activeConversationId,
+                                            streaming = runningSessions.any { it.conversationId == session.id },
+                                            unread = unreadSet.contains(session.id),
                                             isLastChild = sIndex == sessions.lastIndex,
                                             onClick = { onOpenProject(project, session.id) }
                                         )
@@ -1057,6 +1152,8 @@ private fun DrawerNormalContent(
                             title = conv.title.ifBlank { "New chat" },
                             showChevron = false,
                             selected = isActive,
+                            trailingProgress = runningSessions.any { it.conversationId == conv.id },
+                            unread = unreadSet.contains(conv.id),
                             onClick = { onLoadConversation(conv.id) },
                             onLongClick = { onConversationLongClick(conv) }
                         )
@@ -1087,6 +1184,8 @@ private fun DrawerNormalContent(
                                 conv = conv,
                                 isActive = isActive,
                                 isLast = conv == chats.lastOrNull(),
+                                streaming = runningSessions.any { it.conversationId == conv.id },
+                                unread = unreadSet.contains(conv.id),
                                 onClick = { onLoadConversation(conv.id) },
                                 onLongClick = { onConversationLongClick(conv) }
                             )
@@ -1222,6 +1321,8 @@ private fun ConversationDrawerItem(
     conv: ConversationEntity,
     isActive: Boolean,
     isLast: Boolean,
+    streaming: Boolean = false,
+    unread: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -1235,7 +1336,7 @@ private fun ConversationDrawerItem(
                 onClick = onClick,
                 onLongClick = onLongClick
             )
-            .background(Color.Transparent)
+            .background(if (isActive) colors.activeBackground else Color.Transparent)
     ) {
         Row(
             modifier = Modifier
@@ -1251,12 +1352,16 @@ private fun ConversationDrawerItem(
                     lineHeight = 19.sp
                 ),
                 color = colors.primaryText,
-                modifier = Modifier.weight(1f).fadingEdge()
+                modifier = Modifier.weight(1f).fadingEdge().shimmeringText(streaming, colors.primaryText)
             )
 
-            if (isActive) {
+            if (streaming) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
-                ActiveDot()
+            }
+
+            if (unread) {
+                UnreadDot()
             }
 
         }

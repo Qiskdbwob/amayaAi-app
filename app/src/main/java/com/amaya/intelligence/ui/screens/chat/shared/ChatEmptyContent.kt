@@ -70,7 +70,7 @@ fun ChatEmptyContent(
             .then(if (!drawerOpen) Modifier.imePadding() else Modifier),
         contentAlignment = Alignment.Center
     ) {
-        if (uiState.isLoading ||
+        if (uiState.isLoadingHistory ||
             (isRemoteMode && !isBridgeMode && connectionState == ConnectionState.CONNECTING)
         ) {
             ConversationSkeleton()

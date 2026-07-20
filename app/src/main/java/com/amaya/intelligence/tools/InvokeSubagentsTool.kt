@@ -40,7 +40,7 @@ class InvokeSubagentsTool @Inject constructor(
 
     override val name = "invoke_subagents"
     override val description =
-        "Spawn multiple independent AI subagents that run IN PARALLEL with staggered starts to avoid rate limits. " +
+        "Spawn multiple temporary, read-only research workers in parallel. This is not delegation: workers have no persistent Agent identity or conversation and do not receive Agent memory/history. Use delegate_agent for one named group member who must continue its persistent conversation. " +
         "Each subagent receives its own task description and read-only workspace research tools. " +
         "Use this when a task can be split into independent sub-tasks (e.g. reading multiple folders at once, " +
         "auditing different layers of the codebase simultaneously). " +

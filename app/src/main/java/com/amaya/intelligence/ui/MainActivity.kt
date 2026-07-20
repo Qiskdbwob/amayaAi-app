@@ -1,6 +1,9 @@
 package com.amaya.intelligence.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -9,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -54,11 +58,23 @@ class MainActivity : androidx.appcompat.app.AppCompatActivity() {
 
     private var chatViewModel: ChatViewModel? = null
 
+    companion object {
+        private const val NOTIFICATION_PERMISSION_REQUEST = 4_902
+    }
+
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        consumeConversationIntent(intent)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+            getPreferences(MODE_PRIVATE).getBoolean("notification_permission_requested", false).not()
+        ) {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("notification_permission_requested", true).apply()
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
+        }
 
         // Observe theme OUTSIDE Compose -- safe on UI thread via lifecycleScope.
         lifecycleScope.launch {
@@ -104,11 +120,35 @@ class MainActivity : androidx.appcompat.app.AppCompatActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        com.amaya.intelligence.service.AiSessionNotificationVisibility.resumed(
+            chatViewModel?.uiState?.value?.conversationId?.toLongOrNull()
+        )
+    }
+
+    override fun onPause() {
+        com.amaya.intelligence.service.AiSessionNotificationVisibility.paused(
+            chatViewModel?.uiState?.value?.conversationId?.toLongOrNull()
+        )
+        super.onPause()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val id = intent.getLongExtra("open_conversation_id", -1L)
+        val id = consumeConversationIntent(intent)
         if (id > 0) chatViewModel?.loadConversation(id)
+    }
+
+    private fun consumeConversationIntent(intent: Intent?): Long {
+        val id = intent?.getLongExtra(com.amaya.intelligence.service.AiSessionNotificationService.EXTRA_OPEN_CONVERSATION_ID, -1L) ?: -1L
+        if (id <= 0) return -1L
+        com.amaya.intelligence.service.AiSessionNotificationStore.remove(this, id)
+        androidx.core.app.NotificationManagerCompat.from(this)
+            .cancel(com.amaya.intelligence.service.AiSessionNotificationService.messageId(id))
+        com.amaya.intelligence.service.AiSessionNotificationService.refreshCompletedSummary(this)
+        return id
     }
 
 }
@@ -133,6 +173,26 @@ private fun AppContent(
     }
 
     LaunchedEffect(viewModel) { onChatViewModelReady(viewModel) }
+
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val visibleConversationId = viewModel.uiState.collectAsState().value.conversationId?.toLongOrNull()
+    DisposableEffect(lifecycleOwner, visibleConversationId) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> com.amaya.intelligence.service.AiSessionNotificationVisibility.resumed(visibleConversationId)
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> com.amaya.intelligence.service.AiSessionNotificationVisibility.paused(visibleConversationId)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) {
+            com.amaya.intelligence.service.AiSessionNotificationVisibility.resumed(visibleConversationId)
+        }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            com.amaya.intelligence.service.AiSessionNotificationVisibility.paused(visibleConversationId)
+        }
+    }
 
     LaunchedEffect(initialIntent) {
         val id = initialIntent?.getLongExtra("open_conversation_id", -1L) ?: -1L

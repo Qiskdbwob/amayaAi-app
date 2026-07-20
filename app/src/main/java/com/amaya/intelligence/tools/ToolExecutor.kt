@@ -188,7 +188,7 @@ class ToolExecutor @Inject constructor(
         )
         val result = run(approvedContext)
 
-        // Handle nested confirmation requests from tools
+        // Handle nested confirmation requests from tools.
         if (result is ToolResult.RequiresConfirmation) {
             val confirmed = onConfirmationRequired(
                 ConfirmationRequest(
@@ -368,13 +368,13 @@ class ToolExecutor @Inject constructor(
             // ── Subagent tool ──────────────────────────────────────────────────────
             ToolDefinition(
                 name = "delegate_agent",
-                description = "Delegate one focused read-only task to a member of the active agent group. Use the stable agent_id supplied by the host.",
+                description = "Delegate one focused task to a named persistent Agent in this group. Use the group-local agent_id from the host directory. This is different from invoke_subagents, which creates temporary parallel read-only workers.",
                 parameters = listOf(
                     ToolParameter("title", "string", "Short delegation title, 2-5 words; do not repeat the task", required = true),
                     ToolParameter(
                         "agent_id",
                         "integer",
-                        "Stable member ID from the active agent group${delegationAgentIds.takeIf(List<Long>::isNotEmpty)?.joinToString(prefix = ": ").orEmpty()}",
+                        "Group-local member ID from the active agent directory; IDs restart at 1 per group${delegationAgentIds.takeIf(List<Long>::isNotEmpty)?.joinToString(prefix = ": ").orEmpty()}",
                         required = true
                     ),
                     ToolParameter("task", "string", "Focused task with all needed context", required = true)

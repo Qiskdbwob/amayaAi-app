@@ -15,7 +15,7 @@ class DelegateAgentTool @Inject constructor(
     private val subagentRunner: SubagentRunner
 ) : Tool, ContextAwareTool {
     override val name = "delegate_agent"
-    override val description = "Delegate one focused read-only task to a member of the active agent group by stable ID."
+    override val description = "Delegate one focused read-only task to another member of the active agent group. Use the group-local agent_id from the team directory; do not use a name or database ID."
 
     override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
         ToolResult.Error("Agent group context is required", ErrorType.PERMISSION_ERROR)
@@ -23,7 +23,7 @@ class DelegateAgentTool @Inject constructor(
     override suspend fun execute(arguments: Map<String, Any?>, context: ToolExecutionContext): ToolResult {
         val groupId = context.ownerId?.toLongOrNull()
             ?: return ToolResult.Error("Active agent group is required", ErrorType.PERMISSION_ERROR)
-        val targetId = when (val raw = arguments["agent_id"]) {
+        val targetLocalId = when (val raw = arguments["agent_id"]) {
             is Number -> raw.toLong()
             is String -> raw.trim().toLongOrNull()
             else -> null
@@ -31,17 +31,17 @@ class DelegateAgentTool @Inject constructor(
         val title = (arguments["title"] as? String)?.trim().orEmpty()
         val request = (arguments["task"] as? String)?.trim().orEmpty()
         if (title.isBlank() || request.isBlank()) return ToolResult.Error("title, agent_id, and task are required", ErrorType.VALIDATION_ERROR)
-        if (targetId == context.agentId) {
-            return ToolResult.Error("An agent cannot delegate to itself", ErrorType.VALIDATION_ERROR)
-        }
         val members = agentDao.getByGroup(groupId)
-        val agent = members.firstOrNull { it.id == targetId }
-            ?: return ToolResult.Error(
-                "Agent ID '$targetId' is not in the active group. Available members: ${members.filter { it.id != context.agentId }.joinToString { "${it.name} (${it.id})" }}",
-                ErrorType.PERMISSION_ERROR
-            )
         val source = context.agentId?.let { id -> members.firstOrNull { it.id == id } }
             ?: return ToolResult.Error("Active source agent is required", ErrorType.PERMISSION_ERROR)
+        if (targetLocalId == source.localId) {
+            return ToolResult.Error("An agent cannot delegate to itself", ErrorType.VALIDATION_ERROR)
+        }
+        val agent = members.firstOrNull { it.localId == targetLocalId }
+            ?: return ToolResult.Error(
+                "Agent ID '$targetLocalId' is not in the active group. Available members: ${members.filter { it.id != source.id }.joinToString { "${it.name} (agent_id=${it.localId})" }}",
+                ErrorType.PERMISSION_ERROR
+            )
         val group = agentDao.getGroupById(groupId)
             ?: return ToolResult.Error("Active agent group no longer exists", ErrorType.PERMISSION_ERROR)
         val targetContext = runCatching {
@@ -50,6 +50,16 @@ class DelegateAgentTool @Inject constructor(
             return ToolResult.Error("Could not append delegation to ${agent.name}: ${it.message}", ErrorType.EXECUTION_ERROR)
         }
         val taskId = delegationTaskDao.insert(DelegationTaskEntity(groupId = groupId, agentId = agent.id, request = request, status = "RUNNING"))
+        val parentId = context.toolCallId ?: return ToolResult.Error("Delegation call ID is required", ErrorType.VALIDATION_ERROR)
+        context.onEvent?.invoke(com.amaya.intelligence.data.repository.AgentEvent.SubagentUpdate(
+            parentToolCallId = parentId,
+            index = 0,
+            taskName = agent.name,
+            prompt = request,
+            result = null,
+            isComplete = false,
+            isError = false
+        ))
         val result = runCatching {
             subagentRunner.run(
                 SubagentTask(
@@ -61,7 +71,8 @@ class DelegateAgentTool @Inject constructor(
                     selectedModelId = context.selectedModelId,
                     conversationHistory = targetContext.history,
                     systemInstructions = buildString {
-                        append("You are ${agent.name}.")
+                        append("You are the selected persistent group Agent: agent_id=${agent.localId}; name=${agent.name}; role=${agent.role.ifBlank { "unspecified" }}.")
+                        append("\nThis is delegate_agent: continue your own persistent conversation. It is not invoke_subagents and not a temporary worker.")
                         agent.role.takeIf(String::isNotBlank)?.let { append("\nRole: $it") }
                         agent.instructions.takeIf(String::isNotBlank)?.let { append("\nInstructions: $it") }
                         group.instructions.takeIf(String::isNotBlank)?.let { append("\nGroup instructions: $it") }
@@ -75,6 +86,15 @@ class DelegateAgentTool @Inject constructor(
                 val failed = it.summary.startsWith("[ERROR]") || it.summary.startsWith("[RATE LIMITED]") || it.summary.startsWith("[INCOMPLETE]")
                 agentConversationRepository.appendDelegationResponse(targetContext.conversationId, source, it, failed)
                 delegationTaskDao.complete(taskId, if (failed) "FAILED" else "COMPLETED", it.summary)
+                context.onEvent?.invoke(com.amaya.intelligence.data.repository.AgentEvent.SubagentUpdate(
+                    parentToolCallId = parentId,
+                    index = 0,
+                    taskName = agent.name,
+                    prompt = request,
+                    result = it.summary,
+                    isComplete = true,
+                    isError = failed
+                ))
                 if (failed) ToolResult.Error(it.summary, ErrorType.EXECUTION_ERROR) else ToolResult.Success(it.summary)
             },
             onFailure = {
@@ -86,6 +106,15 @@ class DelegateAgentTool @Inject constructor(
                     true
                 )
                 delegationTaskDao.complete(taskId, "FAILED", message)
+                context.onEvent?.invoke(com.amaya.intelligence.data.repository.AgentEvent.SubagentUpdate(
+                    parentToolCallId = parentId,
+                    index = 0,
+                    taskName = agent.name,
+                    prompt = request,
+                    result = message,
+                    isComplete = true,
+                    isError = true
+                ))
                 ToolResult.Error(message, ErrorType.EXECUTION_ERROR)
             }
         )

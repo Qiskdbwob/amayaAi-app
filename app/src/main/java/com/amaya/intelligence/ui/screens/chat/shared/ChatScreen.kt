@@ -107,6 +107,7 @@ fun ChatScreen(
     val agentGroups by viewModel.agentGroups.collectAsState()
     val allAgents by viewModel.allAgents.collectAsState()
     val allLocalConversations by viewModel.allLocalConversations.collectAsState()
+    val runningSessions by viewModel.runningSessions.collectAsState()
 
     val isRemoteMode = isRemoteModeOverride ?: uiState.sessionMode.isRemote()
     val isBridgeMode = uiState.sessionMode ==
@@ -143,10 +144,11 @@ fun ChatScreen(
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     val inputBarHeight = remember { mutableIntStateOf(0) }
-    var attachedFilePath by remember(uiState.conversationId) { mutableStateOf<String?>(null) }
-    var attachedImageBase64 by remember(uiState.conversationId) { mutableStateOf<String?>(null) }
-    var attachedImageMimeType by remember(uiState.conversationId) { mutableStateOf<String?>(null) }
-    var attachedImageName by remember(uiState.conversationId) { mutableStateOf<String?>(null) }
+    val composerKey = "${uiState.assistantMode}:${uiState.ownerId}:${uiState.agentId}:${uiState.conversationId}"
+    var attachedFilePath by remember(composerKey) { mutableStateOf<String?>(null) }
+    var attachedImageBase64 by remember(composerKey) { mutableStateOf<String?>(null) }
+    var attachedImageMimeType by remember(composerKey) { mutableStateOf<String?>(null) }
+    var attachedImageName by remember(composerKey) { mutableStateOf<String?>(null) }
     var showConversationModeSheet by remember { mutableStateOf(false) }
 
     var showLocalhostLinkSheet by remember { mutableStateOf(false) }
@@ -160,7 +162,7 @@ fun ChatScreen(
         }
     }
 
-    val inputText = remember(uiState.conversationId) { mutableStateOf("") }
+    val inputText = remember(composerKey) { mutableStateOf("") }
 
     // Use server IP from extension if available, otherwise fallback to device local IP
     val serverIp = uiState.serverIp ?: localIp
@@ -443,6 +445,7 @@ fun ChatScreen(
                     agentGroups = agentGroups,
                     allAgents = allAgents,
                     allLocalConversations = allLocalConversations,
+                    runningSessions = runningSessions,
                     isLoadingConversations = uiState.isLoadingConversations,
                     connectionState = connectionState,
                     conversations = conversations,
@@ -507,7 +510,7 @@ fun ChatScreen(
                 ChatMessageList(
                     listState = listState,
                     displayMessages = displayMessages,
-                    isLoading = uiState.isLoading,
+                    isLoading = uiState.isLoading && !uiState.isLoadingHistory,
                     isStreaming = uiState.isStreaming,
                     isRemoteMode = isRemoteMode,
                     headerDp = headerDp,
@@ -617,7 +620,7 @@ fun ChatScreen(
                 ownerLabel = ownerLabel,
                 mentionAgents = if (uiState.assistantMode == com.amaya.intelligence.domain.models.AssistantMode.AGENT) {
                     activeAgentMembers.filter { it.id != uiState.agentId }.map {
-                        com.amaya.intelligence.ui.components.shared.ChatMentionAgent(it.id, it.name, it.role, activeAgentGroupLabel)
+                        com.amaya.intelligence.ui.components.shared.ChatMentionAgent(it.localId, it.name, it.role, activeAgentGroupLabel)
                     }
                 } else emptyList(),
                 onSearchWorkspaceFiles = { query -> viewModel.searchWorkspaceFiles(query) },

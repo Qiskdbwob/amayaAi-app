@@ -4,16 +4,34 @@ import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
+import com.amaya.intelligence.domain.ai.IntelligenceService
+import com.amaya.intelligence.service.AiSessionNotificationVisibility
 import com.amaya.intelligence.ui.screens.chat.local.LocalChatScreen
 import com.amaya.intelligence.ui.theme.AmayaTheme
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 
 @AndroidEntryPoint
 class LocalChatActivity : AppCompatActivity() {
+    @Inject lateinit var intelligenceService: IntelligenceService
+    private var visibleConversationId: Long? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        lifecycleScope.launch {
+            intelligenceService.uiState.collectLatest { state ->
+                val previous = visibleConversationId
+                visibleConversationId = state.conversationId?.toLongOrNull()
+                if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) {
+                    AiSessionNotificationVisibility.paused(previous)
+                    AiSessionNotificationVisibility.resumed(visibleConversationId)
+                }
+            }
+        }
         setContent {
             AmayaTheme {
                 LocalChatScreen(
@@ -31,6 +49,16 @@ class LocalChatActivity : AppCompatActivity() {
                 )
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AiSessionNotificationVisibility.resumed(visibleConversationId)
+    }
+
+    override fun onPause() {
+        AiSessionNotificationVisibility.paused(visibleConversationId)
+        super.onPause()
     }
 
     companion object {

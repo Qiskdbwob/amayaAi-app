@@ -336,7 +336,7 @@ internal fun ToolCardContent(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        OutlinedButton(
+                        Button(
                             onClick = {
                                 if (!approvalSubmitted && approvalSectionVisible) {
                                     approvalSubmitted = true
@@ -344,6 +344,10 @@ internal fun ToolCardContent(
                                 }
                             },
                             enabled = !approvalSubmitted,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError
+                            ),
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -362,7 +366,7 @@ internal fun ToolCardContent(
                         ) {
                             Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Accept")
+                            Text("Approve")
                         }
                     }
                 }

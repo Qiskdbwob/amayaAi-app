@@ -40,9 +40,10 @@ class AgentConversationRepository @Inject constructor(
             incoming,
             mapOf(
                 "delegation" to "incoming",
-                "sourceAgentId" to source.id.toString(),
+                "sourceAgentId" to source.localId.toString(),
+                "sourceAgentDatabaseId" to source.id.toString(),
                 "sourceAgentName" to source.name,
-                "sourceAgentMention" to agentMentionMarkdown(source.id, source.name)
+                "sourceAgentMention" to agentMentionMarkdown(source.localId, source.name)
             ),
             now
         )
@@ -80,7 +81,8 @@ class AgentConversationRepository @Inject constructor(
             result,
             mapOf(
                 "delegation" to if (failed) "failed" else "response",
-                "sourceAgentId" to source.id.toString(),
+                "sourceAgentId" to source.localId.toString(),
+                "sourceAgentDatabaseId" to source.id.toString(),
                 "sourceAgentName" to source.name,
                 "completedAt" to result.completedAt.toString()
             )

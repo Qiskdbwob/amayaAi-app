@@ -71,6 +71,9 @@ class ChatViewModel @Inject constructor(
     val allLocalConversations = intelligenceService.allLocalConversations
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    val runningSessions = intelligenceService.runningSessions
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     val activeAgentMembers = uiState.flatMapLatest { state ->
         if (state.assistantMode == com.amaya.intelligence.domain.models.AssistantMode.AGENT) {
             state.ownerId?.toLongOrNull()?.let(agentDao::observeByGroup) ?: flowOf(emptyList())

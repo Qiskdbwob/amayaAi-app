@@ -38,6 +38,34 @@ object LocalToolMapper {
     fun mapDisplayToolName(toolName: String, args: Map<String, Any?>): String =
         com.amaya.intelligence.tools.CapabilityToolMapper.displayName(toolName, args).let(::mapToolName)
 
+    /** Compact host-owned label shared by chat, drawer, and notifications. */
+    fun displayLabel(toolName: String, args: Map<String, Any?>): String {
+        val normalizedName = mapDisplayToolName(toolName, args)
+        val normalizedArgs = mapToolArgs(toolName, args)
+        fun value(vararg keys: String): String? = keys.firstNotNullOfOrNull { key ->
+            normalizedArgs[key]?.toString()?.trim()?.takeIf { it.isNotBlank() && it != "null" }
+        }
+        fun fileName(): String? = value("path", "file", "filePath", "TargetFile", "AbsolutePath")
+            ?.replace('\\', '/')?.substringAfterLast('/')?.takeIf(String::isNotBlank)
+        fun quoted(raw: String?) = raw?.take(40)?.let { "“$it”" }
+        return when (normalizedName) {
+            "read_file" -> fileName()?.let { "Read $it" }
+            "write_file" -> fileName()?.let { "Write $it" }
+            "edit_file" -> fileName()?.let { "Edit $it" }
+            "delete_file" -> fileName()?.let { "Delete $it" }
+            "create_directory" -> fileName()?.let { "Create $it" }
+            "list_files" -> fileName()?.let { "List $it" }
+            "find_files", "grep_search" -> quoted(value("query", "pattern", "content"))?.let { "Find $it" }
+            "run_shell" -> value("command", "cmd", "CommandLine")?.lineSequence()?.firstOrNull()?.take(56)?.let { "Run $it" }
+            "web_search" -> quoted(value("query"))?.let { "Search $it" }
+            "session_search" -> quoted(value("query"))?.let { "Search chats for $it" }
+            "delegate_agent" -> value("title")?.take(48)?.let { "Delegate $it" } ?: "Delegate Agent"
+            "invoke_subagents" -> value("title")?.take(48) ?: "Parallel research"
+            else -> null
+        } ?: getUiMetadata(toolName, args).label.takeIf(String::isNotBlank) ?: normalizedName.replace('_', ' ')
+            .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+    }
+
     /**
      * Normalizes arguments based on the tool name.
      */

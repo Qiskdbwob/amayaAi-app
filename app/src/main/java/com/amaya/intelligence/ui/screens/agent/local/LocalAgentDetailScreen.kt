@@ -82,7 +82,7 @@ fun LocalAgentDetailScreen(
                     }
                 } else agents.forEachIndexed { index, agent ->
                     if (index > 0) AmayaDivider()
-                    AmayaNavigationRow(Icons.Default.SmartToy, agent.name, agent.role.ifBlank { "No role" }, onClick = { onOpenAgent(agent) })
+                    AmayaNavigationRow(Icons.Default.SmartToy, "${agent.name} · ID ${agent.localId}", agent.role.ifBlank { "No role" }, onClick = { onOpenAgent(agent) })
                 }
             }
             OutlinedButton(onClick = { confirmDelete = true }, modifier = Modifier.fillMaxWidth()) {

@@ -22,6 +22,7 @@
 
     <!-- Notifications (required Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
 
     <!-- Exact alarms for cron job reminders (Android 12+) -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"
@@ -265,6 +266,15 @@
             android:name=".service.AiOperationService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".service.AiSessionNotificationService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".service.AiSessionNotificationActionReceiver"
+            android:exported="false" />
 
         <!-- BroadcastReceiver for cron job alarms -->
         <receiver

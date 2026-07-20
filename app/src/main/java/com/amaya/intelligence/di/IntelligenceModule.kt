@@ -99,6 +99,8 @@ object IntelligenceModule {
                 initial = emptyList()
             )
             override val allLocalConversations = localService.allLocalConversations
+            override val runningSessions = localService.runningSessions
+            override val completedSessions = localService.completedSessions
             override val projectFiles: StateFlow<List<ProjectFileEntry>> = switchedFlow(
                 selector = { it.projectFiles },
                 initial = emptyList()
@@ -125,6 +127,8 @@ object IntelligenceModule {
             override fun setAssistantOwner(mode: AssistantMode, ownerId: String?, workspacePath: String?, agentId: Long?) =
                 active.setAssistantOwner(mode, ownerId, workspacePath, agentId)
             override fun clearError() = active.clearError()
+            override suspend fun sendMessageToConversation(conversationId: Long, content: String) =
+                localService.sendMessageToConversation(conversationId, content)
             override fun loadMoreConversations() = active.loadMoreConversations()
             override fun hasMoreConversations() = active.hasMoreConversations()
             override fun respondToToolInteraction(executionId: String, confirmed: Boolean) = active.respondToToolInteraction(executionId, confirmed)

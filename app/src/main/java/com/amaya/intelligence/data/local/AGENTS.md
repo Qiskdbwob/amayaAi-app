@@ -34,7 +34,7 @@ data/local/
 
 ## File Functions
 - `AGENTS.md`: rules for local persistence and storage.
-- `entity/`: Room entities for projects, files, metadata, conversations, and cron jobs. Provider/model settings live in DataStore, not Room.
+- `entity/`: Room entities for projects, files, metadata, conversations, and cron jobs. Agent `id` is internal DB identity; `local_id` is the group-scoped model-facing identity. Provider/model settings live in DataStore, not Room.
 - `dao/`: Room DAO interfaces for data access.
 - `db/AppDatabase.kt`: Room database definition and wiring.
 - `db/migrations/`: Database migration scripts.
@@ -50,7 +50,7 @@ data/local/
 - `entity/FileMetadataEntity.kt`: detailed file information.
 - `entity/ConversationEntity.kt`: stored conversation records with explicit Chat/Project/Agent owner scope plus active Agent member ID.
 - `entity/AgentGroupEntity.kt`: persisted shared group workspace, instructions, and references.
-- `entity/AgentEntity.kt`: many named roles, instructions, per-agent capability profiles, and private reference paths belonging to one agent group.
+- `entity/AgentEntity.kt`: many named roles, instructions, per-agent capability profiles, private reference paths, and group-local IDs belonging to one agent group.
 - `entity/DelegationTaskEntity.kt`: persisted intra-group task status and result.
 - `dao/AgentDao.kt`: agent-group/member list, create, update, and delete persistence.
 - `dao/DelegationTaskDao.kt`: group-scoped delegation history.

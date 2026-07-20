@@ -206,6 +206,10 @@ Migration `13 → 14` adds nullable `cron_jobs.agent_id` plus its lookup index. 
 
 Migration `14 → 15` adds `agents.default_model_keys_json`. Keys reference active Manage Models entries; an empty list inherits the global active model.
 
+## ✅ V16 (Group-local Agent IDs)
+
+Migration `15 → 16` adds `agents.local_id`, backfills IDs by creation order per group, and adds a unique `(group_id, local_id)` index. Model prompts, mentions, and delegation use this ID; Room `agents.id` remains internal database identity.
+
 ---
 
 # 🔥 TEMPLATE MIGRATION (WAJIB PUNYA)

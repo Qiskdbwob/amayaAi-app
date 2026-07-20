@@ -1,6 +1,7 @@
 package com.amaya.intelligence.ui.components.shared
 
 import com.amaya.intelligence.domain.models.ToolExecution
+import com.amaya.intelligence.impl.local.tools.LocalToolMapper
 import com.amaya.intelligence.domain.models.ToolStatus
 import com.amaya.intelligence.domain.models.ToolUiMetadata
 
@@ -12,7 +13,8 @@ internal fun resolveToolCallHeaderText(
     approvalPending: Boolean
 ): String {
     if (execution.metadata["source"].equals("local", ignoreCase = true)) {
-        localToolHeader(execution)?.let { return it }
+        val label = LocalToolMapper.displayLabel(execution.name, execution.arguments)
+        return if (approvalPending) "Tools: $label" else localToolHeader(execution) ?: label
     }
 
     if (execution.isSyntheticThinkingCard()) {

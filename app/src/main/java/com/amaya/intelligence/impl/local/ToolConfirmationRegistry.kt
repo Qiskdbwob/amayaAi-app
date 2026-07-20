@@ -31,6 +31,18 @@ internal class ToolConfirmationRegistry {
             entry.decision.complete(confirmed)
         }
 
+    fun cancel(turnId: Long) {
+        synchronized(lock) {
+            val cancellation = CancellationException("Tool confirmation cancelled")
+            pending.entries.removeIf { (_, value) ->
+                if (value.turnId == turnId) {
+                    value.decision.cancel(cancellation)
+                    true
+                } else false
+            }
+        }
+    }
+
     fun cancelAll() {
         synchronized(lock) {
             val cancellation = CancellationException("Tool confirmation cancelled")

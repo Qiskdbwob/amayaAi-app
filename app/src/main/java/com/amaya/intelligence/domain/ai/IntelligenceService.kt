@@ -5,6 +5,7 @@ import com.amaya.intelligence.domain.models.*
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
@@ -15,6 +16,8 @@ interface IntelligenceService {
     val uiState: StateFlow<ChatUiState>
     val conversations: StateFlow<List<ConversationEntity>>
     val allLocalConversations: StateFlow<List<ConversationEntity>> get() = MutableStateFlow(emptyList())
+    val runningSessions: StateFlow<List<RunningSession>> get() = MutableStateFlow(emptyList())
+    val completedSessions: SharedFlow<RunningSession> get() = MutableSharedFlow()
 
     // Actions
     fun sendMessage(content: String)
@@ -38,6 +41,7 @@ interface IntelligenceService {
     fun setWorkspace(path: String?) {}
     fun setAssistantOwner(mode: AssistantMode, ownerId: String? = null, workspacePath: String? = null, agentId: Long? = null) {}
     fun clearError() {}
+    suspend fun sendMessageToConversation(conversationId: Long, content: String): Boolean = false
     fun loadMoreConversations() {}
     fun hasMoreConversations(): Boolean = false
 

@@ -11,9 +11,35 @@ import java.util.UUID
 
 // ── UI State ─────────────────────────────────────────────────────────────────
 
+enum class SessionPhase { STARTING, THINKING, STREAMING, TOOL, DELEGATING, WAITING_APPROVAL, COMPLETED, FAILED, STOPPED }
+
+data class RunningSession(
+    val conversationId: Long,
+    val title: String,
+    val mode: AssistantMode,
+    val ownerId: String?,
+    val agentId: Long?,
+    val status: String,
+    val detail: String = "",
+    val updatedAt: Long = System.currentTimeMillis(),
+    val isDelegating: Boolean = false,
+    val approvalId: String? = null,
+    val approvalLabel: String? = null,
+    val approvalRisk: String? = null,
+    val phase: SessionPhase = SessionPhase.STARTING,
+    val latestAssistantMessage: String = "",
+    val completedDelegates: Int = 0,
+    val totalDelegates: Int = 0,
+    val activeDelegateName: String? = null,
+    val notificationTitle: String = title,
+    val notificationSender: String = "AI",
+    val notificationThreadKey: String = "chat:$conversationId"
+)
+
 data class ChatUiState(
     val messages:         List<UiMessage> = emptyList(),
     val isLoading:        Boolean         = false,
+    val isLoadingHistory: Boolean         = false,
     val isStreaming:      Boolean         = false,
     val error:            String?         = null,
     val selectedModel:    String          = "",
@@ -45,6 +71,7 @@ data class ComposerReferences(
     val commands: List<String> = emptyList()
 )
 
+/** Agent reference ID is group-local; database IDs never enter model-owned Markdown. */
 fun agentMentionMarkdown(agentId: Long, name: String): String =
     "[@${name.replace("[", "").replace("]", "")}](agent:$agentId)"
 

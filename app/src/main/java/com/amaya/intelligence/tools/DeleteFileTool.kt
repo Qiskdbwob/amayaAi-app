@@ -1,4 +1,4 @@
-﻿package com.amaya.intelligence.tools
+package com.amaya.intelligence.tools
 
 import android.content.Context
 import com.amaya.intelligence.domain.security.CommandValidator

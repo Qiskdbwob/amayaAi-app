@@ -17,7 +17,7 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.amaya.intelligence"
-    compileSdk = 35
+    compileSdk = 36
 
     sourceSets {
         getByName("main") {

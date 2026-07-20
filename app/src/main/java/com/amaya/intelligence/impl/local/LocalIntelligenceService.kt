@@ -9,6 +9,7 @@ import com.amaya.intelligence.data.remote.api.MessageRole
 
 import com.amaya.intelligence.data.local.dao.ConversationDao
 import com.amaya.intelligence.data.local.dao.AgentDao
+import com.amaya.intelligence.data.local.dao.ProjectDao
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.data.repository.AiRepository
 import com.amaya.intelligence.data.repository.AgentEvent
@@ -31,6 +32,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
+import dagger.hilt.android.qualifiers.ApplicationContext
+import android.content.Context
 
 /**
  * Local implementation of IntelligenceService.
@@ -41,8 +44,10 @@ class LocalIntelligenceService @Inject constructor(
     private val aiRepository: AiRepository,
     private val conversationDao: ConversationDao,
     private val agentDao: AgentDao,
+    private val projectDao: ProjectDao,
     private val settingsManager: AiSettingsManager,
     private val browserSessionManager: BrowserSessionManager,
+    @ApplicationContext private val appContext: Context,
     @ApplicationScope appScope: CoroutineScope
 ) : IntelligenceService {
 
@@ -58,12 +63,16 @@ class LocalIntelligenceService @Inject constructor(
     override val conversations: StateFlow<List<ConversationEntity>> = _conversations.asStateFlow()
     override val allLocalConversations: StateFlow<List<ConversationEntity>> = conversationDao.observeAllConversations()
         .stateIn(scope, SharingStarted.Eagerly, emptyList())
+    private val _runningSessions = MutableStateFlow<List<RunningSession>>(emptyList())
+    override val runningSessions: StateFlow<List<RunningSession>> = _runningSessions.asStateFlow()
+    private val _completedSessions = kotlinx.coroutines.flow.MutableSharedFlow<RunningSession>(extraBufferCapacity = 16)
+    override val completedSessions: kotlinx.coroutines.flow.SharedFlow<RunningSession> = _completedSessions
 
     private val _workspaces = MutableStateFlow<List<RemoteWorkspace>>(emptyList())
     override val workspaces: StateFlow<List<RemoteWorkspace>> = _workspaces.asStateFlow()
 
     private var chatJob: Job? = null
-    private var currentConversationId: Long? = null
+    @Volatile private var currentConversationId: Long? = null
     private var currentAssistantMessageId: String? = null
     private val assistantTextBuffer = StringBuilder()
     private val assistantThinkingBuffer = StringBuilder()
@@ -72,14 +81,38 @@ class LocalIntelligenceService @Inject constructor(
     private var thinkingFlushJob: Job? = null
     private var browserConversationKey: String? = null
     private val conversationSaveMutex = Mutex()
+    private val conversationStartMutex = Mutex()
     private val pendingToolConfirmations = ToolConfirmationRegistry()
     private val pendingConfirmationUi = ConcurrentHashMap<String, ConfirmationRequest>()
     private val pendingApprovalIds = ConcurrentHashMap<String, String>()
     private val titleJobs = ConcurrentHashMap<Long, Job>()
     private val activeTurnId = AtomicLong(0L)
+    private val targetEpoch = AtomicLong(0L)
+    private val activeTurns = ConcurrentHashMap<Long, LocalTurn>()
+    private val startingConversations = ConcurrentHashMap.newKeySet<Long>()
+    private val turnsById = ConcurrentHashMap<Long, LocalTurn>()
+    private data class LocalTurn(
+        val turnId: Long,
+        val conversationId: Long,
+        val prompt: String,
+        val isNewConversation: Boolean,
+        var state: ChatUiState,
+        val notificationTitle: String,
+        val notificationSender: String,
+        val notificationThreadKey: String,
+        var assistantMessageId: String? = null,
+        var job: Job? = null,
+        var delegationActive: Boolean = false,
+        var lastStatus: String = "Streaming",
+        var lastDetail: String = "Waiting for response",
+        var lastNotificationAt: Long = 0L,
+        var delegateTotal: Int = 0,
+        var delegateCompleted: Int = 0,
+        var activeDelegateName: String? = null
+    )
 
     init {
-
+        scope.launch { recoverInterruptedTurns() }
 
         // Keep the drawer scoped to Chat/Project. An Agent owns exactly one conversation.
         scope.launch {
@@ -120,6 +153,35 @@ class LocalIntelligenceService @Inject constructor(
 
     override fun sendMessage(content: String) = sendMessageInternal(content, emptyList())
 
+    override suspend fun sendMessageToConversation(conversationId: Long, content: String): Boolean {
+        val text = content.trim()
+        if (text.isBlank() || activeTurns.containsKey(conversationId)) return false
+        val entity = conversationDao.getConversationById(conversationId) ?: return false
+        val messages = parseMessagesFromJson(entity.messagesJson).getOrNull() ?: return false
+        val settings = settingsManager.getSettings()
+        val preferredModelKey = entity.agentId?.let { id -> agentDao.getById(id)?.defaultModelKeysJson }
+            ?.let { runCatching { JSONArray(it) }.getOrNull() }
+            ?.let { array -> (0 until array.length()).map { array.optString(it) }.firstOrNull(String::isNotBlank) }
+            ?: settings.activeSelection?.key.orEmpty()
+        val modelParts = preferredModelKey.split('|', limit = 3)
+        val selectedModel = modelParts.getOrNull(2).orEmpty().ifBlank { settings.activeSelection?.modelId.orEmpty() }
+        val effort = if (modelParts.size == 3) settingsManager.getThinkingEffort(modelParts[1], modelParts[2]) else _uiState.value.effort
+        val state = ChatUiState(
+            messages = messages,
+            selectedModel = selectedModel,
+            workspacePath = entity.workspacePath,
+            assistantMode = runCatching { AssistantMode.valueOf(entity.assistantMode) }.getOrDefault(AssistantMode.CHAT),
+            ownerId = entity.ownerId,
+            agentId = entity.agentId,
+            modelOptions = _uiState.value.modelOptions,
+            activeModelKey = preferredModelKey,
+            conversationId = entity.id.toString(),
+            effort = effort,
+            sessionMode = IntelligenceSessionManager.SessionMode.LOCAL
+        )
+        return startTurn(text, emptyList(), state, projectVisible = false)
+    }
+
     override fun sendMessageWithImage(content: String, imageBase64: String, mimeType: String, fileName: String) {
         if (!mimeType.startsWith("image/") || imageBase64.isBlank() || imageBase64.length > 1_000_000) {
             _uiState.update { it.copy(error = "Invalid or oversized image attachment") }
@@ -135,112 +197,386 @@ class LocalIntelligenceService @Inject constructor(
         content: String,
         images: List<com.amaya.intelligence.data.remote.api.ChatImage>
     ) {
-        val trimmedContent = content.trim()
-        if (trimmedContent.isBlank() && images.isEmpty()) return
-        val turnId = activeTurnId.incrementAndGet()
-        val interruptedTurn = chatJob?.isActive == true
-        chatJob?.cancel()
-        chatJob = null
-        assistantFlushJob?.cancel()
-        assistantFlushJob = null
-        thinkingFlushJob?.cancel()
-        thinkingFlushJob = null
-        pendingToolConfirmations.cancelAll()
-        pendingConfirmationUi.clear()
-        pendingApprovalIds.clear()
-        if (interruptedTurn) {
-            flushAssistantThinkingBuffer()
-            flushAssistantTextBuffer()
-            markActiveToolsStopped()
-            markCurrentAssistantTerminal("cancelled")
-            saveCurrentConversation()
-        }
-        currentAssistantMessageId = null
-        assistantTextBuffer.clear()
-        assistantThinkingBuffer.clear()
-        lastAssistantTextUiEmitAt = 0L
-
         val currentState = _uiState.value
-        LocalStreamPerfLog.startTurn(
-            messageChars = trimmedContent.length,
-            historyMessages = currentState.messages.size,
-            model = currentState.selectedModel.ifBlank { currentState.activeModelKey }
-        )
+        scope.launch {
+            if (!startTurn(content, images, currentState, projectVisible = true)) {
+                _uiState.update { it.copy(error = "Could not start this conversation.", isLoading = false, isStreaming = false) }
+            }
+        }
+    }
+
+    private suspend fun startTurn(
+        content: String,
+        images: List<com.amaya.intelligence.data.remote.api.ChatImage>,
+        initialState: ChatUiState,
+        projectVisible: Boolean
+    ): Boolean {
+        val trimmedContent = content.trim()
+        if (trimmedContent.isBlank() && images.isEmpty()) return false
+        val selectedEpoch = targetEpoch.get()
+        val activeConversation = initialState.conversationId?.toLongOrNull()
+        if (activeConversation != null &&
+            (activeTurns.containsKey(activeConversation) || !startingConversations.add(activeConversation))
+        ) {
+            if (projectVisible) _uiState.update { it.copy(error = "This session is already streaming") }
+            return false
+        }
+        val turnId = activeTurnId.incrementAndGet()
         val userMsg = UiMessage(
             role = MessageRole.USER,
             content = trimmedContent,
             attachments = images.map { MessageAttachment(it.mediaType, it.base64, it.fileName) }
         )
-        ensureBrowserConversationSession(userMsg.id)
-        browserSessionManager.onAssistantStreamingChanged(true)
-
-        // Optimistic update
-        _uiState.update { it.copy(
-            messages = it.messages + userMsg,
-            isLoading = true,
-            isStreaming = true
-        )}
-
-        chatJob = scope.launch {
-            try {
-                // Check before persistence: the first turn alone receives an AI title.
-                val isNewConversation = currentConversationId == null
-                val conversationIdForTurn = persistCurrentConversation()
-                    ?: throw IllegalStateException("Could not save this conversation. Message was not sent.")
-
-                val history = _uiState.value.messages.flatMap { it.toChatMessages() }
-                var turnCompleted = false
-
-                aiRepository.chat(
-                    message = trimmedContent,
-                    userImages = images,
-                    conversationHistory = history.dropLast(1), // Exclude the one we just added
-                    workspacePath = currentState.workspacePath,
-                    assistantMode = currentState.assistantMode,
-                    ownerId = currentState.ownerId,
-                    agentId = currentState.agentId,
-                    connectionId = currentState.activeModelKey
-                        .takeIf { it.startsWith("model|") }
-                        ?.split('|', limit = 3)
-                        ?.getOrNull(1),
-                    conversationId = conversationIdForTurn,
-                    selectedModel = currentState.selectedModel,
-                    effort = currentState.effort,
-                    onConfirmation = { request -> awaitInlineToolConfirmation(request, turnId) }
-                ).collect { event ->
-                    if (activeTurnId.get() == turnId) {
-                        if (event is AgentEvent.Done) turnCompleted = true
-                        handleAgentEvent(event)
+        if (projectVisible) ensureBrowserConversationSession(userMsg.id)
+        val turnState = initialState.copy(messages = initialState.messages + userMsg, isLoading = true, isStreaming = true, error = null)
+        if (projectVisible) _uiState.value = turnState
+        val isNewConversation = activeConversation == null
+        val conversationId = conversationStartMutex.withLock {
+            if (projectVisible && targetEpoch.get() != selectedEpoch) return@withLock null
+            persistConversationStart(turnState, activeConversation)
+        }
+        if (conversationId == null) {
+            activeConversation?.let(startingConversations::remove)
+            return false
+        }
+        val runtimeState = turnState.copy(conversationId = conversationId.toString())
+        if (projectVisible && targetEpoch.get() == selectedEpoch) {
+            currentConversationId = conversationId
+            _uiState.value = runtimeState
+        }
+        val notificationIdentity = notificationIdentity(runtimeState)
+        val turn = LocalTurn(
+            turnId,
+            conversationId,
+            trimmedContent,
+            isNewConversation,
+            runtimeState,
+            notificationIdentity.title,
+            notificationIdentity.sender,
+            notificationIdentity.threadKey
+        )
+        activeTurns[conversationId] = turn
+        activeConversation?.let(startingConversations::remove)
+        turnsById[turnId] = turn
+        com.amaya.intelligence.service.AiSessionNotificationService.start(appContext)
+        publishTurn(turn, "Streaming", "Waiting for response")
+        turn.job = scope.launch {
+                var completed = false
+                var failed = false
+                try {
+                    aiRepository.chat(
+                        message = trimmedContent,
+                        userImages = images,
+                        conversationHistory = runtimeState.messages.dropLast(1).flatMap { it.toChatMessages() },
+                        workspacePath = runtimeState.workspacePath,
+                        assistantMode = runtimeState.assistantMode,
+                        ownerId = runtimeState.ownerId,
+                        agentId = runtimeState.agentId,
+                        connectionId = runtimeState.activeModelKey.takeIf { it.startsWith("model|") }?.split('|', limit = 3)?.getOrNull(1),
+                        conversationId = conversationId,
+                        selectedModel = runtimeState.selectedModel,
+                        effort = runtimeState.effort,
+                        onConfirmation = { request -> awaitInlineToolConfirmation(request, turnId) }
+                    ).collect { event ->
+                        completed = completed || event is AgentEvent.Done
+                        failed = failed || event is AgentEvent.Error || event is AgentEvent.Incomplete
+                        handleTurnEvent(turn, event)
+                    }
+                    if (isNewConversation && completed) launchTitleGeneration(trimmedContent, conversationId)
+                    if (!completed && !failed) {
+                        failed = true
+                        handleTurnEvent(turn, AgentEvent.Incomplete("Provider stream ended unexpectedly", retryable = true))
+                    }
+                } catch (cancelled: CancellationException) {
+                    failed = true
+                    handleTurnEvent(turn, AgentEvent.Incomplete("Stopped", retryable = true))
+                    throw cancelled
+                } catch (error: Exception) {
+                    failed = true
+                    handleTurnEvent(turn, AgentEvent.Error(error.message.orEmpty().ifBlank { "AI session failed" }, retryable = true))
+                } finally {
+                    turn.state = turn.state.copy(isLoading = false, isStreaming = false)
+                    persistTurn(turn)
+                    activeTurns.remove(conversationId, turn)
+                    turnsById.remove(turn.turnId, turn)
+                    removeRunningSession(conversationId)
+                    if (currentConversationId == conversationId) {
+                        browserSessionManager.onAssistantStreamingChanged(false)
+                        _uiState.update { it.copy(isLoading = false, isStreaming = false) }
                     }
                 }
-                // Local model servers commonly allow one generation at a time. Start the
-                // auxiliary title request only after the visible answer has released it.
-                if (isNewConversation && turnCompleted && activeTurnId.get() == turnId) {
-                    launchTitleGeneration(trimmedContent, conversationIdForTurn)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (activeTurnId.get() != turnId) return@launch
-                chatJob = null
-                flushAssistantTextBuffer()
-                browserSessionManager.onAssistantStreamingChanged(false)
-                _uiState.update { it.copy(error = e.message, isLoading = false, isStreaming = false) }
-                LocalStreamPerfLog.endTurn("exception:${e.message.orEmpty().take(80)}", _uiState.value.messages.size, currentAssistantTextLength())
+            }
+        return true
+    }
+
+    private fun publishTurn(turn: LocalTurn, status: String, detail: String, urgent: Boolean = false) {
+        turn.lastStatus = status
+        turn.lastDetail = detail
+        val now = System.currentTimeMillis()
+        if (!urgent && now - turn.lastNotificationAt < 900L && status in setOf("Streaming", "Thinking")) {
+            if (currentConversationId == turn.conversationId) _uiState.value = turn.state
+            return
+        }
+        turn.lastNotificationAt = now
+        val activeTool = turn.state.messages.asReversed().asSequence()
+            .flatMap { it.toolExecutions.asReversed().asSequence() }
+            .firstOrNull { it.status == ToolStatus.RUNNING || it.status == ToolStatus.PENDING }
+        val item = RunningSession(
+            conversationId = turn.conversationId,
+            title = turn.notificationTitle,
+            mode = turn.state.assistantMode,
+            ownerId = turn.state.ownerId,
+            agentId = turn.state.agentId,
+            status = status,
+            detail = detail,
+            updatedAt = System.currentTimeMillis(),
+            isDelegating = turn.delegationActive,
+            approvalId = activeTool?.metadata?.get("approvalId")?.takeIf { activeTool.metadata["approvalState"] == "pending" },
+            approvalLabel = activeTool?.takeIf { it.metadata["approvalState"] == "pending" }
+                ?.let { LocalToolMapper.displayLabel(it.name, it.arguments) },
+            approvalRisk = activeTool?.metadata?.get("riskLevel"),
+            phase = sessionPhase(status, turn.delegationActive),
+            latestAssistantMessage = turn.state.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.content.orEmpty(),
+            completedDelegates = turn.delegateCompleted,
+            totalDelegates = turn.delegateTotal,
+            activeDelegateName = turn.activeDelegateName,
+            notificationTitle = turn.notificationTitle,
+            notificationSender = turn.notificationSender,
+            notificationThreadKey = turn.notificationThreadKey
+        )
+        if (item.phase in setOf(SessionPhase.COMPLETED, SessionPhase.FAILED, SessionPhase.STOPPED)) {
+            _runningSessions.update { sessions -> sessions.filterNot { it.conversationId == turn.conversationId } }
+            _completedSessions.tryEmit(item)
+        } else {
+            _runningSessions.update { sessions ->
+                (sessions.filterNot { it.conversationId == turn.conversationId } + item).sortedByDescending(RunningSession::updatedAt)
             }
         }
+        if (currentConversationId == turn.conversationId) {
+            _uiState.value = turn.state
+        }
+    }
+
+    private suspend fun recoverInterruptedTurns() {
+        conversationDao.getConversationsByScope("local").forEach { summary ->
+            val entity = conversationDao.getConversationById(summary.id) ?: return@forEach
+            val messages = parseMessagesFromJson(entity.messagesJson).getOrNull() ?: return@forEach
+            val index = messages.indexOfLast { message ->
+                message.role == MessageRole.ASSISTANT &&
+                    message.metadata["turnStatus"].isNullOrBlank() &&
+                    (message.isThinking || message.toolExecutions.any { it.status == ToolStatus.RUNNING || it.status == ToolStatus.PENDING })
+            }
+            if (index < 0) return@forEach
+            val interrupted = messages[index].let { message ->
+                fun stop(tool: ToolExecution) = if (tool.status == ToolStatus.RUNNING || tool.status == ToolStatus.PENDING) {
+                    tool.copy(
+                        status = ToolStatus.ERROR,
+                        result = tool.result ?: "Interrupted when the app process stopped",
+                        metadata = tool.metadata + mapOf("approvalRequired" to "false", "approvalState" to "cancelled")
+                    )
+                } else tool
+                message.copy(
+                    isThinking = false,
+                    toolExecutions = message.toolExecutions.map(::stop),
+                    steps = message.steps.map { if (it is MessageStep.ToolCall) it.copy(execution = stop(it.execution)) else it },
+                    metadata = message.metadata + mapOf(
+                        "turnStatus" to "interrupted",
+                        "completedAt" to System.currentTimeMillis().toString(),
+                        "retryable" to "true"
+                    )
+                )
+            }
+            val recovered = messages.toMutableList().also { it[index] = interrupted }
+            conversationDao.updateConversation(entity.copy(messagesJson = serializeMessagesToJson(recovered), updatedAt = System.currentTimeMillis()))
+        }
+    }
+
+    private fun sessionPhase(status: String, delegating: Boolean): SessionPhase = when {
+        status == "Approval required" -> SessionPhase.WAITING_APPROVAL
+        status == "Completed" -> SessionPhase.COMPLETED
+        status in setOf("Failed", "Incomplete") -> SessionPhase.FAILED
+        status == "Stopped" -> SessionPhase.STOPPED
+        delegating -> SessionPhase.DELEGATING
+        status == "Thinking" -> SessionPhase.THINKING
+        status.startsWith("Tools:") || status.startsWith("Tool ") -> SessionPhase.TOOL
+        status == "Streaming" -> SessionPhase.STREAMING
+        else -> SessionPhase.STARTING
+    }
+
+    private data class NotificationIdentity(val threadKey: String, val title: String, val sender: String)
+
+    private suspend fun notificationIdentity(state: ChatUiState): NotificationIdentity = when (state.assistantMode) {
+        AssistantMode.AGENT -> {
+            val groupId = state.ownerId?.toLongOrNull()
+            val agentName = state.agentId?.let { agentDao.getById(it)?.name }.orEmpty().ifBlank { "Agent" }
+            val groupName = groupId?.let { agentDao.getGroupById(it)?.name }.orEmpty().ifBlank { "Agent group" }
+            val convId = state.conversationId?.toLongOrNull()
+            val sessionTitle = allLocalConversations.value.firstOrNull { it.id == convId }?.title
+                ?: state.messages.firstOrNull { it.role == MessageRole.USER }?.content?.take(48)
+                ?: "Agent session"
+            NotificationIdentity("agent-group:${groupId ?: state.conversationId.orEmpty()}", "$sessionTitle • $groupName", agentName)
+        }
+        AssistantMode.PROJECT -> {
+            val projectId = state.ownerId?.toLongOrNull()
+            val projectName = projectId?.let { projectDao.getById(it)?.name }.orEmpty().ifBlank { "Project" }
+            val convId = state.conversationId?.toLongOrNull()
+            val sessionTitle = allLocalConversations.value.firstOrNull { it.id == convId }?.title
+                ?: state.messages.firstOrNull { it.role == MessageRole.USER }?.content?.take(48)
+                ?: "Project session"
+            NotificationIdentity("project:${projectId ?: state.conversationId.orEmpty()}", "$sessionTitle • $projectName", "AI")
+        }
+        AssistantMode.CHAT -> NotificationIdentity("chat:${state.conversationId.orEmpty()}", sessionTitle(state), "AI")
+    }
+
+    private fun sessionTitle(state: ChatUiState): String = when (state.assistantMode) {
+        AssistantMode.CHAT -> state.conversationId?.toLongOrNull()?.let { id ->
+            allLocalConversations.value.firstOrNull { it.id == id }?.title
+        } ?: "Chat"
+        AssistantMode.PROJECT -> state.ownerId?.toLongOrNull()?.let { id ->
+            allLocalConversations.value.firstOrNull { it.ownerId == id.toString() && it.assistantMode == AssistantMode.PROJECT.name }?.title
+        } ?: "Project"
+        AssistantMode.AGENT -> state.agentId?.let { id ->
+            allLocalConversations.value.firstOrNull { it.agentId == id }?.title
+        } ?: "Agent"
+    }
+
+    private fun updateTurnMessage(turn: LocalTurn, transform: (UiMessage) -> UiMessage) {
+        val messages = turn.state.messages.toMutableList()
+        var index = turn.assistantMessageId?.let { id -> messages.indexOfLast { it.id == id } } ?: -1
+        if (index < 0) {
+            val message = UiMessage(role = MessageRole.ASSISTANT, content = "", metadata = mapOf("source" to "local"))
+            turn.assistantMessageId = message.id
+            messages += message
+            index = messages.lastIndex
+        }
+        messages[index] = transform(messages[index])
+        turn.state = turn.state.copy(messages = messages)
+    }
+
+    private fun finalizeTurnThinking(turn: LocalTurn, status: String) {
+        val now = System.currentTimeMillis()
+        updateTurnMessage(turn) { message ->
+            val duration = message.thinkingStartedAt?.let { (now - it).coerceAtLeast(0L) }
+            message.copy(
+                isThinking = false,
+                thinkingDurationMs = message.thinkingDurationMs ?: duration,
+                metadata = message.metadata + mapOf("turnStatus" to status, "completedAt" to now.toString())
+            )
+        }
+    }
+
+    private fun handleTurnEvent(turn: LocalTurn, event: AgentEvent) {
+        when (event) {
+            is AgentEvent.TextDelta -> {
+                updateTurnMessage(turn) { message ->
+                    val steps = if (message.steps.lastOrNull() is MessageStep.Text) {
+                        message.steps.dropLast(1) + (message.steps.last() as MessageStep.Text).let { it.copy(content = it.content + event.text) }
+                    } else message.steps + MessageStep.Text(content = event.text)
+                    message.copy(content = message.content + event.text, steps = steps)
+                }
+                publishTurn(turn, "Streaming", event.text.takeLast(120))
+            }
+            is AgentEvent.ThinkingDelta -> {
+                updateTurnMessage(turn) { it.copy(thinking = it.thinking.orEmpty() + event.text, isThinking = true, thinkingStartedAt = it.thinkingStartedAt ?: System.currentTimeMillis()) }
+                publishTurn(turn, "Thinking", event.text.takeLast(120))
+            }
+            is AgentEvent.ToolCallStart -> {
+                val displayName = LocalToolMapper.mapDisplayToolName(event.name, event.arguments)
+                if (displayName == "delegate_agent") turn.delegationActive = true
+                val execution = ToolExecution(event.toolCallId, displayName, LocalToolMapper.mapToolArgs(event.name, event.arguments), status = ToolStatus.RUNNING, metadata = event.metadata + ("source" to "local"), uiMetadata = LocalToolMapper.getUiMetadata(event.name, event.arguments))
+                updateTurnMessage(turn) { it.copy(toolExecutions = it.toolExecutions + execution, steps = it.steps + MessageStep.ToolCall(execution = execution)) }
+                publishTurn(turn, "Tools: ${LocalToolMapper.displayLabel(event.name, event.arguments)}", toolEventDetail(event.name, event.arguments), urgent = true)
+            }
+            is AgentEvent.ToolCallResult -> {
+                if (LocalToolMapper.mapToolName(event.toolName) == "delegate_agent") turn.delegationActive = false
+                fun complete(tool: ToolExecution) = if (tool.toolCallId == event.toolCallId) tool.copy(result = event.result, status = if (event.isError) ToolStatus.ERROR else ToolStatus.SUCCESS) else tool
+                updateTurnMessage(turn) { message -> message.copy(
+                    toolExecutions = message.toolExecutions.map(::complete),
+                    steps = message.steps.map { if (it is MessageStep.ToolCall) it.copy(execution = complete(it.execution)) else it }
+                ) }
+                publishTurn(turn, if (event.isError) "Tool failed" else "Tool completed", event.result.takeLast(120), urgent = true)
+            }
+            is AgentEvent.ResponseItem -> updateTurnMessage(turn) { if (event.json in it.responseItems) it else it.copy(responseItems = it.responseItems + event.json) }
+            is AgentEvent.Usage -> turn.state = turn.state.copy(totalInputTokens = turn.state.totalInputTokens + event.inputTokens, totalOutputTokens = turn.state.totalOutputTokens + event.outputTokens)
+            is AgentEvent.Incomplete -> {
+                finalizeTurnThinking(turn, "incomplete")
+                turn.state = turn.state.copy(error = event.reason, isLoading = false, isStreaming = false)
+                publishTurn(turn, "Incomplete", event.reason, urgent = true)
+            }
+            is AgentEvent.Error -> {
+                finalizeTurnThinking(turn, "failed")
+                turn.state = turn.state.copy(error = event.message, isLoading = false, isStreaming = false)
+                publishTurn(turn, "Failed", event.message, urgent = true)
+            }
+            is AgentEvent.Done -> {
+                finalizeTurnThinking(turn, "completed")
+                turn.state = turn.state.copy(isLoading = false, isStreaming = false)
+                publishTurn(turn, "Completed", turn.state.messages.lastOrNull()?.content.orEmpty().takeLast(120), urgent = true)
+            }
+            is AgentEvent.SubagentUpdate -> {
+                turn.delegateTotal = maxOf(turn.delegateTotal, event.index + 1)
+                turn.activeDelegateName = if (event.isComplete) null else event.taskName
+                if (event.isComplete) turn.delegateCompleted = minOf(turn.delegateTotal, turn.delegateCompleted + 1)
+                fun child(tool: ToolExecution): ToolExecution {
+                    if (tool.toolCallId != event.parentToolCallId) return tool
+                    val execution = SubagentExecution(event.index, event.taskName, event.prompt, event.result, if (!event.isComplete) ToolStatus.RUNNING else if (event.isError) ToolStatus.ERROR else ToolStatus.SUCCESS)
+                    return tool.copy(children = (tool.children.filterNot { it.index == event.index } + execution).sortedBy { it.index })
+                }
+                updateTurnMessage(turn) { message -> message.copy(toolExecutions = message.toolExecutions.map(::child), steps = message.steps.map { if (it is MessageStep.ToolCall) it.copy(execution = child(it.execution)) else it }) }
+                publishTurn(turn, "Delegating", "${turn.delegateCompleted}/${turn.delegateTotal} · ${event.taskName}", urgent = true)
+            }
+            is AgentEvent.NewIteration -> publishTurn(turn, "Continuing", "Processing tool results")
+        }
+    }
+
+    private suspend fun persistConversationStart(state: ChatUiState, existingId: Long?): Long? = conversationSaveMutex.withLock {
+        val messagesJson = serializeMessagesToJson(state.messages)
+        val now = System.currentTimeMillis()
+        if (existingId != null) {
+            val existing = conversationDao.getConversationById(existingId) ?: return@withLock null
+            conversationDao.updateConversation(existing.copy(
+                workspacePath = state.workspacePath,
+                assistantMode = state.assistantMode.name,
+                ownerId = state.ownerId,
+                agentId = state.agentId,
+                messagesJson = messagesJson,
+                updatedAt = now
+            ))
+            return@withLock existingId
+        }
+        val title = state.messages.firstOrNull { it.role == MessageRole.USER }?.content?.split("\\s+".toRegex())?.take(5)?.joinToString(" ")?.take(50).orEmpty().ifBlank { "New Conversation" }
+        conversationDao.insertConversation(ConversationEntity(
+            title = title,
+            workspacePath = state.workspacePath,
+            assistantMode = state.assistantMode.name,
+            ownerId = state.ownerId,
+            agentId = state.agentId,
+            messagesJson = messagesJson,
+            createdAt = now,
+            updatedAt = now
+        ))
+    }
+
+    private suspend fun persistTurn(turn: LocalTurn) = conversationSaveMutex.withLock {
+        val existing = conversationDao.getConversationById(turn.conversationId) ?: return@withLock
+        conversationDao.updateConversation(existing.copy(messagesJson = serializeMessagesToJson(turn.state.messages), updatedAt = System.currentTimeMillis()))
     }
 
     private fun handleAgentEvent(event: AgentEvent) {
         when (event) {
             is AgentEvent.TextDelta -> {
+                currentConversationId?.let { updateRunningSession(it, "Streaming", event.text.takeLast(120)) }
                 flushAssistantThinkingBuffer()
                 finalizeThinkingIfActive()
                 browserSessionManager.onAssistantTextDelta(event.text)
                 bufferAssistantTextDelta(event.text)
             }
-            is AgentEvent.ThinkingDelta -> bufferAssistantThinkingDelta(event.text)
+            is AgentEvent.ThinkingDelta -> {
+                currentConversationId?.let { updateRunningSession(it, "Thinking", event.text.takeLast(120)) }
+                bufferAssistantThinkingDelta(event.text)
+            }
             is AgentEvent.ToolCallStart -> {
+                currentConversationId?.let { updateRunningSession(it, "Using ${LocalToolMapper.mapDisplayToolName(event.name, event.arguments)}", toolEventDetail(event.name, event.arguments)) }
                 flushAssistantThinkingBuffer()
                 finalizeThinkingIfActive()
                 flushAssistantTextBuffer()
@@ -400,14 +736,14 @@ class LocalIntelligenceService @Inject constructor(
 
     private suspend fun awaitInlineToolConfirmation(request: ConfirmationRequest, turnId: Long): Boolean {
         val toolCallId = request.toolCallId ?: return false
-        if (activeTurnId.get() != turnId) return false
+        if (turnsById[turnId] == null) return false
         val approvalId = "$turnId:$toolCallId"
         pendingConfirmationUi[toolCallId] = request
         pendingApprovalIds[toolCallId] = approvalId
         return try {
             pendingToolConfirmations.await(approvalId, turnId) {
-                if (activeTurnId.get() != turnId) return@await
-                updateToolExecution(toolCallId) { tool ->
+                if (turnsById[turnId] == null) return@await
+                updateTurnToolExecution(turnsById[turnId]!!, toolCallId) { tool ->
                     tool.copy(
                         status = ToolStatus.PENDING,
                         metadata = tool.metadata + approvalMetadata(request, approvalId)
@@ -577,6 +913,24 @@ class LocalIntelligenceService @Inject constructor(
         }
     }
 
+    private fun updateRunningSession(conversationId: Long, status: String, detail: String) {
+        val state = _uiState.value
+        val title = _conversations.value.firstOrNull { it.id == conversationId }?.title
+            ?: state.messages.firstOrNull { it.role == MessageRole.USER }?.content?.take(48)
+            ?: "AI session"
+        val item = RunningSession(conversationId, title, state.assistantMode, state.ownerId, state.agentId, status, detail)
+        _runningSessions.update { current -> current.filterNot { it.conversationId == conversationId } + item }
+    }
+
+    private fun removeRunningSession(conversationId: Long) {
+        _runningSessions.update { current -> current.filterNot { it.conversationId == conversationId } }
+    }
+
+    private fun toolEventDetail(name: String, arguments: Map<String, Any?>): String =
+        listOf("path", "query", "command", "task", "url").firstNotNullOfOrNull { key ->
+            arguments[key]?.toString()?.takeIf(String::isNotBlank)?.let { "$key: ${it.take(100)}" }
+        } ?: name
+
     private fun currentAssistantTextLength(): Int {
         val assistantId = currentAssistantMessageId ?: return 0
         return _uiState.value.messages.lastOrNull { it.id == assistantId }?.content?.length ?: 0
@@ -666,6 +1020,13 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     override fun stopGeneration() {
+        currentConversationId?.let { conversationId ->
+            activeTurns[conversationId]?.let { turn ->
+                pendingToolConfirmations.cancel(turn.turnId)
+                turn.job?.cancel()
+            }
+            return
+        }
         activeTurnId.incrementAndGet()
         chatJob?.cancel()
         chatJob = null
@@ -687,16 +1048,16 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     override fun clearConversation() {
-        activeTurnId.incrementAndGet()
-        chatJob?.cancel()
+        targetEpoch.incrementAndGet()
+        resetVisibleConversation()
+    }
+
+    private fun resetVisibleConversation() {
         chatJob = null
         assistantFlushJob?.cancel()
         assistantFlushJob = null
         thinkingFlushJob?.cancel()
         thinkingFlushJob = null
-        pendingToolConfirmations.cancelAll()
-        pendingConfirmationUi.clear()
-        pendingApprovalIds.clear()
         currentConversationId = null
         currentAssistantMessageId = null
         assistantTextBuffer.clear()
@@ -709,6 +1070,7 @@ class LocalIntelligenceService @Inject constructor(
             messages = emptyList(),
             error = null,
             isLoading = false,
+            isLoadingHistory = false,
             isStreaming = false,
             totalInputTokens = 0,
             totalOutputTokens = 0
@@ -717,19 +1079,31 @@ class LocalIntelligenceService @Inject constructor(
 
     override fun loadConversation(id: String) {
         val longId = id.toLongOrNull() ?: return
-        val turnId = activeTurnId.incrementAndGet()
-        chatJob?.cancel()
-        chatJob = null
-        assistantFlushJob?.cancel()
-        assistantFlushJob = null
-        thinkingFlushJob?.cancel()
-        thinkingFlushJob = null
-        pendingToolConfirmations.cancelAll()
-        pendingConfirmationUi.clear()
-        pendingApprovalIds.clear()
+        val epoch = targetEpoch.incrementAndGet()
+        currentConversationId = longId
+        activeTurns[longId]?.let { running ->
+            _uiState.value = running.state.copy(isLoading = true, isStreaming = true)
+            return
+        }
+        _uiState.update { state ->
+            state.copy(
+                conversationId = longId.toString(),
+                messages = emptyList(),
+                isLoading = false,
+                isLoadingHistory = true,
+                isStreaming = false,
+                error = null,
+                totalInputTokens = 0,
+                totalOutputTokens = 0
+            )
+        }
         scope.launch {
             val entity = conversationDao.getConversationById(longId)
-            if (activeTurnId.get() != turnId) return@launch
+            if (targetEpoch.get() != epoch || currentConversationId != longId) return@launch
+            activeTurns[longId]?.let { running ->
+                _uiState.value = running.state.copy(isLoading = true, isStreaming = true)
+                return@launch
+            }
             entity?.let { conv ->
                 val parsed = parseMessagesFromJson(conv.messagesJson)
                 val messages = parsed.getOrElse {
@@ -752,9 +1126,12 @@ class LocalIntelligenceService @Inject constructor(
                     messages = messages,
                     totalInputTokens = 0,
                     totalOutputTokens = 0,
-                    error = null
+                    error = null,
+                    isLoading = false,
+                    isLoadingHistory = false,
+                    isStreaming = false
                 )}
-            }
+            } ?: _uiState.update { it.copy(isLoading = false, isLoadingHistory = false, isStreaming = false, error = "Conversation not found") }
         }
     }
 
@@ -806,11 +1183,15 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     override fun setWorkspace(path: String?) {
-        setAssistantOwner(AssistantMode.forWorkspace(path), ownerId = path, workspacePath = path)
+        // Workspace browsing must never change Chat/Project/Agent ownership.
+        _uiState.update { state ->
+            state.copy(workspacePath = path?.takeIf(String::isNotBlank) ?: state.workspacePath)
+        }
     }
 
     override fun setAssistantOwner(mode: AssistantMode, ownerId: String?, workspacePath: String?, agentId: Long?) {
-        clearConversation()
+        val epoch = targetEpoch.incrementAndGet()
+        resetVisibleConversation()
         _uiState.update {
             it.copy(
                 assistantMode = mode,
@@ -825,14 +1206,12 @@ class LocalIntelligenceService @Inject constructor(
                 val active = agentDao.getById(agentId)?.defaultModelKeysJson.orEmpty()
                     .let { runCatching { org.json.JSONArray(it) }.getOrNull() }
                     ?.let { array -> (0 until array.length()).map { array.optString(it) }.firstOrNull() }
-                val global = settingsManager.getSettings().activeSelection?.key
-                val selected = active ?: global
-                if (selected != null) applyModelToUi(selected)
-                val conversation = conversationDao.getAgentConversation(agentId) ?: return@launch
+                val selected = active ?: settingsManager.getSettings().activeSelection?.key
+                val conversation = conversationDao.getAgentConversation(agentId)
                 val state = _uiState.value
-                if (state.assistantMode == AssistantMode.AGENT && state.agentId == agentId && state.ownerId == targetOwnerId) {
-                    loadConversation(conversation.id.toString())
-                }
+                if (targetEpoch.get() != epoch || state.assistantMode != AssistantMode.AGENT || state.agentId != agentId || state.ownerId != targetOwnerId) return@launch
+                if (selected != null) applyModelToUi(selected)
+                conversation?.let { loadConversation(it.id.toString()) }
             }
         }
     }
@@ -854,21 +1233,43 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     override fun respondToToolInteraction(executionId: String, confirmed: Boolean) {
+        val turnId = executionId.substringBefore(':', "").toLongOrNull() ?: return
         val toolCallId = executionId.substringAfter(':', executionId)
-        pendingToolConfirmations.resolve(executionId, activeTurnId.get(), confirmed) {
+        pendingToolConfirmations.resolve(executionId, turnId, confirmed) {
             pendingConfirmationUi.remove(toolCallId)
             pendingApprovalIds.remove(toolCallId, executionId)
-            updateToolExecution(toolCallId) { tool ->
-                tool.copy(
-                    status = if (confirmed) ToolStatus.RUNNING else ToolStatus.ERROR,
-                    result = if (confirmed) tool.result else "User declined: ${tool.metadata["approvalReason"].orEmpty()}",
-                    metadata = tool.metadata + mapOf(
-                        "approvalRequired" to "false",
-                        "approvalState" to if (confirmed) "accepted" else "declined"
+            turnsById[turnId]?.let { turn ->
+                updateTurnToolExecution(turn, toolCallId) { tool ->
+                    tool.copy(
+                        status = if (confirmed) ToolStatus.RUNNING else ToolStatus.ERROR,
+                        result = if (confirmed) tool.result else "User declined: ${tool.metadata["approvalReason"].orEmpty()}",
+                        metadata = tool.metadata + mapOf(
+                            "approvalRequired" to "false",
+                            "approvalState" to if (confirmed) "accepted" else "declined"
+                        )
                     )
-                )
+                }
             }
         }
+    }
+
+    private fun updateTurnToolExecution(turn: LocalTurn, toolCallId: String, transform: (ToolExecution) -> ToolExecution) {
+        updateTurnMessage(turn) { message ->
+            message.copy(
+                toolExecutions = message.toolExecutions.map { if (it.toolCallId == toolCallId) transform(it) else it },
+                steps = message.steps.map { if (it is MessageStep.ToolCall && it.execution.toolCallId == toolCallId) it.copy(execution = transform(it.execution)) else it }
+            )
+        }
+        val execution = turn.state.messages.asReversed().asSequence()
+            .flatMap { it.toolExecutions.asReversed().asSequence() }
+            .firstOrNull { it.toolCallId == toolCallId }
+        val pending = execution?.metadata?.get("approvalState") == "pending"
+        publishTurn(
+            turn,
+            if (pending) "Approval required" else turn.lastStatus,
+            if (pending) execution?.let { "Tools: ${LocalToolMapper.displayLabel(it.name, it.arguments)}" } ?: "Waiting for your decision" else turn.lastDetail,
+            urgent = true
+        )
     }
 
     private fun parseMessagesFromJson(json: String): Result<List<UiMessage>> {

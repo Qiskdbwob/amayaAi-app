@@ -254,10 +254,9 @@ class AiRepository @Inject constructor(
         }
         val activeAgent = if (assistantMode == AssistantMode.AGENT) {
             agentId?.let { agentDao.getById(it) }?.takeIf { it.groupId == agentGroup?.id }
-                ?: agentGroup?.let { agentDao.getByGroup(it.id).firstOrNull() }
         } else null
         if (assistantMode == AssistantMode.AGENT && activeAgent == null) {
-            send(AgentEvent.Error("The active agent group has no configured agents. Add an agent before starting a chat.", retryable = false))
+            send(AgentEvent.Error("The selected agent is missing or does not belong to the active group. Select the agent again.", retryable = false))
             return@channelFlow
         }
         val agentCapabilityProfile = activeAgent?.capabilityProfile?.let(com.amaya.intelligence.domain.models.AgentCapabilityProfile::decode)
@@ -269,7 +268,7 @@ class AiRepository @Inject constructor(
                 assistantMode,
                 workspacePath != null,
                 agentCapabilityProfile,
-                delegationMembers.map { it.id }
+                delegationMembers.map { it.localId }
             )
         } else emptyList()
         if (modelConfig.supportsTools && tools.isEmpty()) {
@@ -292,13 +291,14 @@ class AiRepository @Inject constructor(
                 val members = agentGroupMembers
                 val composerReferences = com.amaya.intelligence.domain.models.parseComposerReferences(message)
                 val explicitlyMentioned = members.filter { member ->
-                    member.id != activeAgent?.id && member.id in composerReferences.agentIds
+                    member.id != activeAgent?.id && member.localId in composerReferences.agentIds
                 }
                 buildString {
                     append("Agent group: ${group.name}")
                     group.instructions.takeIf(String::isNotBlank)?.let { append("\nGroup instructions:\n$it") }
                     activeAgent?.let { agent ->
-                        append("\nActive agent: ${agent.name}")
+                        append("\nActive agent identity (host-authoritative): agent_id=${agent.localId}; name=${agent.name}; role=${agent.role.ifBlank { "unspecified" }}")
+                        append("\nYou are this active agent. Never claim another team member's identity.")
                         agent.role.takeIf(String::isNotBlank)?.let { append("\nRole: $it") }
                         agent.instructions.takeIf(String::isNotBlank)?.let { append("\nAgent instructions:\n$it") }
                     }
@@ -314,16 +314,19 @@ class AiRepository @Inject constructor(
                     if (members.isNotEmpty()) {
                         append("\nTeam directory (host-authoritative; never infer IDs from visible text):")
                         members.forEach { member ->
-                            append("\n- agent_id=${member.id}; name=${member.name}")
+                            append("\n- agent_id=${member.localId}; name=${member.name}")
                             member.role.takeIf(String::isNotBlank)?.let { append("; role=$it") }
                             if (member.id == activeAgent?.id) append("; active=true")
                         }
-                        append("\nDelegate only with delegate_agent(title, agent_id, task). title must be a short 2-5 word activity label; task contains the full prompt. Never pass a name as agent_id.")
+                        append("\nTool distinction:")
+                        append("\n- delegate_agent(title, agent_id, task): use only for one named member in this directory. It appends to that Agent's persistent conversation, identity, instructions, references, and memory. agent_id is group-local and restarts at 1 in every group. title is 2-5 words; task is the full prompt.")
+                        append("\n- invoke_subagents(subagents): use only for temporary parallel read-only research workers. They are not group Agents, have no agent_id, identity, memory, or persistent conversation, and receive all required context inside each task.")
+                        append("\nNever substitute invoke_subagents for a named delegation. Never pass a name or database ID as agent_id.")
                     }
                     if (explicitlyMentioned.isNotEmpty()) {
-                        append("\nHost-resolved explicit delegation: ${explicitlyMentioned.joinToString { "${it.name} (agent_id=${it.id})" }}. Call delegate_agent for each resolved agent before answering.")
+                        append("\nHost-resolved explicit delegation: ${explicitlyMentioned.joinToString { "${it.name} (agent_id=${it.localId})" }}. Call delegate_agent for each resolved agent before answering.")
                     }
-                    val unresolvedAgentIds = composerReferences.agentIds.filter { id -> members.none { it.id == id } }
+                    val unresolvedAgentIds = composerReferences.agentIds.filter { id -> members.none { it.localId == id } }
                     if (unresolvedAgentIds.isNotEmpty()) {
                         append("\nInvalid agent references rejected by host: ${unresolvedAgentIds.joinToString()}. Do not delegate them.")
                     }

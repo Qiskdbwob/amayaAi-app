@@ -1,4 +1,4 @@
-﻿package com.amaya.intelligence.tools
+package com.amaya.intelligence.tools
 
 import com.amaya.intelligence.domain.security.CommandValidator
 import com.amaya.intelligence.domain.security.ValidationResult
