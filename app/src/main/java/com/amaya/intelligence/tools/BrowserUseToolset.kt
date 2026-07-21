@@ -27,16 +27,14 @@ class BrowserUseToolset @Inject constructor(
                     "string",
                     "Single browser action to run",
                     required = false,
-                    enum = listOf(
-                        "open_url", "observe", "click", "type", "press_key", "scroll", "search",
-                        "go_back", "reload"
-                    )
+                    enum = com.amaya.intelligence.impl.local.browser.BrowserActionCatalog.names
                 ),
-                ToolParameter("params", "object", "Parameters for action. Common fields: url, element_id, selector, query, text, key, submit, append, direction, amount, timeout_ms. Use element_id from agent.interactive_elements when possible. Never pass password/OTP/token text unless user allowed once.", required = false),
+                ToolParameter("params", "object", "Parameters for action. Common fields: url, page_id, element_id, selector, query, text, key, submit, append, direction, amount, timeout_ms.", required = false),
                 ToolParameter("url", "string", "Top-level shortcut for open_url/new_tab", required = false),
                 ToolParameter("element_id", "string", "Top-level shortcut for click/type_text/clear_input target. Prefer this over selector.", required = false),
                 ToolParameter("query", "string", "Top-level shortcut for find_element/wait_for_element. Use a short visible label/text.", required = false),
-                ToolParameter("text", "string", "Top-level shortcut for type_text content. Do not send sensitive data unless user allowed once.", required = false),
+                ToolParameter("text", "string", "Top-level shortcut for type_text content. Supports any user-provided text.", required = false),
+                ToolParameter("expression", "string", "JavaScript expression or script to run in the active local GeckoView.", required = false),
                 ToolParameter("steps", "array", "Batch related browser steps. Each item: {action:string, params:{url|element_id|query|text|...}}. Strongly preferred for browsing tasks: open_url -> get_dom -> find_element/click/read.", required = false, items = "object"),
                 ToolParameter("reset_task", "boolean", "Start a fresh parent Browser task instead of appending to the current one", required = false)
             )
@@ -52,7 +50,16 @@ class BrowserUseToolset @Inject constructor(
 
         override suspend fun execute(arguments: Map<String, Any?>, context: ToolExecutionContext): ToolResult {
             val json = browserSessionManager.executeBrowserTask(arguments, context)
-            return ToolResult.Success(json, mapOf("tool_family" to "browser", "parent_tool" to true))
+            val screenshot = browserSessionManager.takeLastScreenshotAttachment()
+            val metadata = buildMap<String, Any> {
+                put("tool_family", "browser")
+                put("parent_tool", true)
+                screenshot?.let {
+                    put("bridge_image_base64", it)
+                    put("bridge_image_format", "jpeg")
+                }
+            }
+            return ToolResult.Success(json, metadata)
         }
     }
 }

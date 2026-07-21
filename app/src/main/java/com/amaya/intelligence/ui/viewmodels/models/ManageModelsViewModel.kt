@@ -191,6 +191,20 @@ class ManageModelsViewModel @Inject constructor(
         }
     }
 
+    fun saveModel(connectionId: String, model: ConfiguredModel, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            _operation.update { it.copy(loading = true, error = null) }
+            runCatching {
+                settingsManager.updateConfiguredModel(connectionId, model)
+            }.onSuccess {
+                _operation.value = OperationState()
+                onSuccess()
+            }.onFailure { failure ->
+                _operation.update { it.copy(loading = false, error = failure.message ?: "Could not save model") }
+            }
+        }
+    }
+
     fun selectModel(connectionId: String, modelId: String, onSuccess: () -> Unit = {}) {
         viewModelScope.launch {
             runCatching {

@@ -1,7 +1,15 @@
 package com.amaya.intelligence.impl.local.browser
 
 import android.content.Context
-import android.webkit.WebView
+import android.net.Uri
+import android.view.View
+import org.mozilla.geckoview.GeckoSession
+import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.WebResponse
+import androidx.core.content.FileProvider
+import android.webkit.URLUtil
+import java.io.File
+import java.io.FileOutputStream
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -9,6 +17,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
@@ -21,55 +32,319 @@ import com.amaya.intelligence.tools.ToolExecutionContext
 @Singleton
 class BrowserSessionManager @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val safetyGuard: SafetyGuard
 ) {
+    private var sessionId = newSessionId()
     private val initialTab = BrowserPageTab()
-    private val _uiState = MutableStateFlow(BrowserUiState(activeTabId = initialTab.id, tabs = listOf(initialTab)))
+    private val _uiState = MutableStateFlow(BrowserUiState(
+        sessionId = sessionId,
+        activeTabId = initialTab.id,
+        tabs = listOf(initialTab)
+    ))
     val uiState: StateFlow<BrowserUiState> = _uiState.asStateFlow()
 
+    private data class PageRuntime(val tabId: String, val view: GeckoView, val session: GeckoSession, val controller: AndroidBrowserController)
+
     @Volatile private var controller: AndroidBrowserController? = null
-    @Volatile private var sharedWebView: WebView? = null
+    private val pageRuntimes = mutableMapOf<String, PageRuntime>()
     private val assistantStreamBuffer = StringBuilder()
     private var lastAssistantStreamUiEmitAt = 0L
 
-    private val sessionId = "sess_android_${UUID.randomUUID().toString().take(8)}"
     private val browserId = "browser_local_001"
     private var parentTaskId = "browser_task_${UUID.randomUUID().toString().take(8)}"
     private var parentStartedAt = BrowserResponseFormatter.nowIso()
     private var parentSummary = "Browser task"
     private val parentSubToolcalls = mutableListOf<JSONObject>()
     private var conversationKey: String? = null
+    private var pendingRestoreUrl: String? = null
+    private val prefs = context.getSharedPreferences("browser_sessions", Context.MODE_PRIVATE)
     private val executionMutex = Mutex()
-    @Volatile private var approvalGrant: BrowserApprovalGrant? = null
+    @Volatile private var fileChooserCallback: ((Array<Uri>?) -> Unit)? = null
+    @Volatile private var pendingUploadAcceptTypes: Array<String> = emptyArray()
+    @Volatile private var pendingUploadMultiple: Boolean = false
+    private var workspacePath: String? = null
+    private var lastDownloadUri: String? = null
+    private var lastDownloadAtMs = 0L
+    private val resumeScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
 
-    fun resetForConversation(key: String) {
-        if (conversationKey == key) return
+    fun setWorkspace(path: String?) { workspacePath = path?.takeIf(String::isNotBlank) }
+
+    fun canOpenOperator(): Boolean = _uiState.value.agentId != null && conversationKey != null
+
+    fun markAuthHandoffCompleted() { _uiState.update { it.copy(currentAction = "External verification completed") } }
+
+    fun releaseInactiveRuntimes() {
+        val active = _uiState.value.activeTabId
+        pageRuntimes.keys.filter { it != active }.forEach { id ->
+            pageRuntimes.remove(id)?.let { runtime -> runtime.controller.resetToBlank(); GeckoBrowserRuntime.detach(runtime.session); runtime.session.close() }
+        }
+    }
+
+    fun resetForConversation(key: String, agentId: Long? = null) {
+        if (conversationKey == key && _uiState.value.agentId == agentId) return
         conversationKey = key
-        controller?.cancel()
-        controller?.resetToBlank()
+        sessionId = stableSessionId(key, agentId)
+        pageRuntimes.values.forEach { runtime ->
+            runtime.controller.resetToBlank()
+            GeckoBrowserRuntime.detach(runtime.session)
+            runtime.session.close()
+        }
+        pageRuntimes.clear()
+        controller = null
+        pendingRestoreUrl = restoreState(sessionId)
         parentTaskId = "browser_task_${UUID.randomUUID().toString().take(8)}"
         parentStartedAt = BrowserResponseFormatter.nowIso()
         parentSummary = "Browser task"
         parentSubToolcalls.clear()
-        approvalGrant = null
-        val tab = BrowserPageTab()
-        _uiState.value = BrowserUiState(activeTabId = tab.id, tabs = listOf(tab))
+        val restoredTabs = restoreTabs(sessionId)
+        val restoredHistory = restoreHistory(sessionId)
+        val tab = restoredTabs.firstOrNull() ?: BrowserPageTab()
+        _uiState.value = BrowserUiState(
+            sessionId = sessionId,
+            browserId = browserId,
+            conversationKey = conversationKey,
+            agentId = agentId,
+            activeTabId = prefs.getString("${sessionId}.active_tab_id", null)
+                ?.takeIf { id -> restoredTabs.any { it.id == id } }
+                ?: tab.id,
+            tabs = restoredTabs.ifEmpty { listOf(tab) },
+            sessionHistory = restoredHistory
+        )
     }
 
     fun resetEphemeral() {
         conversationKey = null
-        controller?.cancel()
-        controller?.resetToBlank()
+        sessionId = newSessionId()
+        pageRuntimes.values.forEach { runtime ->
+            runtime.controller.resetToBlank()
+            GeckoBrowserRuntime.detach(runtime.session)
+            runtime.session.close()
+        }
+        pageRuntimes.clear()
+        controller = null
         parentSubToolcalls.clear()
         val tab = BrowserPageTab()
-        _uiState.value = BrowserUiState(activeTabId = tab.id, tabs = listOf(tab))
+        _uiState.value = BrowserUiState(
+            sessionId = sessionId,
+            browserId = browserId,
+            activeTabId = tab.id,
+            tabs = listOf(tab)
+        )
     }
 
-    fun acquireSharedWebView(): WebView {
-        check(android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
-            "Browser WebView must be acquired on the main thread"
+    fun sessionId(): String = sessionId
+
+    fun takeLastScreenshotAttachment(): String? = _uiState.value.screenshotBase64.also {
+        if (it != null) _uiState.update { state -> state.copy(screenshotBase64 = null) }
+    }
+
+    suspend fun captureScreenshotToWorkspace(): BrowserToolResponse {
+        val root = workspacePath?.let(::File)?.let { File(it, ".amaya/browser/screenshots") }
+            ?: return BrowserToolResponse.Failure("Screenshot blocked: select a workspace first")
+        val result = execute("get_screenshot", emptyMap())
+        val success = result as? BrowserToolResponse.Success ?: return result
+        val image = success.metadata["image_base64"] as? String ?: return BrowserToolResponse.Failure("Screenshot image was empty")
+        return runCatching {
+            withContext(Dispatchers.IO) {
+                root.mkdirs()
+                val file = uniqueFile(root, "${System.currentTimeMillis()}.jpg")
+                file.writeBytes(android.util.Base64.decode(image, android.util.Base64.DEFAULT))
+                success.copy(output = "Screenshot saved", metadata = success.metadata + ("relative_path" to ".amaya/browser/screenshots/${file.name}"))
+            }
+        }.getOrElse { BrowserToolResponse.Failure("Screenshot failed: ${it.message ?: "unknown error"}") }
+    }
+
+    fun clearActiveSiteData() {
+        val parsed = Uri.parse(_uiState.value.activeUrl)
+        val origin = parsed.takeIf { it.scheme == "http" || it.scheme == "https" }?.let { "${it.scheme}://${it.authority}" } ?: return
+        GeckoBrowserRuntime.clearHostData(context, parsed.host ?: return)
+        _uiState.update { it.copy(currentAction = "Cleared site data for $origin") }
+    }
+
+    fun provideUploadUris(uris: Array<Uri>?) {
+        val callback = fileChooserCallback ?: return
+        fileChooserCallback = null
+        _uiState.update { it.copy(uploadPending = false, uploadAcceptTypes = emptyList()) }
+        if (uris.isNullOrEmpty()) {
+            callback(null)
+            return
         }
-        return ensureSharedControllerOnMain().first
+        val selected = if (pendingUploadMultiple) uris.take(10) else uris.take(1)
+        val acceptTypes = pendingUploadAcceptTypes.filter(String::isNotBlank)
+        resumeScope.launch(Dispatchers.IO) {
+            val staged = runCatching {
+                val root = workspacePath?.let(::File)?.let { File(it, ".amaya/browser/uploads") }
+                    ?: error("Upload blocked: select a workspace first")
+                root.mkdirs()
+                selected.mapNotNull { uri ->
+                    val type = context.contentResolver.getType(uri).orEmpty()
+                    if (acceptTypes.isNotEmpty() && acceptTypes.none { matchesMime(it, type) }) return@mapNotNull null
+                    val name = sanitizeFileName(queryDisplayName(uri) ?: "upload")
+                    val target = uniqueFile(root, name)
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        FileOutputStream(target).use { output ->
+                            var total = 0L
+                            val buffer = ByteArray(8192)
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                total += count
+                                require(total <= 50L * 1024L * 1024L) { "Upload exceeds 50MB limit" }
+                                output.write(buffer, 0, count)
+                            }
+                        }
+                    } ?: error("Cannot read selected file")
+                    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", target)
+                }.toTypedArray()
+            }
+            withContext(Dispatchers.Main.immediate) {
+                staged.onSuccess { values ->
+                    if (values.isEmpty()) callback(null)
+                    else callback(values)
+                }.onFailure {
+                    callback(null)
+                    onBrowserError(it.message ?: "Upload failed")
+                }
+            }
+        }
+    }
+
+    fun cancelPendingUpload() = provideUploadUris(null)
+
+    private fun matchesMime(pattern: String, actual: String): Boolean = pattern == "*/*" || pattern == actual || (pattern.endsWith("/*") && actual.startsWith(pattern.removeSuffix("*")))
+
+    private fun queryDisplayName(uri: Uri): String? = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        if (cursor.moveToFirst()) cursor.getString(0) else null
+    }
+
+    private fun sanitizeFileName(value: String): String = value.replace(Regex("[^A-Za-z0-9._-]"), "_").take(180).ifBlank { "upload" }
+
+    fun openDownload(download: BrowserDownload): Uri? = workspacePath?.let(::File)?.let { root ->
+        val file = File(root, download.relativePath.removePrefix(".amaya/browser/downloads/")).takeIf(File::isFile) ?: return@let null
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }
+
+    fun deleteDownload(download: BrowserDownload) {
+        workspacePath?.let(::File)?.let { root -> File(root, download.relativePath.removePrefix(".amaya/browser/downloads/")).delete() }
+        _uiState.update { it.copy(downloads = it.downloads.filterNot { item -> item.relativePath == download.relativePath }) }
+    }
+
+    fun clearSessionState() {
+        if (conversationKey == null) return
+        prefs.edit().remove("${sessionId}.tabs").remove("${sessionId}.history").remove("${sessionId}.active_url").remove("${sessionId}.active_title").remove("${sessionId}.active_tab_id").apply()
+        resetEphemeral()
+    }
+
+    private fun uniqueFile(root: File, name: String): File {
+        val base = name.substringBeforeLast('.', name)
+        val extension = name.substringAfterLast('.', "").takeIf { it != name }
+        var index = 0
+        var candidate = File(root, name)
+        while (candidate.exists()) {
+            index++
+            candidate = File(root, "$base ($index)${extension?.let { ".${it}" }.orEmpty()}")
+        }
+        return candidate
+    }
+
+    @Synchronized
+    private fun handleGeckoDownload(response: WebResponse) {
+        val now = System.currentTimeMillis()
+        if (response.uri == lastDownloadUri && now - lastDownloadAtMs < 1_000) {
+            response.body?.close()
+            android.util.Log.i("AmayaBrowser", "download duplicate ignored uri=${response.uri}")
+            return
+        }
+        lastDownloadUri = response.uri
+        lastDownloadAtMs = now
+        val root = workspacePath?.let(::File)?.let { File(it, ".amaya/browser/downloads") } ?: run { onBrowserError("Download blocked: select a workspace first"); response.body?.close(); return }
+        android.util.Log.i("AmayaBrowser", "download callback uri=${response.uri} status=${response.statusCode} hasBody=${response.body != null}")
+        resumeScope.launch(Dispatchers.IO) {
+            runCatching {
+                root.mkdirs()
+                val url = response.uri
+                val mimeType = response.headers["content-type"] ?: "application/octet-stream"
+                val name = URLUtil.guessFileName(url, response.headers["content-disposition"], mimeType).replace(Regex("[^A-Za-z0-9._-]"), "_").take(180).ifBlank { "download" }
+                val target = uniqueFile(root, name)
+                var total = 0L
+                (response.body ?: error("Download body unavailable")).use { input -> FileOutputStream(target).use { output ->
+                    val buffer = ByteArray(8192)
+                    while (true) { val count = input.read(buffer); if (count < 0) break; total += count; require(total <= 100L * 1024L * 1024L) { "Download exceeds 100MB limit" }; output.write(buffer, 0, count) }
+                } }
+                val relative = ".amaya/browser/downloads/${target.name}"
+                android.util.Log.i("AmayaBrowser", "download saved path=$relative bytes=$total")
+                withContext(Dispatchers.Main.immediate) { _uiState.update { it.copy(downloads = (it.downloads + BrowserDownload(target.name, relative, mimeType, target.length())).takeLast(50)) } }
+            }.onFailure { error ->
+                android.util.Log.e("AmayaBrowser", "download failed", error)
+                withContext(Dispatchers.Main.immediate) { onBrowserError("Download failed: ${error.message ?: "unknown error"}") }
+            }
+        }
+    }
+
+
+    suspend fun switchToTab(pageId: String): BrowserToolResponse = execute("switch_tab", mapOf("page_id" to pageId))
+
+    private fun newSessionId(): String = "sess_android_${UUID.randomUUID().toString().take(8)}"
+
+    private fun stableSessionId(key: String, agentId: Long?): String = "sess_android_${UUID.nameUUIDFromBytes("$key|agent:$agentId".toByteArray()).toString().take(8)}"
+
+    private fun restoreState(id: String): String? = prefs.getString("$id.active_url", null)
+
+    private fun restoreTabs(id: String): List<BrowserPageTab> = runCatching {
+        val array = JSONArray(prefs.getString("$id.tabs", "[]"))
+        (0 until array.length()).mapNotNull { index ->
+            val item = array.optJSONObject(index) ?: return@mapNotNull null
+            BrowserPageTab(
+                id = item.optString("id").ifBlank { UUID.randomUUID().toString() },
+                title = item.optString("title", "New Page"),
+                url = item.optString("url", "about:blank"),
+                canGoBack = item.optBoolean("can_go_back"),
+                canGoForward = item.optBoolean("can_go_forward"),
+                scrollX = item.optInt("scroll_x"),
+                scrollY = item.optInt("scroll_y")
+            )
+        }
+    }.getOrDefault(emptyList())
+
+    private fun restoreHistory(id: String): List<BrowserHistoryEntry> = runCatching {
+        val array = JSONArray(prefs.getString("$id.history", "[]"))
+        (0 until array.length()).mapNotNull { index ->
+            val item = array.optJSONObject(index) ?: return@mapNotNull null
+            item.optString("url").takeIf(String::isNotBlank)?.let { BrowserHistoryEntry(it, item.optString("title", it), item.optLong("visited_at")) }
+        }.takeLast(60)
+    }.getOrDefault(emptyList())
+
+    private fun persistState(state: BrowserUiState) {
+        val active = state.tabs.firstOrNull { it.id == state.activeTabId } ?: return
+        prefs.edit()
+            .putString("${state.sessionId}.active_url", active.url)
+            .putString("${state.sessionId}.active_title", active.title)
+            .putString("${state.sessionId}.active_tab_id", state.activeTabId.orEmpty())
+            .putString("${state.sessionId}.tabs", JSONArray().apply {
+                state.tabs.forEach { tab -> put(JSONObject().apply {
+                    put("id", tab.id); put("title", tab.title); put("url", tab.url)
+                    put("can_go_back", tab.canGoBack); put("can_go_forward", tab.canGoForward)
+                    put("scroll_x", tab.scrollX); put("scroll_y", tab.scrollY)
+                }) }
+            }.toString())
+            .putString("${state.sessionId}.history", JSONArray().apply {
+                state.sessionHistory.forEach { entry -> put(JSONObject().apply {
+                    put("url", entry.url); put("title", entry.title); put("visited_at", entry.visitedAt)
+                }) }
+            }.toString())
+            .apply()
+    }
+
+    fun acquireSharedBrowserView(): GeckoView {
+        check(android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            "Browser view must be acquired on the main thread"
+        }
+        val view = ensureSharedControllerOnMain().first
+        if (!pendingRestoreUrl.isNullOrBlank() && controller?.currentUrl() == "about:blank") {
+            val url = pendingRestoreUrl ?: return view
+            pendingRestoreUrl = null
+            controller?.session?.loadUri(url)
+        }
+        return view
     }
 
     fun isDispatchingAgentInput(): Boolean = controller?.isDispatchingAgentInput == true
@@ -78,48 +353,61 @@ class BrowserSessionManager @Inject constructor(
         controller?.hideSoftKeyboard()
     }
 
-    fun attachController(controller: AndroidBrowserController) {
-        this.controller = controller
-        _uiState.update { state ->
-            state.copy(
-                status = if (state.isPaused) BrowserAgentStatus.PAUSED else BrowserAgentStatus.IDLE,
-                currentAction = "Browser ready",
-                lastError = null
-            )
+    private fun ensureSharedControllerOnMain(): Pair<GeckoView, AndroidBrowserController> {
+        val tabId = _uiState.value.activeTabId ?: BrowserPageTab().id
+        pageRuntimes[tabId]?.let { runtime ->
+            controller = runtime.controller
+            return runtime.view to runtime.controller
         }
-    }
-
-    fun detachController(controller: AndroidBrowserController) {
-        // Keep the shared/headless controller alive so manual browser opens resume
-        // the same page instead of showing a blank WebView.
-        if (this.controller == null) this.controller = controller
-    }
-
-    private fun ensureSharedControllerOnMain(): Pair<WebView, AndroidBrowserController> {
-        val existingWebView = sharedWebView
-        val existingController = controller
-        if (existingWebView != null && existingController != null) return existingWebView to existingController
-
-        val webView = existingWebView ?: WebView(context).also { sharedWebView = it }
-        val newController = existingController ?: AndroidBrowserController(
-            webView = webView,
-            onNavigationChanged = this::onNavigationChanged,
+        val tab = _uiState.value.tabs.firstOrNull { it.id == tabId } ?: BrowserPageTab(id = tabId)
+        val session = GeckoSession()
+        session.open(GeckoBrowserRuntime.get(context))
+        val view = GeckoView(context).apply {
+            setBackgroundColor(android.graphics.Color.WHITE)
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            setSession(session)
+        }
+        val newController = AndroidBrowserController(
+            geckoView = view,
+            session = session,
+            onNavigationChanged = { url, title, progress, back, forward ->
+                onNavigationChanged(tabId, url, title, progress, back, forward)
+            },
+            onScrollChanged = { x, y -> onScrollChanged(tabId, x, y) },
             onError = this::onBrowserError,
-            onAgentTouch = this::onAgentTouch
-        ).also { controller = it }
+            onAgentTouch = this::onAgentTouch,
+            onDownload = this::handleGeckoDownload,
+            onFileChooser = { acceptTypes, multiple, callback ->
+                fileChooserCallback?.invoke(null)
+                fileChooserCallback = callback
+                pendingUploadAcceptTypes = acceptTypes
+                pendingUploadMultiple = multiple
+                _uiState.update { it.copy(uploadPending = true, uploadAcceptTypes = acceptTypes.filter(String::isNotBlank), uploadRequestNonce = System.currentTimeMillis()) }
+            }
+        )
+        pageRuntimes[tabId] = PageRuntime(tabId, view, session, newController)
+        controller = newController
         _uiState.update { state ->
             state.copy(
+                sessionId = sessionId,
+                browserId = browserId,
+                conversationKey = conversationKey,
                 status = if (state.isPaused) BrowserAgentStatus.PAUSED else BrowserAgentStatus.IDLE,
                 currentAction = "Browser ready",
                 lastError = null
             )
         }
-        return webView to newController
+        return view to newController
     }
 
-    fun onNavigationChanged(url: String, title: String, progress: Float, canGoBack: Boolean, canGoForward: Boolean) {
+    private fun onScrollChanged(tabId: String, x: Int, y: Int) {
+        _uiState.update { state -> state.copy(tabs = state.tabs.map { tab -> if (tab.id == tabId) tab.copy(scrollX = x, scrollY = y) else tab }) }
+        persistState(_uiState.value)
+    }
+
+    private fun onNavigationChanged(tabId: String, url: String, title: String, progress: Float, canGoBack: Boolean, canGoForward: Boolean) {
         _uiState.update { state ->
-            val activeId = state.activeTabId ?: state.tabs.firstOrNull()?.id
+            val activeId = tabId
             val tabs = state.tabs.map { tab ->
                 if (tab.id == activeId) tab.copy(title = title.ifBlank { url }, url = url, canGoBack = canGoBack, canGoForward = canGoForward) else tab
             }
@@ -128,9 +416,11 @@ class BrowserSessionManager @Inject constructor(
                 activeTitle = title.ifBlank { url },
                 progress = progress,
                 tabs = tabs,
-                sessionHistory = (state.sessionHistory + url).distinct().takeLast(60)
+                sessionHistory = if (url == "about:blank" || state.sessionHistory.lastOrNull()?.url == url) state.sessionHistory else
+                    (state.sessionHistory + BrowserHistoryEntry(url, title.ifBlank { url })).takeLast(60)
             )
         }
+        persistState(_uiState.value)
     }
 
     @Synchronized
@@ -206,6 +496,21 @@ class BrowserSessionManager @Inject constructor(
         arguments: Map<String, Any?>,
         executionContext: ToolExecutionContext = ToolExecutionContext()
     ): String = executionMutex.withLock {
+        if (executionContext.assistantMode != com.amaya.intelligence.domain.models.AssistantMode.AGENT) {
+            return@withLock JSONObject().put("status", "error").put("error", "Browser is available only in Agent mode").toString(2)
+        }
+        if (executionContext.agentCapabilityProfile?.browser == false) {
+            return@withLock JSONObject().put("status", "error").put("error", "Browser capability is disabled for this Agent").toString(2)
+        }
+        if (executionContext.agentId == null) {
+            return@withLock JSONObject().put("status", "error").put("error", "Browser requires an active Agent").toString(2)
+        }
+        val contextKey = executionContext.conversationId?.let { "conversation:$it" }
+            ?: "agent:${executionContext.agentId}"
+        workspacePath = executionContext.workspacePath?.takeIf(String::isNotBlank) ?: workspacePath
+        if (conversationKey != contextKey || _uiState.value.agentId != executionContext.agentId) {
+            resetForConversation(contextKey, executionContext.agentId)
+        }
         _uiState.update { it.copy(browserAccessActive = true) }
         val reset = arguments["reset_task"] == true || parentSubToolcalls.isEmpty()
         if (reset) {
@@ -316,7 +621,12 @@ class BrowserSessionManager @Inject constructor(
     private fun normalizeActionName(raw: String): String {
         val name = raw.removePrefix("browser.").trim()
         return when (name) {
-            "observe", "analyze_page" -> "get_dom"
+            "observe", "analyze_page", "get_snapshot" -> "get_dom"
+            "get_content" -> "get_visible_text"
+            "wait_for_selector" -> "wait_for_element"
+            "wait_for_nav", "wait_for_navigation" -> "wait_for_navigation"
+            "list_pages" -> "get_status"
+            "switch_page" -> "switch_tab"
             "type" -> "type_text"
             "click_element" -> "click"
             "scroll_page", "swipe" -> "scroll"
@@ -331,6 +641,11 @@ class BrowserSessionManager @Inject constructor(
     private fun actionToInternalTool(action: String): String = when (action) {
         "new_tab" -> "new_page"
         "close_tab" -> "close_page"
+        "list_pages" -> "get_status"
+        "switch_page" -> "switch_tab"
+        "wait_for_selector" -> "wait_for_element"
+        "wait_for_nav" -> "wait_for_navigation"
+        "get_content" -> "get_visible_text"
         "click" -> "click_element"
         "scroll" -> "scroll_page"
         "screenshot" -> "get_screenshot"
@@ -343,7 +658,17 @@ class BrowserSessionManager @Inject constructor(
         put("session_id", sessionId)
         put("browser_id", browserId)
         put("active_page_id", _uiState.value.activeTabId ?: "")
+        put("pages", BrowserResponseFormatter.toJsonValue(pageList()))
     }
+
+    private fun pageList(): List<Map<String, Any>> = _uiState.value.tabs.map { tab -> mapOf(
+        "page_id" to tab.id,
+        "active" to (tab.id == _uiState.value.activeTabId),
+        "title" to tab.title,
+        "url" to tab.url,
+        "can_go_back" to tab.canGoBack,
+        "can_go_forward" to tab.canGoForward
+    ) }
 
     private fun currentSessionMetadata(): Map<String, Any> = mapOf(
         "url" to _uiState.value.activeUrl,
@@ -351,7 +676,7 @@ class BrowserSessionManager @Inject constructor(
         "session_id" to sessionId,
         "browser_id" to browserId,
         "active_page_id" to (_uiState.value.activeTabId ?: ""),
-        "tabs" to _uiState.value.tabs.map { mapOf("id" to it.id, "title" to it.title, "url" to it.url) },
+        "pages" to pageList(),
         "status" to _uiState.value.status.name.lowercase()
     )
 
@@ -395,6 +720,7 @@ class BrowserSessionManager @Inject constructor(
                         status = if (toolName == "pause_session") BrowserAgentStatus.PAUSED else BrowserAgentStatus.IDLE,
                         currentAction = "Completed ${readableAction(toolName)}",
                         screenshotBase64 = image ?: it.screenshotBase64,
+                        evaluateResult = if (toolName == "evaluate") result.output else it.evaluateResult,
                         lastError = null
                     )
                 }
@@ -409,64 +735,8 @@ class BrowserSessionManager @Inject constructor(
                     )
                 }
             }
-            is BrowserToolResponse.SafetyPause -> {
-                appendLog(toolName, argsPreview, "paused", result.prompt.reason)
-                _uiState.update {
-                    it.copy(
-                        status = BrowserAgentStatus.WAITING_INPUT,
-                        currentAction = "Waiting for user decision",
-                        safetyPrompt = result.prompt,
-                        isPaused = true
-                    )
-                }
-            }
         }
         return result
-    }
-
-    fun userManualInput() {
-        _uiState.update {
-            it.copy(
-                status = BrowserAgentStatus.WAITING_INPUT,
-                currentAction = "User is filling sensitive input manually",
-                safetyPrompt = null,
-                isPaused = true
-            )
-        }
-        appendLog("human_input", "", "waiting", "User chose manual input")
-    }
-
-    fun skipSensitiveStep() {
-        _uiState.update {
-            it.copy(
-                status = BrowserAgentStatus.PAUSED,
-                currentAction = "Sensitive step skipped",
-                safetyPrompt = null,
-                isPaused = true
-            )
-        }
-        appendLog("safety", "", "skipped", "User skipped sensitive step")
-    }
-
-    fun allowSensitiveAndResume() {
-        _uiState.value.safetyPrompt?.let { prompt ->
-            approvalGrant = BrowserApprovalGrant(
-                toolName = prompt.toolName.orEmpty(),
-                selector = prompt.selector,
-                origin = prompt.origin.orEmpty(),
-                actionFingerprint = prompt.actionFingerprint.orEmpty(),
-                expiresAt = System.currentTimeMillis() + 60_000L
-            )
-        }
-        _uiState.update {
-            it.copy(
-                status = BrowserAgentStatus.IDLE,
-                currentAction = "Sensitive action allowed for this step",
-                safetyPrompt = null,
-                isPaused = false
-            )
-        }
-        appendLog("safety", "", "allowed", "User allowed agent to continue")
     }
 
     fun cancelFromUser() {
@@ -475,7 +745,6 @@ class BrowserSessionManager @Inject constructor(
             it.copy(
                 status = BrowserAgentStatus.CANCELLED,
                 currentAction = "Cancelled by user",
-                safetyPrompt = null,
                 isPaused = false,
                 isCancelled = true
             )
@@ -485,46 +754,6 @@ class BrowserSessionManager @Inject constructor(
 
     private suspend fun executeBrowserTool(toolName: String, arguments: Map<String, Any?>): BrowserToolResponse {
         val controller = ensureController()
-            ?: return BrowserToolResponse.Failure("Browser UI is not ready. Open AI Browser Operator and retry.")
-        val origin = runCatching { android.net.Uri.parse(_uiState.value.activeUrl).let { "${it.scheme}://${it.authority}" } }
-            .getOrDefault("")
-        fun fingerprint(selector: String?): String = java.security.MessageDigest.getInstance("SHA-256")
-            .digest(listOf(
-                toolName,
-                selector.orEmpty(),
-                arguments.toSortedMap().entries.joinToString("&") { "${it.key}=${it.value}" }
-            ).joinToString("|").toByteArray())
-            .joinToString("") { "%02x".format(it) }
-        fun consumeApproval(selector: String?): Boolean {
-            val grant = approvalGrant ?: return false
-            val valid = grant.expiresAt >= System.currentTimeMillis() &&
-                grant.toolName == toolName &&
-                grant.origin == origin &&
-                grant.actionFingerprint == fingerprint(selector) &&
-                grant.selector == selector
-            if (valid) approvalGrant = null
-            return valid
-        }
-        fun approvalPause(reason: String, selector: String? = null) = BrowserToolResponse.SafetyPause(
-            BrowserSafetyPrompt(
-                reason = reason,
-                selector = selector,
-                toolName = toolName,
-                origin = origin,
-                actionFingerprint = fingerprint(selector)
-            )
-        )
-
-        suspend fun guardSelector(selector: String): BrowserToolResponse? {
-            val element = controller.inspectElement(selector)
-            if (safetyGuard.requiresApproval(toolName, element) && !consumeApproval(selector)) {
-                return BrowserToolResponse.SafetyPause(
-                    safetyGuard.buildPrompt(toolName, element, origin, fingerprint(selector))
-                )
-            }
-            return null
-        }
-
         return when (toolName) {
             "open_url" -> {
                 val url = arguments["url"]?.toString() ?: return BrowserToolResponse.Failure("Missing url")
@@ -532,19 +761,22 @@ class BrowserSessionManager @Inject constructor(
             }
             "new_page" -> {
                 createTab(arguments["url"]?.toString())
-                controller.newPage(arguments["url"]?.toString()).also { updateTabAfterNavigation(controller) }
+                val runtime = withContext(Dispatchers.Main.immediate) { ensureSharedControllerOnMain() }
+                GeckoBrowserRuntime.attach(context, runtime.second.session, reloadIfNeeded = false)
+                runtime.second.newPage(arguments["url"]?.toString()).also { updateTabAfterNavigation(runtime.second) }
             }
             "close_page" -> closeActiveTab(controller)
             "switch_tab" -> switchTab(controller, arguments["page_id"]?.toString() ?: arguments["tab_id"]?.toString())
             "click_element" -> {
                 val selector = selectorArg(arguments)
                     ?: return domBackedFailure(controller, "Missing selector/element_id for click. Use element_id from interactive_elements.")
-                guardSelector(selector) ?: run {
-                    val clicked = controller.click(selector).also { updateTabAfterNavigation(controller) }
-                    if (clicked is BrowserToolResponse.Failure && clicked.message.contains("not found", ignoreCase = true)) {
-                        domBackedFailure(controller, "Element not found for click target: $selector")
-                    } else clicked
+                val clicked = try {
+                    controller.click(selector)
+                } catch (error: IllegalStateException) {
+                    if (error.message == "Browser document navigated") controller.waitForNavigation(30_000)
+                    else BrowserToolResponse.Failure("Click failed: ${error.message ?: "unknown error"}")
                 }
+                clicked.also { updateTabAfterNavigation(controller) }
             }
             "tap" -> controller.tap(
                 intArg(arguments, "x", -1),
@@ -563,39 +795,31 @@ class BrowserSessionManager @Inject constructor(
             "focus" -> {
                 val selector = selectorArg(arguments)
                     ?: return domBackedFailure(controller, "Missing selector/element_id for focus. Use element_id from interactive_elements.")
-                guardSelector(selector) ?: controller.focus(selector)
+                controller.focus(selector)
             }
             "press_key" -> {
                 val key = arguments["key"]?.toString() ?: arguments["text"]?.toString() ?: "ENTER"
-                if (key.equals("ENTER", true) && !consumeApproval(null)) {
-                    return approvalPause("Pressing Enter may submit a form or trigger an external action. User approval is required.")
-                }
                 controller.pressKey(key).also { updateTabAfterNavigation(controller) }
             }
             "search" -> {
                 val text = arguments["query"]?.toString() ?: arguments["text"]?.toString()
                     ?: return domBackedFailure(controller, "Missing query/text for search.")
                 val selector = selectorArg(arguments)
-                if (selector != null) guardSelector(selector)?.let { return it }
                 controller.search(text, selector).also { updateTabAfterNavigation(controller) }
             }
             "type_text" -> {
                 val selector = selectorArg(arguments)
                     ?: return domBackedFailure(controller, "Missing selector/element_id for type_text. Use element_id from interactive_elements.")
                 val text = arguments["text"]?.toString() ?: return BrowserToolResponse.Failure("Missing text for type_text")
-                guardSelector(selector) ?: run {
-                    val typed = controller.typeText(selector, text, boolArg(arguments, "append", true))
-                    if (typed is BrowserToolResponse.Success && boolArg(arguments, "submit", false) && !consumeApproval(selector)) {
-                        approvalPause("Submitting this form may create an external change. User approval is required.", selector)
-                    } else if (typed is BrowserToolResponse.Success && boolArg(arguments, "submit", false)) {
-                        controller.submitFromContext(selector).also { updateTabAfterNavigation(controller) }
-                    } else typed
-                }
+                val typed = controller.typeText(selector, text, boolArg(arguments, "append", true))
+                if (typed is BrowserToolResponse.Success && boolArg(arguments, "submit", false)) {
+                    controller.submitFromContext(selector).also { updateTabAfterNavigation(controller) }
+                } else typed
             }
             "clear_input" -> {
                 val selector = selectorArg(arguments)
                     ?: return domBackedFailure(controller, "Missing selector/element_id for clear_input. Use element_id from interactive_elements.")
-                guardSelector(selector) ?: controller.clearInput(selector)
+                controller.clearInput(selector)
             }
             "scroll_page" -> {
                 val direction = arguments["direction"]?.toString()
@@ -611,8 +835,26 @@ class BrowserSessionManager @Inject constructor(
                 }
             }
             "get_dom" -> controller.getDom()
+            "get_html" -> controller.getHtml()
             "get_visible_text" -> controller.getVisibleText()
             "get_screenshot" -> controller.screenshot()
+            "evaluate" -> {
+                val expression = arguments["expression"]?.toString() ?: arguments["script"]?.toString()
+                    ?: return BrowserToolResponse.Failure("Missing expression for evaluate")
+                controller.evaluate(expression, longArg(arguments, "timeout_ms", 10_000))
+            }
+            "hover" -> {
+                val selector = selectorArg(arguments)
+                    ?: return domBackedFailure(controller, "Missing selector/element_id for hover")
+                controller.hover(selector)
+            }
+            "select_option" -> {
+                val selector = selectorArg(arguments)
+                    ?: return domBackedFailure(controller, "Missing selector/element_id for select_option")
+                val value = firstString(arguments, "value", "text", "label")
+                    ?: return BrowserToolResponse.Failure("Missing value for select_option")
+                controller.selectOption(selector, value)
+            }
             "find_element" -> {
                 val query = queryArg(arguments)
                 if (query == null) {
@@ -631,6 +873,7 @@ class BrowserSessionManager @Inject constructor(
                     domBackedFailure(controller, "Timed out waiting for element: $query")
                 } else found
             }
+            "wait_for_navigation" -> controller.waitForNavigation(longArg(arguments, "timeout_ms", 30_000)).also { updateTabAfterNavigation(controller) }
             "go_back" -> controller.goBack().also { updateTabAfterNavigation(controller) }
             "go_forward" -> controller.goForward().also { updateTabAfterNavigation(controller) }
             "reload_page" -> controller.reload().also { updateTabAfterNavigation(controller) }
@@ -638,23 +881,33 @@ class BrowserSessionManager @Inject constructor(
         }
     }
 
-    private suspend fun ensureController(): AndroidBrowserController? {
-        controller?.let { return it }
-        return withContext(Dispatchers.Main.immediate) {
+    private suspend fun ensureController(): AndroidBrowserController {
+        val active = controller ?: withContext(Dispatchers.Main.immediate) {
             ensureSharedControllerOnMain().second
         }
+        GeckoBrowserRuntime.attach(context, active.session, reloadIfNeeded = false)
+        return active
     }
 
     private fun createTab(url: String?) {
+        if (_uiState.value.tabs.size >= 8) {
+            val removable = _uiState.value.tabs.firstOrNull { it.id != _uiState.value.activeTabId }
+            removable?.let { old -> pageRuntimes.remove(old.id)?.let { it.controller.resetToBlank(); GeckoBrowserRuntime.detach(it.session); it.session.close() } }
+            _uiState.update { it.copy(tabs = it.tabs.filterNot { tab -> tab.id == removable?.id }) }
+        }
         val tab = BrowserPageTab(title = "New Page", url = url ?: "about:blank")
         _uiState.update { it.copy(tabs = it.tabs + tab, activeTabId = tab.id) }
     }
 
-    private suspend fun switchTab(controller: AndroidBrowserController, pageId: String?): BrowserToolResponse {
+    private suspend fun switchTab(@Suppress("UNUSED_PARAMETER") current: AndroidBrowserController, pageId: String?): BrowserToolResponse {
         val target = _uiState.value.tabs.firstOrNull { it.id == pageId }
             ?: return BrowserToolResponse.Failure("Tab not found: ${pageId ?: "missing page_id"}")
-        _uiState.update { it.copy(activeTabId = target.id) }
-        return controller.openUrl(target.url).also { updateTabAfterNavigation(controller) }
+        _uiState.update { it.copy(activeTabId = target.id, activeUrl = target.url, activeTitle = target.title) }
+        val targetRuntime = withContext(Dispatchers.Main.immediate) { ensureSharedControllerOnMain() }
+        GeckoBrowserRuntime.attach(context, targetRuntime.second.session, reloadIfNeeded = false)
+        return targetRuntime.second.openUrl(target.url).also {
+            updateTabAfterNavigation(targetRuntime.second)
+        }
     }
 
     private suspend fun closeActiveTab(controller: AndroidBrowserController): BrowserToolResponse {
@@ -662,13 +915,19 @@ class BrowserSessionManager @Inject constructor(
         val active = state.activeTabId
         val remaining = state.tabs.filterNot { it.id == active }
         return if (remaining.isEmpty()) {
+            pageRuntimes.remove(active)?.let { it.controller.resetToBlank(); GeckoBrowserRuntime.detach(it.session); it.session.close() }
             val newTab = BrowserPageTab()
-            _uiState.update { it.copy(tabs = listOf(newTab), activeTabId = newTab.id) }
-            controller.closePage()
+            _uiState.update { it.copy(tabs = listOf(newTab), activeTabId = newTab.id, activeUrl = "about:blank", activeTitle = "New Page") }
+            val runtime = withContext(Dispatchers.Main.immediate) { ensureSharedControllerOnMain() }
+            GeckoBrowserRuntime.attach(context, runtime.second.session, reloadIfNeeded = false)
+            runtime.second.closePage()
         } else {
             val next = remaining.last()
-            _uiState.update { it.copy(tabs = remaining, activeTabId = next.id) }
-            controller.openUrl(next.url).also { updateTabAfterNavigation(controller) }
+            pageRuntimes.remove(active)?.let { it.controller.resetToBlank(); GeckoBrowserRuntime.detach(it.session); it.session.close() }
+            _uiState.update { it.copy(tabs = remaining, activeTabId = next.id, activeUrl = next.url, activeTitle = next.title) }
+            val nextRuntime = withContext(Dispatchers.Main.immediate) { ensureSharedControllerOnMain() }
+            GeckoBrowserRuntime.attach(context, nextRuntime.second.session, reloadIfNeeded = false)
+            nextRuntime.second.openUrl(next.url).also { updateTabAfterNavigation(nextRuntime.second) }
         }
     }
 
@@ -681,7 +940,9 @@ class BrowserSessionManager @Inject constructor(
     private suspend fun updateTabAfterNavigation(controller: AndroidBrowserController) {
         withContext(Dispatchers.Main.immediate) {
             val metadata = controller.currentMetadata()
+            val tabId = _uiState.value.activeTabId ?: return@withContext
             onNavigationChanged(
+                tabId,
                 controller.currentUrl(),
                 controller.currentTitle(),
                 1f,
@@ -697,7 +958,7 @@ class BrowserSessionManager @Inject constructor(
     }
 
     private fun resumeSession(): BrowserToolResponse {
-        _uiState.update { it.copy(status = BrowserAgentStatus.IDLE, isPaused = false, safetyPrompt = null, currentAction = "Session resumed") }
+        _uiState.update { it.copy(status = BrowserAgentStatus.IDLE, isPaused = false, currentAction = "Session resumed") }
         return BrowserToolResponse.Success("Browser session resumed")
     }
 

@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -47,6 +49,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -77,6 +80,9 @@ fun BrowserControlDock(
     onAddressChange: (String) -> Unit,
     onGo: () -> Unit,
     onClose: () -> Unit,
+    onPause: () -> Unit = {},
+    onResume: () -> Unit = {},
+    onStop: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -84,9 +90,9 @@ fun BrowserControlDock(
     val logs = remember(state.logs, state.assistantStreamText, state.assistantStreamUpdatedAt) { browserLiveLogs(state) }
 
     val isDark = isSystemInDarkTheme()
-    val bgMain = if (isDark) Color(0xFF17171A) else Color(0xFFF9F9F9)
-    val cardBorder = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
-    val cardBg = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
+    val bgMain = if (isDark) Color(0xFF1D1F24).copy(alpha = 0.92f) else Color(0xFFF7F7FA).copy(alpha = 0.94f)
+    val cardBorder = if (isDark) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.10f)
+    val cardBg = if (isDark) Color(0xFF1C1C1E) else Color.White
 
     val duration = remember(logs, state.status, state.isAssistantStreaming) {
         if (logs.isEmpty()) return@remember "0s"
@@ -113,6 +119,7 @@ fun BrowserControlDock(
     LaunchedEffect(state.isAssistantStreaming, state.status) {
         if (state.isAssistantStreaming) {
             autoDoneExpanded = false
+            if (expanded) expanded = false
         }
         if (!state.isAssistantStreaming && state.status == BrowserAgentStatus.COMPLETED) {
             expanded = true
@@ -125,19 +132,33 @@ fun BrowserControlDock(
         wasStreaming = state.isAssistantStreaming
     }
 
-    val borderMain = if (isDark) Color.White.copy(alpha = 0.10f) else Color.Black.copy(alpha = 0.08f)
+    val borderMain = if (isDark) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.10f)
     val textPrimary = if (isDark) Color.White.copy(alpha = 0.90f) else Color.Black.copy(alpha = 0.88f)
     val textSecondary = if (isDark) Color.White.copy(alpha = 0.55f) else Color.Black.copy(alpha = 0.50f)
     val textTertiary = if (isDark) Color.White.copy(alpha = 0.42f) else Color.Black.copy(alpha = 0.38f)
 
-    Surface(
-        shape = RoundedCornerShape(28.dp),
-        color = bgMain,
-        border = BorderStroke(1.dp, borderMain),
-        shadowElevation = 16.dp,
-        modifier = modifier.fillMaxWidth()
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(
+                brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                    colors = listOf(
+                        Color.Transparent,
+                        Color.Black.copy(alpha = 0.6f),
+                        Color.Black.copy(alpha = 0.95f)
+                    )
+                )
+            ),
+        contentAlignment = Alignment.BottomCenter
     ) {
-        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+        Surface(
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+            color = bgMain,
+            border = BorderStroke(1.dp, borderMain),
+            shadowElevation = 0.dp,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(14.dp)) {
             if (!autoDoneExpanded) {
                 Surface(
                     shape = RoundedCornerShape(22.dp),
@@ -221,7 +242,7 @@ fun BrowserControlDock(
                     if (logs.isNotEmpty()) {
                         val scrollState = rememberScrollState()
                         LaunchedEffect(logs.size) { scrollState.animateScrollTo(scrollState.maxValue) }
-                        Column(modifier = Modifier.heightIn(max = 340.dp).verticalScroll(scrollState), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Column(modifier = Modifier.heightIn(max = 280.dp).verticalScroll(scrollState), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             val timelineItems = mutableListOf<BrowserDockTimelineItem>()
                             val normalTextLogs = mutableListOf<@Composable () -> Unit>()
                             val normalTextTotal = logs.sumOf { log ->
@@ -322,33 +343,14 @@ fun BrowserControlDock(
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
-
-            Surface(shape = RoundedCornerShape(20.dp), color = cardBg, border = BorderStroke(1.dp, cardBorder), modifier = Modifier.fillMaxWidth()) {
-                Row(modifier = Modifier.padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Surface(shape = CircleShape, color = Color(0xFF0A84FF).copy(alpha = 0.14f), border = BorderStroke(1.dp, Color(0xFF0A84FF).copy(alpha = 0.18f))) {
-                        Box(modifier = Modifier.size(22.dp), contentAlignment = Alignment.Center) {
-                            Icon(if (state.activeUrl.startsWith("https://")) Icons.Default.Lock else Icons.Default.Public, null, modifier = Modifier.size(12.dp), tint = if (state.activeUrl.startsWith("https://")) Color(0xFF34C759).copy(alpha = 0.7f) else textSecondary)
-                        }
-                    }
-                    Box(modifier = Modifier.weight(1f)) {
-                        BasicTextField(
-                            value = address,
-                            onValueChange = onAddressChange,
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = textPrimary),
-                            cursorBrush = SolidColor(Color(0xFF0A84FF)),
-                            decorationBox = { inner ->
-                                if (address.isEmpty()) Text("Search or enter address", style = MaterialTheme.typography.bodyMedium, color = textTertiary)
-                                inner()
-                            }
-                        )
-                    }
-                    MiniButton("Go", onGo, isDark)
-                    IconButton(onClick = onClose, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Close, null, tint = textSecondary) }
-                }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                if (state.isPaused) TextButton(onClick = onResume) { Text("Resume") }
+                else if (state.isAssistantStreaming || state.status == BrowserAgentStatus.BROWSING) TextButton(onClick = onPause) { Text("Pause") }
+                TextButton(onClick = onStop) { Text("Stop") }
             }
+            Spacer(Modifier.height(4.dp))
         }
+    }
     }
 }
 

@@ -76,7 +76,7 @@ class WindowsBridgeIntelligenceService @Inject constructor(
         scope.launch {
             settingsManager.settingsFlow.collect { settings ->
                 val options = settings.connections.flatMap { connection ->
-                    connection.visibleModels.map { model ->
+                    connection.visibleModels.mapNotNull { model ->
                         ModelUiMapper.mapConnectionModel(connection, model)
                     }
                 }

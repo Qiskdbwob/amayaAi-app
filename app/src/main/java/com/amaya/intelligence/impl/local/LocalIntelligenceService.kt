@@ -79,7 +79,6 @@ class LocalIntelligenceService @Inject constructor(
     private var lastAssistantTextUiEmitAt = 0L
     private var assistantFlushJob: Job? = null
     private var thinkingFlushJob: Job? = null
-    private var browserConversationKey: String? = null
     private val conversationSaveMutex = Mutex()
     private val conversationStartMutex = Mutex()
     private val pendingToolConfirmations = ToolConfirmationRegistry()
@@ -131,7 +130,7 @@ class LocalIntelligenceService @Inject constructor(
         scope.launch {
             settingsManager.settingsFlow.collect { settings ->
                 val options = settings.connections.flatMap { connection ->
-                    connection.visibleModels.map { model ->
+                    connection.visibleModels.mapNotNull { model ->
                         ModelUiMapper.mapConnectionModel(connection, model)
                     }
                 }
@@ -227,7 +226,6 @@ class LocalIntelligenceService @Inject constructor(
             content = trimmedContent,
             attachments = images.map { MessageAttachment(it.mediaType, it.base64, it.fileName) }
         )
-        if (projectVisible) ensureBrowserConversationSession(userMsg.id)
         val turnState = initialState.copy(messages = initialState.messages + userMsg, isLoading = true, isStreaming = true, error = null)
         if (projectVisible) _uiState.value = turnState
         val isNewConversation = activeConversation == null
@@ -242,6 +240,10 @@ class LocalIntelligenceService @Inject constructor(
         val runtimeState = turnState.copy(conversationId = conversationId.toString())
         if (projectVisible && targetEpoch.get() == selectedEpoch) {
             currentConversationId = conversationId
+            if (runtimeState.assistantMode == AssistantMode.AGENT && runtimeState.agentId != null) {
+                browserSessionManager.resetForConversation("conversation:$conversationId", runtimeState.agentId)
+                browserSessionManager.onAssistantStreamingChanged(true)
+            }
             _uiState.value = runtimeState
         }
         val notificationIdentity = notificationIdentity(runtimeState)
@@ -468,6 +470,9 @@ class LocalIntelligenceService @Inject constructor(
     private fun handleTurnEvent(turn: LocalTurn, event: AgentEvent) {
         when (event) {
             is AgentEvent.TextDelta -> {
+                if (currentConversationId == turn.conversationId && turn.state.assistantMode == AssistantMode.AGENT) {
+                    browserSessionManager.onAssistantTextDelta(event.text)
+                }
                 updateTurnMessage(turn) { message ->
                     val steps = if (message.steps.lastOrNull() is MessageStep.Text) {
                         message.steps.dropLast(1) + (message.steps.last() as MessageStep.Text).let { it.copy(content = it.content + event.text) }
@@ -891,13 +896,6 @@ class LocalIntelligenceService @Inject constructor(
         }
         _uiState.value = state.copy(messages = msgs)
     }
-    private fun ensureBrowserConversationSession(seedMessageId: String) {
-        if (browserConversationKey != null) return
-        val key = currentConversationId?.let { "conversation:$it" } ?: "draft:$seedMessageId"
-        browserConversationKey = key
-        browserSessionManager.resetForConversation(key)
-    }
-
     private fun currentAssistantMetadata(): Map<String, String> {
         val state = _uiState.value
         val model = state.modelOptions.firstOrNull { it.id == state.activeModelKey }
@@ -1063,8 +1061,7 @@ class LocalIntelligenceService @Inject constructor(
         assistantTextBuffer.clear()
         assistantThinkingBuffer.clear()
         lastAssistantTextUiEmitAt = 0L
-        browserConversationKey = null
-        browserSessionManager.resetEphemeral()
+        browserSessionManager.clearSessionState()
         _uiState.update { it.copy(
             conversationId = null,
             messages = emptyList(),
@@ -1115,8 +1112,7 @@ class LocalIntelligenceService @Inject constructor(
                 assistantTextBuffer.clear()
                 assistantThinkingBuffer.clear()
                 lastAssistantTextUiEmitAt = 0L
-                browserConversationKey = "conversation:${conv.id}"
-                browserSessionManager.resetForConversation(browserConversationKey!!)
+                browserSessionManager.resetForConversation("conversation:${conv.id}", conv.agentId)
                 _uiState.update { it.copy(
                     conversationId = conv.id.toString(),
                     workspacePath = conv.workspacePath,
@@ -1184,6 +1180,7 @@ class LocalIntelligenceService @Inject constructor(
 
     override fun setWorkspace(path: String?) {
         // Workspace browsing must never change Chat/Project/Agent ownership.
+        browserSessionManager.setWorkspace(path)
         _uiState.update { state ->
             state.copy(workspacePath = path?.takeIf(String::isNotBlank) ?: state.workspacePath)
         }
@@ -1200,6 +1197,7 @@ class LocalIntelligenceService @Inject constructor(
                 workspacePath = if (mode == AssistantMode.CHAT) null else workspacePath
             )
         }
+        browserSessionManager.setWorkspace(if (mode == AssistantMode.CHAT) null else workspacePath)
         if (mode == AssistantMode.AGENT && agentId != null) {
             val targetOwnerId = ownerId
             scope.launch {

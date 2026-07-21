@@ -97,6 +97,45 @@ object DomInspector {
         )
     }
 
+    fun hoverScript(selector: String): String {
+        val s = JSONObject.quote(selector)
+        return baseInspector(
+            """
+            var el = resolveElement($s);
+            if (!el) return JSON.stringify({ ok:false, error:'Element not found', selector:$s });
+            el.scrollIntoView({block:'center', inline:'center', behavior:'auto'});
+            var rect = el.getBoundingClientRect();
+            var x = rect.left + rect.width / 2;
+            var y = rect.top + rect.height / 2;
+            ['pointerover','mouseover','mouseenter','mousemove'].forEach(function(type) {
+              var Ctor = type.indexOf('pointer') === 0 && window.PointerEvent ? PointerEvent : MouseEvent;
+              el.dispatchEvent(new Ctor(type, {bubbles:true,cancelable:true,view:window,clientX:x,clientY:y,pointerType:'mouse'}));
+            });
+            return JSON.stringify({ ok:true, element:summarize(el) });
+            """.trimIndent()
+        )
+    }
+
+    fun selectOptionScript(selector: String, value: String): String {
+        val s = JSONObject.quote(selector)
+        val v = JSONObject.quote(value)
+        return baseInspector(
+            """
+            var el = resolveElement($s);
+            if (!el) return JSON.stringify({ ok:false, error:'Select not found', selector:$s });
+            if ((el.tagName || '').toLowerCase() !== 'select') return JSON.stringify({ ok:false, error:'Element is not a select', selector:$s, element:summarize(el) });
+            var wanted = String($v);
+            var option = Array.prototype.find.call(el.options, function(o) { return o.value === wanted || (o.textContent || '').trim() === wanted; });
+            if (!option) return JSON.stringify({ ok:false, error:'Option not found', selector:$s });
+            var setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+            if (setter && setter.set) setter.set.call(el, option.value); else el.value = option.value;
+            el.dispatchEvent(new Event('input', {bubbles:true}));
+            el.dispatchEvent(new Event('change', {bubbles:true}));
+            return JSON.stringify({ ok:true, element:summarize(el), value:option.value, text:(option.textContent || '').trim() });
+            """.trimIndent()
+        )
+    }
+
     fun focusScript(selector: String): String {
         val s = JSONObject.quote(selector)
         return baseInspector(
@@ -261,10 +300,58 @@ object DomInspector {
     private fun baseInspector(body: String): String = """
         (function() {
           function visible(el) {
-            if (!el) return false;
-            var style = window.getComputedStyle(el);
+            if (!el || !el.isConnected) return false;
             var rect = el.getBoundingClientRect();
-            return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
+            if (rect.width <= 0 || rect.height <= 0) return false;
+            for (var node = el; node && node !== document.documentElement; node = node.parentElement) {
+              var style = window.getComputedStyle(node);
+              if (!style || style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.contentVisibility === 'hidden' || parseFloat(style.opacity || '1') <= 0.01 || node.getAttribute('aria-hidden') === 'true') return false;
+            }
+            return true;
+          }
+          function actionability(el) {
+            if (!el || !el.isConnected) return { attached:false };
+            var rect = el.getBoundingClientRect();
+            var style = window.getComputedStyle(el);
+            var cx = Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2));
+            var cy = Math.max(0, Math.min(window.innerHeight - 1, rect.top + rect.height / 2));
+            var top = document.elementFromPoint(cx, cy);
+            var inViewport = rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
+            var unclipped = rect.top >= 0 && rect.left >= 0 && rect.bottom <= window.innerHeight && rect.right <= window.innerWidth;
+            var unoccluded = !!top && (top === el || el.contains(top) || top.contains(el));
+            var painted = style.opacity !== '0' && style.visibility !== 'hidden' && style.pointerEvents !== 'none';
+            var clipped = false;
+            for (var parent = el.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+              var ps = window.getComputedStyle(parent);
+              if (/(auto|scroll|hidden|clip)/.test((ps.overflow || '') + (ps.overflowX || '') + (ps.overflowY || ''))) {
+                var pr = parent.getBoundingClientRect();
+                if (rect.right <= pr.left || rect.left >= pr.right || rect.bottom <= pr.top || rect.top >= pr.bottom) { clipped = true; break; }
+              }
+            }
+            var mutationVersion = window.__amayaMutationVersion || 0;
+            var previous = window.__amayaStableRects && window.__amayaStableRects.get(el);
+            var stable = !!previous && previous.version === mutationVersion && Math.abs(previous.x - rect.left) < 1 && Math.abs(previous.y - rect.top) < 1 && Math.abs(previous.w - rect.width) < 1 && Math.abs(previous.h - rect.height) < 1;
+            if (!window.__amayaStableRects) window.__amayaStableRects = new WeakMap();
+            window.__amayaStableRects.set(el, {x:rect.left,y:rect.top,w:rect.width,h:rect.height,version:mutationVersion});
+            return {
+              attached:true,
+              css_visible:visible(el),
+              in_viewport:inViewport,
+              unclipped:unclipped && !clipped,
+              painted:painted,
+              unoccluded:unoccluded,
+              receives_events:style.pointerEvents !== 'none' && !!top,
+              stable:stable,
+              enabled:enabledState(el),
+              editable:isEditable(el),
+              human_actionable:visible(el) && inViewport && painted && unoccluded && style.pointerEvents !== 'none' && enabledState(el),
+              bounds:{x:Math.round(rect.left),y:Math.round(rect.top),width:Math.round(rect.width),height:Math.round(rect.height)}
+            };
+          }
+          if (!window.__amayaMutationObserver && document.documentElement) {
+            window.__amayaMutationVersion = 0;
+            window.__amayaMutationObserver = new MutationObserver(function() { window.__amayaMutationVersion += 1; });
+            window.__amayaMutationObserver.observe(document.documentElement, {subtree:true, childList:true, attributes:true, characterData:true});
           }
           function enabledState(el) {
             return !!el && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
@@ -613,13 +700,20 @@ object DomInspector {
           }
           function primaryUrlFor(el) {
             if (!el) return '';
-            if (el.href) return el.href;
+            function safeUrl(url) {
+              try {
+                var parsed = new URL(url, location.href);
+                if (parsed.hostname === 'x.com' && parsed.pathname.indexOf('/i/jf/') === 0) return '';
+                return parsed.href;
+              } catch (e) { return ''; }
+            }
+            if (el.href) return safeUrl(el.href);
             var primary = primaryAnchorFor(el);
-            if (primary && primary.href) return primary.href;
+            if (primary && primary.href) return safeUrl(primary.href);
             var clickable = clickTargetFor(el);
-            if (clickable && clickable.href) return clickable.href;
+            if (clickable && clickable.href) return safeUrl(clickable.href);
             var closestAnchor = el.closest && el.closest('a[href]');
-            return closestAnchor && closestAnchor.href ? closestAnchor.href : '';
+            return closestAnchor && closestAnchor.href ? safeUrl(closestAnchor.href) : '';
           }
           function stableElementIdFor(el, target) {
             var url = primaryUrlFor(target || el);
@@ -640,7 +734,6 @@ object DomInspector {
             var elementId = makeElementId(el, index || 0);
             var stableId = stableElementIdFor(el, target);
             var text = textForElement(el).trim().replace(/\s+/g, ' ');
-            if (sensitive && ((el.tagName || '').toLowerCase() === 'input' || (el.tagName || '').toLowerCase() === 'textarea')) text = currentEditableValue(el) ? '[redacted]' : '';
             var selector = selectorFor(el);
             var clickSelector = selectorFor(target);
             var primaryUrl = primaryUrlFor(el);
@@ -672,7 +765,8 @@ object DomInspector {
               sensitive: sensitive,
               sensitive_type: sensitive ? sensitiveType(el) : null,
               hasValue: !!currentEditableValue(el),
-              valuePreview: sensitive ? '[redacted]' : (currentEditableValue(el).slice(0, 80)),
+              valuePreview: currentEditableValue(el).slice(0, 80),
+              actionability: actionability(target),
               bounds: { x: Math.round(el.getBoundingClientRect().left), y: Math.round(el.getBoundingClientRect().top), width: Math.round(el.getBoundingClientRect().width), height: Math.round(el.getBoundingClientRect().height) },
               center: { x: Math.round(el.getBoundingClientRect().left + el.getBoundingClientRect().width / 2), y: Math.round(el.getBoundingClientRect().top + el.getBoundingClientRect().height / 2) },
               focused: document.activeElement === el || !!(el.contains && document.activeElement && el.contains(document.activeElement)),

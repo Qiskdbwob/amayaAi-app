@@ -138,6 +138,7 @@ class ToolExecutor @Inject constructor(
             conversationId = conversationId,
             ownerId = ownerId,
             agentId = agentId,
+            agentCapabilityProfile = agentCapabilityProfile,
             assistantMode = assistantMode,
             readOnly = readOnly
         )

@@ -25,13 +25,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.domain.models.ConnectionState
 import com.amaya.intelligence.domain.models.RemoteWorkspace
 import com.amaya.intelligence.domain.models.ToolExecution
-import com.amaya.intelligence.ui.res.UiStrings
 
 /**
  * Configuration for ChatScreen behavior.
@@ -191,12 +189,9 @@ fun LocalDrawerFooter(
     onNavigateToSettings: () -> Unit,
     onNavigateToRemoteSession: () -> Unit
 ) {
-    val context = LocalContext.current
-
+    // Browser entry lives on Agent Browser tool cards; generic Chat/Project drawer entry is intentionally absent.
     Surface(
-        onClick = {
-            context.startActivity(android.content.Intent(context, com.amaya.intelligence.ui.activities.browser.BrowserOperatorActivity::class.java))
-        },
+        onClick = onNavigateToRemoteSession,
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
         modifier = Modifier
@@ -218,7 +213,7 @@ fun LocalDrawerFooter(
                     tint = MaterialTheme.colorScheme.primary)
             }
             Spacer(Modifier.width(14.dp))
-            Text("AI Browser Operator", style = MaterialTheme.typography.bodyLarge,
+            Text("Remote Connection", style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f))
@@ -227,9 +222,8 @@ fun LocalDrawerFooter(
         }
     }
 
-    // Remote Connection button (only in local mode)
     Surface(
-        onClick = onNavigateToRemoteSession,
+        onClick = onNavigateToSettings,
         shape = RoundedCornerShape(14.dp),
         color = Color.Transparent,
         modifier = Modifier
@@ -251,7 +245,7 @@ fun LocalDrawerFooter(
                     tint = MaterialTheme.colorScheme.primary)
             }
             Spacer(Modifier.width(14.dp))
-            Text(UiStrings.Connection.REMOTE_CONNECTION, style = MaterialTheme.typography.bodyLarge,
+            Text("Settings", style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f))

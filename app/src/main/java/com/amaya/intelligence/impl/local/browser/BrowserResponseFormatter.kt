@@ -102,33 +102,19 @@ object BrowserResponseFormatter {
     fun successStatus(response: BrowserToolResponse): String = when (response) {
         is BrowserToolResponse.Success -> "success"
         is BrowserToolResponse.Failure -> if (response.recoverable) "error" else "cancelled"
-        is BrowserToolResponse.SafetyPause -> "paused"
     }
 
     fun resultFor(action: String, response: BrowserToolResponse): Any? = when (response) {
         is BrowserToolResponse.Success -> normalizeResult(action, response)
         is BrowserToolResponse.Failure -> normalizeFailureResult(response)
-        is BrowserToolResponse.SafetyPause -> null
     }
 
     fun summaryFor(action: String, response: BrowserToolResponse): String = when (response) {
         is BrowserToolResponse.Success -> response.output.take(180)
         is BrowserToolResponse.Failure -> response.message.take(180)
-        is BrowserToolResponse.SafetyPause -> response.prompt.reason.take(180)
     }.ifBlank { action.split('_').joinToString(" ") }
 
-    fun safetyFor(response: BrowserToolResponse): JSONObject = when (response) {
-        is BrowserToolResponse.SafetyPause -> JSONObject().apply {
-            put("sensitive_detected", true)
-            put("sensitive_type", inferSensitiveType(response.prompt.fieldLabel ?: response.prompt.selector ?: response.prompt.reason))
-            put("requires_user_decision", true)
-            put("reason", response.prompt.reason)
-            put("allowed_next_actions", JSONArray(listOf(
-                "fill_manually", "allow_once", "allow_for_this_site", "skip_step", "cancel_task", "resume_after_user_done"
-            )))
-        }
-        else -> defaultSafety()
-    }
+    fun safetyFor(@Suppress("UNUSED_PARAMETER") response: BrowserToolResponse): JSONObject = defaultSafety()
 
     fun errorFor(action: String, response: BrowserToolResponse, pageUrl: String, params: Map<String, Any?>): JSONObject? {
         if (response !is BrowserToolResponse.Failure) return null
@@ -158,7 +144,6 @@ object BrowserResponseFormatter {
     fun agentStatusFor(response: BrowserToolResponse): BrowserAgentStatus = when (response) {
         is BrowserToolResponse.Success -> BrowserAgentStatus.IDLE
         is BrowserToolResponse.Failure -> if (response.recoverable) BrowserAgentStatus.ERROR else BrowserAgentStatus.CANCELLED
-        is BrowserToolResponse.SafetyPause -> BrowserAgentStatus.WAITING_INPUT
     }
 
     fun defaultSafety(): JSONObject = JSONObject().apply {
@@ -200,6 +185,9 @@ object BrowserResponseFormatter {
                 put("text", response.output)
                 put("truncated", response.output.length > 6000)
                 put("length", response.output.length)
+            }
+            "evaluate" -> JSONObject().apply {
+                put("value", parseJsonOrString(metadata["evaluate_result"]?.toString() ?: response.output))
             }
             "screenshot" -> JSONObject().apply {
                 put("captured", true)
@@ -369,12 +357,7 @@ object BrowserResponseFormatter {
         if (raw.trim().startsWith("[")) JSONArray(raw) else JSONObject(raw)
     }.getOrElse { raw.take(1000) }
 
-    private fun redactParams(params: Map<String, Any?>): Map<String, Any?> = params.mapValues { (key, value) ->
-        val k = key.lowercase()
-        if (k.contains("password") || k.contains("otp") || k.contains("token") || k.contains("secret") || k.contains("text")) {
-            if (value == null) null else "[redacted:${value.toString().length}]"
-        } else value
-    }
+    private fun redactParams(params: Map<String, Any?>): Map<String, Any?> = params
 
     private fun inferSensitiveType(raw: String): String {
         val text = raw.lowercase()

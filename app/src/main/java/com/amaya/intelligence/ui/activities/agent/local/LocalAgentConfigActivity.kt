@@ -67,7 +67,7 @@ class LocalAgentConfigActivity : AppCompatActivity() {
                 val currentAgent = agent
                 val currentGroup = group
                 val settings = settingsManager.getSettings()
-                val availableModels = settings.connections.flatMap { connection -> connection.visibleModels.map { ModelUiMapper.mapConnectionModel(connection, it) } }
+                val availableModels = settings.connections.flatMap { connection -> connection.visibleModels.mapNotNull { ModelUiMapper.mapConnectionModel(connection, it) } }
                 if (loading) {
                     androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
                         androidx.compose.material3.CircularProgressIndicator()

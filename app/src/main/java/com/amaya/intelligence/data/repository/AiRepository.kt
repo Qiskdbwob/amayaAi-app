@@ -213,14 +213,18 @@ class AiRepository @Inject constructor(
         val model = selectedModel?.takeIf { it.isNotBlank() }
             ?: activeSelection?.takeIf { it.connectionId == connection.id }?.modelId
             ?: ""
-        if (model.isBlank() || connection.visibleModels.none { it.id == model }) {
+        if (model.isBlank() || connection.visibleModels.none { it.id == model && it.enabled }) {
             send(AgentEvent.Error("The selected model is unavailable. Open Settings → Manage Models and select another model.", retryable = false))
             return@channelFlow
         }
         val provider = resolveProvider(connection)
         val modelConfig = connection.visibleModels.first { it.id == model }
         val maxOutputTokens = modelConfig.maxOutputTokens?.coerceIn(256, 32_768) ?: DEFAULT_MAX_OUTPUT_TOKENS
-        val contextWindowTokens = modelConfig.contextWindowTokens?.coerceAtLeast(maxOutputTokens + 2_048) ?: 32_768
+        val providerContextWindowTokens = modelConfig.contextWindowTokens?.coerceAtLeast(maxOutputTokens + 1) ?: 32_768
+        val maxInputTokens = modelConfig.maxInputTokens
+            ?.coerceIn(1, providerContextWindowTokens - maxOutputTokens)
+            ?: providerContextWindowTokens - maxOutputTokens
+        val contextWindowTokens = minOf(providerContextWindowTokens, maxInputTokens + maxOutputTokens)
         if (userImages.isNotEmpty() && !modelConfig.supportsImages) {
             send(AgentEvent.Error("The selected model does not support image input.", retryable = false))
             return@channelFlow

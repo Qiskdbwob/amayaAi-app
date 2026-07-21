@@ -254,7 +254,7 @@ class SubagentRunner @Inject constructor(
                 ?.takeIf { it.connectionId == activeConnection.id }
                 ?.modelId
             ?: error("No model selected for ${activeConnection.name}")
-        require(activeConnection.visibleModels.any { it.id == model }) {
+        require(activeConnection.visibleModels.any { it.id == model && it.enabled }) {
             "The selected model is not shown for ${activeConnection.name}"
         }
 

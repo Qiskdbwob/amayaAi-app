@@ -168,7 +168,7 @@ private fun ConnectionsOverview(
 ) {
     val active = settings.activeSelection?.let { selection ->
         settings.connections.firstOrNull { it.id == selection.connectionId }
-            ?.let { connection -> connection to connection.visibleModels.firstOrNull { it.id == selection.modelId } }
+            ?.let { connection -> connection to connection.visibleModels.firstOrNull { it.id == selection.modelId && it.enabled } }
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -375,7 +375,7 @@ private fun SelectModelSheet(settings: AiSettings, onSelect: (ModelOption) -> Un
     var query by remember { mutableStateOf("") }
     val allOptions = remember(settings.connections) {
         settings.connections.flatMap { connection ->
-            connection.visibleModels.map { model ->
+            connection.visibleModels.mapNotNull { model ->
                 com.amaya.intelligence.impl.common.mappers.ModelUiMapper.mapConnectionModel(connection, model)
             }
         }

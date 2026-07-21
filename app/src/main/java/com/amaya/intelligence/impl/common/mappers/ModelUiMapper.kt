@@ -9,18 +9,21 @@ object ModelUiMapper {
     fun mapConnectionModel(
         connection: ProviderConnection,
         model: ConfiguredModel
-    ): ModelOption = ModelOption(
-        id = "model|${connection.id}|${model.id}",
-        name = model.displayName.ifBlank { model.id },
-        modelId = model.id,
-        connectionId = connection.id,
-        providerId = connection.providerId,
-        providerName = connection.name.ifBlank {
-            AmayaProviderRegistry.displayName(connection.providerId)
-        },
-        iconType = connection.providerId,
-        supportsImages = model.supportsImages
-    )
+    ): ModelOption? {
+        if (!model.enabled) return null
+        return ModelOption(
+            id = "model|${connection.id}|${model.id}",
+            name = model.displayName.ifBlank { model.id },
+            modelId = model.id,
+            connectionId = connection.id,
+            providerId = connection.providerId,
+            providerName = connection.name.ifBlank {
+                AmayaProviderRegistry.displayName(connection.providerId)
+            },
+            iconType = connection.providerId,
+            supportsImages = model.supportsImages
+        )
+    }
 
     fun mapRemoteModel(
         id: String,

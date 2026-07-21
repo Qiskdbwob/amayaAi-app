@@ -189,10 +189,15 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
     implementation("com.google.android.gms:play-services-mlkit-barcode-scanning:18.3.1")
+    implementation("com.google.guava:guava:33.3.1-android")
 
     // Custom Tabs for Codex OAuth browser flow
     implementation("androidx.browser:browser:1.8.0")
 
+    // GeckoView browser engine.
+    implementation("org.mozilla.geckoview:geckoview-omni:152.0.20260713164047") {
+        exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
+    }
 
     // Testing
     testImplementation(libs.junit)

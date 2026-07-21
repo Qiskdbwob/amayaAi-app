@@ -42,6 +42,7 @@ fun ProviderDetailScreen(
     var initialSelectedIds by remember(connectionId) { mutableStateOf<Set<String>>(emptySet()) }
     var hasCredential by remember(connectionId) { mutableStateOf(false) }
     var subscriptionAuthenticated by remember(connectionId) { mutableStateOf(false) }
+    var editingModel by remember(connectionId) { mutableStateOf<ConfiguredModel?>(null) }
 
     // Init connection data
     LaunchedEffect(connection) {
@@ -49,12 +50,12 @@ fun ProviderDetailScreen(
             hasCredential = viewModel.hasCredential(connection.id)
             val isSubscription = AmayaProviderRegistry.find(connection.providerId)?.isSubscription == true
             subscriptionAuthenticated = hasCredential || !isSubscription
-            selectedIds = connection.visibleModels.map { it.id }.toSet()
+            selectedIds = connection.visibleModels.filter { it.enabled }.map { it.id }.toSet()
             initialSelectedIds = selectedIds
             availableModels = connection.visibleModels
             if (!isSubscription) {
                 viewModel.refresh(connection) { refreshed ->
-                    availableModels = (refreshed + connection.visibleModels).distinctBy { it.id }
+                    availableModels = (connection.visibleModels + refreshed).distinctBy { it.id }
                 }
             }
         }
@@ -162,7 +163,7 @@ fun ProviderDetailScreen(
                             colors, 
                             onClick = {
                                 viewModel.refresh(connection) { refreshed ->
-                                    availableModels = (refreshed + availableModels).distinctBy { it.id }
+                                    availableModels = (availableModels + refreshed).distinctBy { it.id }
                                 }
                             }
                         )
@@ -230,7 +231,8 @@ fun ProviderDetailScreen(
                                         } else {
                                             selectedIds + model.id
                                         }
-                                    }
+                                    },
+                                    onConfigure = { editingModel = model }
                                 )
                                 if (index < filteredModels.lastIndex) ModelDivider(colors)
                             }
@@ -265,7 +267,89 @@ fun ProviderDetailScreen(
             }
         }
     }
+
+    editingModel?.let { model ->
+        ModelConfigurationSheet(
+            model = model,
+            operation = operation,
+            onDismiss = { editingModel = null },
+            onSave = { updated ->
+                viewModel.saveModel(connection.id, updated) {
+                    availableModels = availableModels.map { if (it.id == updated.id) updated else it }
+                    editingModel = null
+                }
+            }
+        )
+    }
 }
+
+@Composable
+private fun ModelConfigurationSheet(
+    model: ConfiguredModel,
+    operation: ManageModelsViewModel.OperationState,
+    onDismiss: () -> Unit,
+    onSave: (ConfiguredModel) -> Unit
+) {
+    var contextWindow by remember(model.id, model.contextWindowTokens) { mutableStateOf(model.contextWindowTokens?.toString().orEmpty()) }
+    var maxInput by remember(model.id, model.maxInputTokens) { mutableStateOf(model.maxInputTokens?.toString().orEmpty()) }
+    var maxOutput by remember(model.id, model.maxOutputTokens) { mutableStateOf(model.maxOutputTokens?.toString().orEmpty()) }
+    var supportsTools by remember(model.id) { mutableStateOf(model.supportsTools) }
+    var supportsImages by remember(model.id) { mutableStateOf(model.supportsImages) }
+    val candidate = runCatching {
+        model.copy(
+            contextWindowTokens = contextWindow.toPositiveTokenCount(),
+            maxInputTokens = maxInput.toPositiveTokenCount(),
+            maxOutputTokens = maxOutput.toPositiveTokenCount(),
+            supportsTools = supportsTools,
+            supportsImages = supportsImages
+        ).also { com.amaya.intelligence.data.remote.api.normalizeConfiguredModel(it) }
+    }
+
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
+        onDismissRequest = onDismiss,
+        title = model.displayName
+    ) {
+        Text(model.id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        TokenField("Context window", contextWindow) { contextWindow = it }
+        TokenField("Max input", maxInput) { maxInput = it }
+        TokenField("Max output", maxOutput) { maxOutput = it }
+        ModelCapabilityRow("Tool use", supportsTools) { supportsTools = it }
+        ModelCapabilityRow("Image input", supportsImages) { supportsImages = it }
+        candidate.exceptionOrNull()?.message?.let { message -> InlineError(message) }
+        Button(
+            onClick = { candidate.getOrNull()?.let(onSave) },
+            enabled = candidate.isSuccess && !operation.loading,
+            modifier = Modifier.fillMaxWidth().height(52.dp)
+        ) {
+            if (operation.loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text("Save")
+        }
+    }
+}
+
+@Composable
+private fun TokenField(label: String, value: String, onValueChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = { input -> if (input.all(Char::isDigit)) onValueChange(input) },
+        label = { Text(label) },
+        placeholder = { Text("Auto") },
+        supportingText = { Text("Leave blank for provider default") },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
+    )
+}
+
+@Composable
+private fun ModelCapabilityRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+private fun String.toPositiveTokenCount(): Int? = trim().takeIf(String::isNotBlank)?.toIntOrNull()
 
 @Composable
 fun ModernModelToggleRow(
@@ -273,12 +357,13 @@ fun ModernModelToggleRow(
     providerId: String,
     checked: Boolean,
     colors: ModelSettingsColors,
-    onToggle: () -> Unit
+    onToggle: () -> Unit,
+    onConfigure: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onToggle)
+            .clickable(onClick = onConfigure)
             .padding(horizontal = 20.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -313,9 +398,7 @@ fun ModernModelToggleRow(
                 )
             }
         }
-        Switch(
-            checked = checked,
-            onCheckedChange = { onToggle() }
-        )
+        Icon(Icons.Default.ChevronRight, "Configure ${model.displayName}", tint = colors.secondaryText)
+        Switch(checked = checked, onCheckedChange = { onToggle() })
     }
 }

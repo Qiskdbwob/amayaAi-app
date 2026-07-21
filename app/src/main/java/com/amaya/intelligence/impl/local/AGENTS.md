@@ -30,17 +30,20 @@ impl/local/
 - `AGENTS.md`: rules for local runtime and services.
 - `LocalIntelligenceService.kt`: local AI orchestration and persistence-backed chat flow.
 - `ToolConfirmationRegistry.kt`: turn-bound, idempotent inline tool approval state.
-- `browser/`: WebView controller, session manager, DOM inspection, and browser safety handling.
+- `browser/`: GeckoView controller, WebExtension JavaScript bridge, session manager, DOM inspection, and browser safety handling.
 - `tools/`: local tool mapping, browser tool wrapping, and execution helpers.
 - `providers/`: local provider adapters and implementation-specific helpers.
 
 ## Key Source Code
 - `LocalIntelligenceService.kt`: local conversation flow, stable conversation-id persistence before model turns, repository integration, concurrent per-conversation turns, and target-switch-safe UI projection.
-- `browser/AndroidBrowserController.kt`: WebView interaction, navigation, and DOM-safe browser actions.
-- `browser/BrowserSessionManager.kt`: parent browser task state, pause/resume/cancel flow, and shared WebView ownership.
+- `browser/AndroidBrowserController.kt`: GeckoView interaction, navigation, and DOM-backed browser actions.
+- `browser/GeckoBrowserRuntime.kt`: process-wide Gecko runtime plus built-in WebExtension JavaScript bridge.
+- `browser/BrowserSessionManager.kt`: parent browser task state, pause/resume/cancel flow, and GeckoSession ownership.
 - `browser/DomInspector.kt`: safe DOM summaries, selector mapping, and interaction helpers.
 - `browser/BrowserResponseFormatter.kt`: compact browser JSON formatting for parent and sub-tool responses.
-- `browser/SafetyGuard.kt`: sensitive-input detection and user-decision gating.
+- `browser/BrowserActionCatalog.kt`: canonical model-exposed browser action inventory shared by tool schema and debug coverage.
+- `browser/SafetyGuard.kt`: documents unrestricted local browser input policy; no credential/OTP gating.
+- `src/debug/.../BrowserDebugActivity.kt`: debug-only ADB-launchable browser action harness using the production parent-tool path and an in-process test page.
 - `tools/LocalToolMapper.kt`: local tool normalization, capability display-name mapping, and UI metadata mapping.
 - `tools/BrowserUseToolset.kt`: parent browser tool wrapper and legacy alias compatibility.
 - `providers/`: local provider implementations and compatibility adapters.

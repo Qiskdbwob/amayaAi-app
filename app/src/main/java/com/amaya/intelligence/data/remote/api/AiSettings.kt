@@ -29,10 +29,43 @@ data class ConfiguredModel(
     val id: String,
     val displayName: String = id,
     val contextWindowTokens: Int? = null,
+    val maxInputTokens: Int? = null,
     val maxOutputTokens: Int? = null,
+    val enabled: Boolean = true,
     val supportsTools: Boolean = true,
     val supportsImages: Boolean = true
 )
+
+fun normalizeConfiguredModel(model: ConfiguredModel): ConfiguredModel {
+    val normalized = model.copy(
+        id = model.id.trim(),
+        displayName = model.displayName.trim()
+    )
+    require(normalized.id.isNotBlank()) { "Model ID is required" }
+    listOf(
+        "Context window" to normalized.contextWindowTokens,
+        "Max input" to normalized.maxInputTokens,
+        "Max output" to normalized.maxOutputTokens
+    ).forEach { (name, value) ->
+        require(value == null || value > 0) { "$name must be greater than zero" }
+    }
+    normalized.contextWindowTokens?.let { contextWindow ->
+        normalized.maxOutputTokens?.let { maxOutput ->
+            require(contextWindow > maxOutput) {
+                "Context window must exceed max output"
+            }
+            normalized.maxInputTokens?.let { maxInput ->
+                require(maxInput + maxOutput <= contextWindow) {
+                    "Max input plus max output cannot exceed the context window"
+                }
+            }
+        }
+        normalized.maxInputTokens?.let { maxInput ->
+            require(maxInput <= contextWindow) { "Max input cannot exceed the context window" }
+        }
+    }
+    return normalized.copy(displayName = normalized.displayName.ifBlank { normalized.id })
+}
 
 data class ProviderConnection(
     val id: String = UUID.randomUUID().toString(),
@@ -118,7 +151,7 @@ class AiSettingsManager @Inject constructor(
             activeSelection = activeSelection?.takeIf { selection ->
                 connections.any { connection ->
                     connection.id == selection.connectionId &&
-                        connection.visibleModels.any { it.id == selection.modelId }
+                        connection.visibleModels.any { it.id == selection.modelId && it.enabled }
                 }
             },
             mcpConfigJson = prefs[KEY_MCP_CONFIG_JSON].orEmpty(),
@@ -163,10 +196,8 @@ class AiSettingsManager @Inject constructor(
             name = connection.name.trim(),
             baseUrl = connection.baseUrl.trim().trimEnd('/'),
             visibleModels = connection.visibleModels
-                .map { it.copy(id = it.id.trim(), displayName = it.displayName.trim()) }
-                .filter { it.id.isNotBlank() }
+                .map(::normalizeConfiguredModel)
                 .distinctBy { it.id }
-                .map { it.copy(displayName = it.displayName.ifBlank { it.id }) }
         )
         val credentialKey = "$ENC_CONNECTION_KEY_PREFIX${connection.id}"
         val previousCredential = if (apiKey != null) encryptedPrefs.getString(credentialKey, null) else null
@@ -245,7 +276,7 @@ class AiSettingsManager @Inject constructor(
                 )
                 require(connections.any { connection ->
                     connection.id == selection.connectionId &&
-                        connection.visibleModels.any { it.id == selection.modelId }
+                        connection.visibleModels.any { it.id == selection.modelId && it.enabled }
                 }) { "Selected model is not visible for this provider connection" }
                 prefs[KEY_ACTIVE_SELECTION] = serializeActiveSelection(selection)
             }
@@ -254,12 +285,30 @@ class AiSettingsManager @Inject constructor(
         }
     }
 
+    suspend fun updateConfiguredModel(connectionId: String, model: ConfiguredModel) {
+        val normalizedModel = normalizeConfiguredModel(model)
+        context.dataStore.edit { prefs ->
+            val connections = parseConnections(
+                prefs[KEY_CONNECTIONS] ?: prefs[LEGACY_AGENT_CONFIGS].orEmpty()
+            ).toMutableList()
+            val index = connections.indexOfFirst { it.id == connectionId }
+            require(index >= 0) { "Provider connection not found" }
+            connections[index] = connections[index].copy(
+                visibleModels = connections[index].visibleModels.map {
+                    if (it.id == normalizedModel.id) normalizedModel else it
+                }.let { models ->
+                    if (models.any { it.id == normalizedModel.id }) models else models + normalizedModel
+                }
+            )
+            prefs[KEY_CONNECTIONS] = serializeConnections(connections)
+            prefs.remove(LEGACY_AGENT_CONFIGS)
+        }
+    }
+
     suspend fun setVisibleModels(connectionId: String, models: List<ConfiguredModel>) {
         val normalizedModels = models
-            .map { model -> model.copy(id = model.id.trim(), displayName = model.displayName.trim()) }
-            .filter { it.id.isNotBlank() }
+            .map(::normalizeConfiguredModel)
             .distinctBy { it.id }
-            .map { model -> model.copy(displayName = model.displayName.ifBlank { model.id }) }
         context.dataStore.edit { prefs ->
             val connections = parseConnections(
                 prefs[KEY_CONNECTIONS] ?: prefs[LEGACY_AGENT_CONFIGS].orEmpty()
@@ -272,10 +321,16 @@ class AiSettingsManager @Inject constructor(
                     connectionId = prefs[LEGACY_ACTIVE_AGENT_ID].orEmpty(),
                     modelId = prefs[LEGACY_ACTIVE_MODEL].orEmpty()
                 )
-            connections[index] = connections[index].copy(visibleModels = normalizedModels)
+            val selectedById = normalizedModels.associateBy { it.id }
+            val updatedModels = connections[index].visibleModels.map { existing ->
+                selectedById[existing.id]?.copy(enabled = true) ?: existing.copy(enabled = false)
+            } + normalizedModels.filter { selected ->
+                connections[index].visibleModels.none { it.id == selected.id }
+            }.map { selected -> selected.copy(enabled = true) }
+            connections[index] = connections[index].copy(visibleModels = updatedModels)
             prefs[KEY_CONNECTIONS] = serializeConnections(connections)
             prefs.remove(LEGACY_AGENT_CONFIGS)
-            if (active?.connectionId == connectionId && normalizedModels.none { it.id == active.modelId }) {
+            if (active?.connectionId == connectionId && updatedModels.none { it.id == active.modelId && it.enabled }) {
                 prefs.remove(KEY_ACTIVE_SELECTION)
             } else if (active != null) {
                 prefs[KEY_ACTIVE_SELECTION] = serializeActiveSelection(active)
@@ -360,7 +415,9 @@ class AiSettingsManager @Inject constructor(
                                 id = it,
                                 displayName = value.optString("displayName", it),
                                 contextWindowTokens = value.optInt("contextWindowTokens").takeIf { n -> n > 0 },
+                                maxInputTokens = value.optInt("maxInputTokens").takeIf { n -> n > 0 },
                                 maxOutputTokens = value.optInt("maxOutputTokens").takeIf { n -> n > 0 },
+                                enabled = value.optBoolean("enabled", true),
                                 supportsTools = value.optBoolean("supportsTools", true),
                                 supportsImages = value.optBoolean("supportsImages", true)
                             )
@@ -406,7 +463,9 @@ class AiSettingsManager @Inject constructor(
                                 .put("id", model.id)
                                 .put("displayName", model.displayName)
                                 .put("contextWindowTokens", model.contextWindowTokens ?: JSONObject.NULL)
+                                .put("maxInputTokens", model.maxInputTokens ?: JSONObject.NULL)
                                 .put("maxOutputTokens", model.maxOutputTokens ?: JSONObject.NULL)
+                                .put("enabled", model.enabled)
                                 .put("supportsTools", model.supportsTools)
                                 .put("supportsImages", model.supportsImages))
                         }
@@ -437,7 +496,7 @@ class AiSettingsManager @Inject constructor(
     ): ActiveModelSelection? {
         if (connectionId.isBlank() || modelId.isBlank()) return null
         return connections.firstOrNull { it.id == connectionId }
-            ?.takeIf { connection -> connection.visibleModels.any { it.id == modelId } }
+            ?.takeIf { connection -> connection.visibleModels.any { it.id == modelId && it.enabled } }
             ?.let { ActiveModelSelection(it.id, modelId) }
     }
 
