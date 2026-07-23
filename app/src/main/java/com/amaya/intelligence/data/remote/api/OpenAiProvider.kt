@@ -1087,10 +1087,11 @@ data class OpenAiUsage(
 
 @JsonClass(generateAdapter = true)
 data class OpenAiStreamChunk(
-    val id: String,
-    val `object`: String,
-    val created: Long,
-    val model: String,
+    // OpenAI-compatible providers may omit these unused metadata fields in delta chunks.
+    val id: String? = null,
+    val `object`: String? = null,
+    val created: Long? = null,
+    val model: String? = null,
     val choices: List<OpenAiStreamChoice>,
     val usage: OpenAiUsage? = null
 )

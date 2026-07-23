@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -93,11 +94,13 @@ fun MemoryAreaListScreen(
     state: AmayaUiState,
     snackbarHostState: SnackbarHostState,
     onNavigateBack: () -> Unit,
-    onAdd: (String) -> Unit
+    onAdd: (String) -> Unit,
+    onDelete: (MemoryRecord) -> Unit = {}
 ) {
     val colors = iosMemoryAreaColors()
     val gradients = LocalAmayaGradients.current
     var showAddSheet by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf<MemoryRecord?>(null) }
 
     val records = when (area) {
         MemoryArea.USER -> state.userMemoryRecords
@@ -117,7 +120,7 @@ fun MemoryAreaListScreen(
             if (records.isNotEmpty()) {
                 AmayaSection("Saved") {
                     records.forEachIndexed { index, record ->
-                        MemoryRecordCard(record = record, colors = colors)
+                        MemoryRecordCard(record = record, colors = colors, onDelete = { deleting = record })
                         if (index < records.lastIndex) AmayaDivider()
                     }
                 }
@@ -198,6 +201,13 @@ fun MemoryAreaListScreen(
             onAdd = onAdd
         )
     }
+    deleting?.let { record -> androidx.compose.material3.AlertDialog(
+        onDismissRequest = { deleting = null },
+        title = { Text("Delete memory?") },
+        text = { Text(record.content) },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = { onDelete(record); deleting = null }) { Text("Delete") } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = { deleting = null }) { Text("Cancel") } }
+    ) }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -245,7 +255,7 @@ private fun AddMemorySheet(
 }
 
 @Composable
-private fun MemoryRecordCard(record: MemoryRecord, colors: IosMemoryAreaColors) {
+private fun MemoryRecordCard(record: MemoryRecord, colors: IosMemoryAreaColors, onDelete: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
         verticalAlignment = Alignment.Top
@@ -263,6 +273,9 @@ private fun MemoryRecordCard(record: MemoryRecord, colors: IosMemoryAreaColors) 
                     color = colors.secondaryText
                 )
             }
+        }
+        IconButton(onClick = onDelete) {
+            Icon(Icons.Default.Delete, "Delete memory", tint = MaterialTheme.colorScheme.error)
         }
     }
 }

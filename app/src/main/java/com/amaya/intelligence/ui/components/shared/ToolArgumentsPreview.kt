@@ -51,7 +51,8 @@ fun ToolArgumentsPreview(
     isDark: Boolean,
     category: ToolCategory = ToolCategory.UNKNOWN,
     uiMetadata: ToolUiMetadata? = null,
-    result: String? = null
+    result: String? = null,
+    isBrowserStep: Boolean = false
 ) {
     val metaColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
     val codeBg = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
@@ -163,6 +164,10 @@ fun ToolArgumentsPreview(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (isBrowserStep) {
+            CodePreviewBlock("Arguments", JSONObject(arguments).toString(2), maxChars = 4_000)
+            return@Column
+        }
         if (toolName == "delegate_agent") {
             CodePreviewBlock("Prompt", argText("task"), maxChars = 4000)
             return@Column

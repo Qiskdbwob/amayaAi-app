@@ -50,6 +50,14 @@ class AgentMemoryRepository @Inject constructor(
         } }
     }
 
+    suspend fun delete(agentId: Long, id: String, expectedVersion: Int): Result<Unit> = withContext(Dispatchers.IO) {
+        synchronized(lock) { runCatching {
+            val current = active(agentId).firstOrNull { it.id == id } ?: error("Agent memory not found: $id")
+            require(current.version == expectedVersion) { "Agent memory conflict: refresh before deleting." }
+            rewrite(agentId, read(agentId).map { if (it.id == id && it.active) it.copy(active = false) else it })
+        } }
+    }
+
     suspend fun deleteOwner(agentId: Long) = withContext(Dispatchers.IO) { File(root, "$agentId.jsonl").delete() }
 
     private fun validate(agentId: Long, title: String?, content: String) = classifier.classify(

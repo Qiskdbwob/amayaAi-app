@@ -39,7 +39,7 @@ data/local/
 - `db/AppDatabase.kt`: Room database definition and wiring.
 - `db/migrations/`: Database migration scripts.
 - `app/schemas/`: exported Room schema snapshots that must stay aligned with migration updates.
-- `files/FileSessionStore.kt`: file locations for session recall records and summaries.
+- `files/FileSessionStore.kt`: file locations for session recall records and summaries; deleting model context must also remove the matching conversation-scoped recall records.
 - `files/FileSkillStore.kt`: file locations and safe names for local reusable skill documents.
 - `files/FileWorkspaceMemoryStore.kt`: stable workspace UUID metadata, canonical-root resolution, and explicit moved-root remapping for memory/session scoping.
 
@@ -48,7 +48,7 @@ data/local/
 - `entity/FileEntity.kt`: local file index entries.
 - `entity/FileFtsEntity.kt`: full-text-search support for local files.
 - `entity/FileMetadataEntity.kt`: detailed file information.
-- `entity/ConversationEntity.kt`: stored conversation records with explicit Chat/Project/Agent owner scope plus active Agent member ID.
+- `entity/ConversationEntity.kt`: stored conversation records with explicit Chat/Project/Agent owner scope plus active Agent member ID. `messages_json` is rendered history; `context_messages_json` is model-visible history or an active-session compression summary.
 - `entity/AgentGroupEntity.kt`: persisted shared group workspace, instructions, and references.
 - `entity/AgentEntity.kt`: many named roles, instructions, per-agent capability profiles, private reference paths, and group-local IDs belonging to one agent group.
 - `entity/DelegationTaskEntity.kt`: persisted intra-group task status and result.
@@ -57,7 +57,7 @@ data/local/
 - `entity/CronJobEntity.kt`: scheduled local job records, optionally owned by one Agent.
 - `dao/ProjectDao.kt`: project persistence access.
 - `dao/FileDao.kt`: file index and FTS access.
-- `dao/ConversationDao.kt`: conversation persistence access.
+- `dao/ConversationDao.kt`: conversation persistence access. List projections must replace large history/context JSON with empty literals; fetch a payload only by ID in CursorWindow-safe chunks. Never scan `SELECT *` across local conversations.
 - `dao/CronJobDao.kt`: cron job persistence access, including Agent-scoped lists.
 - `db/AppDatabase.kt`: database configuration and migration wiring.
 - `files/FileSessionStore.kt`: file-backed session recall root, JSONL record file, summary file, and legacy `sessions.db` migration.

@@ -4,8 +4,6 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
-import android.net.Uri
-import androidx.browser.customtabs.CustomTabsIntent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
@@ -44,10 +42,7 @@ class BrowserOperatorActivity : AppCompatActivity() {
                     },
                     onDeleteDownload = browserSessionManager::deleteDownload,
                     onAuthHandoff = {
-                        val url = browserSessionManager.uiState.value.activeUrl
-                        if (url.startsWith("http://") || url.startsWith("https://")) {
-                            CustomTabsIntent.Builder().build().launchUrl(this@BrowserOperatorActivity, Uri.parse(url))
-                        }
+                        Toast.makeText(this@BrowserOperatorActivity, "Complete human verification in this browser, then press Resume.", Toast.LENGTH_LONG).show()
                     }
                 )
             }

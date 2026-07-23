@@ -143,11 +143,13 @@ object AntigravityTimelineMetadata {
         val stepMap = LinkedHashMap<String, MessageStep>()
         (first.steps + second.steps).forEach { step ->
             val key = when (step) {
+                is MessageStep.Thinking -> step.id
                 is MessageStep.Text -> step.id
                 is MessageStep.ToolCall -> "tool:${step.execution.toolCallId}"
             }
             val existing = stepMap[key]
             stepMap[key] = when {
+                existing is MessageStep.Thinking && step is MessageStep.Thinking -> if (step.text.length >= existing.text.length) step else existing
                 existing is MessageStep.Text && step is MessageStep.Text -> if (step.content.length >= existing.content.length) step else existing
                 existing is MessageStep.ToolCall && step is MessageStep.ToolCall -> MessageStep.ToolCall(id = existing.id, execution = mergeTool(existing.execution, step.execution))
                 existing == null -> step

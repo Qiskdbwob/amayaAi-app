@@ -76,6 +76,7 @@ interface SessionMemoryRepository {
         ownerId: String? = null
     ): List<SessionSearchResult>
     suspend fun summarizeSession(sessionId: String, forceRebuild: Boolean = false): String
+    suspend fun deleteSession(sessionId: String)
     suspend fun sessionWorkspacePath(sessionId: String): String?
     suspend fun sessionWorkspaceId(sessionId: String): String?
     suspend fun sessionAssistantMode(sessionId: String): String?
@@ -188,6 +189,15 @@ class FileSessionMemoryRepository @Inject constructor(
         fileMutex.withLock {
             if (forceRebuild) buildDeterministicSummary(sessionId).summary
             else readSummaries()[sessionId]?.summary ?: buildDeterministicSummary(sessionId).summary
+        }
+    }
+
+    override suspend fun deleteSession(sessionId: String) = withContext(Dispatchers.IO) {
+        fileMutex.withLock {
+            val records = readRecords().filterNot { it.optString("sessionId") == sessionId }
+            store.sessionsFile.parentFile?.mkdirs()
+            store.sessionsFile.writeText(records.joinToString("\n", postfix = if (records.isEmpty()) "" else "\n") { it.toString() })
+            writeSummaries(readSummaries().filterKeys { it != sessionId }.values.toList())
         }
     }
 

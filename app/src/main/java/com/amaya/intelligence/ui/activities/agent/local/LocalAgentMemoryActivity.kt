@@ -7,8 +7,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.lifecycle.lifecycleScope
 import com.amaya.intelligence.data.repository.AgentMemoryRepository
@@ -24,6 +26,7 @@ class LocalAgentMemoryActivity : AppCompatActivity() {
     @Inject lateinit var repository: AgentMemoryRepository
     private val agentId by lazy { intent.getLongExtra(EXTRA_AGENT_ID, -1L) }
     private val records = MutableStateFlow(emptyList<com.amaya.intelligence.data.repository.AgentMemoryRecord>())
+    private val message = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -32,11 +35,20 @@ class LocalAgentMemoryActivity : AppCompatActivity() {
         setContent {
             AmayaTheme {
                 val items by records.collectAsState()
+                val snackbarHostState = remember { SnackbarHostState() }
+                LaunchedEffect(message.value) { message.value?.let { snackbarHostState.showSnackbar(it); message.value = null } }
                 LocalAgentMemoryScreen(
                     records = items,
-                    snackbarHostState = remember { SnackbarHostState() },
+                    snackbarHostState = snackbarHostState,
                     onNavigateBack = ::finish,
-                    onAdd = { content -> lifecycleScope.launch { repository.save(agentId, null, content); refresh() } }
+                    onAdd = { content -> lifecycleScope.launch {
+                        repository.save(agentId, null, content).onFailure { message.value = "Save failed: ${it.message}" }
+                        refresh()
+                    } },
+                    onDelete = { record -> lifecycleScope.launch {
+                        repository.delete(agentId, record.id, record.version).onSuccess { message.value = "Deleted" }.onFailure { message.value = "Delete failed: ${it.message}" }
+                        refresh()
+                    } }
                 )
             }
         }

@@ -12,6 +12,7 @@ import com.amaya.intelligence.domain.models.ModelOption
 import com.amaya.intelligence.domain.models.ChatUiState
 import com.amaya.intelligence.domain.models.ConnectionState
 import com.amaya.intelligence.domain.models.MessageStep
+import com.amaya.intelligence.domain.models.finishThinking
 import com.amaya.intelligence.domain.models.ProjectFileEntry
 import com.amaya.intelligence.domain.models.RemoteWorkspace
 import com.amaya.intelligence.domain.models.ToolExecution
@@ -505,7 +506,7 @@ class OpencodeIntelligenceService @Inject constructor(
                 val steps = replaceTextStep(msg.steps, partId, update.text)
                 val newContent = steps.filterIsInstance<MessageStep.Text>()
                     .joinToString(separator = "") { it.content }
-                msg.copy(content = newContent, steps = steps)
+                msg.finishThinking().copy(content = newContent, steps = steps)
             })
         }
     }
@@ -532,17 +533,22 @@ class OpencodeIntelligenceService @Inject constructor(
             val id = currentAssistantMessageId ?: return@update state
             state.copy(messages = state.messages.map { msg ->
                 if (msg.id != id) msg
-                else msg.copy(
-                    thinking = update.text,
-                    isThinking = update.timeEnd == null,
-                    // Seed startedAt on the first reasoning token so the
-                    // "Thought for Xs" label and the terminal durationMs
-                    // (set on session.idle) can be computed. Parity with
-                    // LocalIntelligenceService, which seeds this on the first
-                    // ThinkingDelta.
-                    thinkingStartedAt = msg.thinkingStartedAt
-                        ?: System.currentTimeMillis()
-                )
+                else {
+                    val current = msg.steps.lastOrNull() as? MessageStep.Thinking
+                    val startedAt = current?.startedAt ?: System.currentTimeMillis()
+                    val step = MessageStep.Thinking(
+                        id = current?.id ?: update.partId ?: UUID.randomUUID().toString(),
+                        text = update.text,
+                        isStreaming = update.timeEnd == null,
+                        startedAt = startedAt
+                    )
+                    msg.copy(
+                        thinking = update.text,
+                        isThinking = step.isStreaming,
+                        thinkingStartedAt = startedAt,
+                        steps = if (current == null) msg.steps + step else msg.steps.dropLast(1) + step
+                    )
+                }
             })
         }
     }
@@ -568,13 +574,13 @@ class OpencodeIntelligenceService @Inject constructor(
                         arguments = emptyMap(),
                         status = nextStatus
                     )
-                    msg.copy(
+                    msg.finishThinking().copy(
                         toolExecutions = msg.toolExecutions + execution,
                         steps = msg.steps + MessageStep.ToolCall(execution = execution)
                     )
                 } else {
                     val updated = existing.copy(status = nextStatus)
-                    msg.copy(
+                    msg.finishThinking().copy(
                         toolExecutions = msg.toolExecutions.map { if (it.toolCallId == callId) updated else it },
                         steps = msg.steps.map { step ->
                             if (step is MessageStep.ToolCall && step.execution.toolCallId == callId) {
@@ -619,6 +625,13 @@ class OpencodeIntelligenceService @Inject constructor(
             )
         }
         todoRepository.replaceAll(items)
+    }
+
+    private fun UiMessage.finishThinking(nowMs: Long = System.currentTimeMillis()): UiMessage {
+        val finishedSteps = steps.finishThinking(nowMs)
+        if (!isThinking && thinkingDurationMs != null && finishedSteps === steps) return this
+        val durationMs = thinkingStartedAt?.let { (nowMs - it).coerceAtLeast(0L) }
+        return copy(isThinking = false, thinkingDurationMs = thinkingDurationMs ?: durationMs, steps = finishedSteps)
     }
 
     private fun ensureAssistantMessage() {
@@ -707,6 +720,14 @@ class OpencodeIntelligenceService @Inject constructor(
         put("steps", JSONArray().apply {
             msg.steps.forEach { step ->
                 when (step) {
+                    is MessageStep.Thinking -> put(JSONObject().apply {
+                        put("id", step.id)
+                        put("type", "thinking")
+                        put("text", step.text)
+                        put("isStreaming", step.isStreaming)
+                        step.startedAt?.let { put("startedAt", it) }
+                        step.durationMs?.let { put("durationMs", it) }
+                    })
                     is MessageStep.Text -> put(JSONObject().apply {
                         put("id", step.id)
                         put("type", "text")
@@ -740,6 +761,15 @@ class OpencodeIntelligenceService @Inject constructor(
                     for (j in 0 until stepsArr.length()) {
                         val step = stepsArr.optJSONObject(j) ?: continue
                         when (step.optString("type")) {
+                            "thinking" -> steps.add(
+                                MessageStep.Thinking(
+                                    id = step.optString("id", UUID.randomUUID().toString()),
+                                    text = step.optString("text"),
+                                    isStreaming = step.optBoolean("isStreaming"),
+                                    startedAt = step.optLong("startedAt", 0L).takeIf { it > 0 },
+                                    durationMs = step.optLong("durationMs", 0L).takeIf { it > 0 }
+                                )
+                            )
                             "text" -> steps.add(
                                 MessageStep.Text(
                                     id = step.optString("id", UUID.randomUUID().toString()),
@@ -835,8 +865,7 @@ class OpencodeIntelligenceService @Inject constructor(
 
     private fun handleSessionList(sessions: List<OpencodeSessionSummary>) {
         scope.launch {
-            val existing = conversationDao
-                .getConversationsByScope(ConversationScope.OPENCODE.wireName)
+            val existing = conversationDao.getOpencodeConversations()
             val existingBySessionId: Map<String, com.amaya.intelligence.data.local.entity.ConversationEntity> =
                 existing.mapNotNull { row ->
                     val sid = extractOpencodeSessionId(row.messagesJson) ?: return@mapNotNull null
@@ -879,7 +908,7 @@ class OpencodeIntelligenceService @Inject constructor(
     }
 
     private suspend fun purgeConversationByOpencodeSessionId(sessionId: String) {
-        val rows = conversationDao.getConversationsByScope(ConversationScope.OPENCODE.wireName)
+        val rows = conversationDao.getOpencodeConversations()
         for (row in rows) {
             val sid = extractOpencodeSessionId(row.messagesJson)
             if (sid == sessionId) {

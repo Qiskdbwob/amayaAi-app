@@ -52,6 +52,7 @@ fun ChatBottomSection(
     onSendMessageWithImage: (String, String, String, String) -> Unit = { _, _, _, _ -> },
     onClearImageAttachment: () -> Unit = {},
     onStopGeneration: () -> Unit,
+    onCancelCompactConversation: () -> Unit = {},
     onNavigateToWorkspace: () -> Unit,
     ownerLabel: String,
     mentionAgents: List<ChatMentionAgent> = emptyList(),
@@ -65,6 +66,7 @@ fun ChatBottomSection(
     onSelectModel: () -> Unit,
     effort: com.amaya.intelligence.data.remote.api.ThinkingEffort = com.amaya.intelligence.data.remote.api.ThinkingEffort.MEDIUM,
     onEffortChange: (com.amaya.intelligence.data.remote.api.ThinkingEffort) -> Unit = {},
+    onCompactConversation: (String) -> Unit = {},
     onInputBarHeightChange: (Int) -> Unit
 ) {
     var attachedPath by remember { mutableStateOf(attachedFilePath) }
@@ -148,6 +150,7 @@ fun ChatBottomSection(
             onTextChange = { inputText.value = it },
             resetKey = uiState.conversationId,
             isStreaming = uiState.isStreaming,
+            isCompressing = uiState.isCompressing,
             attachedFilePath = attachedPath,
             attachedImageBase64 = currentImageBase64,
             attachedImageName = currentImageName,
@@ -179,6 +182,8 @@ fun ChatBottomSection(
             onSelectModel = onSelectModel,
             effort = effort,
             onEffortChange = onEffortChange,
+            onCompactConversation = onCompactConversation,
+            onCancelCompactConversation = onCancelCompactConversation,
             onSendMessage = { text ->
                 keyboardController?.hide()
                 val path = attachedPath

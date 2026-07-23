@@ -37,6 +37,10 @@ data class ConversationEntity(
     @ColumnInfo(name = "messages_json")
     val messagesJson: String,
 
+    /** Model-visible history; `messagesJson` may be cleared without losing it. */
+    @ColumnInfo(name = "context_messages_json")
+    val contextMessagesJson: String = "",
+
     @ColumnInfo(name = "scope")
     val scope: String = ConversationScope.LOCAL.wireName,
 

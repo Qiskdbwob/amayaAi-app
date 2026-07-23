@@ -20,6 +20,7 @@ import com.amaya.intelligence.data.local.db.migrations.MIGRATION_12_13
 import com.amaya.intelligence.data.local.db.migrations.MIGRATION_13_14
 import com.amaya.intelligence.data.local.db.migrations.MIGRATION_14_15
 import com.amaya.intelligence.data.local.db.migrations.MIGRATION_15_16
+import com.amaya.intelligence.data.local.db.migrations.MIGRATION_16_17
 
 @TypeConverters(CronJobTypeConverters::class)
 @Database(
@@ -48,7 +49,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun delegationTaskDao(): DelegationTaskDao
 
     companion object {
-        const val DATABASE_VERSION = 16
+        const val DATABASE_VERSION = 17
         private const val DATABASE_NAME = "Amaya_db"
         private const val TAG = "AppDatabase"
 
@@ -79,7 +80,7 @@ abstract class AppDatabase : RoomDatabase() {
                         Log.d(TAG, "Database opened: version ${db.version}")
                     }
                 })
-                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16)
+                .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17)
                 .build()
         }
     }

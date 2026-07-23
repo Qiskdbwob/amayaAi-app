@@ -28,6 +28,9 @@ interface IntelligenceService {
     fun clearConversation()
     fun loadConversation(id: String)
     fun deleteConversation(id: String)
+    fun clearVisibleHistory(deleteContext: Boolean) {}
+    fun compactConversation(focus: String = "") {}
+    fun cancelCompactConversation() {}
     fun resync() {}
     fun refreshState() {}
 

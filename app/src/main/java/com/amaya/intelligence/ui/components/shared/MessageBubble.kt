@@ -1,13 +1,6 @@
 package com.amaya.intelligence.ui.components.shared
 
 import com.amaya.intelligence.domain.models.*
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
@@ -21,7 +14,6 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -130,10 +122,6 @@ fun MessageBubble(
             }
         }
     } else {
-        val sawLiveThinking = remember(message.id) { mutableStateOf(message.isThinking) }
-        SideEffect {
-            if (message.isThinking) sawLiveThinking.value = true
-        }
         Row(
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -148,14 +136,8 @@ fun MessageBubble(
                         }
                         if (finalTextIndex != null) {
                             // Steps branch — completed turn wrapped in a
-                            // "Worked for {duration} · N tools" card. The
-                            // thinking segment lives INSIDE this card so it
-                            // stays inside the same container as the tool
-                            // timeline; without this the reasoning card
-                            // rendered outside the worked-by header and read
-                            // as a separate block. The ThinkingCard keeps
-                            // its own PROCESSING → DONE auto-collapse so a
-                            // finished segment doesn't bloat the summary.
+                            // "Worked for {duration} · N tools" card. Timeline
+                            // steps preserve provider event order.
                             val summarySteps = summaryTimelineSteps(message, finalTextIndex)
                             val finalTextStep = message.steps[finalTextIndex] as MessageStep.Text
                             WorkSummaryCard(
@@ -163,13 +145,6 @@ fun MessageBubble(
                                 steps = summarySteps,
                                 onInteraction = onInteraction
                             ) {
-                                MessageThinkingBlock(
-                                    message = message,
-                                    hideWhenDuplicate = hideThinkingHeader,
-                                    onLocalhostLinkClick = onLocalhostLinkClick,
-                                    onBodyScroll = onThinkingScroll,
-                                    animateInitialCollapse = sawLiveThinking.value && !message.isThinking
-                                )
                                 StepTimeline(
                                     steps = summarySteps,
                                     hideThinkingHeader = hideThinkingHeader,
@@ -194,17 +169,16 @@ fun MessageBubble(
                                 }
                             }
                         } else {
-                            // Steps branch — no summary card (streaming or
-                            // single-step shortcut). Thinking card stays
-                            // OUTSIDE above the timeline, matching legacy
-                            // behaviour.
-                            MessageThinkingBlock(
-                                message = message,
-                                hideWhenDuplicate = hideThinkingHeader,
-                                onLocalhostLinkClick = onLocalhostLinkClick,
-                                onBodyScroll = onThinkingScroll,
-                                animateInitialCollapse = sawLiveThinking.value && !message.isThinking
-                            )
+                            // Field reasoning is legacy fallback only. New
+                            // reasoning lives in ordered MessageStep.Thinking.
+                            if (message.steps.none { it is MessageStep.Thinking }) {
+                                MessageThinkingBlock(
+                                    message = message,
+                                    hideWhenDuplicate = hideThinkingHeader,
+                                    onLocalhostLinkClick = onLocalhostLinkClick,
+                                    onBodyScroll = onThinkingScroll
+                                )
+                            }
                             StepTimeline(
                                 steps = message.steps,
                                 hideThinkingHeader = hideThinkingHeader,
@@ -225,16 +199,19 @@ fun MessageBubble(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                val browserMerged = mergeBrowserToolExecutions(message.toolExecutions.filter { it.name == "browser" })
                                 val visibleExecutions = message.toolExecutions.filter { it.name != "update_todo" }
                                 val groups = buildToolExecutionGroups(
                                     visibleExecutions.map { MessageStep.ToolCall(execution = it) }
                                 )
 
                                 visibleExecutions.forEach { execution ->
-                                    val group = groups.find { it.executions.contains(execution) }
+                                    val group = groups.find {
+                                        it.executions.contains(execution) || it.parentToolCallId == execution.toolCallId
+                                    }
                                     when {
-                                        group != null && execution == group.executions.first() -> {
+                                        group != null && (
+                                            execution == group.executions.first() || group.parentToolCallId == execution.toolCallId
+                                        ) -> {
                                             key(group.key + "_" + execution.toolCallId) {
                                                 ToolExecutionGroupCard(
                                                     group = group,
@@ -246,18 +223,6 @@ fun MessageBubble(
                                             }
                                         }
                                         group != null -> Unit // Skip other group members
-                                        execution.name == "browser" && browserMerged != null && execution == message.toolExecutions.firstOrNull { it.name == "browser" } -> {
-                                            key(browserMerged.toolCallId) {
-                                                ToolCallCard(
-                                                    execution = browserMerged,
-                                                    onAccept = onToolAccept?.let { callback -> { callback(execution) } },
-                                                    onDecline = onToolDecline?.let { callback -> { callback(execution) } },
-                                                    onLocalhostLinkClick = onLocalhostLinkClick,
-                                                    onInteraction = onInteraction
-                                                )
-                                            }
-                                        }
-                                        execution.name == "browser" -> Unit
                                         else -> {
                                             key(execution.toolCallId) {
                                                 ToolCallCard(
@@ -282,8 +247,7 @@ fun MessageBubble(
                             message = message,
                             hideWhenDuplicate = hideThinkingHeader,
                             onLocalhostLinkClick = onLocalhostLinkClick,
-                            onBodyScroll = onThinkingScroll,
-                            animateInitialCollapse = sawLiveThinking.value && !message.isThinking
+                            onBodyScroll = onThinkingScroll
                         )
 
                         if (message.content.isNotBlank()) {
@@ -312,47 +276,24 @@ private fun StepTimeline(
     onLocalhostLinkClick: ((String) -> Unit)?,
     onInteraction: () -> Unit
 ) {
-    val browserIndices = steps.mapIndexedNotNull { idx, step ->
-        ((step as? MessageStep.ToolCall)?.execution?.name == "browser").takeIf { it }?.let { idx }
-    }
-    val firstBrowserIndex = browserIndices.firstOrNull()
-    val lastBrowserIndex = browserIndices.lastOrNull()
-    val mergedBrowserExecution = mergeBrowserToolExecutions(
-        steps.mapNotNull { (it as? MessageStep.ToolCall)?.execution?.takeIf { exec -> exec.name == "browser" } }
-    )
-    val embeddedBrowserText = if (firstBrowserIndex != null && lastBrowserIndex != null && firstBrowserIndex < lastBrowserIndex) {
-        steps.subList(firstBrowserIndex + 1, lastBrowserIndex).mapNotNull { step ->
-            val textStep = step as? MessageStep.Text ?: return@mapNotNull null
-            (textStep.formattedContent ?: textStep.content).takeIf { it.isNotBlank() }
-        }.joinToString("\n\n").takeIf { it.isNotBlank() }
-    } else null
     val groups = buildToolExecutionGroups(steps)
 
     steps.forEachIndexed { idx, step ->
-        val isBetweenBrowserCalls = firstBrowserIndex != null && lastBrowserIndex != null && idx in (firstBrowserIndex + 1) until lastBrowserIndex
         when (step) {
+            is MessageStep.Thinking -> {
+                key(step.id) {
+                    ThinkingCard(
+                        text = step.text,
+                        isStreaming = step.isStreaming,
+                        startedAt = step.startedAt,
+                        durationMs = step.durationMs,
+                        onLocalhostLinkClick = onLocalhostLinkClick
+                    )
+                }
+            }
             is MessageStep.ToolCall -> {
                 when {
                     step.execution.name == "update_todo" -> Unit
-                    isThinkingExecution(step.execution) && isBetweenBrowserCalls -> Unit
-                    step.execution.name == "browser" && idx == firstBrowserIndex && mergedBrowserExecution != null -> {
-                        key(mergedBrowserExecution.toolCallId) {
-                            ToolCallCard(
-                                execution = attachBrowserTimeline(
-                                    execution = mergedBrowserExecution,
-                                    steps = steps,
-                                    firstIndex = firstBrowserIndex,
-                                    lastIndex = lastBrowserIndex
-                                ),
-                                onAccept = onToolAccept?.let { callback -> { callback(step.execution) } },
-                                onDecline = onToolDecline?.let { callback -> { callback(step.execution) } },
-                                onLocalhostLinkClick = onLocalhostLinkClick,
-                                onInteraction = onInteraction,
-                                embeddedText = embeddedBrowserText
-                            )
-                        }
-                    }
-                    step.execution.name == "browser" -> Unit
                     isThinkingExecution(step.execution) -> {
                         key(step.execution.toolCallId) {
                             ThinkingCard(
@@ -362,10 +303,14 @@ private fun StepTimeline(
                         }
                     }
                     else -> {
-                        val group = groups.find { it.executions.contains(step.execution) }
+                        val group = groups.find {
+                            it.executions.contains(step.execution) || it.parentToolCallId == step.execution.toolCallId
+                        }
 
                         when {
-                            group != null && step.execution == group.executions.first() -> {
+                            group != null && (
+                                step.execution == group.executions.first() || group.parentToolCallId == step.execution.toolCallId
+                            ) -> {
                                 key(group.key + "_" + step.execution.toolCallId) {
                                     ToolExecutionGroupCard(
                                         group = group,
@@ -393,16 +338,14 @@ private fun StepTimeline(
                 }
             }
             is MessageStep.Text -> {
-                if (!isBetweenBrowserCalls) {
-                    val textContent = step.formattedContent ?: step.content
-                    if (textContent.isNotBlank()) {
-                        key(step.id) {
-                            AssistantTextWithThinking(
-                                text = textContent,
-                                hideThinkingHeader = hideThinkingHeader,
-                                onLocalhostLinkClick = onLocalhostLinkClick
-                            )
-                        }
+                val textContent = step.formattedContent ?: step.content
+                if (textContent.isNotBlank()) {
+                    key(step.id) {
+                        AssistantTextWithThinking(
+                            text = textContent,
+                            hideThinkingHeader = hideThinkingHeader,
+                            onLocalhostLinkClick = onLocalhostLinkClick
+                        )
                     }
                 }
             }
@@ -466,11 +409,7 @@ private fun WorkSummaryCard(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                 )
             }
-            AnimatedVisibility(
-                visible = expanded,
-                enter = expandVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)) + fadeIn(),
-                exit = shrinkVertically(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium)) + fadeOut()
-            ) {
+            ToolCallAnimatedSection(visible = expanded) {
                 Column {
                     HorizontalDivider(
                         color = borderColor,
@@ -499,6 +438,7 @@ private fun finalVisibleTextIndexForSummary(message: UiMessage): Int? {
 
     val meaningful = steps.mapIndexedNotNull { index, step ->
         when (step) {
+            is MessageStep.Thinking -> index
             is MessageStep.Text -> index.takeIf {
                 !isEmbeddedBrowserText(index) && (step.formattedContent ?: step.content).isNotBlank()
             }
@@ -529,10 +469,14 @@ private fun summaryTimelineSteps(message: UiMessage, finalTextIndex: Int): List<
     if (!isRemote) return message.steps.take(finalTextIndex)
 
     // Antigravity state snapshots often contain cumulative/duplicated text fragments.
-    // Keep the human-facing final text outside the work summary and show only the
-    // tool/thinking timeline inside the collapsible summary card.
+    // Keep the final answer outside the summary while retaining ordered tool and
+    // reasoning events inside it.
     return message.steps.filterIndexed { index, step ->
-        index != finalTextIndex && step is MessageStep.ToolCall && step.execution.name != "update_todo"
+        index != finalTextIndex && when (step) {
+            is MessageStep.Thinking -> true
+            is MessageStep.ToolCall -> step.execution.name != "update_todo"
+            is MessageStep.Text -> false
+        }
     }
 }
 
@@ -571,56 +515,6 @@ private fun formatWorkedDuration(startedAt: Long, completedAt: Long?): String {
         minutes > 0 -> "${minutes}m ${secs}s"
         else -> "${secs}s"
     }
-}
-
-private fun attachBrowserTimeline(
-    execution: ToolExecution,
-    steps: List<MessageStep>,
-    firstIndex: Int?,
-    lastIndex: Int?
-): ToolExecution {
-    if (firstIndex == null || lastIndex == null) return execution
-    val parent = runCatching { JSONObject(execution.result.orEmpty()) }.getOrNull() ?: return execution
-    val timeline = JSONArray()
-
-    for (idx in firstIndex..lastIndex) {
-        when (val step = steps[idx]) {
-            is MessageStep.Text -> {
-                val content = step.formattedContent ?: step.content
-                parseThinkingTags(content).forEach { part ->
-                    if (part.text.isNotBlank()) {
-                        timeline.put(JSONObject().apply {
-                            put("type", if (part.isThinking) "thinking" else "text")
-                            put("content", part.text)
-                        })
-                    }
-                }
-            }
-            is MessageStep.ToolCall -> {
-                when {
-                    step.execution.name == "browser" -> {
-                        val childParent = runCatching { JSONObject(step.execution.result.orEmpty()) }.getOrNull()
-                        val subs = childParent?.optJSONArray("sub_toolcalls") ?: JSONArray()
-                        for (i in 0 until subs.length()) {
-                            timeline.put(JSONObject().apply {
-                                put("type", "subtool")
-                                put("item", subs.optJSONObject(i))
-                            })
-                        }
-                    }
-                    isThinkingExecution(step.execution) && !step.execution.result.isNullOrBlank() -> {
-                        timeline.put(JSONObject().apply {
-                            put("type", "thinking")
-                            put("content", step.execution.result.orEmpty())
-                        })
-                    }
-                }
-            }
-        }
-    }
-
-    parent.put("timeline", timeline)
-    return execution.copy(result = parent.toString(2))
 }
 
 /**

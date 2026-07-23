@@ -94,6 +94,25 @@ data class ConversationCompression(
     val estimatedSavedTokens: Int
 )
 
+private const val COMPRESSED_SESSION_CONTEXT_PREFIX = "[COMPRESSED SESSION CONTEXT]"
+
+private fun ChatMessage.isCompressedSessionContext(): Boolean =
+    role == MessageRole.SYSTEM && content.orEmpty().startsWith(COMPRESSED_SESSION_CONTEXT_PREFIX)
+
+internal fun List<ChatMessage>.compressedSessionSummary(): String? =
+    firstOrNull(ChatMessage::isCompressedSessionContext)?.content
+        ?.removePrefix(COMPRESSED_SESSION_CONTEXT_PREFIX)
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+
+internal fun String.withCompressedSessionContext(summary: String?): String = buildString {
+    append(this@withCompressedSessionContext)
+    summary?.takeIf(String::isNotBlank)?.let {
+        if (isNotEmpty()) append("\n\n")
+        append("[COMPRESSED CONVERSATION]\n").append(it)
+    }
+}
+
 @Singleton
 class ContextManager @Inject constructor(
     private val brainSettingsRepository: BrainSettingsRepository,
@@ -107,8 +126,9 @@ class ContextManager @Inject constructor(
     suspend fun buildContext(request: ContextBuildRequest): ContextBuildResult {
         val settings = brainSettingsRepository.getBrainSettings()
         val intent = inferIntent(request.userMessage)
+        val activeSessionSummary = request.conversationHistory.compressedSessionSummary()
         val compression = conversationCompressor.compress(
-            request.conversationHistory,
+            request.conversationHistory.filterNot { it.isCompressedSessionContext() },
             promptBudgetManager.historyBudgetFor(request.contextWindowTokens, request.maxOutputTokens, request.toolSchemaTokens)
         )
         val clock = currentClockText()
@@ -123,18 +143,8 @@ class ContextManager @Inject constructor(
             add(skillIndexProvider.skillIndex(request.userMessage, settings, intent))
             add(sessionSummaryProvider.sessionSummary(request.userMessage, settings, intent, request.workspacePath, request.assistantMode, request.ownerId))
             workspaceItem(request.workspacePath, settings, intent)?.let { add(it) }
-            if (compression.summary.isNotBlank()) {
-                add(ContextItem(
-                    id = "conversation_summary",
-                    sectionId = "conversation_summary",
-                    source = ContextSource.SESSION_SUMMARY,
-                    title = "Compressed Conversation",
-                    content = compression.summary,
-                    priority = 740,
-                    score = 1.0,
-                    mode = ContextInclusionMode.SUMMARY,
-                    maxTokens = 900
-                ))
+            if (activeSessionSummary == null && compression.summary.isNotBlank()) {
+                add(compressedConversationItem(compression.summary))
             }
             add(ContextItem("time", "time", ContextSource.TIME, "Current Time", clock, 800, mode = ContextInclusionMode.ALWAYS, alwaysInclude = true, maxTokens = 80))
         }
@@ -146,21 +156,23 @@ class ContextManager @Inject constructor(
         )
         val ranked = contextRanker.rank(items, intent)
         val budgeted = promptBudgetManager.buildPrompt(sections, ranked, promptBudget)
+        val systemPrompt = budgeted.prompt.withCompressedSessionContext(activeSessionSummary)
         return ContextBuildResult(
-            systemPrompt = budgeted.prompt,
+            systemPrompt = systemPrompt,
             messages = compression.messages + ChatMessage(role = MessageRole.USER, content = request.userMessage, images = request.userImages),
-            estimatedPromptTokens = budgeted.estimatedTokens + compression.messages.sumOf { promptBudgetManager.estimateTokens(it.content.orEmpty()) },
+            estimatedPromptTokens = promptBudgetManager.estimateTokens(systemPrompt) + compression.messages.sumOf { promptBudgetManager.estimateTokens(it.content.orEmpty()) },
             droppedItems = budgeted.droppedItems
         )
     }
 
     fun buildWindowsBridgeContext(request: ContextBuildRequest): ContextBuildResult {
+        val activeSessionSummary = request.conversationHistory.compressedSessionSummary()
         val compression = conversationCompressor.compress(
-            request.conversationHistory,
+            request.conversationHistory.filterNot { it.isCompressedSessionContext() },
             promptBudgetManager.historyBudgetFor(request.contextWindowTokens, request.maxOutputTokens, request.toolSchemaTokens)
         )
         val clock = currentClockText()
-        val systemPrompt = windowsBridgeSystemPrompt(clock)
+        val systemPrompt = windowsBridgeSystemPrompt(clock).withCompressedSessionContext(activeSessionSummary)
         val estimated = promptBudgetManager.estimateTokens(systemPrompt) +
             compression.messages.sumOf { promptBudgetManager.estimateTokens(it.content.orEmpty()) }
         return ContextBuildResult(
@@ -170,6 +182,18 @@ class ContextManager @Inject constructor(
             droppedItems = emptyList()
         )
     }
+
+    private fun compressedConversationItem(summary: String) = ContextItem(
+        id = "conversation_summary",
+        sectionId = "conversation_summary",
+        source = ContextSource.SESSION_SUMMARY,
+        title = "Compressed Conversation",
+        content = summary,
+        priority = 740,
+        score = 1.0,
+        mode = ContextInclusionMode.SUMMARY,
+        maxTokens = 900
+    )
 
     private fun inferIntent(message: String): ContextIntent {
         val lower = message.lowercase()

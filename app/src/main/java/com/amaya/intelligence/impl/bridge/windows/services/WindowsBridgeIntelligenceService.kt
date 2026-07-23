@@ -434,6 +434,14 @@ class WindowsBridgeIntelligenceService @Inject constructor(
                 put("steps", JSONArray().apply {
                     msg.steps.forEach { step ->
                         when (step) {
+                            is MessageStep.Thinking -> put(JSONObject().apply {
+                                put("id", step.id)
+                                put("type", "thinking")
+                                put("text", step.text)
+                                put("isStreaming", step.isStreaming)
+                                step.startedAt?.let { put("startedAt", it) }
+                                step.durationMs?.let { put("durationMs", it) }
+                            })
                             is MessageStep.Text -> put(JSONObject().apply {
                                 put("id", step.id)
                                 put("type", "text")
@@ -474,6 +482,13 @@ class WindowsBridgeIntelligenceService @Inject constructor(
                     (0 until stepsArr.length()).mapNotNull { idx ->
                         val step = stepsArr.getJSONObject(idx)
                         when (step.optString("type")) {
+                            "thinking" -> MessageStep.Thinking(
+                                id = step.optString("id", UUID.randomUUID().toString()),
+                                text = step.optString("text"),
+                                isStreaming = step.optBoolean("isStreaming"),
+                                startedAt = step.optLong("startedAt", 0L).takeIf { it > 0 },
+                                durationMs = step.optLong("durationMs", 0L).takeIf { it > 0 }
+                            )
                             "text" -> MessageStep.Text(
                                 id = step.optString("id", UUID.randomUUID().toString()),
                                 content = step.optString("content")

@@ -3,6 +3,9 @@ package com.amaya.intelligence.impl.local.browser
 import android.content.Context
 import android.net.Uri
 import android.view.View
+import android.graphics.PixelFormat
+import android.media.ImageReader
+import org.mozilla.geckoview.GeckoDisplay
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.WebResponse
@@ -19,12 +22,17 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.amaya.intelligence.tools.ToolExecutionContext
@@ -32,6 +40,135 @@ import com.amaya.intelligence.tools.ToolExecutionContext
 @Singleton
 class BrowserSessionManager @Inject constructor(
     @ApplicationContext private val context: Context,
+) {
+    private data class SessionKey(val conversationKey: String, val agentId: Long)
+
+    private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
+    private val headlessSurfaceSlots = Semaphore(2)
+    private val sessions = object : LinkedHashMap<SessionKey, BrowserConversationSession>(8, 0.75f, true) {}
+    private val _uiState = MutableStateFlow(BrowserUiState())
+    val uiState: StateFlow<BrowserUiState> = _uiState.asStateFlow()
+    private var visibleKey: SessionKey? = null
+    private var sharedViewOwner: SessionKey? = null
+    private var visibleStateJob: Job? = null
+    private var workspacePath: String? = null
+
+    @Synchronized
+    private fun sessionFor(key: SessionKey): BrowserConversationSession {
+        sessions[key]?.let { return it }
+        val session = BrowserConversationSession(context, headlessSurfaceSlots).apply {
+            resetForConversation(key.conversationKey, key.agentId)
+            setWorkspace(workspacePath)
+        }
+        sessions[key] = session
+        return session
+    }
+
+    @Synchronized
+    private fun selected(): BrowserConversationSession? = visibleKey?.let(sessions::get)
+
+    @Synchronized
+    private fun trimSessions() {
+        while (sessions.size > MAX_RESIDENT_SESSIONS) {
+            val removable = sessions.entries.firstOrNull {
+                it.key != visibleKey && it.key != sharedViewOwner && !it.value.isExecuting()
+            } ?: return
+            sessions.remove(removable.key)
+            removable.value.close()
+        }
+    }
+
+    @Synchronized
+    fun selectConversation(key: String, agentId: Long? = null) {
+        if (agentId == null) {
+            visibleKey = null
+            visibleStateJob?.cancel()
+            visibleStateJob = null
+            _uiState.value = BrowserUiState()
+            return
+        }
+        val sessionKey = SessionKey(key, agentId)
+        val session = sessionFor(sessionKey)
+        visibleKey = sessionKey
+        trimSessions()
+        visibleStateJob?.cancel()
+        _uiState.value = session.uiState.value
+        visibleStateJob = scope.launch { session.uiState.collect { _uiState.value = it } }
+    }
+
+    fun setWorkspace(path: String?) {
+        workspacePath = path?.takeIf(String::isNotBlank)
+        selected()?.setWorkspace(workspacePath)
+    }
+
+    fun canOpenOperator(): Boolean = selected()?.canOpenOperator() == true
+    fun markAuthHandoffCompleted() { selected()?.markAuthHandoffCompleted() }
+    fun releaseInactiveRuntimes() { synchronized(this) { sessions.values.toList() }.forEach(BrowserConversationSession::releaseInactiveRuntimes); trimSessions() }
+    fun resetForConversation(key: String, agentId: Long? = null) = selectConversation(key, agentId)
+    fun resetEphemeral() { selectConversation("", null) }
+    fun sessionId(): String = selected()?.sessionId().orEmpty()
+    fun takeLastScreenshotAttachment(executionContext: ToolExecutionContext): String? {
+        val agentId = executionContext.agentId ?: return null
+        val key = SessionKey(executionContext.conversationId?.let { "conversation:$it" } ?: "agent:$agentId", agentId)
+        return synchronized(this) { sessions[key] }?.takeLastScreenshotAttachment()
+    }
+    suspend fun captureScreenshotToWorkspace(): BrowserToolResponse = selected()?.captureScreenshotToWorkspace() ?: BrowserToolResponse.Failure("No active browser session")
+    fun clearActiveSiteData() { selected()?.clearActiveSiteData() }
+    fun provideUploadUris(uris: Array<Uri>?) { selected()?.provideUploadUris(uris) }
+    fun cancelPendingUpload() { selected()?.cancelPendingUpload() }
+    fun openDownload(download: BrowserDownload): Uri? = selected()?.openDownload(download)
+    fun deleteDownload(download: BrowserDownload) { selected()?.deleteDownload(download) }
+    fun clearSessionState() { selected()?.clearSessionState() }
+    suspend fun switchToTab(pageId: String): BrowserToolResponse = selected()?.switchToTab(pageId) ?: BrowserToolResponse.Failure("No active browser session")
+    fun acquireSharedBrowserView(): GeckoView {
+        val previous: BrowserConversationSession?
+        val current: BrowserConversationSession
+        synchronized(this) {
+            val key = checkNotNull(visibleKey) { "No active browser session" }
+            previous = sharedViewOwner?.takeIf { it != key }?.let(sessions::get)
+            sharedViewOwner = key
+            current = checkNotNull(sessions[key]) { "No active browser session" }
+        }
+        previous?.releaseSharedBrowserView()
+        return current.acquireSharedBrowserView()
+    }
+
+    fun releaseSharedBrowserView() {
+        val owner = synchronized(this) {
+            sharedViewOwner?.let(sessions::get).also { sharedViewOwner = null }
+        }
+        owner?.releaseSharedBrowserView()
+        trimSessions()
+    }
+    fun isDispatchingAgentInput(): Boolean = selected()?.isDispatchingAgentInput() == true
+    fun hideSoftKeyboardForAgent() { selected()?.hideSoftKeyboardForAgent() }
+    fun onAssistantStreamingChanged(streaming: Boolean) { selected()?.onAssistantStreamingChanged(streaming) }
+    fun onAssistantTextDelta(delta: String) { selected()?.onAssistantTextDelta(delta) }
+    fun onAgentTouch(x: Float, y: Float) { selected()?.onAgentTouch(x, y) }
+    fun onBrowserError(message: String) { selected()?.onBrowserError(message) }
+    suspend fun executeBrowserTask(arguments: Map<String, Any?>, executionContext: ToolExecutionContext = ToolExecutionContext()): String {
+        val agentId = executionContext.agentId
+            ?: return JSONObject().put("status", "error").put("error", "Browser requires an active Agent").toString(2)
+        val key = SessionKey(executionContext.conversationId?.let { "conversation:$it" } ?: "agent:$agentId", agentId)
+        val session = synchronized(this) { sessionFor(key).also { it.retain() } }
+        return try {
+            session.setWorkspace(executionContext.workspacePath?.takeIf(String::isNotBlank) ?: workspacePath)
+            session.executeBrowserTask(arguments, executionContext)
+        } finally {
+            session.release()
+            trimSessions()
+        }
+    }
+    suspend fun execute(toolName: String, arguments: Map<String, Any?>): BrowserToolResponse =
+        selected()?.execute(toolName, arguments) ?: BrowserToolResponse.Failure("No active browser session")
+    fun cancelFromUser() { selected()?.cancelFromUser() }
+
+    companion object { private const val MAX_RESIDENT_SESSIONS = 6 }
+}
+
+private class BrowserConversationSession(
+    private val context: Context,
+    private val headlessSurfaceSlots: Semaphore,
 ) {
     private var sessionId = newSessionId()
     private val initialTab = BrowserPageTab()
@@ -42,7 +179,14 @@ class BrowserSessionManager @Inject constructor(
     ))
     val uiState: StateFlow<BrowserUiState> = _uiState.asStateFlow()
 
-    private data class PageRuntime(val tabId: String, val view: GeckoView, val session: GeckoSession, val controller: AndroidBrowserController)
+    private class PageRuntime(
+        val tabId: String,
+        val view: GeckoView,
+        val session: GeckoSession,
+        val controller: AndroidBrowserController,
+        var display: GeckoDisplay? = null,
+        var imageReader: ImageReader? = null
+    )
 
     @Volatile private var controller: AndroidBrowserController? = null
     private val pageRuntimes = mutableMapOf<String, PageRuntime>()
@@ -55,18 +199,41 @@ class BrowserSessionManager @Inject constructor(
     private var parentSummary = "Browser task"
     private val parentSubToolcalls = mutableListOf<JSONObject>()
     private var conversationKey: String? = null
+    private var visibleConversationKey: String? = null
+    private var visibleAgentId: Long? = null
     private var pendingRestoreUrl: String? = null
     private val prefs = context.getSharedPreferences("browser_sessions", Context.MODE_PRIVATE)
     private val executionMutex = Mutex()
     @Volatile private var fileChooserCallback: ((Array<Uri>?) -> Unit)? = null
+    @Volatile private var queuedUploadDecision = false
+    @Volatile private var queuedUploadUris: Array<Uri>? = null
     @Volatile private var pendingUploadAcceptTypes: Array<String> = emptyArray()
     @Volatile private var pendingUploadMultiple: Boolean = false
     private var workspacePath: String? = null
     private var lastDownloadUri: String? = null
     private var lastDownloadAtMs = 0L
     private val resumeScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
+    @Volatile private var visibleHost = false
+    private var headlessSurfaceHeld = false
+    private val clients = AtomicInteger()
 
     fun setWorkspace(path: String?) { workspacePath = path?.takeIf(String::isNotBlank) }
+
+    fun retain() { clients.incrementAndGet() }
+    fun release() { clients.decrementAndGet() }
+    fun isExecuting(): Boolean = clients.get() > 0 || executionMutex.isLocked
+
+    fun close() {
+        detachHeadlessSurface()
+        pageRuntimes.values.forEach { runtime ->
+            runtime.controller.resetToBlank()
+            GeckoBrowserRuntime.detach(runtime.session)
+            runtime.session.close()
+        }
+        pageRuntimes.clear()
+        controller = null
+        resumeScope.cancel()
+    }
 
     fun canOpenOperator(): Boolean = _uiState.value.agentId != null && conversationKey != null
 
@@ -75,8 +242,19 @@ class BrowserSessionManager @Inject constructor(
     fun releaseInactiveRuntimes() {
         val active = _uiState.value.activeTabId
         pageRuntimes.keys.filter { it != active }.forEach { id ->
-            pageRuntimes.remove(id)?.let { runtime -> runtime.controller.resetToBlank(); GeckoBrowserRuntime.detach(runtime.session); runtime.session.close() }
+            pageRuntimes.remove(id)?.let { runtime ->
+                runtime.controller.resetToBlank()
+                runtime.session.setActive(false)
+                GeckoBrowserRuntime.detach(runtime.session)
+                runtime.session.close()
+            }
         }
+    }
+
+    fun selectConversation(key: String, agentId: Long? = null) {
+        visibleConversationKey = key
+        visibleAgentId = agentId
+        resetForConversation(key, agentId)
     }
 
     fun resetForConversation(key: String, agentId: Long? = null) {
@@ -113,6 +291,8 @@ class BrowserSessionManager @Inject constructor(
 
     fun resetEphemeral() {
         conversationKey = null
+        visibleConversationKey = null
+        visibleAgentId = null
         sessionId = newSessionId()
         pageRuntimes.values.forEach { runtime ->
             runtime.controller.resetToBlank()
@@ -161,9 +341,18 @@ class BrowserSessionManager @Inject constructor(
     }
 
     fun provideUploadUris(uris: Array<Uri>?) {
-        val callback = fileChooserCallback ?: return
+        val callback = fileChooserCallback
+        if (callback == null) {
+            // Gecko can deliver the file prompt one main-loop turn after the click.
+            // Keep the user's selection instead of dropping it during that race.
+            queuedUploadDecision = true
+            queuedUploadUris = uris
+            return
+        }
         fileChooserCallback = null
-        _uiState.update { it.copy(uploadPending = false, uploadAcceptTypes = emptyList()) }
+        queuedUploadDecision = false
+        queuedUploadUris = null
+        if (uris.isNullOrEmpty()) _uiState.update { it.copy(uploadPending = false, uploadAcceptTypes = emptyList()) }
         if (uris.isNullOrEmpty()) {
             callback(null)
             return
@@ -193,22 +382,34 @@ class BrowserSessionManager @Inject constructor(
                             }
                         }
                     } ?: error("Cannot read selected file")
-                    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", target)
+                    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", target).also {
+                        context.grantUriPermission(context.packageName, it, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
                 }.toTypedArray()
             }
             withContext(Dispatchers.Main.immediate) {
                 staged.onSuccess { values ->
-                    if (values.isEmpty()) callback(null)
-                    else callback(values)
+                    if (values.isEmpty()) callback(null) else callback(values)
+                    _uiState.update { it.copy(uploadPending = false, uploadAcceptTypes = emptyList()) }
                 }.onFailure {
                     callback(null)
+                    _uiState.update { it.copy(uploadPending = false, uploadAcceptTypes = emptyList()) }
                     onBrowserError(it.message ?: "Upload failed")
                 }
             }
         }
     }
 
-    fun cancelPendingUpload() = provideUploadUris(null)
+    fun cancelPendingUpload() {
+        val callback = fileChooserCallback
+        fileChooserCallback = null
+        queuedUploadDecision = false
+        queuedUploadUris = null
+        pendingUploadAcceptTypes = emptyArray()
+        pendingUploadMultiple = false
+        _uiState.update { it.copy(uploadPending = false, uploadAcceptTypes = emptyList()) }
+        callback?.invoke(null)
+    }
 
     private fun matchesMime(pattern: String, actual: String): Boolean = pattern == "*/*" || pattern == actual || (pattern.endsWith("/*") && actual.startsWith(pattern.removeSuffix("*")))
 
@@ -335,10 +536,17 @@ class BrowserSessionManager @Inject constructor(
     }
 
     fun acquireSharedBrowserView(): GeckoView {
+        if (headlessSurfaceHeld) detachHeadlessSurface()
+        visibleHost = true
         check(android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
             "Browser view must be acquired on the main thread"
         }
         val view = ensureSharedControllerOnMain().first
+        controller?.setVisibleFileChooserHost(true)
+        pageRuntimes[_uiState.value.activeTabId]?.session?.let {
+            it.setActive(true)
+            it.setPriorityHint(GeckoSession.PRIORITY_HIGH)
+        }
         if (!pendingRestoreUrl.isNullOrBlank() && controller?.currentUrl() == "about:blank") {
             val url = pendingRestoreUrl ?: return view
             pendingRestoreUrl = null
@@ -347,10 +555,55 @@ class BrowserSessionManager @Inject constructor(
         return view
     }
 
+    fun releaseSharedBrowserView() {
+        visibleHost = false
+        controller?.setVisibleFileChooserHost(false)
+        detachHeadlessSurface()
+        pageRuntimes.values.forEach { runtime ->
+            runtime.session.setActive(false)
+            runtime.session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT)
+        }
+    }
+
     fun isDispatchingAgentInput(): Boolean = controller?.isDispatchingAgentInput == true
 
     fun hideSoftKeyboardForAgent() {
         controller?.hideSoftKeyboard()
+    }
+
+    private suspend fun attachHeadlessSurfaceOnMain() {
+        if (visibleHost) return
+        val tabId = _uiState.value.activeTabId ?: return
+        val runtime = pageRuntimes[tabId] ?: return
+        if (runtime.display != null) return
+        if (headlessSurfaceHeld) detachHeadlessSurface(releaseSlot = false) else headlessSurfaceSlots.acquire()
+        val imageReader = ImageReader.newInstance(1080, 1920, PixelFormat.RGBA_8888, 2).apply {
+            setOnImageAvailableListener({ reader -> reader.acquireLatestImage()?.close() }, null)
+        }
+        val display = runtime.session.acquireDisplay()
+        display.surfaceChanged(GeckoDisplay.SurfaceInfo.Builder(imageReader.surface).size(1080, 1920).build())
+        runtime.imageReader = imageReader
+        runtime.display = display
+        runtime.session.setActive(true)
+        runtime.session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
+        headlessSurfaceHeld = true
+    }
+
+    private fun detachHeadlessSurface(releaseSlot: Boolean = true) {
+        if (!headlessSurfaceHeld) return
+        pageRuntimes.values.forEach { runtime ->
+            runtime.display?.let { display ->
+                runCatching { display.surfaceDestroyed() }
+                runCatching { runtime.session.releaseDisplay(display) }
+            }
+            runtime.imageReader?.close()
+            runtime.display = null
+            runtime.imageReader = null
+            runtime.session.setActive(false)
+            runtime.session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT)
+        }
+        headlessSurfaceHeld = false
+        if (releaseSlot) headlessSurfaceSlots.release()
     }
 
     private fun ensureSharedControllerOnMain(): Pair<GeckoView, AndroidBrowserController> {
@@ -367,9 +620,12 @@ class BrowserSessionManager @Inject constructor(
             setLayerType(View.LAYER_TYPE_HARDWARE, null)
             setSession(session)
         }
+        session.setActive(false)
+        session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT)
         val newController = AndroidBrowserController(
             geckoView = view,
             session = session,
+            capturePixels = { pageRuntimes[tabId]?.display?.capturePixels() ?: view.capturePixels() },
             onNavigationChanged = { url, title, progress, back, forward ->
                 onNavigationChanged(tabId, url, title, progress, back, forward)
             },
@@ -378,11 +634,22 @@ class BrowserSessionManager @Inject constructor(
             onAgentTouch = this::onAgentTouch,
             onDownload = this::handleGeckoDownload,
             onFileChooser = { acceptTypes, multiple, callback ->
+                if (!visibleHost) {
+                    callback(null)
+                    onBrowserError("File selection requires Browser Operator")
+                    return@AndroidBrowserController
+                }
                 fileChooserCallback?.invoke(null)
                 fileChooserCallback = callback
                 pendingUploadAcceptTypes = acceptTypes
                 pendingUploadMultiple = multiple
                 _uiState.update { it.copy(uploadPending = true, uploadAcceptTypes = acceptTypes.filter(String::isNotBlank), uploadRequestNonce = System.currentTimeMillis()) }
+                if (queuedUploadDecision) {
+                    val queued = queuedUploadUris
+                    queuedUploadDecision = false
+                    queuedUploadUris = null
+                    provideUploadUris(queued)
+                }
             }
         )
         pageRuntimes[tabId] = PageRuntime(tabId, view, session, newController)
@@ -406,17 +673,19 @@ class BrowserSessionManager @Inject constructor(
     }
 
     private fun onNavigationChanged(tabId: String, url: String, title: String, progress: Float, canGoBack: Boolean, canGoForward: Boolean) {
+        // Gecko may still deliver a final callback after a tab is removed.
+        if (_uiState.value.tabs.none { it.id == tabId }) return
         _uiState.update { state ->
-            val activeId = tabId
+            val isActive = tabId == state.activeTabId
             val tabs = state.tabs.map { tab ->
-                if (tab.id == activeId) tab.copy(title = title.ifBlank { url }, url = url, canGoBack = canGoBack, canGoForward = canGoForward) else tab
+                if (tab.id == tabId) tab.copy(title = title.ifBlank { url }, url = url, canGoBack = canGoBack, canGoForward = canGoForward) else tab
             }
             state.copy(
-                activeUrl = url,
-                activeTitle = title.ifBlank { url },
-                progress = progress,
+                activeUrl = if (isActive) url else state.activeUrl,
+                activeTitle = if (isActive) title.ifBlank { url } else state.activeTitle,
+                progress = if (isActive) progress else state.progress,
                 tabs = tabs,
-                sessionHistory = if (url == "about:blank" || state.sessionHistory.lastOrNull()?.url == url) state.sessionHistory else
+                sessionHistory = if (!isActive || url == "about:blank" || state.sessionHistory.lastOrNull()?.url == url) state.sessionHistory else
                     (state.sessionHistory + BrowserHistoryEntry(url, title.ifBlank { url })).takeLast(60)
             )
         }
@@ -496,6 +765,10 @@ class BrowserSessionManager @Inject constructor(
         arguments: Map<String, Any?>,
         executionContext: ToolExecutionContext = ToolExecutionContext()
     ): String = executionMutex.withLock {
+        val restoreKey = visibleConversationKey
+        val restoreAgentId = visibleAgentId
+        var needsHeadlessSurface = false
+        try {
         if (executionContext.assistantMode != com.amaya.intelligence.domain.models.AssistantMode.AGENT) {
             return@withLock JSONObject().put("status", "error").put("error", "Browser is available only in Agent mode").toString(2)
         }
@@ -512,6 +785,11 @@ class BrowserSessionManager @Inject constructor(
             resetForConversation(contextKey, executionContext.agentId)
         }
         _uiState.update { it.copy(browserAccessActive = true) }
+        needsHeadlessSurface = !visibleHost
+        if (needsHeadlessSurface) withContext(Dispatchers.Main.immediate) {
+            ensureSharedControllerOnMain()
+            attachHeadlessSurfaceOnMain()
+        }
         val reset = arguments["reset_task"] == true || parentSubToolcalls.isEmpty()
         if (reset) {
             parentTaskId = executionContext.toolCallId
@@ -541,6 +819,12 @@ class BrowserSessionManager @Inject constructor(
             }
         }
         parentSnapshot(lastLabel, totalSteps, totalSteps).toString(2)
+        } finally {
+            if (needsHeadlessSurface) withContext(Dispatchers.Main.immediate) { detachHeadlessSurface() }
+            if (restoreKey != null && restoreKey != conversationKey) {
+                resetForConversation(restoreKey, restoreAgentId)
+            }
+        }
     }
 
     private suspend fun executeNormalizedSubtool(
@@ -550,14 +834,19 @@ class BrowserSessionManager @Inject constructor(
         currentStep: Int,
         totalSteps: Int
     ): JSONObject {
+        if (!visibleHost) withContext(Dispatchers.Main.immediate) { attachHeadlessSurfaceOnMain() }
+        hydrateRestoredPageIfNeeded(action)
         val started = System.currentTimeMillis()
         val internalName = actionToInternalTool(action)
         _uiState.update { it.copy(progress = currentStep.toFloat() / totalSteps.toFloat(), currentAction = readableAction(action)) }
-        val response = when (action) {
+        val rawResponse = when (action) {
             "get_status" -> BrowserToolResponse.Success("Browser status read", currentSessionMetadata())
             "analyze_page" -> execute("get_dom", params)
             else -> execute(internalName, params)
         }
+        val response = if (action in HUMAN_VERIFICATION_CHECK_ACTIONS && rawResponse is BrowserToolResponse.Success) {
+            humanVerificationGuard(rawResponse)
+        } else rawResponse
         val duration = System.currentTimeMillis() - started
         return BrowserResponseFormatter.subToolResponse(
             id = BrowserResponseFormatter.newCallId(),
@@ -634,6 +923,7 @@ class BrowserSessionManager @Inject constructor(
             "reload_page" -> "reload"
             "new_page" -> "new_tab"
             "close_page" -> "close_tab"
+            "expression", "run_js", "run_javascript" -> "evaluate"
             else -> name
         }
     }
@@ -726,12 +1016,20 @@ class BrowserSessionManager @Inject constructor(
                 }
             }
             is BrowserToolResponse.Failure -> {
-                appendLog(toolName, argsPreview, "error", result.message)
+                val waitingForHuman = result.metadata["human_verification_required"] == true
+                appendLog(toolName, argsPreview, if (waitingForHuman) "paused" else "error", result.message)
                 _uiState.update {
                     it.copy(
-                        status = if (result.recoverable) BrowserAgentStatus.ERROR else BrowserAgentStatus.CANCELLED,
-                        currentAction = "Failed ${readableAction(toolName)}",
-                        lastError = result.message
+                        status = when {
+                            waitingForHuman -> BrowserAgentStatus.WAITING_INPUT
+                            result.recoverable -> BrowserAgentStatus.ERROR
+                            else -> BrowserAgentStatus.CANCELLED
+                        },
+                        isPaused = waitingForHuman || it.isPaused,
+                        humanVerificationRequired = waitingForHuman || it.humanVerificationRequired,
+                        humanVerificationProvider = result.metadata["provider"]?.toString() ?: it.humanVerificationProvider,
+                        currentAction = if (waitingForHuman) "Human verification required" else "Failed ${readableAction(toolName)}",
+                        lastError = if (waitingForHuman) null else result.message
                     )
                 }
             }
@@ -757,11 +1055,14 @@ class BrowserSessionManager @Inject constructor(
         return when (toolName) {
             "open_url" -> {
                 val url = arguments["url"]?.toString() ?: return BrowserToolResponse.Failure("Missing url")
+                pendingRestoreUrl = null
                 controller.openUrl(url, longArg(arguments, "timeout_ms", 30_000)).also { updateTabAfterNavigation(controller) }
             }
             "new_page" -> {
                 createTab(arguments["url"]?.toString())
-                val runtime = withContext(Dispatchers.Main.immediate) { ensureSharedControllerOnMain() }
+                val runtime = withContext(Dispatchers.Main.immediate) {
+                    ensureSharedControllerOnMain().also { if (!visibleHost) attachHeadlessSurfaceOnMain() }
+                }
                 GeckoBrowserRuntime.attach(context, runtime.second.session, reloadIfNeeded = false)
                 runtime.second.newPage(arguments["url"]?.toString()).also { updateTabAfterNavigation(runtime.second) }
             }
@@ -809,8 +1110,9 @@ class BrowserSessionManager @Inject constructor(
             }
             "type_text" -> {
                 val selector = selectorArg(arguments)
-                    ?: return domBackedFailure(controller, "Missing selector/element_id for type_text. Use element_id from interactive_elements.")
                 val text = arguments["text"]?.toString() ?: return BrowserToolResponse.Failure("Missing text for type_text")
+                // External keyboard focus is valid even when the field is outside the
+                // DOM viewport. Omit element_id/selector to type into document.activeElement.
                 val typed = controller.typeText(selector, text, boolArg(arguments, "append", true))
                 if (typed is BrowserToolResponse.Success && boolArg(arguments, "submit", false)) {
                     controller.submitFromContext(selector).also { updateTabAfterNavigation(controller) }
@@ -822,17 +1124,21 @@ class BrowserSessionManager @Inject constructor(
                 controller.clearInput(selector)
             }
             "scroll_page" -> {
-                val direction = arguments["direction"]?.toString()
-                if (!direction.isNullOrBlank()) {
-                    val distance = when (arguments["amount"]?.toString()?.lowercase()) {
-                        "small" -> 0.18f
-                        "large" -> 0.42f
-                        else -> floatArg(arguments, "distance", 0.28f)
-                    }
-                    controller.swipe(direction, distance, -1, -1, -1, -1, longArg(arguments, "duration_ms", 360))
-                } else {
-                    controller.scrollPage(intArg(arguments, "delta_x", 0), intArg(arguments, "delta_y", 800))
+                val direction = arguments["direction"]?.toString()?.trim()?.lowercase()
+                val distance = when (arguments["amount"]?.toString()?.lowercase()) {
+                    "small" -> 420
+                    "large" -> 1_400
+                    else -> (floatArg(arguments, "distance", 0.28f) * 2_000).toInt().coerceIn(320, 1_600)
                 }
+                val (deltaX, deltaY) = when (direction) {
+                    "left" -> distance to 0
+                    "right" -> -distance to 0
+                    "up" -> 0 to distance
+                    "down" -> 0 to -distance
+                    else -> intArg(arguments, "delta_x", 0) to intArg(arguments, "delta_y", 800)
+                }
+                // DOM scrolling works for headless Gecko sessions; touch coordinates do not.
+                controller.scrollPage(deltaX, deltaY)
             }
             "get_dom" -> controller.getDom()
             "get_html" -> controller.getHtml()
@@ -865,6 +1171,11 @@ class BrowserSessionManager @Inject constructor(
                     domBackedFailure(controller, "Element not found for query: $query")
                 } else found
             }
+            "find_text" -> {
+                val query = queryArg(arguments)
+                    ?: return BrowserToolResponse.Failure("Missing query/text for find_text")
+                controller.findText(query)
+            }
             "wait_for_element" -> {
                 val query = queryArg(arguments)
                     ?: return domBackedFailure(controller, "Missing query for wait_for_element. Provide query/text/label/target.")
@@ -881,11 +1192,21 @@ class BrowserSessionManager @Inject constructor(
         }
     }
 
+    private suspend fun hydrateRestoredPageIfNeeded(action: String) {
+        if (action in setOf("open_url", "new_page", "new_tab", "get_status", "list_pages")) return
+        val url = pendingRestoreUrl?.takeIf { it.isNotBlank() && it != "about:blank" } ?: return
+        pendingRestoreUrl = null
+        val active = ensureController()
+        if (active.currentUrl() == "about:blank") active.openUrl(url)
+    }
+
     private suspend fun ensureController(): AndroidBrowserController {
         val active = controller ?: withContext(Dispatchers.Main.immediate) {
             ensureSharedControllerOnMain().second
         }
-        GeckoBrowserRuntime.attach(context, active.session, reloadIfNeeded = false)
+        // A delegated turn may select this persisted session before its GeckoView is
+        // mounted. Attach/reload here so DOM actions get the same ready bridge as the UI.
+        GeckoBrowserRuntime.attach(context, active.session, reloadIfNeeded = active.currentUrl() != "about:blank")
         return active
     }
 
@@ -903,7 +1224,14 @@ class BrowserSessionManager @Inject constructor(
         val target = _uiState.value.tabs.firstOrNull { it.id == pageId }
             ?: return BrowserToolResponse.Failure("Tab not found: ${pageId ?: "missing page_id"}")
         _uiState.update { it.copy(activeTabId = target.id, activeUrl = target.url, activeTitle = target.title) }
-        val targetRuntime = withContext(Dispatchers.Main.immediate) { ensureSharedControllerOnMain() }
+        val targetRuntime = withContext(Dispatchers.Main.immediate) {
+            ensureSharedControllerOnMain().also {
+                if (visibleHost) {
+                    it.second.session.setActive(true)
+                    it.second.session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
+                } else attachHeadlessSurfaceOnMain()
+            }
+        }
         GeckoBrowserRuntime.attach(context, targetRuntime.second.session, reloadIfNeeded = false)
         return targetRuntime.second.openUrl(target.url).also {
             updateTabAfterNavigation(targetRuntime.second)
@@ -918,14 +1246,18 @@ class BrowserSessionManager @Inject constructor(
             pageRuntimes.remove(active)?.let { it.controller.resetToBlank(); GeckoBrowserRuntime.detach(it.session); it.session.close() }
             val newTab = BrowserPageTab()
             _uiState.update { it.copy(tabs = listOf(newTab), activeTabId = newTab.id, activeUrl = "about:blank", activeTitle = "New Page") }
-            val runtime = withContext(Dispatchers.Main.immediate) { ensureSharedControllerOnMain() }
+            val runtime = withContext(Dispatchers.Main.immediate) {
+                ensureSharedControllerOnMain().also { if (!visibleHost) attachHeadlessSurfaceOnMain() }
+            }
             GeckoBrowserRuntime.attach(context, runtime.second.session, reloadIfNeeded = false)
             runtime.second.closePage()
         } else {
             val next = remaining.last()
             pageRuntimes.remove(active)?.let { it.controller.resetToBlank(); GeckoBrowserRuntime.detach(it.session); it.session.close() }
             _uiState.update { it.copy(tabs = remaining, activeTabId = next.id, activeUrl = next.url, activeTitle = next.title) }
-            val nextRuntime = withContext(Dispatchers.Main.immediate) { ensureSharedControllerOnMain() }
+            val nextRuntime = withContext(Dispatchers.Main.immediate) {
+                ensureSharedControllerOnMain().also { if (!visibleHost) attachHeadlessSurfaceOnMain() }
+            }
             GeckoBrowserRuntime.attach(context, nextRuntime.second.session, reloadIfNeeded = false)
             nextRuntime.second.openUrl(next.url).also { updateTabAfterNavigation(nextRuntime.second) }
         }
@@ -953,14 +1285,72 @@ class BrowserSessionManager @Inject constructor(
     }
 
     private fun pauseSession(message: String): BrowserToolResponse {
-        _uiState.update { it.copy(status = BrowserAgentStatus.PAUSED, isPaused = true, currentAction = message) }
+        _uiState.update { it.copy(status = BrowserAgentStatus.PAUSED, isPaused = true, humanVerificationRequired = false, currentAction = message) }
         return BrowserToolResponse.Success(message)
     }
 
-    private fun resumeSession(): BrowserToolResponse {
-        _uiState.update { it.copy(status = BrowserAgentStatus.IDLE, isPaused = false, currentAction = "Session resumed") }
-        return BrowserToolResponse.Success("Browser session resumed")
+    private suspend fun resumeSession(): BrowserToolResponse {
+        val active = ensureController()
+        val challenge = active.detectHumanVerification()
+        if (challenge.first) {
+            val provider = challenge.second ?: _uiState.value.humanVerificationProvider ?: "anti_bot_challenge"
+            _uiState.update {
+                it.copy(
+                    status = BrowserAgentStatus.PAUSED,
+                    isPaused = true,
+                    humanVerificationRequired = true,
+                    humanVerificationProvider = provider,
+                    currentAction = "Waiting for human verification"
+                )
+            }
+            return humanVerificationFailure(provider)
+        }
+        _uiState.update {
+            it.copy(
+                status = BrowserAgentStatus.IDLE,
+                isPaused = false,
+                humanVerificationRequired = false,
+                humanVerificationProvider = null,
+                currentAction = "Session resumed"
+            )
+        }
+        return BrowserToolResponse.Success("Human verification complete; browser session resumed")
     }
+
+    private suspend fun humanVerificationGuard(success: BrowserToolResponse.Success): BrowserToolResponse {
+        val active = ensureController()
+        var challenge = active.detectHumanVerification()
+        if (!challenge.first) return success
+
+        // Managed challenges often clear themselves. Give them a bounded grace period,
+        // then stop automation rather than repeatedly clicking challenge controls.
+        repeat(12) {
+            delay(250)
+            challenge = active.detectHumanVerification()
+            if (!challenge.first) return success
+        }
+        val provider = challenge.second ?: "anti_bot_challenge"
+        _uiState.update {
+            it.copy(
+                status = BrowserAgentStatus.PAUSED,
+                isPaused = true,
+                humanVerificationRequired = true,
+                humanVerificationProvider = provider,
+                currentAction = "Human verification required"
+            )
+        }
+        return humanVerificationFailure(provider)
+    }
+
+    private fun humanVerificationFailure(provider: String) = BrowserToolResponse.Failure(
+        message = "Human verification required. Complete the challenge in Browser Operator, then resume_session.",
+        recoverable = true,
+        metadata = mapOf(
+            "human_verification_required" to true,
+            "provider" to provider,
+            "allowed_next_actions" to listOf("open_browser_operator", "resume_session", "cancel_action")
+        )
+    )
 
     private fun cancelAction(): BrowserToolResponse {
         cancelFromUser()
@@ -1009,6 +1399,12 @@ class BrowserSessionManager @Inject constructor(
     }
 
     private fun readableAction(toolName: String): String = toolName.split('_').joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
+
+    companion object {
+        private val HUMAN_VERIFICATION_CHECK_ACTIONS = setOf(
+            "open_url", "click", "tap", "press_key", "search", "wait_for_navigation", "reload", "resume_session"
+        )
+    }
     private fun selectorArg(arguments: Map<String, Any?>): String? = firstString(arguments, "element_id", "target", "selector", "query", "id")
     private fun queryArg(arguments: Map<String, Any?>): String? = firstString(arguments, "query", "text", "label", "name", "target", "selector", "element_id")
     private fun firstString(arguments: Map<String, Any?>, vararg keys: String): String? {

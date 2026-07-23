@@ -155,7 +155,16 @@ data class SubagentTask(
     val providerConnection: ProviderConnection? = null,
     val selectedModelId: String? = null,
     val conversationHistory: List<ChatMessage> = emptyList(),
-    val systemInstructions: String? = null
+    val systemInstructions: String? = null,
+    /** `false` is reserved for persistent `delegate_agent` turns. */
+    val readOnly: Boolean = true,
+    val assistantMode: com.amaya.intelligence.domain.models.AssistantMode = com.amaya.intelligence.domain.models.AssistantMode.PROJECT,
+    val conversationId: String? = null,
+    val ownerId: String? = null,
+    val agentId: Long? = null,
+    val agentCapabilityProfile: com.amaya.intelligence.domain.models.AgentCapabilityProfile? = null,
+    val delegationAgentIds: List<Long> = emptyList(),
+    val onConfirmationRequired: suspend (ConfirmationRequest) -> Boolean = { false }
 )
 
 data class SubagentResult(
@@ -168,11 +177,8 @@ data class SubagentResult(
 
 internal fun completedSubagentResponse(
     continueLoop: Boolean,
-    iterations: Int,
-    maxIterations: Int,
     response: String
 ): String = when {
-    continueLoop && iterations >= maxIterations -> "[INCOMPLETE] Iteration limit reached before a final response."
     response.isBlank() -> "[INCOMPLETE] No final response."
     else -> response.trim()
 }
@@ -260,15 +266,18 @@ class SubagentRunner @Inject constructor(
 
         val systemPrompt = buildString {
             task.systemInstructions?.takeIf(String::isNotBlank)?.let { appendLine(it) }
-            appendLine("Complete one focused research task.")
-            appendLine("Use only the provided read-only tools. Do not modify state or request approval.")
-            if (task.systemInstructions == null) {
-                appendLine("Return a final report with headings: Findings, Files inspected, Evidence, Verification, Blockers.")
+            if (task.readOnly) {
+                appendLine("Complete one focused research task.")
+                appendLine("Use only the provided read-only tools. Do not modify state or request approval.")
+                if (task.systemInstructions == null) {
+                    appendLine("Return a final report with headings: Findings, Files inspected, Evidence, Verification, Blockers.")
+                }
             }
             if (isRetry) appendLine("NOTE: This is a retry after a rate limit error.")
         }.trim()
 
-        val tools = toolExecutor.getReadOnlyToolDefinitions()
+        val tools = (if (task.readOnly) toolExecutor.getReadOnlyToolDefinitions()
+        else toolExecutor.getToolDefinitions(task.assistantMode, task.agentCapabilityProfile, task.delegationAgentIds))
             .map { it.toAiToolDefinition(truncateDesc = true) }
 
         val historySize = task.conversationHistory.size
@@ -276,11 +285,8 @@ class SubagentRunner @Inject constructor(
 
         var finalResponse = ""
         var continueLoop = true
-        var iterations   = 0
-        val maxIterations = 8
 
-        while (continueLoop && iterations < maxIterations) {
-            iterations++
+        while (continueLoop) {
 
             val request = ChatRequest(
                 model        = model,
@@ -352,7 +358,15 @@ class SubagentRunner @Inject constructor(
                         arguments     = toolCall.arguments,
                         workspacePath = task.workspacePath,
                         toolCallId = toolCall.id,
-                        readOnly = true
+                        onConfirmationRequired = task.onConfirmationRequired,
+                        providerConnection = activeConnection,
+                        selectedModelId = model,
+                        conversationId = task.conversationId,
+                        ownerId = task.ownerId,
+                        agentId = task.agentId,
+                        assistantMode = task.assistantMode,
+                        agentCapabilityProfile = task.agentCapabilityProfile,
+                        readOnly = task.readOnly
                     )
                     val resultContent = when (result) {
                         is ToolResult.Success              -> result.output
@@ -378,7 +392,7 @@ class SubagentRunner @Inject constructor(
             }
         }
 
-        val summary = completedSubagentResponse(continueLoop, iterations, maxIterations, finalResponse)
+        val summary = completedSubagentResponse(continueLoop, finalResponse)
         messages += ChatMessage(role = MessageRole.ASSISTANT, content = summary)
         return SubagentResult(
             taskName = task.taskName,

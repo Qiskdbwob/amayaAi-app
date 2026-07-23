@@ -191,7 +191,6 @@
         <activity
             android:name=".ui.activities.browser.BrowserOperatorActivity"
             android:exported="false"
-            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Amaya" />
 

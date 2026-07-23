@@ -31,6 +31,7 @@ class AndroidBrowserController(
     private val onError: (String) -> Unit,
     private val onScrollChanged: (x: Int, y: Int) -> Unit = { _, _ -> },
     private val onAgentTouch: (x: Float, y: Float) -> Unit = { _, _ -> },
+    private val capturePixels: () -> GeckoResult<Bitmap> = geckoView::capturePixels,
     private val onDownload: (response: WebResponse) -> Unit = {},
     private val onFileChooser: (acceptTypes: Array<String>, multiple: Boolean, callback: (Array<Uri>?) -> Unit) -> Unit = { _, _, callback -> callback(null) }
 ) {
@@ -45,13 +46,24 @@ class AndroidBrowserController(
     @Volatile private var canGoForwardValue = false
     @Volatile private var progressValue = 0f
     @Volatile private var externalResponseVersion = 0L
+    @Volatile private var filePromptVersion = 0L
+    @Volatile private var popupVersion = 0L
+    @Volatile private var visibleFileChooserHost = false
 
     init {
         configureGecko()
     }
 
+    fun setVisibleFileChooserHost(visible: Boolean) { visibleFileChooserHost = visible }
+
     private fun configureGecko() {
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
+            override fun onNewSession(session: GeckoSession, uri: String): GeckoResult<GeckoSession>? {
+                popupVersion++
+                onError("Popup blocked: $uri. Use the current page or Browser Operator for manual confirmation.")
+                return null
+            }
+
             override fun onLocationChange(session: GeckoSession, url: String?, perms: List<GeckoSession.PermissionDelegate.ContentPermission>, hasUserGesture: Boolean) {
                 currentUrlValue = url ?: "about:blank"
                 emitNavigation()
@@ -61,12 +73,15 @@ class AndroidBrowserController(
         }
         session.progressDelegate = object : GeckoSession.ProgressDelegate {
             override fun onPageStart(session: GeckoSession, url: String) {
-                GeckoBrowserRuntime.navigationStarted(session)
+                // Publish loading state before failing pending JS. The failure resumes
+                // click/search coroutines synchronously; they must not observe the old
+                // document as already finished.
                 pageFinished = false
                 pageLoadSucceeded = true
                 currentUrlValue = url
                 progressValue = 0f
                 emitNavigation()
+                GeckoBrowserRuntime.navigationStarted(session)
             }
             override fun onProgressChange(session: GeckoSession, progress: Int) { progressValue = progress / 100f; emitNavigation() }
             override fun onPageStop(session: GeckoSession, success: Boolean) {
@@ -89,10 +104,14 @@ class AndroidBrowserController(
         }
         session.promptDelegate = object : GeckoSession.PromptDelegate {
             override fun onFilePrompt(session: GeckoSession, prompt: GeckoSession.PromptDelegate.FilePrompt): GeckoResult<GeckoSession.PromptDelegate.PromptResponse> {
+                filePromptVersion++
                 val result = GeckoResult<GeckoSession.PromptDelegate.PromptResponse>()
                 val multiple = prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE
                 onFileChooser(prompt.mimeTypes ?: emptyArray(), multiple) { uris ->
-                    result.complete(if (uris.isNullOrEmpty()) prompt.dismiss() else prompt.confirm(geckoView.context, uris))
+                    val response = if (uris.isNullOrEmpty()) prompt.dismiss()
+                    else if (uris.size == 1) prompt.confirm(geckoView.context, uris[0])
+                    else prompt.confirm(geckoView.context, uris)
+                    result.complete(response)
                 }
                 return result
             }
@@ -132,6 +151,9 @@ class AndroidBrowserController(
         val beforeTitle = currentTitle()
         val beforeState = readElementState(selector)
         val beforeExternalResponse = externalResponseVersion
+        val beforeFilePrompt = filePromptVersion
+        val beforePopup = popupVersion
+        val isFileInput = beforeState?.optString("type")?.equals("file", ignoreCase = true) == true
         val preflight = runCatching { JSONObject(evaluateJson(DomInspector.clickPreflightScript(selector))) }.getOrNull()
             ?: return@withContext BrowserToolResponse.Failure("Unexpected browser response during click preflight")
 
@@ -155,7 +177,26 @@ class AndroidBrowserController(
         val covered = preflight.optBoolean("covered", false)
         val inViewport = preflight.optBoolean("in_viewport", false)
 
-        if (!covered && inViewport && x.isFinite() && y.isFinite()) {
+        if (isFileInput && !covered && inViewport && x.isFinite() && y.isFinite()) {
+            @Suppress("DEPRECATION")
+            val scale = geckoView.resources.displayMetrics.density
+            val tapX = x * scale
+            val tapY = y * scale
+            if (isPointInsideView(tapX, tapY)) dispatchTap(tapX, tapY)
+            repeat(10) {
+                if (filePromptVersion != beforeFilePrompt) return@withContext BrowserToolResponse.Failure(
+                    "File selection requires Browser Operator",
+                    metadata = mapOf("upload_required" to true, "headless_unsupported" to !visibleFileChooserHost)
+                )
+                delay(50)
+            }
+            return@withContext BrowserToolResponse.Failure(
+                "File chooser was not opened",
+                metadata = mapOf("upload_required" to true, "headless_unsupported" to !visibleFileChooserHost)
+            )
+        }
+
+        if (!isFileInput && !covered && inViewport && x.isFinite() && y.isFinite()) {
             @Suppress("DEPRECATION")
             val scale = geckoView.resources.displayMetrics.density
             val tapX = x * scale
@@ -169,9 +210,17 @@ class AndroidBrowserController(
                     else return@withContext BrowserToolResponse.Failure("Click failed: ${error.message ?: "unknown error"}")
                 }
                 delay(180)
-                val effectObserved = pageChanged || externalResponseVersion != beforeExternalResponse || hasClickEffect(beforeState, readElementState(selector))
+                val effectObserved = pageChanged || externalResponseVersion != beforeExternalResponse || filePromptVersion != beforeFilePrompt || hasClickEffect(beforeState, readElementState(selector))
+                if (popupVersion != beforePopup) return@withContext BrowserToolResponse.Failure(
+                    "Popup blocked; click outcome requires inspection",
+                    metadata = clickOutcomeMetadata(beforeUrl, beforeTitle, pageChanged, beforePopup, popupVersion, true)
+                )
                 if (effectObserved) {
                     suppressSoftKeyboard()
+                    if (isFileInput && filePromptVersion != beforeFilePrompt) return@withContext BrowserToolResponse.Failure(
+                        "File selection requires Browser Operator",
+                        metadata = mapOf("upload_required" to true, "headless_unsupported" to !visibleFileChooserHost)
+                    )
                     return@withContext BrowserToolResponse.Success(
                         "Clicked element; page_changed=$pageChanged",
                         currentMetadata() + mapOf(
@@ -183,13 +232,26 @@ class AndroidBrowserController(
                             "x" to tapX,
                             "y" to tapY,
                             "strategy" to "native_tap"
-                        )
+                        ) + clickOutcomeMetadata(beforeUrl, beforeTitle, pageChanged, beforePopup, popupVersion, effectObserved)
                     )
                 }
             }
         }
 
         val json = evaluateJson(DomInspector.clickScript(selector))
+        if (isFileInput) {
+            repeat(10) {
+                if (filePromptVersion != beforeFilePrompt) return@withContext BrowserToolResponse.Failure(
+                    "File selection requires Browser Operator",
+                    metadata = mapOf("upload_required" to true, "headless_unsupported" to !visibleFileChooserHost)
+                )
+                delay(50)
+            }
+            return@withContext BrowserToolResponse.Failure(
+                "File chooser was not opened",
+                metadata = mapOf("upload_required" to true, "headless_unsupported" to !visibleFileChooserHost)
+            )
+        }
         waitForInteractionSettle(beforeUrl, beforeTitle)
         when (val response = jsOkResponse(json, "Clicked element")) {
             is BrowserToolResponse.Success -> {
@@ -197,9 +259,17 @@ class AndroidBrowserController(
                 val afterTitle = currentTitle()
                 val pageChanged = beforeUrl != afterUrl || beforeTitle != afterTitle
                 val effectObserved = pageChanged || hasClickEffect(beforeState, readElementState(selector))
+                if (popupVersion != beforePopup) return@withContext BrowserToolResponse.Failure(
+                    "Popup blocked; click outcome requires inspection",
+                    metadata = clickOutcomeMetadata(beforeUrl, beforeTitle, pageChanged, beforePopup, popupVersion, true)
+                )
                 if (effectObserved) {
                     suppressSoftKeyboard()
-                    response.copy(
+                    if (isFileInput && filePromptVersion != beforeFilePrompt) return@withContext BrowserToolResponse.Failure(
+                    "File selection requires Browser Operator",
+                    metadata = mapOf("upload_required" to true, "headless_unsupported" to !visibleFileChooserHost)
+                )
+                response.copy(
                         output = "Clicked element; page_changed=$pageChanged",
                         metadata = response.metadata + mapOf(
                             "page_changed" to pageChanged,
@@ -208,13 +278,17 @@ class AndroidBrowserController(
                             "after_url" to afterUrl,
                             "after_title" to afterTitle,
                             "strategy" to "dom_click_fallback"
-                        )
+                        ) + clickOutcomeMetadata(beforeUrl, beforeTitle, pageChanged, beforePopup, popupVersion, effectObserved)
                     )
                 } else if (directHref != null) {
                     directOpenHref(directHref, beforeUrl, beforeTitle, "dom_click_direct_open")
                 } else {
                     suppressSoftKeyboard()
-                    BrowserToolResponse.Failure("Click completed but no visible effect was observed")
+                    if (isFileInput) BrowserToolResponse.Failure(
+                        "File selection requires Browser Operator",
+                        recoverable = true,
+                        metadata = mapOf("upload_required" to true, "headless_unsupported" to true)
+                    ) else BrowserToolResponse.Failure("Click completed but no visible effect was observed")
                 }
             }
             is BrowserToolResponse.Failure -> {
@@ -236,8 +310,8 @@ class AndroidBrowserController(
         jsOkResponse(json, "Focused element")
     }
 
-    suspend fun typeText(selector: String, text: String, append: Boolean): BrowserToolResponse = withContext(Dispatchers.Main.immediate) {
-        resolveCenterPoint(selector)?.let { onAgentTouch(it.first, it.second) }
+    suspend fun typeText(selector: String?, text: String, append: Boolean): BrowserToolResponse = withContext(Dispatchers.Main.immediate) {
+        selector?.let { resolveCenterPoint(it)?.let { point -> onAgentTouch(point.first, point.second) } }
         val before = readElementState(selector)
         var json = evaluateJson(DomInspector.typeScript(selector, text, append))
         waitForDomReady(900)
@@ -425,32 +499,35 @@ class AndroidBrowserController(
         val before = currentScrollSnapshot()
         val script = """
             (function() {
-              var before = { x: window.scrollX, y: window.scrollY, h: document.body ? document.body.scrollHeight : 0 };
-              var node = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
-              var target = null;
+              var root = document.scrollingElement || document.documentElement || document.body;
+              var target = root;
+              var node = document.elementFromPoint(Math.max(1, innerWidth / 2), Math.max(1, innerHeight / 2));
               while (node && node !== document.body) {
                 var style = getComputedStyle(node);
-                if (/(auto|scroll)/.test((style.overflow || '') + (style.overflowX || '') + (style.overflowY || '')) && (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth)) { target = node; break; }
+                var scrollable = /(auto|scroll)/.test((style.overflow || '') + (style.overflowX || '') + (style.overflowY || ''));
+                var canMove = (${deltaY} > 0 && node.scrollTop < node.scrollHeight - node.clientHeight) ||
+                  (${deltaY} < 0 && node.scrollTop > 0) || (${deltaX} > 0 && node.scrollLeft < node.scrollWidth - node.clientWidth) ||
+                  (${deltaX} < 0 && node.scrollLeft > 0);
+                if (scrollable && canMove) { target = node; break; }
                 node = node.parentElement;
               }
-              if (target) target.scrollBy(${deltaX}, ${deltaY}); else window.scrollBy(${deltaX}, ${deltaY});
-              return JSON.stringify({
-                ok:true,
-                target:target ? (target.id || target.tagName || 'nested') : 'window',
-                before: before,
-                after: { x: window.scrollX, y: window.scrollY, h: document.body ? document.body.scrollHeight : 0 }
-              });
+              var before = {x:target.scrollLeft || 0, y:target.scrollTop || 0, width:target.scrollWidth || 0, height:target.scrollHeight || 0};
+              target.scrollBy(${deltaX}, ${deltaY});
+              if (target === root) window.scrollTo(root.scrollLeft, root.scrollTop);
+              var after = {x:target.scrollLeft || 0, y:target.scrollTop || 0, width:target.scrollWidth || 0, height:target.scrollHeight || 0};
+              return JSON.stringify({ok:true, target:target === root ? 'document' : (target.id || target.tagName || 'nested'), before:before, after:after, changed:before.x !== after.x || before.y !== after.y});
             })();
         """.trimIndent()
         val json = evaluateJson(script)
         waitForScrollSettled(900)
-        val after = currentScrollSnapshot()
+        val result = runCatching { JSONObject(json) }.getOrNull()
+        val changed = result?.optBoolean("changed") == true
         BrowserToolResponse.Success(
             "Scrolled page by x=$deltaX y=$deltaY",
             currentMetadata() + mapOf(
                 "before_scroll" to before,
-                "after_scroll" to after,
-                "scroll_changed" to (before != after),
+                "after_scroll" to currentScrollSnapshot(),
+                "scroll_changed" to changed,
                 "scroll_result" to json
             )
         )
@@ -462,12 +539,27 @@ class AndroidBrowserController(
     }
 
     suspend fun getDom(): BrowserToolResponse = withContext(Dispatchers.Main.immediate) {
-        val json = evaluateJson(DomInspector.getDomScript())
-        val viewport = viewportSnapshot()
-        BrowserToolResponse.Success(
-            output = json.take(50_000),
-            metadata = currentMetadata() + mapOf("dom" to json, "viewport" to viewport)
-        )
+        var lastError: Throwable? = null
+        repeat(3) { attempt ->
+            try {
+                val json = evaluateJson(DomInspector.getDomScript(), 15_000)
+                val viewport = evaluateString(
+                    "JSON.stringify({innerWidth:innerWidth,innerHeight:innerHeight,outerWidth:outerWidth,outerHeight:outerHeight,devicePixelRatio:devicePixelRatio,scrollX:scrollX,scrollY:scrollY,visualViewport:visualViewport?{width:visualViewport.width,height:visualViewport.height,scale:visualViewport.scale,offsetTop:visualViewport.offsetTop,offsetLeft:visualViewport.offsetLeft}:null,documentWidth:document.documentElement?document.documentElement.clientWidth:0,documentHeight:document.documentElement?document.documentElement.clientHeight:0,bodyHeight:document.body?document.body.scrollHeight:0})",
+                    5_000
+                )
+                return@withContext BrowserToolResponse.Success(
+                    output = json.take(50_000),
+                    metadata = currentMetadata() + mapOf("dom" to json, "viewport" to viewport, "attempt" to attempt + 1)
+                )
+            } catch (error: Throwable) {
+                lastError = error
+                if (attempt < 2 && isTransientBridgeError(error)) {
+                    GeckoBrowserRuntime.awaitReady(session, 4_000)
+                    delay(200L * (attempt + 1))
+                } else throw error
+            }
+        }
+        BrowserToolResponse.Failure("DOM unavailable: ${lastError?.message ?: "unknown error"}")
     }
 
     suspend fun hover(selector: String): BrowserToolResponse = withContext(Dispatchers.Main.immediate) {
@@ -494,13 +586,34 @@ class AndroidBrowserController(
         }
     }
 
+    suspend fun findText(query: String): BrowserToolResponse = withContext(Dispatchers.Main.immediate) {
+        var json = evaluateJson(DomInspector.findTextScript(query))
+        var total = runCatching { JSONObject(json).optInt("total") }.getOrDefault(0)
+        repeat(3) {
+            if (total > 0) return@withContext BrowserToolResponse.Success(json, currentMetadata() + ("matches" to json))
+            delay(180)
+            json = evaluateJson(DomInspector.findTextScript(query))
+            total = runCatching { JSONObject(json).optInt("total") }.getOrDefault(0)
+        }
+        BrowserToolResponse.Failure("Text not found: $query")
+    }
+
+    suspend fun detectHumanVerification(): Pair<Boolean, String?> = withContext(Dispatchers.Main.immediate) {
+        val result = runCatching { JSONObject(evaluateJson(DomInspector.humanVerificationScript())) }.getOrNull()
+        (result?.optBoolean("required") == true) to result?.optString("provider")?.takeIf(String::isNotBlank)
+    }
+
     suspend fun waitForNavigation(timeoutMs: Long): BrowserToolResponse = waitForPage(timeoutMs)
 
     suspend fun waitForElement(query: String, timeoutMs: Long): BrowserToolResponse {
         val started = System.currentTimeMillis()
         while (System.currentTimeMillis() - started < timeoutMs) {
             if (cancelled) return BrowserToolResponse.Failure("Action cancelled", recoverable = false)
-            val found = findElement(query)
+            val found = if (query.trim().startsWith("#")) {
+                val json = evaluateJson(DomInspector.selectorExistsScript(query.trim()))
+                if (json == "null" || json.isBlank()) BrowserToolResponse.Failure("Element not found for selector: $query")
+                else BrowserToolResponse.Success(json, currentMetadata() + ("element" to json))
+            } else findElement(query)
             if (found is BrowserToolResponse.Success) return found.copy(output = "Element appeared: ${found.output}")
             delay(180)
         }
@@ -588,7 +701,7 @@ class AndroidBrowserController(
     }
 
     suspend fun screenshot(): BrowserToolResponse = withContext(Dispatchers.Main.immediate) {
-        val bitmap = geckoResult(geckoView.capturePixels())
+        val bitmap = geckoResult(capturePixels())
         val width = bitmap.width
         val height = bitmap.height
         val out = ByteArrayOutputStream()
@@ -657,12 +770,35 @@ class AndroidBrowserController(
             when {
                 cancelled -> BrowserToolResponse.Failure("Action cancelled", recoverable = false)
                 !pageLoadSucceeded -> BrowserToolResponse.Failure("Network/browser error while loading ${currentUrl()}")
-                else -> BrowserToolResponse.Success("Loaded ${currentUrl()}", currentMetadata())
+                else -> {
+                    GeckoBrowserRuntime.awaitReady(session, minOf(8_000L, timeoutMs / 2))
+                    refreshDocumentTitle()
+                    BrowserToolResponse.Success("Loaded ${currentUrl()}", currentMetadata())
+                }
             }
         } catch (_: TimeoutCancellationException) {
             BrowserToolResponse.Failure("Page load timed out. You can retry, reload, or inspect the partially loaded page.")
         }
     }
+
+    private suspend fun refreshDocumentTitle() {
+        repeat(3) { attempt ->
+            val title = runCatching { evaluateString("document.title", 3_000) }.getOrNull().orEmpty()
+            if (title.isNotBlank()) {
+                currentTitleValue = title
+                emitNavigation()
+                return
+            }
+            if (attempt < 2) delay(250L * (attempt + 1))
+        }
+    }
+
+    private fun isTransientBridgeError(error: Throwable): Boolean = error is TimeoutCancellationException ||
+        error.message.orEmpty().let { message ->
+            message.contains("bridge", ignoreCase = true) ||
+                message.contains("document navigated", ignoreCase = true) ||
+                message.contains("timed out", ignoreCase = true)
+        }
 
     private suspend fun resolveCenterPoint(selector: String): Pair<Float, Float>? {
         val obj = runCatching { org.json.JSONObject(evaluateJson(DomInspector.boundsScript(selector))) }.getOrNull() ?: return null
@@ -759,16 +895,18 @@ class AndroidBrowserController(
         }
     }
 
-    private suspend fun evaluateJson(script: String): String = evaluateString(script).ifBlank { "{}" }
+    private suspend fun evaluateJson(script: String, timeoutMs: Long = 10_000): String = evaluateString(script, timeoutMs).ifBlank { "{}" }
 
-    private suspend fun evaluateString(script: String): String = withContext(Dispatchers.Main.immediate) {
-        GeckoBrowserRuntime.evaluate(session, script)
+    private suspend fun evaluateString(script: String, timeoutMs: Long = 10_000): String = withContext(Dispatchers.Main.immediate) {
+        GeckoBrowserRuntime.evaluate(session, script, timeoutMs)
     }
 
-    private suspend fun nativeTypeText(selector: String, text: String, append: Boolean): BrowserToolResponse {
-        val focused = jsOkResponse(evaluateJson(DomInspector.focusScript(selector)), "Focused input")
-        if (focused is BrowserToolResponse.Failure) return focused
-        if (!append) evaluateJson(DomInspector.clearScript(selector))
+    private suspend fun nativeTypeText(selector: String?, text: String, append: Boolean): BrowserToolResponse {
+        if (selector != null) {
+            val focused = jsOkResponse(evaluateJson(DomInspector.focusScript(selector)), "Focused input")
+            if (focused is BrowserToolResponse.Failure) return focused
+        }
+        if (!append && selector != null) evaluateJson(DomInspector.clearScript(selector))
         geckoView.requestFocus()
         val imm = geckoView.context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         imm?.restartInput(geckoView)
@@ -788,7 +926,7 @@ class AndroidBrowserController(
         }
     }
 
-    private suspend fun readElementState(selector: String): JSONObject? {
+    private suspend fun readElementState(selector: String?): JSONObject? {
         val json = evaluateJson(DomInspector.elementStateScript(selector))
         val obj = runCatching { JSONObject(json) }.getOrNull() ?: return null
         return obj.takeIf { it.optBoolean("ok", false) }
@@ -887,6 +1025,25 @@ class AndroidBrowserController(
     }
 
     private fun emitNavigation() { onNavigationChanged(currentUrlValue, currentTitleValue, progressValue, canGoBackValue, canGoForwardValue) }
+
+    private fun clickOutcomeMetadata(
+        beforeUrl: String,
+        beforeTitle: String,
+        pageChanged: Boolean,
+        beforePopup: Long,
+        afterPopup: Long,
+        eventObserved: Boolean
+    ): Map<String, Any> = mapOf(
+        "outcome" to if (pageChanged) "navigation" else if (eventObserved) "event_or_state_change" else "no_observable_effect",
+        "event_observed" to eventObserved,
+        "popup_blocked" to (afterPopup != beforePopup),
+        "page_changed" to pageChanged,
+        "before_url" to beforeUrl,
+        "before_title" to beforeTitle,
+        "after_url" to currentUrl(),
+        "after_title" to currentTitle(),
+        "requires_postcondition_check" to true
+    )
 
     private fun isEmbeddedAppRoute(url: String): Boolean = runCatching {
         val uri = Uri.parse(url)

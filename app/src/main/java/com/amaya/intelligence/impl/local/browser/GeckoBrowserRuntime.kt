@@ -147,14 +147,12 @@ object GeckoBrowserRuntime {
         deferred.await()
     }
 
+    suspend fun awaitReady(session: GeckoSession, timeoutMs: Long): Boolean = withTimeoutOrNull(timeoutMs) {
+        while (!isReady(session)) kotlinx.coroutines.delay(25)
+        true
+    } == true
+
     suspend fun evaluate(session: GeckoSession, script: String, timeoutMs: Long = 10_000): String {
-        if (!isReady(session)) {
-            val connected = withTimeoutOrNull(minOf(timeoutMs, 1_000L)) {
-                while (!isReady(session)) kotlinx.coroutines.delay(25)
-                true
-            } == true
-            if (!connected) withContext(Dispatchers.Main.immediate) { session.reload() }
-        }
         Log.d("AmayaBrowser", "evaluate start session=$session timeoutMs=$timeoutMs")
         val id = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<JSONObject>()

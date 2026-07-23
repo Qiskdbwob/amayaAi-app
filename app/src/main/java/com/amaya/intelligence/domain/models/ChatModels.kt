@@ -38,9 +38,12 @@ data class RunningSession(
 
 data class ChatUiState(
     val messages:         List<UiMessage> = emptyList(),
+    /** Model-visible state, retained when the user clears only rendered history. */
+    val contextMessages:  List<UiMessage> = emptyList(),
     val isLoading:        Boolean         = false,
     val isLoadingHistory: Boolean         = false,
     val isStreaming:      Boolean         = false,
+    val isCompressing:    Boolean         = false,
     val error:            String?         = null,
     val selectedModel:    String          = "",
     val activeProjectId:  Long?           = null,
@@ -119,6 +122,14 @@ enum class ConversationMode(val wireValue: String) {
 sealed class MessageStep {
     abstract val id: String
 
+    data class Thinking(
+        override val id: String = UUID.randomUUID().toString(),
+        val text: String,
+        val isStreaming: Boolean = true,
+        val startedAt: Long? = null,
+        val durationMs: Long? = null
+    ): MessageStep()
+
     data class Text(
         override val id: String = UUID.randomUUID().toString(),
         val content: String,
@@ -156,6 +167,32 @@ data class UiMessage(
     /** Ordered provider/tool history. UI fields remain a projection of these items. */
     val canonicalHistory: List<String> = emptyList()
 )
+
+internal fun List<MessageStep>.appendThinking(delta: String, nowMs: Long = System.currentTimeMillis()): List<MessageStep> {
+    val current = lastOrNull() as? MessageStep.Thinking
+    if (current != null) {
+        return dropLast(1) + current.copy(text = current.text + delta, isStreaming = true)
+    }
+    return finishThinking(nowMs) + MessageStep.Thinking(text = delta, startedAt = nowMs)
+}
+
+internal fun List<MessageStep>.appendText(delta: String): List<MessageStep> {
+    val current = lastOrNull() as? MessageStep.Text
+    return if (current == null) this + MessageStep.Text(content = delta)
+    else dropLast(1) + current.copy(content = current.content + delta)
+}
+
+internal fun List<MessageStep>.finishThinking(nowMs: Long = System.currentTimeMillis()): List<MessageStep> {
+    val index = indexOfLast { it is MessageStep.Thinking && it.isStreaming }
+    if (index < 0) return this
+    val current = this[index] as MessageStep.Thinking
+    return toMutableList().apply {
+        this[index] = current.copy(
+            isStreaming = false,
+            durationMs = (nowMs - (current.startedAt ?: nowMs)).coerceAtLeast(0L)
+        )
+    }
+}
 
 data class MessageAttachment(
     val mimeType: String,

@@ -60,6 +60,7 @@ data class ToolExecutionContext(
     val agentId: Long? = null,
     val agentCapabilityProfile: com.amaya.intelligence.domain.models.AgentCapabilityProfile? = null,
     val assistantMode: com.amaya.intelligence.domain.models.AssistantMode = com.amaya.intelligence.domain.models.AssistantMode.PROJECT,
+    val onConfirmationRequired: suspend (ConfirmationRequest) -> Boolean = { false },
     val confirmed: Boolean = false,
     /** Host-enforced subagent mode. Model arguments cannot change this. */
     val readOnly: Boolean = false

@@ -210,6 +210,10 @@ Migration `14 → 15` adds `agents.default_model_keys_json`. Keys reference acti
 
 Migration `15 → 16` adds `agents.local_id`, backfills IDs by creation order per group, and adds a unique `(group_id, local_id)` index. Model prompts, mentions, and delegation use this ID; Room `agents.id` remains internal database identity.
 
+## ✅ V17 (Rendered history and model context)
+
+Migration `16 → 17` adds `conversations.context_messages_json`, backfilled from `messages_json`. It separates rendered history from model-visible history or an active-session compression summary.
+
 ---
 
 # 🔥 TEMPLATE MIGRATION (WAJIB PUNYA)

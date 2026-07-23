@@ -23,7 +23,9 @@ data class BrowserUiState(
     val inspectedElement: String? = null, val progress: Float = 0f, val logs: List<BrowserToolLog> = emptyList(), val screenshotBase64: String? = null,
     val downloads: List<BrowserDownload> = emptyList(), val uploadPending: Boolean = false, val uploadAcceptTypes: List<String> = emptyList(),
     val uploadRequestNonce: Long = 0L, val evaluateResult: String? = null,
-    val isPaused: Boolean = false, val isCancelled: Boolean = false, val lastError: String? = null, val sessionHistory: List<BrowserHistoryEntry> = emptyList(),
+    val isPaused: Boolean = false, val isCancelled: Boolean = false, val lastError: String? = null,
+    val humanVerificationRequired: Boolean = false, val humanVerificationProvider: String? = null,
+    val sessionHistory: List<BrowserHistoryEntry> = emptyList(),
     val assistantStreamText: String = "", val assistantStreamUpdatedAt: Long = 0L, val isAssistantStreaming: Boolean = false, val browserAccessActive: Boolean = false,
     val agentTouchX: Float? = null, val agentTouchY: Float? = null, val agentTouchNonce: Long = 0L
 )

@@ -1,6 +1,8 @@
 package com.amaya.intelligence.data.remote.api
 
 import org.junit.Assert.assertEquals
+import com.squareup.moshi.Moshi
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
@@ -20,6 +22,18 @@ class OpenAiStreamProtocolTest {
             ),
             accumulator.complete()
         )
+    }
+
+    @Test
+    fun `metadata-free delta chunk parses`() {
+        val chunk = Moshi.Builder()
+            .addLast(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
+            .build()
+            .adapter(OpenAiStreamChunk::class.java)
+            .fromJson("""{"choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}""")
+
+        assertNull(chunk?.id)
+        assertEquals("Hi", chunk?.choices?.single()?.delta?.content)
     }
 
     @Test

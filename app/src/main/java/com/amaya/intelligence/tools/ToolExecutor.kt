@@ -140,6 +140,7 @@ class ToolExecutor @Inject constructor(
             agentId = agentId,
             agentCapabilityProfile = agentCapabilityProfile,
             assistantMode = assistantMode,
+            onConfirmationRequired = onConfirmationRequired,
             readOnly = readOnly
         )
 
@@ -215,7 +216,7 @@ class ToolExecutor @Inject constructor(
     }
 
     private fun normalizeIntegerArguments(toolName: String, arguments: Map<String, Any?>): Map<String, Any?> {
-        val integerNames = getToolDefinitions().firstOrNull { it.name == toolName }
+        val integerNames = getToolDefinitions(AssistantMode.AGENT).firstOrNull { it.name == toolName }
             ?.parameters
             ?.filter { it.type.equals("integer", ignoreCase = true) }
             ?.mapTo(mutableSetOf()) { it.name }

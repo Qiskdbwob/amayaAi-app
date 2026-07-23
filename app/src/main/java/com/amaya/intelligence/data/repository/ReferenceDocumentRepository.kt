@@ -40,6 +40,15 @@ class ReferenceDocumentRepository @Inject constructor(
         }
     }
 
+    suspend fun saveManual(ownerType: String, ownerId: Long, name: String, content: String): Result<String> = runCatching {
+        val clean = content.trim()
+        require(clean.isNotBlank()) { "Reference content is required" }
+        require(clean.toByteArray().size <= MAX_FILE_BYTES) { "Reference must be at most 1 MB" }
+        val safeName = name.trim().takeIf(String::isNotBlank)?.replace(Regex("[^A-Za-z0-9._ -]"), "_") ?: "note"
+        val directory = File(context.filesDir, "references/$ownerType/$ownerId").apply { mkdirs() }
+        File(directory, "${System.currentTimeMillis()}_$safeName.txt").apply { writeText(clean) }.absolutePath
+    }
+
     fun appendPath(json: String, path: String): String {
         val values = parsePaths(json).filter { File(it).exists() }.toMutableList()
         if (path !in values) values += path
@@ -50,6 +59,14 @@ class ReferenceDocumentRepository @Inject constructor(
         val array = JSONArray(json)
         (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotBlank) }
     }.getOrDefault(emptyList())
+
+    fun remove(ownerType: String, ownerId: Long, json: String, path: String): Result<String> = runCatching {
+        val directory = File(context.filesDir, "references/$ownerType/$ownerId").canonicalFile
+        val target = File(path).canonicalFile
+        require(target.parentFile == directory) { "Reference does not belong to this owner" }
+        require(target.delete() || !target.exists()) { "Could not delete reference" }
+        JSONArray(parsePaths(json).filter { it != path && File(it).exists() }.takeLast(MAX_REFERENCES)).toString()
+    }
 
     fun deleteOwner(ownerType: String, ownerId: Long) {
         File(context.filesDir, "references/$ownerType/$ownerId").deleteRecursively()

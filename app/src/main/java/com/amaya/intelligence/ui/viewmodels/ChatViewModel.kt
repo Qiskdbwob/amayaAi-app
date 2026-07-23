@@ -145,6 +145,18 @@ class ChatViewModel @Inject constructor(
         intelligenceService.deleteConversation(conversationId.toString())
     }
 
+    fun clearVisibleHistory(deleteContext: Boolean) {
+        intelligenceService.clearVisibleHistory(deleteContext)
+    }
+
+    fun compactConversation(focus: String = "") {
+        intelligenceService.compactConversation(focus)
+    }
+
+    fun cancelCompactConversation() {
+        intelligenceService.cancelCompactConversation()
+    }
+
     fun switchMode(mode: com.amaya.intelligence.domain.ai.IntelligenceSessionManager.SessionMode) {
         sessionManager.setMode(mode)
     }

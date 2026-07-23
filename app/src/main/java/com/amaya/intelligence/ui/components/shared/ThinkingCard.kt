@@ -123,7 +123,6 @@ fun ThinkingCard(
     durationMs: Long? = null,
     onLocalhostLinkClick: ((String) -> Unit)? = null,
     onBodyScroll: () -> Unit = {},
-    animateInitialCollapse: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     if (text.isBlank()) return
@@ -146,17 +145,11 @@ fun ThinkingCard(
     //
     // The latch fires PROCESSING → DONE exactly once, when isStreaming
     // first goes false (turn end for the field segment, tag-close for an
-    // inline block). It is seeded from isStreaming at mount: a live
-    // segment starts PROCESSING and collapses once, smoothly, when the
-    // turn ends (ToolCallAnimatedSection exit); a historical/reloaded
-    // segment (isStreaming=false at mount) starts DONE with no mount
-    // animation. Visuals below all follow the latched lifecycle so they
-    // stay consistent instead of flickering.
+    // inline block). It is seeded from isStreaming at mount: a live segment
+    // starts PROCESSING; a historical/reloaded segment starts DONE. Only a
+    // real lifecycle transition may trigger the spring exit.
     var lifecycle by remember {
-        mutableStateOf(
-            if (isStreaming || animateInitialCollapse) ThinkingLifecycle.PROCESSING
-            else ThinkingLifecycle.DONE
-        )
+        mutableStateOf(if (isStreaming) ThinkingLifecycle.PROCESSING else ThinkingLifecycle.DONE)
     }
     LaunchedEffect(isStreaming) {
         if (!isStreaming && lifecycle == ThinkingLifecycle.PROCESSING) {
@@ -443,16 +436,8 @@ fun stripThinkingTags(raw: String): String = parseThinkingTags(raw)
  * any inline <think> blocks still embedded in [content].
  *
  * [fieldStreaming] drives the field segment: true while reasoning tokens are
- * still arriving, false once reasoning is finalised. For local this is
- * UiMessage.isThinking — a one-way latch (finalizeThinkingIfActive sets
- * isThinking=false + thinkingDurationMs once, then no-ops via the
- * `!isThinking && thinkingDurationMs != null` guard), so the field segment
- * flips PROCESSING → DONE the moment a non-thinking event (text/tool) follows
- * reasoning, and stays DONE across every subsequent text delta. Keying the
- * field segment off `completedAt == null` instead kept the card "pending" for
- * the whole turn (completedAt is only set at turn end) and, worse, re-seeded
- * PROCESSING on the non-steps → steps branch remount that fires when the
- * first text chunk lands — the complete → pending race.
+ * still arriving, false once reasoning is finalised. The caller also treats
+ * ordinary visible text or a real tool call as terminal fallback signals.
  *
  * [inlineStreaming] drives inline <think> blocks still embedded in content
  * (providers that don't strip tags). Live only while the whole message is
@@ -496,22 +481,11 @@ fun MessageThinkingBlock(
     hideWhenDuplicate: Boolean = false,
     onLocalhostLinkClick: ((String) -> Unit)? = null,
     onBodyScroll: () -> Unit = {},
-    animateInitialCollapse: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     if (hideWhenDuplicate) return
     val content = message.formattedContent ?: message.content
     val completedAt = message.metadata["completedAt"]?.toLongOrNull()
-    // Field segment streaming tracks UiMessage.isThinking — a one-way latch
-    // on local (finalizeThinkingIfActive flips it false once + sets
-    // thinkingDurationMs, then no-ops), so the reasoning card flips to DONE
-    // the moment a non-thinking event follows reasoning and stays DONE across
-    // later text deltas. Do NOT key the field segment off `completedAt == null`
-    // (turn end): completedAt is set only at turn end, so the card stayed
-    // "pending" for the whole turn and re-seeded PROCESSING on the non-steps →
-    // steps branch remount fired by the first text chunk — the complete →
-    // pending race. Inline <think> blocks stay live while the turn is active
-    // AND their tag is still open.
     val turnActive = completedAt == null
     val segments = collectThinkingSegments(
         thinkingField = message.thinking,
@@ -538,8 +512,7 @@ fun MessageThinkingBlock(
                     completedAt = completedAt,
                     durationMs = message.thinkingDurationMs,
                     onLocalhostLinkClick = onLocalhostLinkClick,
-                    onBodyScroll = onBodyScroll,
-                    animateInitialCollapse = animateInitialCollapse
+                    onBodyScroll = onBodyScroll
                 )
             }
         }

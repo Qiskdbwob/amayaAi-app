@@ -167,8 +167,8 @@ fun BrowserOperatorScreen(
 
     val browserView = remember(state.activeTabId) { browserSessionManager.acquireSharedBrowserView() }
 
-    DisposableEffect(browserView) {
-        onDispose { }
+    DisposableEffect(Unit) {
+        onDispose { browserSessionManager.releaseSharedBrowserView() }
     }
 
     Scaffold(
@@ -253,6 +253,28 @@ fun BrowserOperatorScreen(
             }
 
                 AgentCursorOverlay(state = state, agentActive = agentActive)
+            }
+
+            if (state.humanVerificationRequired) {
+                Surface(
+                    color = Color(0xFFFFB340).copy(alpha = 0.16f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(Icons.Default.Public, null, tint = Color(0xFFFFB340), modifier = Modifier.size(20.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Human verification required", color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Text("Complete the challenge here. Press Resume when finished.", color = Color.White.copy(alpha = 0.72f), fontSize = 12.sp)
+                        }
+                        TextButton(onClick = { scope.launch { browserSessionManager.execute("resume_session", emptyMap()) } }) {
+                            Text("Resume")
+                        }
+                    }
+                }
             }
 
             if (state.progress in 0.01f..0.99f) {

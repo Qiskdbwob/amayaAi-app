@@ -17,6 +17,7 @@ import com.amaya.intelligence.di.ApplicationScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -40,6 +41,19 @@ private val TITLE_TRAILING_PUNCTUATION = Regex("[.!?:;]+$")
 private val TITLE_WHITESPACE = Regex("\\s+")
 private val THINK_BLOCK = Regex("(?is)<think>.*?</think>")
 private val INTEGER_TEXT = Regex("[+-]?\\d+")
+private const val MAX_STREAM_CONTINUATIONS = 5
+private const val STREAM_CONTINUATION_PROMPT = "Continue the previous response exactly where it stopped. Do not repeat any text. Do not call tools."
+
+internal fun canContinueStream(response: ChatResponse, hasToolCalls: Boolean): Boolean =
+    !hasToolCalls && when (response) {
+        is ChatResponse.Incomplete -> response.retryable
+        is ChatResponse.Error -> response.retryable
+        else -> false
+    }
+
+internal fun hasProviderUserQuery(messages: List<ChatMessage>): Boolean = messages.any { message ->
+    message.role == MessageRole.USER && (!message.content.isNullOrBlank() || message.images.isNotEmpty())
+}
 
 fun normalizeIntegerArgument(value: Any?): Any? = when (value) {
     is String -> value.trim().takeIf(INTEGER_TEXT::matches)?.toLongOrNull() ?: value
@@ -128,10 +142,60 @@ class AiRepository @Inject constructor(
 ) {
     private companion object {
         const val DEFAULT_MAX_OUTPUT_TOKENS = 8_192
-        const val MAX_TOOL_ITERATIONS = 10
     }
 
     // FIX 5.11: Removed manual repoJob/repoScope and close() — lifecycle managed by Hilt ApplicationScope
+
+    /** Hermes-style compaction: model summary of the active session, optionally focused. */
+    suspend fun compressConversation(
+        conversationHistory: List<ChatMessage>,
+        selectedModel: String,
+        connectionId: String?,
+        focus: String
+    ): Result<String> = runCatching {
+        require(conversationHistory.isNotEmpty()) { "Nothing to compress" }
+        val settings = settingsManager.getSettings()
+        val resolvedConnectionId = connectionId ?: settings.activeSelection?.connectionId
+        val connection = settings.connections.firstOrNull { it.id == resolvedConnectionId }
+            ?: error("No model connection selected")
+        val model = selectedModel.ifBlank { settings.activeSelection?.modelId.orEmpty() }
+        require(model.isNotBlank()) { "No model selected" }
+        val summary = StringBuilder()
+        var failure: String? = null
+        resolveProvider(connection).chat(
+            ChatRequest(
+                model = model,
+                messages = conversationHistory,
+                systemPrompt = compressionPrompt(focus),
+                maxTokens = 2_048,
+                stream = true,
+                connectionId = connection.id,
+                providerId = connection.providerId,
+                effort = ThinkingEffort.NONE
+            )
+        ).collect { response ->
+            when (response) {
+                is ChatResponse.TextDelta -> summary.append(response.text)
+                is ChatResponse.Error -> failure = response.message
+                is ChatResponse.Incomplete -> failure = response.reason
+                else -> Unit
+            }
+        }
+        check(failure == null) { failure.orEmpty() }
+        summary.toString().trim().takeIf(String::isNotBlank) ?: error("Compression returned no summary")
+    }
+
+    private fun compressionPrompt(focus: String): String = """
+        Compress this active coding-agent session for continuation in a fresh context window.
+        Preserve concrete state, not conversational prose:
+        - user goal, constraints, decisions, unresolved questions;
+        - files inspected or changed, exact paths, symbols, APIs, commands, errors, test/build results;
+        - current implementation state, next steps, risks, approvals, and tool outcomes;
+        - facts needed to continue safely without repeating work.
+        Omit greetings, repetition, and abandoned speculation. Never invent facts.
+        This summary replaces prior turns. Write concise Markdown.
+        ${focus.takeIf(String::isNotBlank)?.let { "Prioritize: $it" }.orEmpty()}
+    """.trimIndent()
 
     init {
         // Watch for MCP config changes and refresh tools automatically
@@ -370,20 +434,18 @@ class AiRepository @Inject constructor(
 
         var continueLoop = true
         var iterations = 0
-        val maxIterations = MAX_TOOL_ITERATIONS
         var browserTaskStarted = false
         var lastBrowserErrorSignature: String? = null
         var repeatedBrowserErrors = 0
         var terminalError = false
+        var streamContinuations = 0
         val seenToolCallIds = mutableSetOf<String>()
 
-        while (continueLoop && iterations < maxIterations) {
+        while (continueLoop) {
             iterations++
 
-            // Emit NewIteration for subsequent iterations (after tool results)
-            if (iterations > 1) {
-                send(AgentEvent.NewIteration)
-            }
+            // Emit NewIteration for tool results and provider-stream continuations.
+            if (iterations > 1) send(AgentEvent.NewIteration)
 
             val iterationInputBudget = contextWindowTokens - maxOutputTokens - toolSchemaTokens - 1_024
             if (iterationInputBudget <= 0) {
@@ -398,6 +460,11 @@ class AiRepository @Inject constructor(
                 break
             }
             messages = fittedMessages
+            if (!hasProviderUserQuery(messages)) {
+                send(AgentEvent.Error("No user query remains in the request context", retryable = false))
+                terminalError = true
+                break
+            }
             val request = ChatRequest(
                 model        = model,
                 messages     = messages,
@@ -416,6 +483,7 @@ class AiRepository @Inject constructor(
             val responseItems = mutableListOf<String>()
             var hasToolCalls = false
             var providerTerminal = false
+            var retryableFailure: String? = null
 
             provider.chat(request).collect { response ->
                 if (providerTerminal) {
@@ -473,25 +541,44 @@ class AiRepository @Inject constructor(
 
                     is ChatResponse.Incomplete -> {
                         providerTerminal = true
-                        send(AgentEvent.Incomplete(response.reason, response.retryable))
-                        terminalError = true
-                        continueLoop = false
+                        retryableFailure = response.reason.takeIf { canContinueStream(response, hasToolCalls) }
+                        if (retryableFailure == null) {
+                            send(AgentEvent.Incomplete(response.reason, response.retryable))
+                            terminalError = true
+                            continueLoop = false
+                        }
                     }
 
                     is ChatResponse.Error -> {
                         providerTerminal = true
-                        send(AgentEvent.Error(response.message, response.retryable))
-                        terminalError = true
-                        continueLoop = false
+                        retryableFailure = response.message.takeIf { canContinueStream(response, hasToolCalls) }
+                        if (retryableFailure == null) {
+                            send(AgentEvent.Error(response.message, response.retryable))
+                            terminalError = true
+                            continueLoop = false
+                        }
                     }
                 }
             }
 
             if (terminalError) break
-            if (!providerTerminal) {
-                send(AgentEvent.Incomplete("Provider stream ended without a terminal event", retryable = true))
-                terminalError = true
-                break
+            if (!providerTerminal) retryableFailure = "Provider stream ended without a terminal event"
+
+            if (retryableFailure != null) {
+                if (streamContinuations == MAX_STREAM_CONTINUATIONS) {
+                    send(AgentEvent.Incomplete(retryableFailure!!, retryable = true))
+                    terminalError = true
+                    break
+                }
+                streamContinuations++
+                if (textBuffer.isNotBlank()) {
+                    messages = messages + ChatMessage(
+                        role = MessageRole.ASSISTANT,
+                        content = textBuffer.toString()
+                    ) + ChatMessage(role = MessageRole.USER, content = STREAM_CONTINUATION_PROMPT)
+                }
+                delay(1_000L shl (streamContinuations - 1))
+                continue
             }
 
             if (textBuffer.isNotBlank()) {
@@ -633,11 +720,6 @@ class AiRepository @Inject constructor(
                     }
                 }
             }
-        }
-
-        if (continueLoop && iterations >= maxIterations) {
-            send(AgentEvent.Error("Maximum iterations reached", retryable = false))
-            terminalError = true
         }
 
         val reflectionContext = CompletedInteractionContext(
@@ -818,7 +900,16 @@ class AiRepository @Inject constructor(
             used += spanCost
             cut = spanStart
         }
-        return messages.drop(cut)
+        val fitted = messages.drop(cut)
+        if (hasProviderUserQuery(fitted)) return fitted
+
+        // A tool-result suffix alone is invalid for OpenAI-compatible providers.
+        val userQueryIndex = messages.indexOfLast { message ->
+            message.role == MessageRole.USER && (!message.content.isNullOrBlank() || message.images.isNotEmpty())
+        }
+        if (userQueryIndex < 0) return emptyList()
+        val anchored = messages.drop(userQueryIndex)
+        return anchored.takeIf { it.sumOf(::cost) <= maxTokens }.orEmpty()
     }
 
     private fun browserErrorSignature(resultContent: String): String? {

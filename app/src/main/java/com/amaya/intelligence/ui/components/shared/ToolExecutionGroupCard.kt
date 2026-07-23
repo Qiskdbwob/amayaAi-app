@@ -41,7 +41,8 @@ internal data class ToolExecutionGroup(
     val startIndex: Int,
     val endIndex: Int,
     val executions: List<ToolExecution>,
-    val isActive: Boolean
+    val isActive: Boolean,
+    val parentToolCallId: String? = null
 )
 
 /** Contiguous local tool calls sharing [toolGroupKey]; only groups with count >= 2. */
@@ -50,6 +51,16 @@ internal fun buildToolExecutionGroups(steps: List<MessageStep>): List<ToolExecut
     var index = 0
     while (index < steps.size) {
         val execution = (steps[index] as? MessageStep.ToolCall)?.execution
+
+        if (execution != null && execution.name == "browser") {
+            val browserGroup = synthesizeBrowserGroup(execution, index)
+            if (browserGroup != null) {
+                groups += browserGroup
+            }
+            index++
+            continue
+        }
+
         val key = execution?.toolGroupKey()
         if (key == null) {
             index++
@@ -85,7 +96,7 @@ private fun ToolExecution.toolGroupKey(): String? {
     return when (name) {
         "read_file", "write_file", "edit_file", "create_directory", "delete_file", "undo_change",
         "list_files", "find_files", "run_shell", "web_search", "create_reminder", "update_memory",
-        "memory_manage", "skill_view", "skill_manage", "session_search" -> name
+        "memory_manage", "skill_view", "skill_manage", "session_search", "browser" -> name
         else -> null
     }
 }
@@ -101,6 +112,7 @@ internal fun ToolExecutionGroupCard(
 ) {
     val hasError = group.executions.any { it.status == ToolStatus.ERROR }
     val isRunning = group.executions.any { it.status == ToolStatus.RUNNING || it.status == ToolStatus.PENDING }
+    val isBrowserGroup = group.parentToolCallId != null
     var expanded by remember(group.key, group.executions.first().toolCallId) { mutableStateOf(group.isActive) }
     LaunchedEffect(group.isActive) {
         expanded = group.isActive
@@ -175,8 +187,8 @@ internal fun ToolExecutionGroupCard(
                         key(execution.toolCallId) {
                             ToolCallCard(
                                 execution = execution.copy(metadata = execution.metadata + ("groupedChild" to "true")),
-                                onAccept = onToolAccept?.let { callback -> { callback(execution) } },
-                                onDecline = onToolDecline?.let { callback -> { callback(execution) } },
+                                onAccept = if (isBrowserGroup) null else onToolAccept?.let { callback -> { callback(execution) } },
+                                onDecline = if (isBrowserGroup) null else onToolDecline?.let { callback -> { callback(execution) } },
                                 onLocalhostLinkClick = onLocalhostLinkClick,
                                 onInteraction = onInteraction
                             )
@@ -208,23 +220,30 @@ private fun groupTitle(group: ToolExecutionGroup): String {
         "skill_view" -> "Read $count skills"
         "skill_manage" -> "Manage $count skills"
         "session_search" -> "Search $count previous chats"
-        else -> "$count tools"
+        "browser" -> "${if (successful) "Performed" else "Perform"} $count browser actions"
+        else -> if (group.parentToolCallId != null) {
+            "${if (successful) "Performed" else "Perform"} $count browser actions"
+        } else "$count tools"
     }
 }
 
-private fun groupIcon(key: String): ToolInfoIcon = when (key) {
-    "read_file" -> ToolInfoIcon.READ
-    "write_file" -> ToolInfoIcon.WRITE
-    "edit_file" -> ToolInfoIcon.EDIT
-    "create_directory" -> ToolInfoIcon.FOLDER
-    "delete_file" -> ToolInfoIcon.DELETE
-    "undo_change" -> ToolInfoIcon.EDIT
-    "list_files" -> ToolInfoIcon.LIST
-    "find_files", "session_search" -> ToolInfoIcon.SEARCH
-    "run_shell" -> ToolInfoIcon.RUN
-    "web_search" -> ToolInfoIcon.WORLD
-    "create_reminder" -> ToolInfoIcon.TASK
-    "update_memory", "memory_manage" -> ToolInfoIcon.BRAIN
-    "skill_view", "skill_manage" -> ToolInfoIcon.BOOK
-    else -> ToolInfoIcon.TASK
+private fun groupIcon(key: String): ToolInfoIcon = when {
+    key.startsWith("browser_") -> ToolInfoIcon.BROWSER
+    else -> when (key) {
+        "read_file" -> ToolInfoIcon.READ
+        "write_file" -> ToolInfoIcon.WRITE
+        "edit_file" -> ToolInfoIcon.EDIT
+        "create_directory" -> ToolInfoIcon.FOLDER
+        "delete_file" -> ToolInfoIcon.DELETE
+        "undo_change" -> ToolInfoIcon.EDIT
+        "list_files" -> ToolInfoIcon.LIST
+        "find_files", "session_search" -> ToolInfoIcon.SEARCH
+        "run_shell" -> ToolInfoIcon.RUN
+        "web_search" -> ToolInfoIcon.WORLD
+        "create_reminder" -> ToolInfoIcon.TASK
+        "update_memory", "memory_manage" -> ToolInfoIcon.BRAIN
+        "skill_view", "skill_manage" -> ToolInfoIcon.BOOK
+        "browser" -> ToolInfoIcon.BROWSER
+        else -> ToolInfoIcon.TASK
+    }
 }

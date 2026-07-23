@@ -35,7 +35,7 @@ impl/local/
 - `providers/`: local provider adapters and implementation-specific helpers.
 
 ## Key Source Code
-- `LocalIntelligenceService.kt`: local conversation flow, stable conversation-id persistence before model turns, repository integration, concurrent per-conversation turns, and target-switch-safe UI projection.
+- `LocalIntelligenceService.kt`: local conversation flow, stable conversation-id persistence before model turns, repository integration, concurrent per-conversation turns, target-switch-safe UI projection, rendered-history/context clearing, Hermes-style model-summary injection into the next main-session prompt, cancellation, and composer progress state.
 - `browser/AndroidBrowserController.kt`: GeckoView interaction, navigation, and DOM-backed browser actions.
 - `browser/GeckoBrowserRuntime.kt`: process-wide Gecko runtime plus built-in WebExtension JavaScript bridge.
 - `browser/BrowserSessionManager.kt`: parent browser task state, pause/resume/cancel flow, and GeckoSession ownership.

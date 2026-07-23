@@ -36,7 +36,8 @@ class LocalMemoryAreaActivity : AppCompatActivity() {
                     state = state,
                     snackbarHostState = snackbarHostState,
                     onNavigateBack = { finish() },
-                    onAdd = { content -> viewModel.addMemory(area, content) }
+                    onAdd = { content -> viewModel.addMemory(area, content) },
+                    onDelete = { record -> viewModel.deleteMemory(area, record) }
                 )
             }
         }

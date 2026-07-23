@@ -93,11 +93,6 @@ internal fun ToolCardContent(
     onInteraction: () -> Unit = {},
     embeddedText: String? = null
 ) {
-    if (execution.name == "browser") {
-        BrowserToolCallCard(execution = execution, onInteraction = onInteraction, embeddedText = embeddedText)
-        return
-    }
-
     val isThinkingCard = execution.isSyntheticThinkingCard()
     val isLocal = execution.metadata["source"].equals("local", ignoreCase = true)
     var expanded by remember(execution.toolCallId) { mutableStateOf(false) }
@@ -124,6 +119,7 @@ internal fun ToolCardContent(
     val hasLocalSemanticBody = execution.status == ToolStatus.ERROR ||
         showApprovalActions ||
         localToolPath(execution.arguments) != null ||
+        (execution.metadata["syntheticBrowserStep"] == "true" && (!execution.result.isNullOrBlank() || execution.arguments.isNotEmpty())) ||
         when (execution.name) {
             "read_file", "list_files", "find_files", "run_shell", "web_search", "update_memory",
             "memory_manage", "skill_view", "skill_manage", "session_search", "invoke_subagents", "delegate_agent" ->
@@ -415,6 +411,16 @@ internal fun ToolCardContent(
                                 softWrap = true
                             )
                         }
+                        if (execution.metadata["syntheticBrowserStep"] == "true" && execution.arguments.isNotEmpty()) {
+                            ToolArgumentsPreview(
+                                toolName = execution.name,
+                                arguments = execution.arguments,
+                                isDark = isDark,
+                                category = execution.uiMetadata?.category ?: ToolCategory.UNKNOWN,
+                                uiMetadata = execution.uiMetadata,
+                                isBrowserStep = true
+                            )
+                        }
                         if (execution.name == "delegate_agent") {
                             ToolScrollableBlock(MaterialTheme.colorScheme.surfaceContainerLow) {
                                 ToolArgumentsPreview(
@@ -441,7 +447,8 @@ internal fun ToolCardContent(
                                 onLocalhostLinkClick = onLocalhostLinkClick,
                                 uiMetadata = execution.uiMetadata,
                                 isLocal = true,
-                                isError = execution.status == ToolStatus.ERROR
+                                isError = execution.status == ToolStatus.ERROR,
+                                isBrowserStep = execution.metadata["syntheticBrowserStep"] == "true"
                             )
                         }
                     }

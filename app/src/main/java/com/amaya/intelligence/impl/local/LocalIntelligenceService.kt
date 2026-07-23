@@ -13,6 +13,7 @@ import com.amaya.intelligence.data.local.dao.ProjectDao
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.data.repository.AiRepository
 import com.amaya.intelligence.data.repository.AgentEvent
+import com.amaya.intelligence.data.repository.SessionMemoryRepository
 
 import com.amaya.intelligence.domain.models.*
 import com.amaya.intelligence.impl.common.mappers.ModelUiMapper
@@ -25,6 +26,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import com.amaya.intelligence.tools.SubagentResult
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -45,6 +47,7 @@ class LocalIntelligenceService @Inject constructor(
     private val conversationDao: ConversationDao,
     private val agentDao: AgentDao,
     private val projectDao: ProjectDao,
+    private val sessionMemoryRepository: SessionMemoryRepository,
     private val settingsManager: AiSettingsManager,
     private val browserSessionManager: BrowserSessionManager,
     @ApplicationContext private val appContext: Context,
@@ -72,6 +75,7 @@ class LocalIntelligenceService @Inject constructor(
     override val workspaces: StateFlow<List<RemoteWorkspace>> = _workspaces.asStateFlow()
 
     private var chatJob: Job? = null
+    private var compactJob: Job? = null
     @Volatile private var currentConversationId: Long? = null
     private var currentAssistantMessageId: String? = null
     private val assistantTextBuffer = StringBuilder()
@@ -157,6 +161,7 @@ class LocalIntelligenceService @Inject constructor(
         if (text.isBlank() || activeTurns.containsKey(conversationId)) return false
         val entity = conversationDao.getConversationById(conversationId) ?: return false
         val messages = parseMessagesFromJson(entity.messagesJson).getOrNull() ?: return false
+        val contextMessages = parseMessagesFromJson(entity.contextMessagesJson.ifBlank { entity.messagesJson }).getOrNull() ?: return false
         val settings = settingsManager.getSettings()
         val preferredModelKey = entity.agentId?.let { id -> agentDao.getById(id)?.defaultModelKeysJson }
             ?.let { runCatching { JSONArray(it) }.getOrNull() }
@@ -167,6 +172,7 @@ class LocalIntelligenceService @Inject constructor(
         val effort = if (modelParts.size == 3) settingsManager.getThinkingEffort(modelParts[1], modelParts[2]) else _uiState.value.effort
         val state = ChatUiState(
             messages = messages,
+            contextMessages = contextMessages,
             selectedModel = selectedModel,
             workspacePath = entity.workspacePath,
             assistantMode = runCatching { AssistantMode.valueOf(entity.assistantMode) }.getOrDefault(AssistantMode.CHAT),
@@ -179,6 +185,53 @@ class LocalIntelligenceService @Inject constructor(
             sessionMode = IntelligenceSessionManager.SessionMode.LOCAL
         )
         return startTurn(text, emptyList(), state, projectVisible = false)
+    }
+
+    suspend fun runDelegatedAgentTurn(conversationId: Long, request: String): SubagentResult {
+        val entity = conversationDao.getConversationById(conversationId) ?: error("Delegated conversation not found")
+        val messages = parseMessagesFromJson(entity.messagesJson).getOrThrow()
+        val contextMessages = parseMessagesFromJson(entity.contextMessagesJson.ifBlank { entity.messagesJson }).getOrThrow()
+        require(contextMessages.lastOrNull()?.role == MessageRole.USER) { "Delegated request is missing" }
+        val settings = settingsManager.getSettings()
+        val modelKey = entity.agentId?.let { agentDao.getById(it)?.defaultModelKeysJson }
+            ?.let { runCatching { JSONArray(it) }.getOrNull() }
+            ?.let { values -> (0 until values.length()).map(values::optString).firstOrNull(String::isNotBlank) }
+            ?: settings.activeSelection?.key.orEmpty()
+        val modelParts = modelKey.split('|', limit = 3)
+        val state = ChatUiState(
+            messages = messages,
+            contextMessages = contextMessages,
+            selectedModel = modelParts.getOrNull(2).orEmpty().ifBlank { settings.activeSelection?.modelId.orEmpty() },
+            workspacePath = entity.workspacePath,
+            assistantMode = AssistantMode.AGENT,
+            ownerId = entity.ownerId,
+            agentId = entity.agentId,
+            modelOptions = _uiState.value.modelOptions,
+            activeModelKey = modelKey,
+            conversationId = entity.id.toString(),
+            effort = if (modelParts.size == 3) settingsManager.getThinkingEffort(modelParts[1], modelParts[2]) else _uiState.value.effort,
+            sessionMode = IntelligenceSessionManager.SessionMode.LOCAL
+        )
+        check(startTurn(request, emptyList(), state, projectVisible = false, preexistingUserMessage = true)) {
+            "Delegated session is already streaming"
+        }
+        val turn = activeTurns[conversationId] ?: error("Delegated session did not start")
+        turn.job?.join()
+        val persisted = conversationDao.getConversationById(conversationId)
+            ?.let { parseMessagesFromJson(it.messagesJson).getOrNull() }
+            .orEmpty()
+        val turnMessages = persisted.drop(messages.size).flatMap { it.toChatMessages() }
+        val completed = persisted.lastOrNull { message -> message.role == MessageRole.ASSISTANT }
+        val summary = completed?.content?.takeIf(String::isNotBlank)
+            ?: turn.state.error?.let { "[ERROR] $it" }
+            ?: "[INCOMPLETE] No final response."
+        return SubagentResult(
+            taskName = entity.title,
+            summary = summary,
+            turnMessages = turnMessages,
+            startedAt = completed?.timestamp ?: System.currentTimeMillis(),
+            completedAt = System.currentTimeMillis()
+        )
     }
 
     override fun sendMessageWithImage(content: String, imageBase64: String, mimeType: String, fileName: String) {
@@ -198,7 +251,9 @@ class LocalIntelligenceService @Inject constructor(
     ) {
         val currentState = _uiState.value
         scope.launch {
-            if (!startTurn(content, images, currentState, projectVisible = true)) {
+            if (!startTurn(content, images, currentState, projectVisible = true) &&
+                !currentState.isStreaming && !currentState.isLoading
+            ) {
                 _uiState.update { it.copy(error = "Could not start this conversation.", isLoading = false, isStreaming = false) }
             }
         }
@@ -208,7 +263,8 @@ class LocalIntelligenceService @Inject constructor(
         content: String,
         images: List<com.amaya.intelligence.data.remote.api.ChatImage>,
         initialState: ChatUiState,
-        projectVisible: Boolean
+        projectVisible: Boolean,
+        preexistingUserMessage: Boolean = false
     ): Boolean {
         val trimmedContent = content.trim()
         if (trimmedContent.isBlank() && images.isEmpty()) return false
@@ -226,7 +282,13 @@ class LocalIntelligenceService @Inject constructor(
             content = trimmedContent,
             attachments = images.map { MessageAttachment(it.mediaType, it.base64, it.fileName) }
         )
-        val turnState = initialState.copy(messages = initialState.messages + userMsg, isLoading = true, isStreaming = true, error = null)
+        val turnState = initialState.copy(
+            messages = if (preexistingUserMessage) initialState.messages else initialState.messages + userMsg,
+            contextMessages = if (preexistingUserMessage) initialState.contextMessages else initialState.contextMessages + userMsg,
+            isLoading = true,
+            isStreaming = true,
+            error = null
+        )
         if (projectVisible) _uiState.value = turnState
         val isNewConversation = activeConversation == null
         val conversationId = conversationStartMutex.withLock {
@@ -241,7 +303,7 @@ class LocalIntelligenceService @Inject constructor(
         if (projectVisible && targetEpoch.get() == selectedEpoch) {
             currentConversationId = conversationId
             if (runtimeState.assistantMode == AssistantMode.AGENT && runtimeState.agentId != null) {
-                browserSessionManager.resetForConversation("conversation:$conversationId", runtimeState.agentId)
+                browserSessionManager.selectConversation("conversation:$conversationId", runtimeState.agentId)
                 browserSessionManager.onAssistantStreamingChanged(true)
             }
             _uiState.value = runtimeState
@@ -269,7 +331,7 @@ class LocalIntelligenceService @Inject constructor(
                     aiRepository.chat(
                         message = trimmedContent,
                         userImages = images,
-                        conversationHistory = runtimeState.messages.dropLast(1).flatMap { it.toChatMessages() },
+                        conversationHistory = runtimeState.contextMessages.dropLast(1).flatMap { it.toChatMessages() },
                         workspacePath = runtimeState.workspacePath,
                         assistantMode = runtimeState.assistantMode,
                         ownerId = runtimeState.ownerId,
@@ -290,8 +352,8 @@ class LocalIntelligenceService @Inject constructor(
                         handleTurnEvent(turn, AgentEvent.Incomplete("Provider stream ended unexpectedly", retryable = true))
                     }
                 } catch (cancelled: CancellationException) {
-                    failed = true
                     handleTurnEvent(turn, AgentEvent.Incomplete("Stopped", retryable = true))
+                    // Stop is an intentional terminal state, not a retryable provider failure.
                     throw cancelled
                 } catch (error: Exception) {
                     failed = true
@@ -360,7 +422,7 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     private suspend fun recoverInterruptedTurns() {
-        conversationDao.getConversationsByScope("local").forEach { summary ->
+        conversationDao.getAllConversations().first().forEach { summary ->
             val entity = conversationDao.getConversationById(summary.id) ?: return@forEach
             val messages = parseMessagesFromJson(entity.messagesJson).getOrNull() ?: return@forEach
             val index = messages.indexOfLast { message ->
@@ -389,7 +451,11 @@ class LocalIntelligenceService @Inject constructor(
                 )
             }
             val recovered = messages.toMutableList().also { it[index] = interrupted }
-            conversationDao.updateConversation(entity.copy(messagesJson = serializeMessagesToJson(recovered), updatedAt = System.currentTimeMillis()))
+            conversationDao.updateConversation(entity.copy(
+                messagesJson = serializeMessagesToJson(recovered),
+                contextMessagesJson = serializeMessagesToJson(recovered),
+                updatedAt = System.currentTimeMillis()
+            ))
         }
     }
 
@@ -443,25 +509,47 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     private fun updateTurnMessage(turn: LocalTurn, transform: (UiMessage) -> UiMessage) {
-        val messages = turn.state.messages.toMutableList()
-        var index = turn.assistantMessageId?.let { id -> messages.indexOfLast { it.id == id } } ?: -1
+        val context = turn.state.contextMessages.toMutableList()
+        val visible = turn.state.messages.toMutableList()
+        var index = turn.assistantMessageId?.let { id -> context.indexOfLast { it.id == id } } ?: -1
         if (index < 0) {
             val message = UiMessage(role = MessageRole.ASSISTANT, content = "", metadata = mapOf("source" to "local"))
             turn.assistantMessageId = message.id
-            messages += message
-            index = messages.lastIndex
+            context += message
+            if (visible.isNotEmpty()) visible += message
+            index = context.lastIndex
         }
-        messages[index] = transform(messages[index])
-        turn.state = turn.state.copy(messages = messages)
+        val updated = transform(context[index])
+        context[index] = updated
+        turn.assistantMessageId?.let { id ->
+            visible.indexOfLast { it.id == id }.takeIf { it >= 0 }?.let { visibleIndex ->
+                visible[visibleIndex] = updated
+            }
+        }
+        turn.state = turn.state.copy(messages = visible, contextMessages = context)
+    }
+
+    private fun markActiveTurnToolsStopped(turn: LocalTurn) {
+        updateTurnMessage(turn) { message ->
+            fun stop(tool: ToolExecution) = if (tool.status == ToolStatus.RUNNING || tool.status == ToolStatus.PENDING) {
+                tool.copy(status = ToolStatus.ERROR, result = tool.result ?: "Stopped by user")
+            } else tool
+            message.copy(
+                toolExecutions = message.toolExecutions.map(::stop),
+                steps = message.steps.map { if (it is MessageStep.ToolCall) it.copy(execution = stop(it.execution)) else it }
+            )
+        }
     }
 
     private fun finalizeTurnThinking(turn: LocalTurn, status: String) {
         val now = System.currentTimeMillis()
         updateTurnMessage(turn) { message ->
-            val duration = message.thinkingStartedAt?.let { (now - it).coerceAtLeast(0L) }
+            val steps = message.steps.finishThinking(now)
             message.copy(
                 isThinking = false,
-                thinkingDurationMs = message.thinkingDurationMs ?: duration,
+                thinkingDurationMs = message.thinkingDurationMs
+                    ?: (steps.lastOrNull { it is MessageStep.Thinking } as? MessageStep.Thinking)?.durationMs,
+                steps = steps,
                 metadata = message.metadata + mapOf("turnStatus" to status, "completedAt" to now.toString())
             )
         }
@@ -474,39 +562,49 @@ class LocalIntelligenceService @Inject constructor(
                     browserSessionManager.onAssistantTextDelta(event.text)
                 }
                 updateTurnMessage(turn) { message ->
-                    val steps = if (message.steps.lastOrNull() is MessageStep.Text) {
-                        message.steps.dropLast(1) + (message.steps.last() as MessageStep.Text).let { it.copy(content = it.content + event.text) }
-                    } else message.steps + MessageStep.Text(content = event.text)
-                    message.copy(content = message.content + event.text, steps = steps)
+                    val steps = message.steps.finishThinking().appendText(event.text)
+                    message.copy(
+                        content = message.content + event.text,
+                        isThinking = false,
+                        steps = steps
+                    )
                 }
                 publishTurn(turn, "Streaming", event.text.takeLast(120))
             }
             is AgentEvent.ThinkingDelta -> {
-                updateTurnMessage(turn) { it.copy(thinking = it.thinking.orEmpty() + event.text, isThinking = true, thinkingStartedAt = it.thinkingStartedAt ?: System.currentTimeMillis()) }
+                updateTurnMessage(turn) { message -> message.appendThinkingStep(event.text) }
                 publishTurn(turn, "Thinking", event.text.takeLast(120))
             }
             is AgentEvent.ToolCallStart -> {
                 val displayName = LocalToolMapper.mapDisplayToolName(event.name, event.arguments)
                 if (displayName == "delegate_agent") turn.delegationActive = true
                 val execution = ToolExecution(event.toolCallId, displayName, LocalToolMapper.mapToolArgs(event.name, event.arguments), status = ToolStatus.RUNNING, metadata = event.metadata + ("source" to "local"), uiMetadata = LocalToolMapper.getUiMetadata(event.name, event.arguments))
-                updateTurnMessage(turn) { it.copy(toolExecutions = it.toolExecutions + execution, steps = it.steps + MessageStep.ToolCall(execution = execution)) }
+                updateTurnMessage(turn) { message ->
+                    val steps = message.steps.finishThinking()
+                    message.finishThinking().copy(
+                        toolExecutions = message.toolExecutions + execution,
+                        steps = steps + MessageStep.ToolCall(execution = execution)
+                    )
+                }
                 publishTurn(turn, "Tools: ${LocalToolMapper.displayLabel(event.name, event.arguments)}", toolEventDetail(event.name, event.arguments), urgent = true)
             }
             is AgentEvent.ToolCallResult -> {
                 if (LocalToolMapper.mapToolName(event.toolName) == "delegate_agent") turn.delegationActive = false
                 fun complete(tool: ToolExecution) = if (tool.toolCallId == event.toolCallId) tool.copy(result = event.result, status = if (event.isError) ToolStatus.ERROR else ToolStatus.SUCCESS) else tool
-                updateTurnMessage(turn) { message -> message.copy(
+                updateTurnMessage(turn) { message -> message.finishThinking().copy(
                     toolExecutions = message.toolExecutions.map(::complete),
-                    steps = message.steps.map { if (it is MessageStep.ToolCall) it.copy(execution = complete(it.execution)) else it }
+                    steps = message.steps.finishThinking().map { if (it is MessageStep.ToolCall) it.copy(execution = complete(it.execution)) else it }
                 ) }
                 publishTurn(turn, if (event.isError) "Tool failed" else "Tool completed", event.result.takeLast(120), urgent = true)
             }
             is AgentEvent.ResponseItem -> updateTurnMessage(turn) { if (event.json in it.responseItems) it else it.copy(responseItems = it.responseItems + event.json) }
             is AgentEvent.Usage -> turn.state = turn.state.copy(totalInputTokens = turn.state.totalInputTokens + event.inputTokens, totalOutputTokens = turn.state.totalOutputTokens + event.outputTokens)
             is AgentEvent.Incomplete -> {
-                finalizeTurnThinking(turn, "incomplete")
-                turn.state = turn.state.copy(error = event.reason, isLoading = false, isStreaming = false)
-                publishTurn(turn, "Incomplete", event.reason, urgent = true)
+                val stopped = event.reason == "Stopped"
+                if (stopped) markActiveTurnToolsStopped(turn)
+                finalizeTurnThinking(turn, if (stopped) "cancelled" else "incomplete")
+                turn.state = turn.state.copy(error = if (stopped) null else event.reason, isLoading = false, isStreaming = false)
+                publishTurn(turn, if (stopped) "Stopped" else "Incomplete", event.reason, urgent = true)
             }
             is AgentEvent.Error -> {
                 finalizeTurnThinking(turn, "failed")
@@ -536,6 +634,7 @@ class LocalIntelligenceService @Inject constructor(
 
     private suspend fun persistConversationStart(state: ChatUiState, existingId: Long?): Long? = conversationSaveMutex.withLock {
         val messagesJson = serializeMessagesToJson(state.messages)
+        val contextMessagesJson = serializeMessagesToJson(state.contextMessages)
         val now = System.currentTimeMillis()
         if (existingId != null) {
             val existing = conversationDao.getConversationById(existingId) ?: return@withLock null
@@ -545,6 +644,7 @@ class LocalIntelligenceService @Inject constructor(
                 ownerId = state.ownerId,
                 agentId = state.agentId,
                 messagesJson = messagesJson,
+                contextMessagesJson = contextMessagesJson,
                 updatedAt = now
             ))
             return@withLock existingId
@@ -557,6 +657,7 @@ class LocalIntelligenceService @Inject constructor(
             ownerId = state.ownerId,
             agentId = state.agentId,
             messagesJson = messagesJson,
+            contextMessagesJson = contextMessagesJson,
             createdAt = now,
             updatedAt = now
         ))
@@ -564,7 +665,11 @@ class LocalIntelligenceService @Inject constructor(
 
     private suspend fun persistTurn(turn: LocalTurn) = conversationSaveMutex.withLock {
         val existing = conversationDao.getConversationById(turn.conversationId) ?: return@withLock
-        conversationDao.updateConversation(existing.copy(messagesJson = serializeMessagesToJson(turn.state.messages), updatedAt = System.currentTimeMillis()))
+        conversationDao.updateConversation(existing.copy(
+            messagesJson = serializeMessagesToJson(turn.state.messages),
+            contextMessagesJson = serializeMessagesToJson(turn.state.contextMessages),
+            updatedAt = System.currentTimeMillis()
+        ))
     }
 
     private fun handleAgentEvent(event: AgentEvent) {
@@ -611,9 +716,10 @@ class LocalIntelligenceService @Inject constructor(
                 )
                 ensureAssistantMessage()
                 updateCurrentAssistantMessage { msg ->
-                    msg.copy(
+                    val steps = msg.steps.finishThinking()
+                    msg.finishThinking().copy(
                         toolExecutions = msg.toolExecutions + toolExec,
-                        steps = msg.steps + MessageStep.ToolCall(execution = toolExec),
+                        steps = steps + MessageStep.ToolCall(execution = toolExec),
                         canonicalHistory = msg.canonicalHistory + canonicalCall
                     )
                 }
@@ -638,7 +744,7 @@ class LocalIntelligenceService @Inject constructor(
                             )
                         } else it
                     }
-                    val updatedSteps = msg.steps.map { step ->
+                    val updatedSteps = msg.steps.finishThinking().map { step ->
                         if (step is MessageStep.ToolCall && step.execution.toolCallId == event.toolCallId) {
                             step.copy(
                                 execution = step.execution.copy(
@@ -824,13 +930,7 @@ class LocalIntelligenceService @Inject constructor(
         val chunk = assistantThinkingBuffer.toString()
         assistantThinkingBuffer.clear()
         ensureAssistantMessage()
-        updateCurrentAssistantMessage { msg ->
-            msg.copy(
-                thinking = msg.thinking.orEmpty() + chunk,
-                isThinking = true,
-                thinkingStartedAt = msg.thinkingStartedAt ?: System.currentTimeMillis()
-            )
-        }
+        updateCurrentAssistantMessage { it.appendThinkingStep(chunk) }
     }
 
     private fun flushAssistantTextBuffer(now: Long = System.currentTimeMillis()) {
@@ -846,15 +946,10 @@ class LocalIntelligenceService @Inject constructor(
         ensureAssistantMessage()
         updateCurrentAssistantMessage { msg ->
             val newContent = msg.content + chunk
-            val lastStep = msg.steps.lastOrNull()
-            val newSteps = if (lastStep is MessageStep.Text) {
-                msg.steps.dropLast(1) + lastStep.copy(content = lastStep.content + chunk)
-            } else {
-                msg.steps + MessageStep.Text(content = chunk)
-            }
+            val newSteps = msg.steps.finishThinking().appendText(chunk)
             totalAssistantChars = newContent.length
             stepCount = newSteps.size
-            msg.copy(
+            msg.finishThinking().copy(
                 content = newContent,
                 steps = newSteps,
                 canonicalHistory = msg.canonicalHistory + JSONObject()
@@ -948,15 +1043,25 @@ class LocalIntelligenceService @Inject constructor(
      * was already finalised or never started.
      */
     private fun finalizeThinkingIfActive() {
-        updateCurrentAssistantMessage { msg ->
-            if (!msg.isThinking && msg.thinkingDurationMs != null) return@updateCurrentAssistantMessage msg
-            val nowMs = System.currentTimeMillis()
-            val durationMs = msg.thinkingStartedAt?.let { (nowMs - it).coerceAtLeast(0L) }
-            msg.copy(
-                isThinking = false,
-                thinkingDurationMs = msg.thinkingDurationMs ?: durationMs
-            )
-        }
+        updateCurrentAssistantMessage { it.finishThinking() }
+    }
+
+    private fun UiMessage.appendThinkingStep(delta: String): UiMessage {
+        val updatedSteps = steps.appendThinking(delta)
+        val current = updatedSteps.last() as MessageStep.Thinking
+        return copy(
+            thinking = current.text,
+            isThinking = true,
+            thinkingStartedAt = current.startedAt,
+            steps = updatedSteps
+        )
+    }
+
+    private fun UiMessage.finishThinking(nowMs: Long = System.currentTimeMillis()): UiMessage {
+        val finishedSteps = steps.finishThinking(nowMs)
+        if (!isThinking && thinkingDurationMs != null && finishedSteps === steps) return this
+        val durationMs = thinkingStartedAt?.let { (nowMs - it).coerceAtLeast(0L) }
+        return copy(isThinking = false, thinkingDurationMs = thinkingDurationMs ?: durationMs, steps = finishedSteps)
     }
 
     private fun markCurrentAssistantTerminal(status: String) {
@@ -1065,10 +1170,12 @@ class LocalIntelligenceService @Inject constructor(
         _uiState.update { it.copy(
             conversationId = null,
             messages = emptyList(),
+            contextMessages = emptyList(),
             error = null,
             isLoading = false,
             isLoadingHistory = false,
             isStreaming = false,
+            isCompressing = false,
             totalInputTokens = 0,
             totalOutputTokens = 0
         )}
@@ -1079,6 +1186,10 @@ class LocalIntelligenceService @Inject constructor(
         val epoch = targetEpoch.incrementAndGet()
         currentConversationId = longId
         activeTurns[longId]?.let { running ->
+            if (running.state.assistantMode == AssistantMode.AGENT) {
+                browserSessionManager.selectConversation("conversation:$longId", running.state.agentId)
+                browserSessionManager.onAssistantStreamingChanged(true)
+            }
             _uiState.value = running.state.copy(isLoading = true, isStreaming = true)
             return
         }
@@ -1098,6 +1209,10 @@ class LocalIntelligenceService @Inject constructor(
             val entity = conversationDao.getConversationById(longId)
             if (targetEpoch.get() != epoch || currentConversationId != longId) return@launch
             activeTurns[longId]?.let { running ->
+                if (running.state.assistantMode == AssistantMode.AGENT) {
+                    browserSessionManager.selectConversation("conversation:$longId", running.state.agentId)
+                    browserSessionManager.onAssistantStreamingChanged(true)
+                }
                 _uiState.value = running.state.copy(isLoading = true, isStreaming = true)
                 return@launch
             }
@@ -1107,12 +1222,17 @@ class LocalIntelligenceService @Inject constructor(
                     _uiState.update { state -> state.copy(error = "Conversation data is corrupted and could not be loaded") }
                     return@launch
                 }
+                val contextMessages = parseMessagesFromJson(conv.contextMessagesJson.ifBlank { conv.messagesJson })
+                    .getOrElse {
+                        _uiState.update { state -> state.copy(error = "Conversation context is corrupted and could not be loaded") }
+                        return@launch
+                    }
                 currentConversationId = conv.id
                 currentAssistantMessageId = null
                 assistantTextBuffer.clear()
                 assistantThinkingBuffer.clear()
                 lastAssistantTextUiEmitAt = 0L
-                browserSessionManager.resetForConversation("conversation:${conv.id}", conv.agentId)
+                browserSessionManager.selectConversation("conversation:${conv.id}", conv.agentId)
                 _uiState.update { it.copy(
                     conversationId = conv.id.toString(),
                     workspacePath = conv.workspacePath,
@@ -1120,6 +1240,7 @@ class LocalIntelligenceService @Inject constructor(
                     ownerId = conv.ownerId,
                     agentId = conv.agentId,
                     messages = messages,
+                    contextMessages = contextMessages,
                     totalInputTokens = 0,
                     totalOutputTokens = 0,
                     error = null,
@@ -1136,6 +1257,74 @@ class LocalIntelligenceService @Inject constructor(
         titleJobs.remove(longId)?.cancel()
         if (currentConversationId == longId) clearConversation()
         scope.launch { conversationDao.deleteConversationById(longId) }
+    }
+
+    override fun clearVisibleHistory(deleteContext: Boolean) {
+        val conversationId = currentConversationId ?: return
+        if (activeTurns.containsKey(conversationId)) {
+            _uiState.update { it.copy(error = "Wait for the current response before clearing this chat") }
+            return
+        }
+        val updatedContext = contextAfterHistoryClear(_uiState.value.contextMessages, deleteContext)
+        _uiState.update { it.copy(messages = emptyList(), contextMessages = updatedContext) }
+        scope.launch {
+            try {
+                conversationSaveMutex.withLock {
+                    conversationDao.clearConversationHistory(
+                        id = conversationId,
+                        contextMessagesJson = serializeMessagesToJson(updatedContext)
+                    )
+                }
+                if (deleteContext) sessionMemoryRepository.deleteSession(conversationId.toString())
+            } catch (error: Exception) {
+                _uiState.update { it.copy(error = "Could not clear this chat: ${error.message.orEmpty()}") }
+            }
+        }
+    }
+
+    override fun compactConversation(focus: String) {
+        val conversationId = currentConversationId ?: run {
+            _uiState.update { it.copy(error = "Nothing to compress") }
+            return
+        }
+        if (activeTurns.containsKey(conversationId) || compactJob?.isActive == true) {
+            _uiState.update { it.copy(error = "Wait for the current operation before compressing") }
+            return
+        }
+        val state = _uiState.value
+        _uiState.update { it.copy(isCompressing = true, error = null) }
+        compactJob = scope.launch {
+            try {
+                val history = state.contextMessages.flatMap { it.toChatMessages() }
+                val summary = aiRepository.compressConversation(
+                    conversationHistory = history,
+                    selectedModel = state.selectedModel,
+                    connectionId = state.activeModelKey.takeIf { it.startsWith("model|") }?.split('|', limit = 3)?.getOrNull(1),
+                    focus = focus
+                ).getOrThrow()
+                val context = compressedSessionContext(summary)
+                conversationSaveMutex.withLock {
+                    conversationDao.updateConversationContext(
+                        id = conversationId,
+                        contextMessagesJson = serializeMessagesToJson(context)
+                    )
+                }
+                if (currentConversationId == conversationId) {
+                    _uiState.update { it.copy(contextMessages = context) }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _uiState.update { it.copy(error = error.message ?: "Could not compress conversation") }
+            } finally {
+                _uiState.update { it.copy(isCompressing = false) }
+                compactJob = null
+            }
+        }
+    }
+
+    override fun cancelCompactConversation() {
+        compactJob?.cancel()
     }
 
     override fun selectModel(modelKey: String) {
@@ -1300,6 +1489,15 @@ class LocalIntelligenceService @Inject constructor(
                         val s = stepsArr.getJSONObject(j)
                         val stepId = s.optString("id", UUID.randomUUID().toString())
                         when (s.optString("type")) {
+                            "thinking" -> {
+                                steps.add(MessageStep.Thinking(
+                                    id = stepId,
+                                    text = s.optString("text"),
+                                    isStreaming = s.optBoolean("isStreaming"),
+                                    startedAt = s.optLong("startedAt", 0L).takeIf { it > 0 },
+                                    durationMs = s.optLong("durationMs", 0L).takeIf { it > 0 }
+                                ))
+                            }
                             "text" -> {
                                 steps.add(MessageStep.Text(
                                     id = stepId,
@@ -1391,7 +1589,9 @@ class LocalIntelligenceService @Inject constructor(
     private fun saveCurrentConversation() {
         val conversationId = currentConversationId ?: return
         val messages = _uiState.value.messages
+        val contextMessages = _uiState.value.contextMessages
         val messagesJson = serializeMessagesToJson(messages)
+        val contextMessagesJson = serializeMessagesToJson(contextMessages)
         scope.launch {
             conversationSaveMutex.withLock {
                 try {
@@ -1400,7 +1600,11 @@ class LocalIntelligenceService @Inject constructor(
                     ) return@withLock
                     val existing = conversationDao.getConversationById(conversationId) ?: return@withLock
                     conversationDao.updateConversation(
-                        existing.copy(messagesJson = messagesJson, updatedAt = System.currentTimeMillis())
+                        existing.copy(
+                            messagesJson = messagesJson,
+                            contextMessagesJson = contextMessagesJson,
+                            updatedAt = System.currentTimeMillis()
+                        )
                     )
                 } catch (error: Exception) {
                     if (currentConversationId == conversationId) {
@@ -1458,6 +1662,7 @@ class LocalIntelligenceService @Inject constructor(
                             ownerId = _uiState.value.ownerId,
                             agentId = _uiState.value.agentId,
                             messagesJson = messagesJson,
+                            contextMessagesJson = serializeMessagesToJson(_uiState.value.contextMessages),
                             updatedAt = now
                         )
                     )
@@ -1485,6 +1690,7 @@ class LocalIntelligenceService @Inject constructor(
                         workspacePath = _uiState.value.workspacePath,
                         ownerId = _uiState.value.ownerId,
                         messagesJson = messagesJson,
+                        contextMessagesJson = serializeMessagesToJson(_uiState.value.contextMessages),
                         updatedAt = now
                     )
                 )
@@ -1502,6 +1708,7 @@ class LocalIntelligenceService @Inject constructor(
                 ownerId = _uiState.value.ownerId,
                 agentId = _uiState.value.agentId,
                 messagesJson = messagesJson,
+                contextMessagesJson = serializeMessagesToJson(_uiState.value.contextMessages),
                 createdAt = now,
                 updatedAt = now
             )
@@ -1551,6 +1758,13 @@ class LocalIntelligenceService @Inject constructor(
                     val stepObj = JSONObject().apply {
                         put("id", step.id)
                         when (step) {
+                            is MessageStep.Thinking -> {
+                                put("type", "thinking")
+                                put("text", step.text)
+                                put("isStreaming", step.isStreaming)
+                                step.startedAt?.let { put("startedAt", it) }
+                                step.durationMs?.let { put("durationMs", it) }
+                            }
                             is MessageStep.Text -> {
                                 put("type", "text")
                                 put("content", step.content)
@@ -1679,8 +1893,21 @@ class LocalIntelligenceService @Inject constructor(
 
 }
 
+private const val COMPRESSED_SESSION_CONTEXT_PREFIX = "[COMPRESSED SESSION CONTEXT]"
+
+internal fun contextAfterHistoryClear(context: List<UiMessage>, deleteContext: Boolean): List<UiMessage> =
+    if (deleteContext) emptyList() else context
+
+internal fun compressedSessionContext(summary: String): List<UiMessage> = listOf(
+    UiMessage(
+        role = MessageRole.SYSTEM,
+        content = "$COMPRESSED_SESSION_CONTEXT_PREFIX\n${summary.trim()}",
+        metadata = mapOf("compressed" to "true")
+    )
+)
+
 // Extension to map domain to repository model
-private fun UiMessage.toChatMessages(): List<ChatMessage> {
+internal fun UiMessage.toChatMessages(): List<ChatMessage> {
     if (role == MessageRole.ASSISTANT && canonicalHistory.isNotEmpty()) {
         canonicalHistoryToChatMessages(canonicalHistory).takeIf { it.isNotEmpty() }?.let { return it }
     }

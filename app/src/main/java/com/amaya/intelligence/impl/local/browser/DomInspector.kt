@@ -22,6 +22,70 @@ object DomInspector {
         )
     }
 
+    fun selectorExistsScript(selector: String): String {
+        val s = JSONObject.quote(selector)
+        return baseInspector(
+            """
+            var el = resolveElement($s);
+            return JSON.stringify(el ? summarize(el) : null);
+            """.trimIndent()
+        )
+    }
+
+    fun humanVerificationScript(): String = """
+        (function() {
+          var title = (document.title || '').toLowerCase();
+          var text = (document.body ? document.body.innerText : '').slice(0, 50000).toLowerCase();
+          var frames = Array.prototype.slice.call(document.querySelectorAll('iframe[src],iframe[title]'));
+          var frameText = frames.map(function(frame) { return ((frame.src || '') + ' ' + (frame.title || '')).toLowerCase(); }).join(' ');
+          var selectors = [
+            '.g-recaptcha','iframe[src*="recaptcha"]','iframe[src*="hcaptcha"]',
+            'iframe[src*="challenges.cloudflare.com"]','[class*="turnstile"]','[id*="turnstile"]',
+            '[class*="h-captcha"]','[id*="captcha"]','[class*="captcha"]'
+          ];
+          var widget = null;
+          selectors.some(function(selector) { try { widget = document.querySelector(selector); } catch (e) {} return !!widget; });
+          var evidence = title + ' ' + text + ' ' + frameText;
+          var phrase = /checking your browser|verify you are human|human verification|security check|complete the captcha|challenge-platform/.test(text + ' ' + frameText);
+          var challengeTitle = /checking your browser|human verification|security check|attention required|challenge/.test(title);
+          var provider = /turnstile|challenges\.cloudflare/.test(evidence) ? 'cloudflare_turnstile' :
+            /hcaptcha|h-captcha/.test(evidence) ? 'hcaptcha' :
+            /recaptcha|g-recaptcha/.test(evidence) ? 'recaptcha' :
+            /captcha/.test(evidence) ? 'captcha' : 'anti_bot_challenge';
+          return JSON.stringify({required:!!widget || (phrase && challengeTitle), provider:provider, widget:!!widget, phrase:phrase, challenge_title:challengeTitle});
+        })();
+    """.trimIndent()
+
+    fun findTextScript(query: String): String {
+        val q = JSONObject.quote(query)
+        return """
+            (function() {
+              var needle = String($q).trim();
+              if (!needle) return JSON.stringify({matches:[], total:0});
+              var folded = needle.toLocaleLowerCase();
+              var matches = [];
+              var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT);
+              var node;
+              while ((node = walker.nextNode()) && matches.length < 100) {
+                var value = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
+                var index = value.toLocaleLowerCase().indexOf(folded);
+                if (index < 0) continue;
+                var parent = node.parentElement;
+                if (!parent || !parent.getClientRects().length || getComputedStyle(parent).display === 'none' || getComputedStyle(parent).visibility === 'hidden') continue;
+                var rect = parent.getBoundingClientRect();
+                matches.push({
+                  text: value.slice(Math.max(0, index - 100), Math.min(value.length, index + needle.length + 180)),
+                  selector: (parent.id ? '#' + CSS.escape(parent.id) : parent.tagName.toLowerCase()),
+                  tag: parent.tagName.toLowerCase(),
+                  bounds: {x:Math.round(rect.left), y:Math.round(rect.top), width:Math.round(rect.width), height:Math.round(rect.height)},
+                  in_viewport: rect.bottom > 0 && rect.right > 0 && rect.top < innerHeight && rect.left < innerWidth
+                });
+              }
+              return JSON.stringify({query:needle, matches:matches, total:matches.length, truncated:matches.length >= 100});
+            })();
+        """.trimIndent()
+    }
+
     fun clickPreflightScript(selector: String): String {
         val s = JSONObject.quote(selector)
         return baseInspector(
@@ -47,7 +111,8 @@ object DomInspector {
               blocker: covered ? summarize(top) : null,
               href: el.href || (anchor ? anchor.href : '') || '',
               target: el.getAttribute('target') || (anchor ? (anchor.getAttribute('target') || '') : ''),
-              tag: (el.tagName || '').toLowerCase()
+              tag: (el.tagName || '').toLowerCase(),
+              submits_form: !!(el.form && ((el.tagName || '').toLowerCase() === 'button' || /^(submit|image)$/i.test(el.type || '')))
             });
             """.trimIndent()
         )
@@ -82,16 +147,10 @@ object DomInspector {
             var cx = info.click.x;
             var cy = info.click.y;
             el.focus && el.focus();
-            ['pointerover','pointerdown','mousedown','touchstart','pointerup','mouseup','touchend','click'].forEach(function(type) {
-              if ((type === 'touchstart' || type === 'touchend') && window.TouchEvent) {
-                try {
-                  el.dispatchEvent(new TouchEvent(type, { bubbles:true, cancelable:true }));
-                  return;
-                } catch (e) {}
-              }
-              var Ctor = type.indexOf('pointer') === 0 && window.PointerEvent ? PointerEvent : MouseEvent;
-              el.dispatchEvent(new Ctor(type, {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy, pointerId:1, pointerType:'touch', isPrimary:true}));
-            });
+            // HTMLElement.click preserves browser default actions, including form submit.
+            // Synthetic MouseEvent("click") only runs listeners and leaves submit buttons inert.
+            if (typeof el.click === 'function') el.click();
+            else el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view:window, clientX:cx, clientY:cy}));
             return JSON.stringify({ ok:true, element:summarize(el), click:{x:cx,y:cy}, strategy:'dom_click_fallback', href:info.href });
             """.trimIndent()
         )
@@ -230,15 +289,15 @@ object DomInspector {
         """.trimIndent()
     )
 
-    fun typeScript(selector: String, text: String, append: Boolean): String {
-        val s = JSONObject.quote(selector)
+    fun typeScript(selector: String?, text: String, append: Boolean): String {
+        val s = selector?.let(JSONObject::quote) ?: "null"
         val t = JSONObject.quote(text)
         return baseInspector(
             """
-            var el = resolveElement($s);
-            if (!el) return JSON.stringify({ ok:false, error:'Input not found', selector:$s });
-            if (!isEditable(el)) return JSON.stringify({ ok:false, error:'Element is not editable', selector:$s, element:summarize(el) });
-            el.scrollIntoView({block:'center', inline:'center', behavior:'auto'});
+            var el = $s ? resolveElement($s) : document.activeElement;
+            if (!el) return JSON.stringify({ ok:false, error:'No focused editable element' });
+            el = focusTargetFor(el);
+            if (!isEditable(el)) return JSON.stringify({ ok:false, error:'Focused element is not editable', selector:$s, element:summarize(el) });
             focusEditable(el);
             var value = $t;
             if (!${append}) clearEditable(el);
@@ -272,11 +331,12 @@ object DomInspector {
         )
     }
 
-    fun elementStateScript(selector: String): String {
-        val s = JSONObject.quote(selector)
+    fun elementStateScript(selector: String?): String {
+        val s = selector?.let(JSONObject::quote) ?: "null"
         return baseInspector(
             """
-            var el = resolveElement($s);
+            var el = $s ? resolveElement($s) : document.activeElement;
+            if (el) el = focusTargetFor(el);
             if (!el) return JSON.stringify({ ok:false, exists:false, selector:$s });
             var active = document.activeElement;
             return JSON.stringify({
@@ -429,6 +489,12 @@ object DomInspector {
           }
           function clickTargetFor(el) {
             if (!el) return el;
+            // A label can be human-clickable, but automation must activate its contained
+            // submit control instead of focusing the first field.
+            if ((el.tagName || '').toLowerCase() === 'label') {
+              var nestedControl = el.querySelector && el.querySelector('button,input[type=submit],input[type=button],input[type=reset]');
+              if (nestedControl && visible(nestedControl) && enabledState(nestedControl)) return nestedControl;
+            }
             if (isEditable(el)) return el;
             if (isSemanticallyClickable(el) && visible(el)) return el;
             var directAnchor = primaryAnchorFor(el);

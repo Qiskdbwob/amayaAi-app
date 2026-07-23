@@ -35,7 +35,8 @@ fun ToolResultPreview(
     onLocalhostLinkClick: ((String) -> Unit)? = null,
     uiMetadata: ToolUiMetadata? = null,
     isLocal: Boolean = false,
-    isError: Boolean = false
+    isError: Boolean = false,
+    isBrowserStep: Boolean = false
 ) {
     val codeBlockBg   = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
     val codeTextColor = if (isDark) Color(0xFFD1D1D6) else Color(0xFF3A3A3C)
@@ -108,6 +109,11 @@ fun ToolResultPreview(
                 }
             }
         }
+    }
+
+    if (isBrowserStep) {
+        GenericResultBlock(result, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
+        return
     }
 
     if (isLocal) {

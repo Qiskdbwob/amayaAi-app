@@ -101,7 +101,11 @@ object BrowserResponseFormatter {
 
     fun successStatus(response: BrowserToolResponse): String = when (response) {
         is BrowserToolResponse.Success -> "success"
-        is BrowserToolResponse.Failure -> if (response.recoverable) "error" else "cancelled"
+        is BrowserToolResponse.Failure -> when {
+            response.metadata["human_verification_required"] == true -> "paused"
+            response.recoverable -> "error"
+            else -> "cancelled"
+        }
     }
 
     fun resultFor(action: String, response: BrowserToolResponse): Any? = when (response) {
@@ -114,7 +118,17 @@ object BrowserResponseFormatter {
         is BrowserToolResponse.Failure -> response.message.take(180)
     }.ifBlank { action.split('_').joinToString(" ") }
 
-    fun safetyFor(@Suppress("UNUSED_PARAMETER") response: BrowserToolResponse): JSONObject = defaultSafety()
+    fun safetyFor(response: BrowserToolResponse): JSONObject {
+        if (response !is BrowserToolResponse.Failure || response.metadata["human_verification_required"] != true) return defaultSafety()
+        return JSONObject().apply {
+            put("sensitive_detected", false)
+            put("sensitive_type", JSONObject.NULL)
+            put("requires_user_decision", true)
+            put("reason", "human_verification_required")
+            put("provider", response.metadata["provider"] ?: "anti_bot_challenge")
+            put("allowed_next_actions", toJsonValue(response.metadata["allowed_next_actions"] ?: emptyList<String>()))
+        }
+    }
 
     fun errorFor(action: String, response: BrowserToolResponse, pageUrl: String, params: Map<String, Any?>): JSONObject? {
         if (response !is BrowserToolResponse.Failure) return null
@@ -124,6 +138,7 @@ object BrowserResponseFormatter {
             response.message.contains("not found", ignoreCase = true) -> "ELEMENT_NOT_FOUND"
             response.message.contains("timeout", ignoreCase = true) || response.message.contains("timed out", ignoreCase = true) -> "TIMEOUT"
             response.message.contains("network", ignoreCase = true) -> "NETWORK_ERROR"
+            response.metadata["human_verification_required"] == true -> "HUMAN_VERIFICATION_REQUIRED"
             response.message.contains("permission", ignoreCase = true) -> "ANDROID_PERMISSION_PROMPT"
             response.message.contains("cancel", ignoreCase = true) -> "CANCELLED"
             else -> "BROWSER_ACTION_FAILED"
@@ -143,7 +158,11 @@ object BrowserResponseFormatter {
 
     fun agentStatusFor(response: BrowserToolResponse): BrowserAgentStatus = when (response) {
         is BrowserToolResponse.Success -> BrowserAgentStatus.IDLE
-        is BrowserToolResponse.Failure -> if (response.recoverable) BrowserAgentStatus.ERROR else BrowserAgentStatus.CANCELLED
+        is BrowserToolResponse.Failure -> when {
+            response.metadata["human_verification_required"] == true -> BrowserAgentStatus.WAITING_INPUT
+            response.recoverable -> BrowserAgentStatus.ERROR
+            else -> BrowserAgentStatus.CANCELLED
+        }
     }
 
     fun defaultSafety(): JSONObject = JSONObject().apply {
@@ -199,6 +218,9 @@ object BrowserResponseFormatter {
             "find_element", "wait_for_element" -> JSONObject().apply {
                 put("element", parseJsonOrString(response.output))
             }
+            "find_text" -> JSONObject().apply {
+                put("matches", parseJsonOrString(response.output))
+            }
             else -> JSONObject().apply {
                 put("message", response.output.take(1000))
                 put("page", JSONObject().apply {
@@ -206,8 +228,16 @@ object BrowserResponseFormatter {
                     put("title", metadata["title"] ?: JSONObject.NULL)
                 })
                 metadata["element"]?.let { put("element", parseJsonOrString(it.toString())) }
+                metadata["outcome"]?.let { put("outcome", it) }
+                metadata["event_observed"]?.let { put("event_observed", it) }
+                metadata["popup_blocked"]?.let { put("popup_blocked", it) }
+                metadata["requires_postcondition_check"]?.let { put("requires_postcondition_check", it) }
                 if (metadata.containsKey("page_changed")) {
                     put("page_changed", metadata["page_changed"] ?: false)
+                    metadata["outcome"]?.let { put("outcome", it) }
+                    metadata["event_observed"]?.let { put("event_observed", it) }
+                    metadata["popup_blocked"]?.let { put("popup_blocked", it) }
+                    metadata["requires_postcondition_check"]?.let { put("requires_postcondition_check", it) }
                     put("page_before", JSONObject().apply {
                         put("url", metadata["before_url"] ?: JSONObject.NULL)
                         put("title", metadata["before_title"] ?: JSONObject.NULL)
@@ -281,6 +311,7 @@ object BrowserResponseFormatter {
         put("tool", sub.optString("tool"))
         put("status", sub.optString("status"))
         put("summary", sub.optJSONObject("ui")?.optString("summary") ?: "")
+        put("request", sub.optJSONObject("request") ?: JSONObject())
         put("result", compactResult(sub.opt("result")))
         put("error", sub.opt("error"))
         val safety = sub.optJSONObject("safety")
@@ -379,6 +410,7 @@ object BrowserResponseFormatter {
         "TIMEOUT" -> "retry_with_longer_timeout_or_reload"
         "NETWORK_ERROR" -> "check_connection_or_reload"
         "ANDROID_PERMISSION_PROMPT" -> "ask_user_to_grant_permission_manually"
+        "HUMAN_VERIFICATION_REQUIRED" -> "open_browser_operator_complete_challenge_then_resume_session"
         "CANCELLED" -> "resume_session_or_start_new_task"
         else -> "inspect_page_and_retry"
     }

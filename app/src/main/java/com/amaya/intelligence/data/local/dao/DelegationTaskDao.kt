@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface DelegationTaskDao {
-    @Query("SELECT * FROM delegation_tasks WHERE group_id = :groupId ORDER BY updated_at DESC")
+    @Query("SELECT id, group_id, agent_id, request, status, NULL AS result, created_at, updated_at FROM delegation_tasks WHERE group_id = :groupId ORDER BY updated_at DESC")
     fun observeByGroup(groupId: Long): Flow<List<DelegationTaskEntity>>
 
     @Insert

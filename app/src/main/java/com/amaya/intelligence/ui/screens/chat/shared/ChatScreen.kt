@@ -59,6 +59,9 @@ import com.amaya.intelligence.ui.components.remote.WindowsBridgeChatPanelViewMod
 import com.amaya.intelligence.ui.components.remote.WindowsBridgeSessionInfoSheet
 import com.amaya.intelligence.ui.components.local.SessionInfoSheet
 import com.amaya.intelligence.ui.components.local.TodoSheet
+import com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet
+import com.amaya.intelligence.ui.activities.agent.local.LocalAgentConfigActivity
+import com.amaya.intelligence.ui.activities.browser.BrowserOperatorActivity
 import com.amaya.intelligence.utils.NetworkUtils
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import kotlinx.coroutines.Dispatchers
@@ -126,6 +129,9 @@ fun ChatScreen(
     val doSelectModel: (String) -> Unit = remember(viewModel) { { viewModel.selectModel(it) } }
     val doLoadConversation: (Long) -> Unit = remember(viewModel) { { viewModel.loadConversation(it) } }
     val doDeleteConversation: (Long) -> Unit = remember(viewModel) { { viewModel.deleteConversation(it) } }
+    val doClearVisibleHistory: (Boolean) -> Unit = remember(viewModel) { { viewModel.clearVisibleHistory(it) } }
+    val doCompactConversation: (String) -> Unit = remember(viewModel) { { focus -> viewModel.compactConversation(focus) } }
+    val doCancelCompactConversation: () -> Unit = remember(viewModel) { { viewModel.cancelCompactConversation() } }
     val doClearError: () -> Unit = remember(viewModel) { { viewModel.clearError() } }
     val doHasMoreConversations: () -> Boolean = remember(viewModel) { { viewModel.hasMoreConversations() } }
     val doLoadMoreConversations: () -> Unit = remember(viewModel) { { viewModel.loadMoreConversations() } }
@@ -136,12 +142,19 @@ fun ChatScreen(
     val drawerVisible = drawerState.currentValue == DrawerValue.Open ||
         drawerState.targetValue == DrawerValue.Open
 
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(drawerState.targetValue, drawerState.isAnimationRunning) {
+        if (drawerState.targetValue == DrawerValue.Open) {
+            keyboardController?.hide()
+        }
+    }
+
     var showModelSelector by remember { mutableStateOf(false) }
     var showSessionInfo by remember { mutableStateOf(false) }
     var showBridgeSessionInfo by remember { mutableStateOf(false) }
     var showTodoSheet by remember { mutableStateOf(false) }
     var showDisconnectDialog by remember { mutableStateOf(false) }
-    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     val inputBarHeight = remember { mutableIntStateOf(0) }
     val composerKey = "${uiState.assistantMode}:${uiState.ownerId}:${uiState.agentId}:${uiState.conversationId}"
@@ -150,6 +163,8 @@ fun ChatScreen(
     var attachedImageMimeType by remember(composerKey) { mutableStateOf<String?>(null) }
     var attachedImageName by remember(composerKey) { mutableStateOf<String?>(null) }
     var showConversationModeSheet by remember { mutableStateOf(false) }
+    var showAgentMenu by remember { mutableStateOf(false) }
+    var showDeleteAgentChatSheet by remember { mutableStateOf(false) }
 
     var showLocalhostLinkSheet by remember { mutableStateOf(false) }
     var selectedLocalhostLink by remember { mutableStateOf<LocalhostLinkInfo?>(null) }
@@ -586,6 +601,8 @@ fun ChatScreen(
                     keyboardController?.hide()
                     doClearConversation()
                 },
+                showAgentMenu = uiState.assistantMode == com.amaya.intelligence.domain.models.AssistantMode.AGENT && uiState.agentId != null,
+                onAgentMenuClick = { showAgentMenu = true },
                 modifier = Modifier.align(Alignment.TopStart)
             )
 
@@ -616,6 +633,7 @@ fun ChatScreen(
                     attachedImageName = null
                 },
                 onStopGeneration = doStopGeneration,
+                onCancelCompactConversation = doCancelCompactConversation,
                 onNavigateToWorkspace = onNavigateToWorkspace,
                 ownerLabel = ownerLabel,
                 mentionAgents = if (uiState.assistantMode == com.amaya.intelligence.domain.models.AssistantMode.AGENT) {
@@ -632,6 +650,7 @@ fun ChatScreen(
                 modelIconType = selectedModelItem?.iconType,
                 effort = uiState.effort,
                 onEffortChange = { viewModel.setEffort(it) },
+                onCompactConversation = doCompactConversation,
                 onSelectModel = {
                     keyboardController?.hide()
                     showModelSelector = true
@@ -642,6 +661,56 @@ fun ChatScreen(
     }
 
     // Bottom sheets
+    if (showAgentMenu) {
+        AgentChatMenu(
+            onOpenBrowser = {
+                showAgentMenu = false
+                (context as? android.app.Activity)?.let(BrowserOperatorActivity::start)
+            },
+            onConfigure = {
+                showAgentMenu = false
+                (context as? android.app.Activity)?.let { activity ->
+                    uiState.agentId?.let { LocalAgentConfigActivity.startForResult(activity, it) }
+                }
+            },
+            onDeleteChat = {
+                showAgentMenu = false
+                showDeleteAgentChatSheet = true
+            },
+            onDismiss = { showAgentMenu = false }
+        )
+    }
+
+    if (showDeleteAgentChatSheet) {
+        var deleteContext by remember(uiState.conversationId) { mutableStateOf(false) }
+        StandardModalBottomSheet(
+            onDismissRequest = { showDeleteAgentChatSheet = false },
+            title = "Delete chat"
+        ) {
+            Text("Clear this agent chat from the screen and history.")
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { deleteContext = !deleteContext },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(checked = deleteContext, onCheckedChange = { deleteContext = it })
+                Spacer(Modifier.width(8.dp))
+                Text("Delete context too")
+            }
+            Button(
+                onClick = {
+                    showDeleteAgentChatSheet = false
+                    doClearVisibleHistory(deleteContext)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+            ) { Text("Yes") }
+            OutlinedButton(
+                onClick = { showDeleteAgentChatSheet = false },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("No") }
+        }
+    }
+
     if (showTodoSheet && todoItems.isNotEmpty()) {
         TodoSheet(
             items = todoItems,
@@ -754,10 +823,11 @@ private fun ChatFloatingTopBar(
     onTitleClick: () -> Unit,
     showNewChat: Boolean,
     onNewChatClick: () -> Unit,
+    showAgentMenu: Boolean,
+    onAgentMenuClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val isDark = isSystemInDarkTheme()
-    val micaColor = if (isDark) Color(0xFF1D1F24).copy(alpha = 0.92f) else Color(0xFFF7F7FA).copy(alpha = 0.94f)
     val orbColor = if (isDark) Color(0xFF202228).copy(alpha = 0.92f) else Color(0xFFFAFAFC).copy(alpha = 0.96f)
     val borderColor = if (isDark) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.10f)
 
@@ -797,17 +867,54 @@ private fun ChatFloatingTopBar(
 
         Spacer(modifier = Modifier.width(18.dp))
 
-        if (showNewChat) {
-            LiquidOrbButton(
+        when {
+            showAgentMenu -> LiquidOrbButton(
+                icon = Icons.Default.MoreVert,
+                contentDescription = "Agent menu",
+                color = orbColor,
+                borderColor = borderColor,
+                onClick = onAgentMenuClick
+            )
+            showNewChat -> LiquidOrbButton(
                 icon = Icons.Default.Add,
                 contentDescription = "New Chat",
                 color = orbColor,
                 borderColor = borderColor,
                 onClick = onNewChatClick
             )
-        } else {
-            Spacer(Modifier.size(48.dp))
+            else -> Spacer(Modifier.size(48.dp))
         }
+    }
+}
+
+@Composable
+private fun AgentChatMenu(
+    onOpenBrowser: () -> Unit,
+    onConfigure: () -> Unit,
+    onDeleteChat: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    DropdownMenu(
+        expanded = true,
+        onDismissRequest = onDismiss,
+        offset = androidx.compose.ui.unit.DpOffset(180.dp, 48.dp),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        DropdownMenuItem(
+            text = { Text("Open browser") },
+            onClick = onOpenBrowser,
+            leadingIcon = { Icon(Icons.Default.OpenInBrowser, null) }
+        )
+        DropdownMenuItem(
+            text = { Text("Configure agent") },
+            onClick = onConfigure,
+            leadingIcon = { Icon(Icons.Default.Settings, null) }
+        )
+        DropdownMenuItem(
+            text = { Text("Delete chat", color = MaterialTheme.colorScheme.error) },
+            onClick = onDeleteChat,
+            leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }
+        )
     }
 }
 

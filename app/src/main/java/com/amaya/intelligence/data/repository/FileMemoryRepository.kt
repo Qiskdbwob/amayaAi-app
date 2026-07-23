@@ -149,10 +149,7 @@ class FileMemoryRepository @Inject constructor(
                 val clean = content.trim()
                 require(clean.isNotBlank()) { "Content is required." }
                 require(!classifier.containsSecret(clean)) { "Rejected because content appears to contain a secret." }
-                val canonicalWorkspace = workspacePath?.takeIf(String::isNotBlank)?.let(::canonicalWorkspacePath)
-                val record = activeMemoryRecords().firstOrNull {
-                    it.id == id && (it.type != MemoryType.WORKSPACE_FACT || it.workspacePath == canonicalWorkspace)
-                } ?: throw IllegalArgumentException("Memory not found: $id")
+                val record = findActiveMemory(id, workspacePath)
                 require(record.version == expectedVersion) {
                     "Memory conflict: expected version $expectedVersion, current version is ${record.version}. Refresh the memory before updating."
                 }
@@ -162,7 +159,7 @@ class FileMemoryRepository @Inject constructor(
                     action = MemoryAction.REPLACE,
                     title = inferTitle(clean, record.type),
                     content = clean,
-                    reason = "Updated by memory_manage.",
+                    reason = "Updated manually.",
                     updatedAt = now,
                     version = record.version + 1,
                     source = "structured",
@@ -171,6 +168,31 @@ class FileMemoryRepository @Inject constructor(
                 "Updated memory ${record.id} to version ${record.version + 1}. This affects the next chat."
             }
         }
+    }
+
+    override suspend fun deleteMemoryById(
+        id: String,
+        expectedVersion: Int,
+        workspacePath: String?
+    ): Result<String> = withContext(Dispatchers.IO) {
+        synchronized(fileLock) {
+            runCatching {
+                ensureMigrated()
+                val record = findActiveMemory(id, workspacePath)
+                require(record.version == expectedVersion) {
+                    "Memory conflict: expected version $expectedVersion, current version is ${record.version}. Refresh the memory before deleting."
+                }
+                supersedeMemoryRecord(record, System.currentTimeMillis())
+                "Deleted memory ${record.id}. This affects the next chat."
+            }
+        }
+    }
+
+    private fun findActiveMemory(id: String, workspacePath: String?): MemoryRecord {
+        val canonicalWorkspace = workspacePath?.takeIf(String::isNotBlank)?.let(::canonicalWorkspacePath)
+        return activeMemoryRecords().firstOrNull {
+            it.id == id && (it.type != MemoryType.WORKSPACE_FACT || it.workspacePath == canonicalWorkspace)
+        } ?: throw IllegalArgumentException("Memory not found: $id")
     }
 
     private fun applyStructuredMemory(proposal: MemoryProposal, label: String): String {

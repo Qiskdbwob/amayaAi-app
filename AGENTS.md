@@ -80,7 +80,7 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/impl/ide/antigravity/`: Antigravity provider, protocol, client, and event mapping.
 - `app/src/main/java/com/amaya/intelligence/impl/ide/opencode/`: Opencode CLI agent client, models, and IntelligenceService driven by the Windows Bridge `agent.*` envelopes.
 - `app/src/main/java/com/amaya/intelligence/impl/common/mappers/ModelUiMapper.kt`: provider/runtime model mapping into shared chat options.
-- `app/src/main/java/com/amaya/intelligence/impl/local/`: local runtime, browser automation, service, and tool execution flow.
+- `app/src/main/java/com/amaya/intelligence/impl/local/`: local runtime, browser automation, service, tool execution flow, Agent rendered-history clearing, and model-summary context compression.
 - `app/src/main/java/com/amaya/intelligence/ui/activities/browser/`: fullscreen browser operator entry point.
 - `app/src/main/java/com/amaya/intelligence/ui/activities/models/`: Manage Models entry point for provider connections and chat-visible models.
 - `app/src/main/java/com/amaya/intelligence/ui/activities/opencode/`: activities for Opencode landing, chat, and settings screens.

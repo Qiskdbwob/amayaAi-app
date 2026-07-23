@@ -8,16 +8,16 @@ class SubagentCompletionTest {
     @Test
     fun `final response is returned without truncation`() {
         val response = "x".repeat(20_000)
-        assertEquals(response, completedSubagentResponse(false, 1, 8, response))
+        assertEquals(response, completedSubagentResponse(false, response))
     }
 
     @Test
     fun `provider error survives completion`() {
-        assertEquals("[ERROR] provider failed", completedSubagentResponse(false, 1, 8, "[ERROR] provider failed"))
+        assertEquals("[ERROR] provider failed", completedSubagentResponse(false, "[ERROR] provider failed"))
     }
 
     @Test
-    fun `iteration cap reports incomplete`() {
-        assertTrue(completedSubagentResponse(true, 8, 8, "interim").startsWith("[INCOMPLETE]"))
+    fun `blank response reports incomplete`() {
+        assertTrue(completedSubagentResponse(false, "").startsWith("[INCOMPLETE]"))
     }
 }

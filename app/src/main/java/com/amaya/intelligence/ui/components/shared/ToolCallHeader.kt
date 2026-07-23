@@ -12,6 +12,10 @@ internal fun resolveToolCallHeaderText(
     @Suppress("UNUSED_PARAMETER") showApprovalActions: Boolean,
     approvalPending: Boolean
 ): String {
+    if (execution.metadata["syntheticBrowserStep"] == "true") {
+        return uiMeta?.label ?: execution.name.replace('_', ' ').replaceFirstChar { it.uppercase() }
+    }
+
     if (execution.metadata["source"].equals("local", ignoreCase = true)) {
         val label = LocalToolMapper.displayLabel(execution.name, execution.arguments)
         return if (approvalPending) "Tools: $label" else localToolHeader(execution) ?: label

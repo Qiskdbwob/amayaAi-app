@@ -2,14 +2,20 @@ package com.amaya.intelligence.ui.components.shared
 
 import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.domain.models.ConversationMode
+import com.amaya.intelligence.domain.models.parseComposerReferences
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -28,6 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.BlendMode
@@ -61,6 +68,7 @@ fun ChatInput(
     onTextChange: (String) -> Unit,
     resetKey: Any? = null,
     isStreaming: Boolean,
+    isCompressing: Boolean = false,
     attachedFilePath: String? = null,
     attachedImageBase64: String? = null,
     attachedImageName: String? = null,
@@ -87,6 +95,8 @@ fun ChatInput(
     onSelectModel: () -> Unit = {},
     effort: com.amaya.intelligence.data.remote.api.ThinkingEffort = com.amaya.intelligence.data.remote.api.ThinkingEffort.MEDIUM,
     onEffortChange: (com.amaya.intelligence.data.remote.api.ThinkingEffort) -> Unit = {},
+    onCompactConversation: (String) -> Unit = {},
+    onCancelCompactConversation: () -> Unit = {},
     onSendMessage: (String) -> Unit,
     onStopGeneration: () -> Unit
 ) {
@@ -131,6 +141,20 @@ fun ChatInput(
             fileResults = emptyList()
             isSearchingFiles = false
         }
+    }
+
+    var showCompactingDone by remember(resetKey) { mutableStateOf(false) }
+    var previousIsCompressing by remember { mutableStateOf(isCompressing) }
+    var isCanceled by remember(resetKey) { mutableStateOf(false) }
+    
+    LaunchedEffect(isCompressing) {
+        if (previousIsCompressing && !isCompressing) {
+            showCompactingDone = true
+            kotlinx.coroutines.delay(1200)
+            showCompactingDone = false
+            isCanceled = false
+        }
+        previousIsCompressing = isCompressing
     }
 
     val pillColor = remember(isDark) {
@@ -259,12 +283,17 @@ fun ChatInput(
         val placeholderColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.46f)
         val canSend = text.isNotBlank() || hasAttachment
         val submitMessage = {
-            if (isStreaming) {
+            if (isCompressing) {
+                isCanceled = true
+                onCancelCompactConversation()
+            } else if (isStreaming) {
                 onStopGeneration()
             } else if (canSend) {
                 val message = text.trim()
                 onTextChange("")
-                onSendMessage(message)
+                if (parseComposerReferences(message).commands.singleOrNull() == "compact") {
+                    onCompactConversation(message.replaceFirst(COMPACT_COMMAND_PREFIX, "").trim())
+                } else onSendMessage(message)
             }
         }
 
@@ -298,8 +327,10 @@ fun ChatInput(
                 }
             }
 
+            val pillVisible = commandMode != null || isCompressing || showCompactingDone
+
             androidx.compose.animation.AnimatedVisibility(
-                visible = commandMode != null,
+                visible = pillVisible,
                 enter = androidx.compose.animation.expandVertically(
                     expandFrom = Alignment.Bottom,
                     animationSpec = androidx.compose.animation.core.spring(stiffness = 400f, dampingRatio = 0.85f)
@@ -327,19 +358,45 @@ fun ChatInput(
                     .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 0.dp, bottomEnd = 0.dp))
                     .pillShadowOverlay(topShadowAlpha = topShadowAlpha)
             ) {
-                ComposerCommandPill(
-                    mode = displayCommandMode.value,
-                    query = displayQuery.value,
-                    agents = displayAgents.value,
-                    files = displayFiles.value,
-                    isSearching = isSearchingFiles,
-                    listState = pillListState,
-                    onSelect = { value ->
-                        val token = text.substringAfterLast(' ')
-                        onTextChange(text.dropLast(token.length) + value + " ")
-                        commandMode = null
+                Surface(
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+                    tonalElevation = 0.dp,
+                    shadowElevation = 0.dp,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .animateContentSize(
+                                animationSpec = androidx.compose.animation.core.spring(stiffness = 400f, dampingRatio = 0.85f),
+                                alignment = Alignment.BottomStart
+                            )
+                    ) {
+                        if (commandMode != null) {
+                            ComposerCommandPill(
+                                mode = displayCommandMode.value,
+                                query = displayQuery.value,
+                                agents = displayAgents.value,
+                                files = displayFiles.value,
+                                isSearching = isSearchingFiles,
+                                listState = pillListState,
+                                onSelect = { value ->
+                                    val token = text.substringAfterLast(' ')
+                                    onTextChange(text.dropLast(token.length) + value + " ")
+                                    commandMode = null
+                                }
+                            )
+                        }
+                        if (isCompressing || showCompactingDone) {
+                            CompactProgressPill(
+                                isDone = showCompactingDone,
+                                isCanceled = isCanceled
+                            )
+                        }
                     }
-                )
+                }
             }
 
             Surface(
@@ -365,7 +422,7 @@ fun ChatInput(
                         ),
                     attachment = {
                         ComposerAttachmentButton(
-                            isStreaming = isStreaming,
+                            isStreaming = isStreaming || isCompressing,
                             onAttachFile = onAttachFile,
                             onAttachImage = onAttachImage
                         )
@@ -448,7 +505,8 @@ fun ChatInput(
                     },
                     send = {
                         ComposerSendButton(
-                            isStreaming = isStreaming,
+                            isStreaming = isStreaming || isCompressing,
+                            isCompressing = isCompressing,
                             canSend = canSend,
                             onClick = submitMessage,
                             onEmptyClick = {
@@ -640,6 +698,7 @@ private fun ComposerAttachmentButton(
 @Composable
 private fun ComposerSendButton(
     isStreaming: Boolean,
+    isCompressing: Boolean,
     canSend: Boolean,
     onClick: () -> Unit,
     onEmptyClick: () -> Unit
@@ -661,7 +720,7 @@ private fun ComposerSendButton(
         if (isStreaming) {
             Icon(
                 Icons.Default.Stop,
-                contentDescription = "Stop",
+                contentDescription = if (isCompressing) "Cancel compression" else "Stop",
                 modifier = Modifier.size(16.dp),
                 tint = MaterialTheme.colorScheme.error
             )
@@ -675,6 +734,53 @@ private fun ComposerSendButton(
                 tint = if (canSend) Color.White else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
             )
         }
+    }
+}
+
+@Composable
+private fun CompactProgressPill(modifier: Modifier = Modifier, isDone: Boolean = false, isCanceled: Boolean = false) {
+    val primary = MaterialTheme.colorScheme.primary
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val transition = rememberInfiniteTransition(label = "compactShimmer")
+    val shimmer by transition.animateFloat(
+        initialValue = -0.6f,
+        targetValue = 1.6f,
+        animationSpec = infiniteRepeatable(tween(1_100, easing = LinearEasing)),
+        label = "compactShimmerOffset"
+    )
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        val displayText = when {
+            isCanceled && isDone -> "Compact canceled"
+            isDone -> "Compacting done"
+            else -> "Compacting"
+        }
+        Text(
+            displayText,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier
+                .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+                .drawWithContent {
+                    drawContent()
+                    val w = size.width
+                    val peakX = shimmer * w
+                    drawRect(
+                        brush = Brush.horizontalGradient(
+                            0f to onSurface.copy(alpha = 0.4f),
+                            0.5f to primary,
+                            1f to onSurface.copy(alpha = 0.4f),
+                            startX = peakX - (w * 0.4f),
+                            endX = peakX + (w * 0.4f)
+                        ),
+                        blendMode = BlendMode.SrcIn
+                    )
+                }
+        )
     }
 }
 
@@ -731,6 +837,7 @@ private class ComposerReferenceTransformation(private val referenceColor: Color)
 }
 
 private val COMPOSER_REFERENCE_LINK = Regex("\\[([^]\\n]+)]\\((?:agent|workspace|command):[^)]+\\)")
+private val COMPACT_COMMAND_PREFIX = Regex("^\\s*(?:/compact|\\[/compact]\\(command:compact\\))\\s*", RegexOption.IGNORE_CASE)
 
 private enum class ComposerCommand { MENTIONS, ACTIONS }
 
@@ -750,6 +857,7 @@ private fun ComposerCommandPill(
     if (mode == null) return
     val actions = remember {
         listOf(
+            ComposerSuggestion("Compact", "Compress context; optional focus after command", "/compact"),
             ComposerSuggestion("Explain", "Explain selected context", "/explain"),
             ComposerSuggestion("Review", "Review code or text", "/review"),
             ComposerSuggestion("Plan", "Draft a concise implementation plan", "/plan")
@@ -759,18 +867,10 @@ private fun ComposerCommandPill(
     val filteredAgents = agents.filter {
         query.isBlank() || it.name.contains(query, ignoreCase = true) || it.role.contains(query, ignoreCase = true)
     }
-    Surface(
-        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
-        modifier = modifier.fillMaxWidth()
-    ) {
-        Box {
-            Column(Modifier.animateContentSize().heightIn(max = 240.dp)) {
-                val isEmpty = mode == ComposerCommand.MENTIONS && filteredAgents.isEmpty() && files.isEmpty() && !isSearching
-                androidx.compose.animation.Crossfade(targetState = isEmpty, label = "pillCrossfade") { showEmpty ->
+    Box(modifier = modifier.fillMaxWidth()) {
+        Column(Modifier.heightIn(max = 240.dp)) {
+            val isEmpty = mode == ComposerCommand.MENTIONS && filteredAgents.isEmpty() && files.isEmpty() && !isSearching
+            androidx.compose.animation.Crossfade(targetState = isEmpty, label = "pillCrossfade") { showEmpty ->
                     if (showEmpty) {
                         Text(
                             if (query.isBlank()) "No agents or workspace files" else "No matching agents or files",
@@ -818,7 +918,6 @@ private fun ComposerCommandPill(
             }
         }
     }
-}
 }
 
 @Composable

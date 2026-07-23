@@ -153,6 +153,14 @@ class AmayaViewModel @Inject constructor(
         }
     }
 
+    fun deleteMemory(area: MemoryArea, record: MemoryRecord) {
+        viewModelScope.launch {
+            val result = memoryRepository.deleteMemoryById(record.id, record.version, if (area == MemoryArea.PROJECT) workspacePath else null)
+            _uiState.value = _uiState.value.copy(message = result.fold({ "Deleted" }, { "Delete failed: ${it.message}" }))
+            refresh()
+        }
+    }
+
     fun reconnectWorkspaceMemory(workspaceId: String) {
         val root = workspacePath
         if (root == null) {

@@ -51,4 +51,5 @@ interface MemoryRepository {
         workspacePath: String? = null
     ): List<MemoryRecord>
     suspend fun updateMemoryById(id: String, content: String, expectedVersion: Int, workspacePath: String? = null): Result<String>
+    suspend fun deleteMemoryById(id: String, expectedVersion: Int, workspacePath: String? = null): Result<String>
 }

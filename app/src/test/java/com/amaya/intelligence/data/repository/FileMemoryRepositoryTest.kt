@@ -56,6 +56,17 @@ class FileMemoryRepositoryTest {
     }
 
     @Test
+    fun `manual deletion hides memory from context`() = runBlocking {
+        repository.applyProposal(proposal("The user prefers Indonesian responses.")).getOrThrow()
+        val record = repository.listMemoryRecords(MemoryType.USER_PROFILE).single()
+
+        repository.deleteMemoryById(record.id, record.version).getOrThrow()
+
+        assertTrue(repository.listMemoryRecords(MemoryType.USER_PROFILE).isEmpty())
+        assertFalse(repository.readUserProfile().contains("Indonesian"))
+    }
+
+    @Test
     fun `same millisecond update keeps newest active revision`() = runBlocking {
         val fixedTime = 1234L
         val first = proposal("The user prefers Indonesian responses.").copy(createdAt = fixedTime)

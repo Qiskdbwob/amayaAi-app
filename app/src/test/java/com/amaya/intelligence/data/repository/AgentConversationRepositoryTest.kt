@@ -4,6 +4,7 @@ import com.amaya.intelligence.data.remote.api.ChatMessage
 import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.data.remote.api.ToolCallMessage
 import com.amaya.intelligence.data.remote.api.ToolResultMessage
+import com.amaya.intelligence.data.local.entity.AgentEntity
 import com.amaya.intelligence.tools.SubagentResult
 import org.json.JSONArray
 import org.junit.Assert.assertEquals
@@ -22,6 +23,16 @@ class AgentConversationRepositoryTest {
             delegationHistoryFromJson(withResponse).map { it.content }
         )
         assertEquals(3, JSONArray(withResponse).length())
+    }
+
+    @Test
+    fun `delegation sender is model context only`() {
+        val source = AgentEntity(groupId = 1, localId = 7, name = "CEO")
+
+        assertEquals(
+            "[HOST-AUTHORITATIVE DELEGATION from CEO (agent_id=7)]\nReview the release plan",
+            delegationPrompt(source, "Review the release plan")
+        )
     }
 
     @Test

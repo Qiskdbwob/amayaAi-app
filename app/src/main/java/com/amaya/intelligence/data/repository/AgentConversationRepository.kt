@@ -6,6 +6,8 @@ import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.data.local.entity.ConversationScope
 import com.amaya.intelligence.data.remote.api.ChatMessage
 import com.amaya.intelligence.data.remote.api.MessageRole
+import com.amaya.intelligence.data.remote.api.ToolCallMessage
+import com.amaya.intelligence.data.remote.api.ToolResultMessage
 import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.domain.models.agentMentionMarkdown
 import com.amaya.intelligence.tools.SubagentResult
@@ -32,8 +34,12 @@ class AgentConversationRepository @Inject constructor(
     ): AgentDelegationContext = lock.withLock {
         val now = System.currentTimeMillis()
         val existing = conversationDao.getAgentConversation(target.id)
-        val history = delegationHistoryFromJson(existing?.messagesJson.orEmpty())
+        val existingContext = existing?.contextMessagesJson
+            ?.takeIf(String::isNotBlank)
+            ?: existing?.messagesJson.orEmpty()
+        val history = delegationHistoryFromJson(existingContext)
         val incoming = request
+        val modelIncoming = delegationPrompt(source, request)
         val messagesJson = appendDelegationMessage(
             existing?.messagesJson.orEmpty(),
             MessageRole.USER,
@@ -53,6 +59,7 @@ class AgentConversationRepository @Inject constructor(
                     title = target.name,
                     workspacePath = workspacePath,
                     messagesJson = messagesJson,
+                    contextMessagesJson = appendDelegationMessage(existingContext, MessageRole.USER, modelIncoming, delegationMetadata(source), now),
                     scope = ConversationScope.LOCAL.wireName,
                     assistantMode = AssistantMode.AGENT.name,
                     ownerId = groupId.toString(),
@@ -62,34 +69,27 @@ class AgentConversationRepository @Inject constructor(
                 )
             )
         } else {
-            conversationDao.updateConversation(existing.copy(messagesJson = messagesJson, updatedAt = now))
+            conversationDao.updateConversation(existing.copy(
+                messagesJson = messagesJson,
+                contextMessagesJson = appendDelegationMessage(existingContext, MessageRole.USER, modelIncoming, delegationMetadata(source), now),
+                updatedAt = now
+            ))
             existing.id
         }
         AgentDelegationContext(conversationId, history, incoming)
     }
 
-    suspend fun appendDelegationResponse(
-        conversationId: Long,
-        source: AgentEntity,
-        result: SubagentResult,
-        failed: Boolean
-    ) = lock.withLock {
-        val existing = conversationDao.getConversationById(conversationId) ?: return@withLock
-        val now = System.currentTimeMillis()
-        val messagesJson = appendDelegationTurn(
-            existing.messagesJson,
-            result,
-            mapOf(
-                "delegation" to if (failed) "failed" else "response",
-                "sourceAgentId" to source.localId.toString(),
-                "sourceAgentDatabaseId" to source.id.toString(),
-                "sourceAgentName" to source.name,
-                "completedAt" to result.completedAt.toString()
-            )
-        )
-        conversationDao.updateConversation(existing.copy(messagesJson = messagesJson, updatedAt = now))
-    }
+    private fun delegationMetadata(source: AgentEntity) = mapOf(
+        "delegation" to "incoming",
+        "sourceAgentId" to source.localId.toString(),
+        "sourceAgentDatabaseId" to source.id.toString(),
+        "sourceAgentName" to source.name,
+        "sourceAgentMention" to agentMentionMarkdown(source.localId, source.name)
+    )
 }
+
+internal fun delegationPrompt(source: AgentEntity, request: String): String =
+    "[HOST-AUTHORITATIVE DELEGATION from ${source.name} (agent_id=${source.localId})]\n$request"
 
 data class AgentDelegationContext(
     val conversationId: Long,
@@ -107,12 +107,44 @@ internal fun delegationHistoryFromJson(json: String): List<ChatMessage> {
                 val role = when (item.optString("role")) {
                     MessageRole.USER.name -> MessageRole.USER
                     MessageRole.ASSISTANT.name -> MessageRole.ASSISTANT
+                    MessageRole.SYSTEM.name -> MessageRole.SYSTEM
                     else -> continue
                 }
-                item.optString("content").takeIf(String::isNotBlank)?.let { add(ChatMessage(role, it)) }
+                val canonical = item.optJSONArray("canonicalHistory")
+                if (role == MessageRole.ASSISTANT && canonical != null) addAll(delegationCanonicalHistory(canonical))
+                else add(ChatMessage(role, item.optString("content").takeIf(String::isNotBlank)))
             }
         }
     }.getOrDefault(emptyList())
+}
+
+private fun delegationCanonicalHistory(history: JSONArray): List<ChatMessage> {
+    val messages = mutableListOf<ChatMessage>()
+    val text = StringBuilder()
+    val calls = mutableListOf<ToolCallMessage>()
+    fun flushAssistant() {
+        if (text.isEmpty() && calls.isEmpty()) return
+        messages += ChatMessage(MessageRole.ASSISTANT, text.toString().takeIf(String::isNotBlank), toolCalls = calls.toList().takeIf(List<ToolCallMessage>::isNotEmpty))
+        text.clear()
+        calls.clear()
+    }
+    for (index in 0 until history.length()) {
+        val item = runCatching { JSONObject(history.getString(index)) }.getOrNull() ?: continue
+        when (item.optString("kind")) {
+            "assistant_text" -> text.append(item.optString("text"))
+            "assistant_tool_call" -> calls += ToolCallMessage(
+                id = item.optString("id"), name = item.optString("name"),
+                arguments = item.optJSONObject("arguments")?.let { values -> buildMap { values.keys().forEach { key -> put(key, values.opt(key).takeUnless { it == JSONObject.NULL }) } } }.orEmpty(),
+                metadata = item.optJSONObject("metadata")?.let { values -> buildMap { values.keys().forEach { key -> put(key, values.optString(key)) } } }.orEmpty()
+            )
+            "tool_result" -> {
+                flushAssistant()
+                messages += ChatMessage(MessageRole.TOOL, toolResult = ToolResultMessage(item.optString("id"), item.optString("result"), item.optBoolean("isError"), mapOf("toolName" to item.optString("name"))))
+            }
+        }
+    }
+    flushAssistant()
+    return messages
 }
 
 internal fun appendDelegationTurn(
@@ -125,44 +157,31 @@ internal fun appendDelegationTurn(
     val executions = JSONArray()
     val executionsById = mutableMapOf<String, JSONObject>()
     val stepExecutionsById = mutableMapOf<String, JSONObject>()
-    val canonicalHistory = JSONArray()
     var visibleText = ""
     result.turnMessages.forEach { message ->
         when {
             message.role == MessageRole.ASSISTANT && !message.toolCalls.isNullOrEmpty() -> {
                 message.content?.takeIf(String::isNotBlank)?.let { text ->
+                    visibleText = text
                     steps.put(JSONObject().put("id", UUID.randomUUID().toString()).put("type", "text").put("content", text))
-                    canonicalHistory.put(JSONObject().put("kind", "assistant_text").put("text", text).toString())
                 }
                 message.toolCalls.orEmpty().forEach { call ->
-                    val execution = JSONObject()
-                        .put("toolCallId", call.id)
-                        .put("name", call.name)
-                        .put("status", "SUCCESS")
-                        .put("arguments", JSONObject(call.arguments))
-                        .put("metadata", JSONObject(mapOf("source" to "local")))
+                    val execution = JSONObject().put("toolCallId", call.id).put("name", call.name).put("status", "SUCCESS").put("arguments", JSONObject(call.arguments))
                     val stepExecution = JSONObject(execution.toString())
                     executions.put(execution)
                     executionsById[call.id] = execution
                     stepExecutionsById[call.id] = stepExecution
                     steps.put(JSONObject().put("id", UUID.randomUUID().toString()).put("type", "toolCall").put("execution", stepExecution))
-                    canonicalHistory.put(JSONObject().put("kind", "assistant_tool_call").put("id", call.id).put("name", call.name).put("arguments", JSONObject(call.arguments)).toString())
                 }
             }
-            message.role == MessageRole.TOOL -> {
-                val toolResult = message.toolResult ?: return@forEach
+            message.role == MessageRole.TOOL -> message.toolResult?.let { toolResult ->
                 listOfNotNull(executionsById[toolResult.toolCallId], stepExecutionsById[toolResult.toolCallId]).forEach { execution ->
-                    execution.put("result", toolResult.content)
-                    execution.put("status", if (toolResult.isError) "ERROR" else "SUCCESS")
+                    execution.put("result", toolResult.content).put("status", if (toolResult.isError) "ERROR" else "SUCCESS")
                 }
-                canonicalHistory.put(JSONObject().put("kind", "tool_result").put("id", toolResult.toolCallId).put("result", toolResult.content).put("isError", toolResult.isError).toString())
             }
-            message.role == MessageRole.ASSISTANT -> {
-                message.content?.takeIf(String::isNotBlank)?.let { text ->
-                    visibleText = text
-                    steps.put(JSONObject().put("id", UUID.randomUUID().toString()).put("type", "text").put("content", text))
-                    canonicalHistory.put(JSONObject().put("kind", "assistant_text").put("text", text).toString())
-                }
+            message.role == MessageRole.ASSISTANT -> message.content?.takeIf(String::isNotBlank)?.let { text ->
+                visibleText = text
+                steps.put(JSONObject().put("id", UUID.randomUUID().toString()).put("type", "text").put("content", text))
             }
         }
     }
@@ -174,7 +193,6 @@ internal fun appendDelegationTurn(
         put("timestamp", result.startedAt)
         put("toolExecutions", executions)
         put("steps", steps)
-        put("canonicalHistory", canonicalHistory)
         put("metadata", JSONObject(metadata + ("completedAt" to result.completedAt.toString())))
     })
     return array.toString()
