@@ -38,7 +38,7 @@ impl/local/
 - `LocalIntelligenceService.kt`: local conversation flow, stable conversation-id persistence before model turns, repository integration, concurrent per-conversation turns, target-switch-safe UI projection, rendered-history/context clearing, Hermes-style model-summary injection into the next main-session prompt, cancellation, and composer progress state.
 - `browser/AndroidBrowserController.kt`: GeckoView interaction, navigation, and DOM-backed browser actions.
 - `browser/GeckoBrowserRuntime.kt`: process-wide Gecko runtime plus built-in WebExtension JavaScript bridge.
-- `browser/BrowserSessionManager.kt`: parent browser task state, pause/resume/cancel flow, and GeckoSession ownership.
+- `browser/BrowserSessionManager.kt`: parent browser task state, cancel flow, GeckoSession ownership, workspace file-input assignment, and resumable approval checkpoints before workspace files are selected for a web form. CAPTCHA/challenge pages receive no special detection or pause behavior.
 - `browser/DomInspector.kt`: safe DOM summaries, selector mapping, and interaction helpers.
 - `browser/BrowserResponseFormatter.kt`: compact browser JSON formatting for parent and sub-tool responses.
 - `browser/BrowserActionCatalog.kt`: canonical model-exposed browser action inventory shared by tool schema and debug coverage.

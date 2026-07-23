@@ -80,8 +80,6 @@ fun BrowserControlDock(
     onAddressChange: (String) -> Unit,
     onGo: () -> Unit,
     onClose: () -> Unit,
-    onPause: () -> Unit = {},
-    onResume: () -> Unit = {},
     onStop: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -344,8 +342,6 @@ fun BrowserControlDock(
             }
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                if (state.isPaused) TextButton(onClick = onResume) { Text("Resume") }
-                else if (state.isAssistantStreaming || state.status == BrowserAgentStatus.BROWSING) TextButton(onClick = onPause) { Text("Pause") }
                 TextButton(onClick = onStop) { Text("Stop") }
             }
             Spacer(Modifier.height(4.dp))
@@ -410,7 +406,6 @@ private fun browserLiveTitle(state: BrowserUiState, logs: List<BrowserToolLog>):
 private fun dockStatusColor(state: BrowserUiState): Color = when {
     state.isCancelled -> Color(0xFFFF453A)
     state.lastError != null -> Color(0xFFFF453A)
-    state.isPaused -> Color(0xFFFFB340)
     state.isAssistantStreaming && state.browserAccessActive -> Color(0xFF0A84FF)
     state.isAssistantStreaming -> Color(0xFF64D2FF)
     state.status == BrowserAgentStatus.BROWSING -> Color(0xFF0A84FF)
@@ -421,7 +416,6 @@ private fun dockStatusColor(state: BrowserUiState): Color = when {
 private fun dockStatusLabel(state: BrowserUiState): String = when {
     state.isCancelled -> "Cancelled"
     state.lastError != null -> "Error"
-    state.isPaused -> "Paused"
     state.isAssistantStreaming && state.browserAccessActive -> "Agent browsing"
     state.isAssistantStreaming -> "Thinking"
     state.status == BrowserAgentStatus.BROWSING -> "Browsing"

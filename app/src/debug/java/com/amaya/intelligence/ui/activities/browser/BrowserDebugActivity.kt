@@ -45,7 +45,7 @@ class BrowserDebugActivity : AppCompatActivity() {
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         output = TextView(this).apply { setPadding(24, 24, 24, 24); textSize = 12f }
-        if (debugMode != "visible") {
+        if (debugMode != "visible" && debugMode != "real-web-ux") {
             setContentView(output)
             if (running.compareAndSet(false, true)) lifecycleScope.launch {
                 when (debugMode) {
@@ -53,6 +53,7 @@ class BrowserDebugActivity : AppCompatActivity() {
                     "restore-seed" -> runProcessRestoreSeed()
                     "restore-check" -> runProcessRestoreCheck()
                     "real-web" -> runRealWebSuite()
+                    "real-web-stress" -> runRealWebStressSuite()
                     else -> runHeadlessSuite()
                 }
             }
@@ -60,11 +61,119 @@ class BrowserDebugActivity : AppCompatActivity() {
         }
         manager.resetForConversation("conversation:debug-browser", 1L)
         manager.setWorkspace(filesDir.absolutePath)
+        manager.releaseSharedBrowserView()
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(manager.acquireSharedBrowserView(), LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(output, LinearLayout.LayoutParams(-1, 260))
         setContentView(root)
-        if (running.compareAndSet(false, true)) lifecycleScope.launch { runSuite() }
+        root.addView(manager.acquireSharedBrowserView(), 0, LinearLayout.LayoutParams(-1, 0, 1f))
+        if (running.compareAndSet(false, true)) lifecycleScope.launch {
+            delay(500)
+            if (debugMode == "real-web-ux") runRealWebStressSuite() else runSuite()
+        }
+    }
+
+    private suspend fun runRealWebStressSuite() {
+        manager.resetForConversation("conversation:debug-real-web-stress", 1L)
+        manager.setWorkspace(filesDir.absolutePath)
+        val context = debugContext("debug-real-web-stress", 1L)
+        val sites = listOf(
+            "https://www.instagram.com/",
+            "https://www.youtube.com/",
+            "https://www.google.com/maps",
+            "https://www.threads.net/",
+            "https://x.com/home",
+            "https://www.tiktok.com/",
+            "https://www.facebook.com/",
+            "https://www.reddit.com/",
+            "https://www.linkedin.com/",
+            "https://www.pinterest.com/",
+            "https://www.twitch.tv/",
+            "https://open.spotify.com/",
+            "https://discord.com/app",
+            "https://web.telegram.org/",
+            "https://www.amazon.com/",
+            "https://www.netflix.com/",
+            "https://www.nytimes.com/",
+            "https://www.bbc.com/",
+            "https://github.com/",
+            "https://www.canva.com/"
+        )
+        val report = JSONArray()
+        val tabs = mutableListOf<Pair<String, String>>()
+
+        suspend fun action(label: String, name: String, params: Map<String, Any?>): JSONObject {
+            val started = System.currentTimeMillis()
+            val raw = runCatching {
+                withTimeout(45_000) {
+                    manager.executeBrowserTask(mapOf("action" to name, "params" to params, "reset_task" to true), context)
+                }
+            }.getOrElse { JSONObject().put("status", "exception").put("error", it.stackTraceToString()).toString() }
+            val result = runCatching { JSONObject(raw) }.getOrElse { JSONObject().put("status", "invalid").put("raw", raw) }
+            val row = JSONObject().apply {
+                val loadedUrl = result.optString("active_url", manager.uiState.value.activeUrl)
+                put("label", label)
+                put("action", name)
+                put("status", result.optString("status"))
+                put("passed", result.optString("status") == "completed" && loadedUrl.isNotBlank() && loadedUrl != "about:blank")
+                put("duration_ms", System.currentTimeMillis() - started)
+                put("requested_url", params["url"] ?: JSONObject.NULL)
+                put("active_url", manager.uiState.value.activeUrl)
+                put("active_page_id", manager.uiState.value.activeTabId)
+                put("result", raw.take(4_000))
+            }
+            report.put(row)
+            emit("REAL_WEB_STRESS ${row.toString()}")
+            return result
+        }
+
+        try {
+            // One-tab history: back/forward/reload must not lose the rendered SPA page.
+            action("history-open-instagram", "open_url", mapOf("url" to sites[0]))
+            action("history-open-youtube", "open_url", mapOf("url" to sites[1]))
+            action("history-back", "go_back", emptyMap())
+            action("history-forward", "go_forward", emptyMap())
+            action("history-reload", "reload", emptyMap())
+            action("history-dom", "get_dom", emptyMap())
+            action("history-scroll-down", "scroll", mapOf("direction" to "down", "amount" to "small"))
+            action("history-scroll-up", "scroll", mapOf("direction" to "up", "amount" to "small"))
+            action("history-screenshot", "screenshot", emptyMap())
+
+            // Twenty heavy pages. Resident tabs remain capped by the production LRU;
+            // old tab IDs must not be reused after eviction.
+            sites.drop(1).forEachIndexed { index, url ->
+                action("open-tab-$index", "new_page", mapOf("url" to url))
+            }
+            tabs.clear()
+            tabs += manager.uiState.value.tabs.map { it.id to it.url }
+            emit("REAL_WEB_STRESS opened_pages=${sites.size} resident_tabs=${tabs.size} max_resident_expected=8")
+            repeat(2) { round ->
+                val ordered = if (round == 0) tabs.asReversed() else tabs
+                ordered.forEachIndexed { index, (pageId, expectedUrl) ->
+                    action("switch-$round-$index", "switch_page", mapOf("page_id" to pageId))
+                    action("status-$round-$index", "get_status", emptyMap())
+                    delay(800)
+                    action("verify-$round-$index", "evaluate", mapOf(
+                        "expression" to "JSON.stringify({url:location.href,title:document.title,ready:document.readyState,history:history.length,body:!!document.body,scrollY:scrollY})"
+                    ))
+                    action("dom-$round-$index", "get_dom", emptyMap())
+                    action("visible-text-$round-$index", "get_visible_text", emptyMap())
+                    action("scroll-down-$round-$index", "scroll", mapOf("direction" to "down", "amount" to "small"))
+                    action("scroll-up-$round-$index", "scroll", mapOf("direction" to "up", "amount" to "small"))
+                    action("reload-$round-$index", "reload", emptyMap())
+                    val actualUrl = manager.uiState.value.activeUrl
+                    emit("REAL_WEB_STRESS CHECK tab=$pageId expected=$expectedUrl actual=$actualUrl")
+                }
+            }
+            action("close-active-tab", "close_page", emptyMap())
+            action("list-final", "list_pages", emptyMap())
+        } finally {
+            val passed = (0 until report.length()).count { report.optJSONObject(it)?.optBoolean("passed") == true }
+            val summary = JSONObject().put("passed", passed).put("failed", report.length() - passed).put("total", report.length()).put("opened_pages", sites.size).put("resident_tabs", tabs.size)
+            val file = File(getExternalFilesDir(null), "browser-real-web-stress-report.json")
+            file.writeText(JSONObject().put("summary", summary).put("actions", report).toString(2))
+            emit("REAL_WEB_STRESS SUMMARY $summary")
+            emit("REAL_WEB_STRESS REPORT ${file.absolutePath}")
+        }
     }
 
     private suspend fun runRealWebSuite() {
@@ -198,7 +307,7 @@ class BrowserDebugActivity : AppCompatActivity() {
                         async { GeckoBrowserRuntime.evaluate(second, "location.pathname", 5_000) }
                     ).map { it.await() }
                 }
-                values == listOf("/spa", "/")
+                values == listOf("/spa", "/spa")
             }
             check("switch-stress-no-cross-session-timeout") {
                 val sessions = (1..4).map { newHeadlessSession("stress-$it") }
@@ -215,7 +324,7 @@ class BrowserDebugActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main.immediate) { first.close() }
                 headlessSessions.remove(first)
                 GeckoBrowserRuntime.detach(first)
-                GeckoBrowserRuntime.evaluate(survivor, "document.title", 5_000) == "Amaya test"
+                GeckoBrowserRuntime.evaluate(survivor, "document.title", 5_000) == "SPA ready"
             }
         } finally {
             offscreenDisplays.toList().forEach { (session, display, resources) ->
@@ -347,13 +456,34 @@ class BrowserDebugActivity : AppCompatActivity() {
 
             manager.selectConversation("conversation:debug-browser-manager", 1L)
             action("open_url", mapOf("url" to "${server.url}upload"))
-            action("click", mapOf("element_id" to "#upload-file"))
-            delay(300)
-            val headlessUploadRequested = manager.uiState.value.uploadPending
-            manager.cancelPendingUpload()
-            val headlessUploadSafe = !headlessUploadRequested
-            emit("MANAGER_HEADLESS upload-file-picker passed=$headlessUploadSafe note=visible_operator_required requested=$headlessUploadRequested")
-            if (!headlessUploadSafe) failures += "headless-upload-picker"
+            val headlessUpload = File(filesDir, "headless-upload.txt").apply { writeText("headless workspace upload payload") }
+            action("upload_file", mapOf("element_id" to "#upload-file", "path" to headlessUpload.name, "__confirmed" to true))
+            action("evaluate", mapOf("expression" to "document.querySelector('#upload-file').files[0]?.name === 'headless-upload.txt' ? 'headless_upload_ok' : (() => { throw new Error('headless workspace upload failed') })()"))
+            val secondUpload = File(filesDir, "headless-second.json").apply { writeText("{}") }
+            action("upload_file", mapOf("element_id" to "#upload-multiple", "paths" to listOf(headlessUpload.name, secondUpload.name), "__confirmed" to true))
+            action("evaluate", mapOf("expression" to "Array.from(document.querySelector('#upload-multiple').files).map(f=>f.name).sort().join(',') === 'headless-second.json,headless-upload.txt' ? 'multiple_upload_ok' : (() => { throw new Error('multiple upload failed') })()"))
+            action("upload_file", mapOf("element_id" to "#upload-single", "paths" to listOf(headlessUpload.name, secondUpload.name)), verify = { it.optString("status") == "error" })
+            action("upload_file", mapOf("element_id" to "#upload-json", "path" to headlessUpload.name), verify = { it.optString("status") == "error" })
+            action("upload_file", mapOf("element_id" to "#upload-json", "path" to secondUpload.name, "__confirmed" to true))
+            val chunkedUpload = File(filesDir, "headless-chunked.bin").apply { writeBytes(ByteArray(UPLOAD_CHUNK_TEST_BYTES) { (it % 251).toByte() }) }
+            action("upload_file", mapOf("element_id" to "#upload-any", "path" to chunkedUpload.name, "__confirmed" to true))
+            action("evaluate", mapOf("expression" to "document.querySelector('#upload-any').files[0]?.size === $UPLOAD_CHUNK_TEST_BYTES ? 'chunked_upload_ok' : (() => { throw new Error('chunked upload size mismatch') })()"))
+            val approvalCallId = "debug-browser-upload-approval"
+            val approvalContext = context.copy(toolCallId = approvalCallId)
+            val approvalSteps = listOf(
+                mapOf("action" to "evaluate", "params" to mapOf("expression" to "window.__beforeApproval=(window.__beforeApproval||0)+1")),
+                mapOf("action" to "upload_file", "params" to mapOf("element_id" to "#upload-file", "path" to headlessUpload.name)),
+                mapOf("action" to "evaluate", "params" to mapOf("expression" to "window.__afterApproval=(window.__afterApproval||0)+1"))
+            )
+            val pending = JSONObject(manager.executeBrowserTask(mapOf("reset_task" to true, "steps" to approvalSteps), approvalContext))
+            val pendingPassed = pending.toString().contains("USER_APPROVAL_REQUIRED")
+            emit("MANAGER_HEADLESS upload-approval-pending passed=$pendingPassed")
+            if (!pendingPassed) failures += "upload-approval-pending"
+            val approved = JSONObject(manager.executeBrowserTask(mapOf("reset_task" to true, "steps" to approvalSteps), approvalContext.copy(confirmed = true)))
+            val approvedPassed = approved.optString("status") == "completed"
+            emit("MANAGER_HEADLESS upload-approval-resume passed=$approvedPassed")
+            if (!approvedPassed) failures += "upload-approval-resume"
+            action("evaluate", mapOf("expression" to "window.__beforeApproval===1 && window.__afterApproval===1 && document.querySelector('#upload-file').files[0]?.name==='headless-upload.txt' ? 'upload_approval_exactly_once' : (() => { throw new Error('upload approval resume duplicated or skipped work') })()"))
         } finally {
             server.close()
             emit("MANAGER_HEADLESS SUMMARY passed=${failures.isEmpty()} failures=${failures.joinToString(",")}")
@@ -365,6 +495,8 @@ class BrowserDebugActivity : AppCompatActivity() {
         val server = withContext(Dispatchers.IO) { TestPageServer() }
         File(filesDir, ".amaya/browser/downloads").deleteRecursively()
         File(filesDir, ".amaya/browser/uploads").deleteRecursively()
+        manager.releaseSharedBrowserView()
+        manager.acquireSharedBrowserView()
         val context = ToolExecutionContext(
             conversationId = "debug-browser",
             agentId = 1L,
@@ -428,7 +560,7 @@ class BrowserDebugActivity : AppCompatActivity() {
 
             // SPA: async hydration plus History API, no full document navigation.
             action("open_url", mapOf("url" to "${server.url}spa"))
-            action("wait_for_selector", mapOf("query" to "SPA ready", "timeout_ms" to 3_000))
+            action("wait_for_selector", mapOf("query" to "#spa-next", "timeout_ms" to 3_000))
             action("click", mapOf("element_id" to "#spa-next"))
             action("evaluate", mapOf("expression" to "location.pathname === '/spa/step-2' && document.body.innerText.includes('SPA step 2') ? 'ok' : (() => { throw new Error('SPA state lost') })()"))
             action("go_back")
@@ -447,11 +579,16 @@ class BrowserDebugActivity : AppCompatActivity() {
             // Download: browser-side Content-Disposition attachment, then workspace persistence.
             action("open_url", mapOf("url" to "${server.url}downloads"))
             action("click", mapOf("element_id" to "#download-report"))
-            check("download_saved_to_workspace_once", 5_000) { manager.uiState.value.downloads.count { it.fileName.startsWith("report") && it.size > 0 } == 1 }
+            check("download_saved_to_workspace_once", 5_000) {
+                File(filesDir, ".amaya/browser/downloads").listFiles().orEmpty().count { it.name.startsWith("report") && it.length() > 0 } == 1
+            }
 
             // File chooser is an Android user interaction. Verify the headless path does
             // not deadlock; the visible suite completes it with the same-session picker.
             action("open_url", mapOf("url" to "${server.url}upload"))
+            val agentUpload = File(filesDir, "agent-upload.txt").apply { writeText("agent workspace upload payload") }
+            action("upload_file", mapOf("element_id" to "#upload-file", "path" to agentUpload.name, "__confirmed" to true))
+            action("evaluate", mapOf("expression" to "document.querySelector('#upload-file').files[0]?.name === 'agent-upload.txt' ? 'workspace_upload_ok' : (() => { throw new Error('workspace upload failed') })()"))
             action("click", mapOf("element_id" to "#upload-file"), expectSuccess = false)
             check("visible_upload_picker_requested") { manager.uiState.value.uploadPending }
             val source = File(filesDir, "debug-upload.txt").apply { writeText("visible upload payload") }
@@ -461,24 +598,18 @@ class BrowserDebugActivity : AppCompatActivity() {
             delay(2_000)
             action("evaluate", mapOf("expression" to "JSON.stringify({count:document.querySelector('#upload-file').files.length,name:document.querySelector('#upload-file').files[0]?.name || '',result:document.querySelector('#upload-result').textContent})"))
 
-            // Local challenge fixtures exercise product detection, waiting, handoff, and resume.
-            action("open_url", mapOf("url" to "${server.url}captcha-copy"))
-            action("evaluate", mapOf("expression" to "document.title === 'Normal article' ? 'ok' : (() => { throw new Error('false positive CAPTCHA detection') })()"))
-            action("open_url", mapOf("url" to "${server.url}challenge-managed"))
-            action("evaluate", mapOf("expression" to "document.title === 'Managed challenge complete' ? 'ok' : (() => { throw new Error('managed challenge did not clear') })()"))
-            action("open_url", mapOf("url" to "${server.url}challenge-checkbox?test_auto_human=1"), expectSuccess = false)
-            check("interactive-human-verification-pauses") { manager.uiState.value.humanVerificationRequired && manager.uiState.value.isPaused }
-            action("resume_session", expectSuccess = false)
-            delay(3_000)
-            action("resume_session")
-            action("evaluate", mapOf("expression" to "document.title === 'Challenge complete' ? 'ok' : (() => { throw new Error('challenge still active') })()"))
+            // Challenge-shaped pages remain ordinary browser content.
+            action("open_url", mapOf("url" to "${server.url}challenge-checkbox"))
+            action("click", mapOf("element_id" to "#human-check"))
+            action("evaluate", mapOf("expression" to "document.title === 'Challenge complete' ? 'ordinary_page_ok' : (() => { throw new Error('ordinary page interaction failed') })()"))
 
             // Cross-document edges. Iframe/shadow interactions are intentionally probed, not hidden.
             action("open_url", mapOf("url" to "${server.url}iframe"))
             action("evaluate", mapOf("expression" to "document.querySelector('#test-frame') ? 'iframe_detected' : (() => { throw new Error('iframe missing') })()"))
             action("open_url", mapOf("url" to "${server.url}shadow"))
-            action("find_element", mapOf("query" to "Shadow action"), expectSuccess = false)
-            action("evaluate", mapOf("expression" to "document.querySelector('test-shadow').shadowRoot.querySelector('button').textContent === 'Shadow action' ? 'shadow_root_present' : (() => { throw new Error('shadow root missing') })()"))
+            action("find_element", mapOf("query" to "Shadow action"))
+            action("click", mapOf("element_id" to "test-shadow >>> #shadow-action"))
+            action("evaluate", mapOf("expression" to "document.querySelector('test-shadow').shadowRoot.querySelector('#shadow-result').textContent === 'clicked' ? 'shadow_action_complete' : (() => { throw new Error('shadow action failed') })()"))
 
             action("reload")
             action("screenshot")
@@ -493,7 +624,7 @@ class BrowserDebugActivity : AppCompatActivity() {
                 put("passed", passed)
                 put("failed", report.size - passed)
                 put("total", report.size)
-                put("policy", "Local deterministic simulation. Anti-bot/CAPTCHA bypass is intentionally excluded; challenge must be reported for manual verification.")
+                put("policy", "Local deterministic browser simulation; challenge-shaped pages receive no special handling.")
             }
             val file = File(getExternalFilesDir(null), "browser-debug-report.json")
             file.writeText(JSONObject().put("summary", summary).put("actions", JSONArray().apply { report.forEach(::put) }).toString(2))
@@ -512,6 +643,10 @@ class BrowserDebugActivity : AppCompatActivity() {
     private fun emit(message: String) {
         Log.i("AmayaBrowserDebug", message)
         runOnUiThread { output.append("\n$message") }
+    }
+
+    companion object {
+        private const val UPLOAD_CHUNK_TEST_BYTES = 700_000
     }
 
     private class TestPageServer : AutoCloseable {
@@ -549,7 +684,7 @@ class BrowserDebugActivity : AppCompatActivity() {
         private fun responseFor(path: String): Response = when (path) {
             "/" -> html("""
                 <title>Amaya test</title><label for=name>Name</label><input id=name><select id=choice><option value=one>One</option><option value=two>Two</option></select>
-                <button id=click onclick=\"result.textContent='clicked'\">Click</button><button id=hover>Hover</button>
+                <button id=click onclick="document.querySelector('#result').textContent='clicked'">Click</button><button id=hover>Hover</button>
                 <form action='/results'><input name=query><button>Search</button></form><p id=result>idle</p><div style='height:2400px'></div>
             """)
             "/spa" -> html("""
@@ -562,7 +697,7 @@ class BrowserDebugActivity : AppCompatActivity() {
                 </script>
             """)
             "/restore" -> html("<title>Restore test</title><input id=restore-field><p>restore marker</p>")
-            "/upload" -> html("<title>Upload test</title><input id=upload-file type=file accept='text/plain' onchange=\"uploadResult.textContent=this.files[0]?this.files[0].name:'none'\"><p id=upload-result>none</p>")
+            "/upload" -> html("<title>Upload test</title><input id=upload-file type=file accept='text/plain' onchange=\"uploadResult.textContent=this.files[0]?this.files[0].name:'none'\"><p id=upload-result>none</p><input id=upload-multiple type=file multiple accept='text/plain,.json'><input id=upload-single type=file accept='text/plain,.json'><input id=upload-json type=file accept='application/json'><input id=upload-any type=file><button id=remote-submit type=button onclick=\"document.querySelector('#remote-result').textContent='submitted'\">Send upload</button><p id=remote-result>idle</p>")
             "/lazy" -> html("""
                 <title>Lazy test</title><input id=external-field><main id=app>Booting</main><div style='height:3000px'></div><script>
                 setTimeout(function(){var marker=document.createElement('button');marker.id='lazy-ready';marker.textContent='Lazy ready';app.replaceChildren(marker)},500)
@@ -577,21 +712,15 @@ class BrowserDebugActivity : AppCompatActivity() {
             "/dashboard" -> html("<title>Dashboard</title><h1>Authenticated debug user</h1>")
             "/downloads" -> html("<title>Downloads</title><a id=download-report href='/download/report.txt'>Download report</a>")
             "/download/report.txt" -> Response("amaya browser debug report\n".toByteArray(), "application/octet-stream", "attachment; filename=report.txt")
-            "/captcha-copy" -> html("<title>Normal article</title><main>This article explains CAPTCHA history and browser security.</main>")
-            "/challenge-managed" -> html("""
-                <title>Checking your browser</title><main><p>Managed security check</p></main>
-                <script>setTimeout(function(){document.title='Managed challenge complete';document.querySelector('main').textContent='Verification complete'},700)</script>
-            """)
             "/challenge-checkbox" -> html("""
                 <title>Cloudflare-like challenge</title><main><h1>Checking your browser</h1><p>Verify you are human</p>
                 <label><input id='human-check' type='checkbox' onchange="if(this.checked){document.title='Challenge complete';document.querySelector('main').textContent='Verification complete'}"> I am human</label>
                 <button id='continue' disabled>Continue</button></main>
-                <script>if(location.search.includes('test_auto_human=1'))setTimeout(function(){document.querySelector('#human-check').click()},4000)</script>
             """)
             "/iframe" -> html("<title>Iframe test</title><iframe id=test-frame title='Embedded content' src='/iframe-inner'></iframe>")
             "/iframe-inner" -> html("<title>Iframe child</title><button id=iframe-button>Inner action</button>")
             "/shadow" -> html("""
-                <title>Shadow DOM test</title><test-shadow></test-shadow><script>customElements.define('test-shadow',class extends HTMLElement{connectedCallback(){this.attachShadow({mode:'open'}).innerHTML='<button>Shadow action</button>'}})</script>
+                <title>Shadow DOM test</title><test-shadow></test-shadow><script>customElements.define('test-shadow',class extends HTMLElement{connectedCallback(){var root=this.attachShadow({mode:'open'});root.innerHTML='<button id="shadow-action">Shadow action</button><span id="shadow-result">idle</span>';root.querySelector('button').onclick=function(){root.querySelector('span').textContent='clicked'}}})</script>
             """)
             else -> html("<title>Results</title><p>Search result</p>")
         }

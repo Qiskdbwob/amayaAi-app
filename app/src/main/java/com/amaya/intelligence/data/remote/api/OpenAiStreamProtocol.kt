@@ -1,5 +1,45 @@
 package com.amaya.intelligence.data.remote.api
 
+internal class OpenAiDeltaCoalescer {
+    private enum class Kind { TEXT, THINKING }
+
+    private var kind: Kind? = null
+    private val buffer = StringBuilder()
+
+    /** Appends a delta; returns the previous kind when event order requires flushing it. */
+    fun append(response: ChatResponse): ChatResponse? {
+        val nextKind = when (response) {
+            is ChatResponse.TextDelta -> Kind.TEXT
+            is ChatResponse.ThinkingDelta -> Kind.THINKING
+            else -> error("Only delta responses can be coalesced")
+        }
+        val previous = if (kind != null && kind != nextKind) flush() else null
+        kind = nextKind
+        buffer.append(when (response) {
+            is ChatResponse.TextDelta -> response.text
+            is ChatResponse.ThinkingDelta -> response.text
+            else -> error("Only delta responses can be coalesced")
+        })
+        return previous
+    }
+
+    fun flush(): ChatResponse? {
+        val previousKind = kind ?: return null
+        val text = buffer.toString()
+        kind = null
+        buffer.clear()
+        return when (previousKind) {
+            Kind.TEXT -> ChatResponse.TextDelta(text)
+            Kind.THINKING -> ChatResponse.ThinkingDelta(text)
+        }
+    }
+
+    fun clear() {
+        kind = null
+        buffer.clear()
+    }
+}
+
 internal data class CompletedOpenAiToolCall(
     val id: String,
     val name: String,
@@ -39,6 +79,15 @@ internal class OpenAiToolCallAccumulator {
     fun clear() = pending.clear()
     fun isNotEmpty(): Boolean = pending.isNotEmpty()
 }
+
+internal fun normalizeOpenAiFinishReason(reason: String?): String? = when (reason?.trim()?.lowercase()) {
+    "toolcall", "tool_call", "tool_calls" -> "tool_calls"
+    "stop" -> "stop"
+    else -> reason?.trim()?.lowercase()
+}
+
+internal fun isOpenAiCompletedFinishReason(reason: String?): Boolean =
+    normalizeOpenAiFinishReason(reason) in setOf("stop", "tool_calls")
 
 internal enum class OpenAiTerminalState { OPEN, COMPLETED, INCOMPLETE, FAILED }
 

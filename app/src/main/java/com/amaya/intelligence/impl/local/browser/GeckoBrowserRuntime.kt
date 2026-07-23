@@ -103,9 +103,16 @@ object GeckoBrowserRuntime {
             if (portFor(session) == null) {
                 withContext(Dispatchers.Main.immediate) { session.reload() }
             }
-            withTimeout(15_000) {
-                while (!isReady(session)) kotlinx.coroutines.delay(25)
+            if (awaitReady(session, 15_000)) return
+            // Screen-off resource suspension can leave Gecko's document resident while
+            // its extension delegate no longer reconnects. Re-register once; the next
+            // DOM action waits for the fresh port instead of inheriting a dead delegate.
+            synchronized(this) {
+                delegated.remove(session)
+                ports.remove(session)
+                readySessions.remove(session)
             }
+            attach(context, session, reloadIfNeeded = true)
             return
         }
         try {

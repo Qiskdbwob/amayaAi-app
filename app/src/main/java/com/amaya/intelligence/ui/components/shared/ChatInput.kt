@@ -286,14 +286,15 @@ fun ChatInput(
             if (isCompressing) {
                 isCanceled = true
                 onCancelCompactConversation()
-            } else if (isStreaming) {
-                onStopGeneration()
             } else if (canSend) {
                 val message = text.trim()
                 onTextChange("")
+                if (isStreaming) onStopGeneration()
                 if (parseComposerReferences(message).commands.singleOrNull() == "compact") {
                     onCompactConversation(message.replaceFirst(COMPACT_COMMAND_PREFIX, "").trim())
                 } else onSendMessage(message)
+            } else if (isStreaming) {
+                onStopGeneration()
             }
         }
 

@@ -8,6 +8,16 @@ import org.junit.Test
 
 class OpenAiStreamProtocolTest {
     @Test
+    fun `text deltas coalesce without crossing thinking boundary`() {
+        val coalescer = OpenAiDeltaCoalescer()
+
+        assertNull(coalescer.append(ChatResponse.TextDelta("Hel")))
+        assertNull(coalescer.append(ChatResponse.TextDelta("lo")))
+        assertEquals(ChatResponse.TextDelta("Hello"), coalescer.append(ChatResponse.ThinkingDelta("plan")))
+        assertEquals(ChatResponse.ThinkingDelta("plan"), coalescer.flush())
+    }
+
+    @Test
     fun `interleaved tool deltas remain correlated by index`() {
         val accumulator = OpenAiToolCallAccumulator()
         accumulator.append(0, "call_a", "read_file", "{\"path\":")
@@ -34,6 +44,28 @@ class OpenAiStreamProtocolTest {
 
         assertNull(chunk?.id)
         assertEquals("Hi", chunk?.choices?.single()?.delta?.content)
+    }
+
+    @Test
+    fun `usage chunk without choices parses`() {
+        val chunk = Moshi.Builder()
+            .addLast(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
+            .build()
+            .adapter(OpenAiStreamChunk::class.java)
+            .fromJson("""{"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}}""")
+
+        assertEquals(emptyList<OpenAiStreamChoice>(), chunk?.choices)
+        assertEquals(12, chunk?.usage?.promptTokens)
+    }
+
+    @Test
+    fun `toolcall finish reason normalizes to completed tool calls`() {
+        assertEquals("tool_calls", normalizeOpenAiFinishReason("toolcall"))
+        assertEquals("tool_calls", normalizeOpenAiFinishReason(" tool_call "))
+        assertEquals("stop", normalizeOpenAiFinishReason("STOP"))
+        assertEquals(true, isOpenAiCompletedFinishReason("toolcall"))
+        assertEquals(true, isOpenAiCompletedFinishReason("tool_calls"))
+        assertEquals(false, isOpenAiCompletedFinishReason("length"))
     }
 
     @Test

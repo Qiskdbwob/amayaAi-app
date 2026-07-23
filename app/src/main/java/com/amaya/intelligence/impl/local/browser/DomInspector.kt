@@ -32,29 +32,14 @@ object DomInspector {
         )
     }
 
-    fun humanVerificationScript(): String = """
-        (function() {
-          var title = (document.title || '').toLowerCase();
-          var text = (document.body ? document.body.innerText : '').slice(0, 50000).toLowerCase();
-          var frames = Array.prototype.slice.call(document.querySelectorAll('iframe[src],iframe[title]'));
-          var frameText = frames.map(function(frame) { return ((frame.src || '') + ' ' + (frame.title || '')).toLowerCase(); }).join(' ');
-          var selectors = [
-            '.g-recaptcha','iframe[src*="recaptcha"]','iframe[src*="hcaptcha"]',
-            'iframe[src*="challenges.cloudflare.com"]','[class*="turnstile"]','[id*="turnstile"]',
-            '[class*="h-captcha"]','[id*="captcha"]','[class*="captcha"]'
-          ];
-          var widget = null;
-          selectors.some(function(selector) { try { widget = document.querySelector(selector); } catch (e) {} return !!widget; });
-          var evidence = title + ' ' + text + ' ' + frameText;
-          var phrase = /checking your browser|verify you are human|human verification|security check|complete the captcha|challenge-platform/.test(text + ' ' + frameText);
-          var challengeTitle = /checking your browser|human verification|security check|attention required|challenge/.test(title);
-          var provider = /turnstile|challenges\.cloudflare/.test(evidence) ? 'cloudflare_turnstile' :
-            /hcaptcha|h-captcha/.test(evidence) ? 'hcaptcha' :
-            /recaptcha|g-recaptcha/.test(evidence) ? 'recaptcha' :
-            /captcha/.test(evidence) ? 'captcha' : 'anti_bot_challenge';
-          return JSON.stringify({required:!!widget || (phrase && challengeTitle), provider:provider, widget:!!widget, phrase:phrase, challenge_title:challengeTitle});
-        })();
-    """.trimIndent()
+    fun fileInputConstraintsScript(selector: String): String {
+        val s = JSONObject.quote(selector)
+        return baseInspector("""
+            var el = resolveElement($s);
+            if (!el || String(el.type || '').toLowerCase() !== 'file') return JSON.stringify({ok:false});
+            return JSON.stringify({ok:true, accept:(el.accept || '').split(',').map(function(x){return x.trim()}).filter(Boolean), multiple:!!el.multiple});
+        """.trimIndent())
+    }
 
     fun findTextScript(query: String): String {
         val q = JSONObject.quote(query)
@@ -99,7 +84,8 @@ object DomInspector {
             var rect = el.getBoundingClientRect();
             var cx = Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2));
             var cy = Math.max(0, Math.min(window.innerHeight - 1, rect.top + rect.height / 2));
-            var top = document.elementFromPoint(cx, cy);
+            var rootAtPoint = el.getRootNode && el.getRootNode();
+            var top = rootAtPoint && rootAtPoint.elementFromPoint ? rootAtPoint.elementFromPoint(cx, cy) : document.elementFromPoint(cx, cy);
             var covered = !!(top && top !== el && !el.contains(top) && !top.contains(el));
             var anchor = el.closest ? el.closest('a[href]') : null;
             return JSON.stringify({
@@ -132,7 +118,8 @@ object DomInspector {
               var rect = el.getBoundingClientRect();
               var cx = Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2));
               var cy = Math.max(0, Math.min(window.innerHeight - 1, rect.top + rect.height / 2));
-              var top = document.elementFromPoint(cx, cy);
+              var rootAtPoint = el.getRootNode && el.getRootNode();
+              var top = rootAtPoint && rootAtPoint.elementFromPoint ? rootAtPoint.elementFromPoint(cx, cy) : document.elementFromPoint(cx, cy);
               var covered = !!(top && top !== el && !el.contains(top) && !top.contains(el));
               var anchor = el.closest ? el.closest('a[href]') : null;
               return JSON.stringify({ ok:true, element:summarize(el), click:{x:cx,y:cy}, covered:covered, blocker:covered ? summarize(top) : null, href:el.href || (anchor ? anchor.href : '') || '' });
@@ -321,6 +308,54 @@ object DomInspector {
         )
     }
 
+    fun fileInputAssignStartScript(selector: String): String {
+        val s = JSONObject.quote(selector)
+        return baseInspector("""
+            var el = resolveElement($s);
+            if (!el || String(el.type || '').toLowerCase() !== 'file') return JSON.stringify({ok:false,error:'File input not found'});
+            window.__amayaUpload = {selector:$s, files:[]};
+            return JSON.stringify({ok:true});
+        """.trimIndent())
+    }
+
+    fun fileInputAssignChunkScript(name: String, mime: String, lastModified: Long, chunkBase64: String, first: Boolean): String = baseInspector("""
+        var state = window.__amayaUpload;
+        if (!state) return JSON.stringify({ok:false,error:'Upload state missing'});
+        if (${if (first) "true" else "false"}) state.files.push({name:${JSONObject.quote(name)},mime:${JSONObject.quote(mime)},lastModified:$lastModified,chunks:[]});
+        var encoded = ${JSONObject.quote(chunkBase64)};
+        var binary = atob(encoded);
+        var bytes = new Uint8Array(binary.length);
+        for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        state.files[state.files.length - 1].chunks.push(bytes);
+        return JSON.stringify({ok:true});
+    """.trimIndent())
+
+    fun fileInputAssignFinishScript(): String = baseInspector("""
+        var state = window.__amayaUpload;
+        if (!state) return JSON.stringify({ok:false,error:'Upload state missing'});
+        var el = resolveElement(state.selector);
+        if (!el || String(el.type || '').toLowerCase() !== 'file') return JSON.stringify({ok:false,error:'File input not found'});
+        var data = new DataTransfer();
+        state.files.forEach(function(item) {
+          data.items.add(new File(item.chunks, item.name, {type:item.mime,lastModified:item.lastModified || Date.now()}));
+        });
+        el.files = data.files;
+        el.dispatchEvent(new Event('input', {bubbles:true}));
+        el.dispatchEvent(new Event('change', {bubbles:true}));
+        delete window.__amayaUpload;
+        return JSON.stringify({ok:true,file_names:Array.prototype.map.call(el.files, function(file){return file.name})});
+    """.trimIndent())
+
+    fun fileInputClickScript(selector: String): String {
+        val s = JSONObject.quote(selector)
+        return baseInspector("""
+            var el = resolveElement($s);
+            if (!el || String(el.type || '').toLowerCase() !== 'file') return JSON.stringify({ok:false,error:'File input not found'});
+            if (typeof el.click === 'function') el.click(); else return JSON.stringify({ok:false,error:'File input is not clickable'});
+            return JSON.stringify({ok:true});
+        """.trimIndent())
+    }
+
     fun elementSensitiveScript(selector: String): String {
         val s = JSONObject.quote(selector)
         return baseInspector(
@@ -339,6 +374,8 @@ object DomInspector {
             if (el) el = focusTargetFor(el);
             if (!el) return JSON.stringify({ ok:false, exists:false, selector:$s });
             var active = document.activeElement;
+            var root = el.getRootNode && el.getRootNode();
+            var mutationRoot = root === document ? document.documentElement : root;
             return JSON.stringify({
               ok:true,
               exists:true,
@@ -350,8 +387,12 @@ object DomInspector {
               expanded:el.getAttribute('aria-expanded') === 'true',
               editable:isEditable(el),
               clickable:/button|a/i.test(el.tagName || '') || !!el.onclick || el.getAttribute('role') === 'button',
+              type:(el.type || '').toLowerCase(),
+              file_count:el.files ? el.files.length : 0,
+              file_names:el.files ? Array.prototype.map.call(el.files, function(file){return file.name}) : [],
               value:currentEditableValue(el).slice(0, 400),
-              text:textForElement(el).trim().replace(/\s+/g, ' ').slice(0, 400)
+              text:textForElement(el).trim().replace(/\s+/g, ' ').slice(0, 400),
+              mutation_version:Number((mutationRoot && mutationRoot.__amayaMutationVersion) || 0)
             });
             """.trimIndent()
         )
@@ -408,11 +449,14 @@ object DomInspector {
               bounds:{x:Math.round(rect.left),y:Math.round(rect.top),width:Math.round(rect.width),height:Math.round(rect.height)}
             };
           }
-          if (!window.__amayaMutationObserver && document.documentElement) {
-            window.__amayaMutationVersion = 0;
-            window.__amayaMutationObserver = new MutationObserver(function() { window.__amayaMutationVersion += 1; });
-            window.__amayaMutationObserver.observe(document.documentElement, {subtree:true, childList:true, attributes:true, characterData:true});
+          function observeMutationRoot(root) {
+            if (!root || root.__amayaMutationObserver) return;
+            root.__amayaMutationVersion = 0;
+            root.__amayaMutationObserver = new MutationObserver(function() { root.__amayaMutationVersion += 1; });
+            root.__amayaMutationObserver.observe(root, {subtree:true, childList:true, attributes:true, characterData:true});
           }
+          if (document.documentElement) observeMutationRoot(document.documentElement);
+          Array.prototype.forEach.call(document.querySelectorAll('*'), function(node) { if (node.shadowRoot) observeMutationRoot(node.shadowRoot); });
           function enabledState(el) {
             return !!el && !el.disabled && el.getAttribute('aria-disabled') !== 'true';
           }
@@ -428,25 +472,35 @@ object DomInspector {
           }
           function selectorFor(el) {
             if (!el || !el.tagName) return '';
-            if (el.id) return '#' + cssEscape(el.id);
-            var data = ['data-testid','data-test','aria-label','name','placeholder'];
-            for (var d of data) {
-              var v = el.getAttribute(d);
-              if (v) return el.tagName.toLowerCase() + '[' + d + '=' + JSON.stringify(v) + ']';
-            }
-            var path = [];
+            var segments = [];
             var node = el;
-            while (node && node.nodeType === 1 && path.length < 5) {
-              var name = node.tagName.toLowerCase();
-              var parent = node.parentElement;
-              if (parent) {
-                var siblings = Array.prototype.filter.call(parent.children, function(x) { return x.tagName === node.tagName; });
-                if (siblings.length > 1) name += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
+            while (node && node.nodeType === 1) {
+              var part = '';
+              if (node.id) part = '#' + cssEscape(node.id);
+              else {
+                var data = ['data-testid','data-test','aria-label','name','placeholder'];
+                for (var d of data) {
+                  var v = node.getAttribute(d);
+                  if (v) { part = node.tagName.toLowerCase() + '[' + d + '=' + JSON.stringify(v) + ']'; break; }
+                }
+                if (!part) {
+                  part = node.tagName.toLowerCase();
+                  var parent = node.parentElement;
+                  if (parent) {
+                    var siblings = Array.prototype.filter.call(parent.children, function(x) { return x.tagName === node.tagName; });
+                    if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
+                  }
+                }
               }
-              path.unshift(name);
-              node = parent;
+              segments.unshift(part);
+              var root = node.getRootNode && node.getRootNode();
+              if (root && root.host) {
+                segments.unshift('>>>');
+                node = root.host;
+              } else node = node.parentElement;
+              if (segments.length >= 11 || part.charAt(0) === '#') break;
             }
-            return path.join(' > ');
+            return segments.join(' ');
           }
           function labelFor(el) {
             if (!el) return '';
@@ -841,34 +895,74 @@ object DomInspector {
               actions: isEditable(el) ? ['focus','type_text','clear_input','press_key','tap'] : (primaryUrl ? ['click','tap','open_url'] : ['click','tap'])
             };
           }
+          function allQueryRoots() {
+            var roots = [document];
+            for (var i = 0; i < roots.length; i++) {
+              var nodes = roots[i].querySelectorAll ? roots[i].querySelectorAll('*') : [];
+              Array.prototype.forEach.call(nodes, function(node) { if (node.shadowRoot) roots.push(node.shadowRoot); });
+            }
+            return roots;
+          }
+          function deepQuerySelector(selector) {
+            var parts = String(selector || '').split(/\s*>>>\s*/).filter(Boolean);
+            var root = document;
+            for (var i = 0; i < parts.length; i++) {
+              var node = root.querySelector(parts[i]);
+              if (!node) return null;
+              if (i < parts.length - 1) {
+                if (!node.shadowRoot) return null;
+                root = node.shadowRoot;
+              } else return node;
+            }
+            return null;
+          }
+          function deepNodes(selector) {
+            var out = [];
+            allQueryRoots().forEach(function(root) { try { out = out.concat(Array.prototype.slice.call(root.querySelectorAll(selector))); } catch (e) {} });
+            return out;
+          }
           function resolveElement(selector) {
             if (window.__amayaElementMap && window.__amayaElementMap[selector]) selector = window.__amayaElementMap[selector];
             if (typeof selector === 'string' && selector.indexOf('url:') === 0) {
               var targetUrl = selector.slice(4);
-              var urlMatch = Array.prototype.find.call(document.querySelectorAll('a[href]'), function(node) { return node.href === targetUrl; });
+              var urlMatch = deepNodes('a[href]').find(function(node) { return node.href === targetUrl; });
               if (urlMatch) return urlMatch;
             }
-            try { var direct = document.querySelector(selector); if (direct) return direct; } catch (e) {}
+            try { var direct = deepQuerySelector(selector); if (direct) return direct; } catch (e) {}
             return findElementNode(selector);
+          }
+          function normalizedMatchText(value) {
+            return String(value || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
           }
           function elementMatchesQuery(node, query, idx) {
             var x = summarize(node, idx + 1);
-            var haystack = [x.selector,x.text,x.label,x.accessible_name,x.data_testid,x.title,x.placeholder,x.name,x.id,x.href,x.type,x.role].join(' ').toLowerCase();
-            var tokens = queryTokens(query);
+            var q = normalizedMatchText(query);
+            var primary = [x.text,x.label,x.accessible_name,x.placeholder,x.title,x.name,x.id,x.data_testid]
+              .map(normalizedMatchText).filter(Boolean);
+            var secondary = [x.selector,x.href,x.type,x.role].map(normalizedMatchText).filter(Boolean);
             var score = 0;
-            if (haystack.indexOf(String(query || '').toLowerCase()) >= 0) score += 80;
-            tokens.forEach(function(token) {
-              if (haystack.indexOf(token) >= 0) score += 25;
-            });
-            if (x.visible) score += 10;
-            if (x.enabled) score += 8;
+            if (primary.some(function(value) { return value === q; })) score = 1000;
+            else if (primary.some(function(value) { return value.indexOf(q) >= 0; })) score = 600;
+            else {
+              var tokens = queryTokens(q);
+              var matched = tokens.filter(function(token) {
+                return primary.some(function(value) { return value.indexOf(token) >= 0; });
+              }).length;
+              // Fuzzy fallback requires every meaningful query token. This prevents
+              // "Log in" selecting unrelated visible controls such as "Home".
+              if (tokens.length && matched === tokens.length) score = 300 + matched * 20;
+              else if (secondary.some(function(value) { return value === q || value.indexOf(q) >= 0; })) score = 180;
+            }
+            if (score > 0 && x.visible) score += 10;
+            if (score > 0 && x.enabled) score += 8;
             return score;
           }
           function findElementNode(query) {
-            var q = String(query || '').toLowerCase();
-            var nodes = Array.prototype.slice.call(document.querySelectorAll('button,[role=button],[role=link],input,textarea,select,a[href],[onclick],label,[contenteditable],[role=textbox],article,[role=article],li,[role=listitem],[data-testid],[tabindex]'));
+            var q = normalizedMatchText(query);
+            if (!q) return null;
+            var nodes = deepNodes('button,[role=button],[role=link],input,textarea,select,a[href],[onclick],label,[contenteditable],[role=textbox],article,[role=article],li,[role=listitem],[data-testid],[tabindex]');
             var best = null;
-            var bestScore = -1;
+            var bestScore = 0;
             nodes.forEach(function(node, idx) {
               var score = elementMatchesQuery(node, q, idx);
               if (score > bestScore) {
@@ -876,14 +970,14 @@ object DomInspector {
                 bestScore = score;
               }
             });
-            return bestScore > 0 ? best : null;
+            return best;
           }
           function findElement(query) {
             var node = findElementNode(query);
             return node ? summarize(node, 1) : null;
           }
           function collect(selector, offset) {
-            return Array.prototype.slice.call(document.querySelectorAll(selector)).filter(visible).slice(0, 120).map(function(node, idx) { return summarize(node, (offset || 0) + idx + 1); });
+            return deepNodes(selector).filter(visible).slice(0, 120).map(function(node, idx) { return summarize(node, (offset || 0) + idx + 1); });
           }
           function formSummary(form, idx) {
             var fields = Array.prototype.slice.call(form.querySelectorAll('input,textarea,select,[contenteditable],[role=textbox]')).filter(visible).map(function(el, i) { return summarize(el, (idx + 1) * 100 + i); });

@@ -42,10 +42,47 @@ private val TITLE_WHITESPACE = Regex("\\s+")
 private val THINK_BLOCK = Regex("(?is)<think>.*?</think>")
 private val INTEGER_TEXT = Regex("[+-]?\\d+")
 private const val MAX_STREAM_CONTINUATIONS = 5
-private const val STREAM_CONTINUATION_PROMPT = "Continue the previous response exactly where it stopped. Do not repeat any text. Do not call tools."
+internal const val STREAM_CONTINUATION_PROMPT = "Continue the previous response exactly where it stopped. Do not repeat any text. Use tools if needed to complete the request."
+private const val TOOL_RESULT_TRUNCATION_MARKER = "\n… [tool result truncated by context budget]"
+private const val AUTO_COMPACTION_MARKER = "[AUTO-COMPACTED ACTIVE CONTEXT]"
+
+internal fun truncateToolResultForContext(content: String, maxChars: Int): String = when {
+    content.length <= maxChars -> content
+    maxChars <= TOOL_RESULT_TRUNCATION_MARKER.length -> TOOL_RESULT_TRUNCATION_MARKER.take(maxChars)
+    else -> content.take(maxChars - TOOL_RESULT_TRUNCATION_MARKER.length).trimEnd() + TOOL_RESULT_TRUNCATION_MARKER
+}
+
+internal fun autoCompactionTranscript(messages: List<ChatMessage>, maxChars: Int): String = buildString {
+    messages.forEach { message ->
+        appendLine("${message.role}:")
+        appendLine(message.content.orEmpty())
+        message.toolCalls.orEmpty().forEach { call -> appendLine("tool_call ${call.name}: ${call.arguments}") }
+        message.toolResult?.let { result -> appendLine("tool_result ${result.toolCallId}: ${result.content}") }
+    }
+}.trim().take(maxChars)
+
+internal fun messagesOmittedByContextFit(messages: List<ChatMessage>, fitted: List<ChatMessage>): List<ChatMessage> {
+    if (fitted.isEmpty() || fitted.size == messages.size) return emptyList()
+    val latestUserIndex = messages.indexOfLast { message ->
+        message.role == MessageRole.USER && (!message.content.isNullOrBlank() || message.images.isNotEmpty())
+    }
+    if (latestUserIndex < 0) return emptyList()
+    val retainedTailStart = messages.size - (fitted.size - 1).coerceAtLeast(0)
+    return messages.take(latestUserIndex) + messages.subList(latestUserIndex + 1, retainedTailStart)
+}
 
 internal fun canContinueStream(response: ChatResponse, hasToolCalls: Boolean): Boolean =
     !hasToolCalls && when (response) {
+        is ChatResponse.Incomplete -> response.retryable
+        is ChatResponse.Error -> response.retryable
+        else -> false
+    }
+
+internal fun repeatedBrowserFailureWarning(signature: String, count: Int): String? =
+    if (count < 2) null else "Warning: the same browser tool error has occurred $count times ($signature). Do not repeat the same call unchanged. Inspect the current page state, choose a different action, or ask the user for clarification."
+
+internal fun shouldExecuteReceivedToolCalls(response: ChatResponse, hasToolCalls: Boolean): Boolean =
+    hasToolCalls && when (response) {
         is ChatResponse.Incomplete -> response.retryable
         is ChatResponse.Error -> response.retryable
         else -> false
@@ -142,6 +179,9 @@ class AiRepository @Inject constructor(
 ) {
     private companion object {
         const val DEFAULT_MAX_OUTPUT_TOKENS = 8_192
+        const val CONTEXT_SAFETY_RESERVE_TOKENS = 1_024
+        const val AUTO_COMPACTION_OUTPUT_TOKENS = 2_048
+        const val AUTO_COMPACTION_SAFETY_TOKENS = 1_024
     }
 
     // FIX 5.11: Removed manual repoJob/repoScope and close() — lifecycle managed by Hilt ApplicationScope
@@ -184,6 +224,51 @@ class AiRepository @Inject constructor(
         check(failure == null) { failure.orEmpty() }
         summary.toString().trim().takeIf(String::isNotBlank) ?: error("Compression returned no summary")
     }
+
+    private suspend fun summarizeAutoCompaction(
+        provider: AiProvider,
+        connection: ProviderConnection,
+        model: String,
+        previousSummary: String?,
+        messages: List<ChatMessage>,
+        maxInputTokens: Int
+    ): String? {
+        val inputChars = ((maxInputTokens - AUTO_COMPACTION_OUTPUT_TOKENS - AUTO_COMPACTION_SAFETY_TOKENS)
+            .coerceAtLeast(256) * 4)
+        val transcript = buildString {
+            previousSummary?.takeIf(String::isNotBlank)?.let {
+                appendLine("Previous active-context summary:")
+                appendLine(it)
+                appendLine()
+            }
+            append(autoCompactionTranscript(messages, inputChars))
+        }.take(inputChars)
+        if (transcript.isBlank()) return null
+        val summary = StringBuilder()
+        var failed = false
+        provider.chat(
+            ChatRequest(
+                model = model,
+                messages = listOf(ChatMessage(MessageRole.USER, transcript)),
+                systemPrompt = compressionPrompt("Keep the active task executable across further tool iterations."),
+                maxTokens = AUTO_COMPACTION_OUTPUT_TOKENS,
+                stream = true,
+                connectionId = connection.id,
+                providerId = connection.providerId,
+                effort = ThinkingEffort.NONE
+            )
+        ).collect { response ->
+            when (response) {
+                is ChatResponse.TextDelta -> summary.append(response.text)
+                is ChatResponse.Error, is ChatResponse.Incomplete -> failed = true
+                else -> Unit
+            }
+        }
+        return summary.toString().trim().takeIf { !failed && it.isNotBlank() }
+    }
+
+    private fun String.withAutoCompactedContext(summary: String): String =
+        substringBefore("\n\n$AUTO_COMPACTION_MARKER") + "\n\n$AUTO_COMPACTION_MARKER\n$summary"
 
     private fun compressionPrompt(focus: String): String = """
         Compress this active coding-agent session for continuation in a fresh context window.
@@ -339,10 +424,6 @@ class AiRepository @Inject constructor(
                 delegationMembers.map { it.localId }
             )
         } else emptyList()
-        if (modelConfig.supportsTools && tools.isEmpty()) {
-            send(AgentEvent.Error("No tools are available for this request. Select a workspace or ask for a memory, web, browser, reminder, or todo action.", retryable = false))
-            return@channelFlow
-        }
         val toolSchemaTokens = estimateToolSchemaTokens(tools)
         val agentMemoryContext = activeAgent?.let { agent ->
             agentMemoryRepository.list(agent.id, query = message, limit = 8).takeIf(List<com.amaya.intelligence.data.repository.AgentMemoryRecord>::isNotEmpty)
@@ -431,6 +512,8 @@ class AiRepository @Inject constructor(
 
         // Start conversation loop
         var messages = managedContext.messages
+        var autoCompactedSummary: String? = null
+        var systemPromptWithAutoContext = systemPrompt
 
         var continueLoop = true
         var iterations = 0
@@ -440,6 +523,7 @@ class AiRepository @Inject constructor(
         var terminalError = false
         var streamContinuations = 0
         val seenToolCallIds = mutableSetOf<String>()
+        val invalidToolArgumentErrors = mutableMapOf<String, Throwable>()
 
         while (continueLoop) {
             iterations++
@@ -447,17 +531,56 @@ class AiRepository @Inject constructor(
             // Emit NewIteration for tool results and provider-stream continuations.
             if (iterations > 1) send(AgentEvent.NewIteration)
 
-            val iterationInputBudget = contextWindowTokens - maxOutputTokens - toolSchemaTokens - 1_024
-            if (iterationInputBudget <= 0) {
-                send(AgentEvent.Error("Selected model context window is too small for this request", retryable = false))
+            val requestInputBudget = minOf(maxInputTokens, contextWindowTokens - maxOutputTokens)
+            var systemPromptTokens = estimatePromptTokens(systemPromptWithAutoContext)
+            var historyBudget = requestInputBudget - toolSchemaTokens - CONTEXT_SAFETY_RESERVE_TOKENS - systemPromptTokens
+            if (historyBudget <= 0) {
+                send(AgentEvent.Error("Selected model context window is too small for its instructions and tools", retryable = false))
                 terminalError = true
                 break
             }
-            val fittedMessages = fitMessagesToBudget(messages, iterationInputBudget)
+            var fittedMessages = fitMessagesToBudget(messages, historyBudget)
+            val dropped = messagesOmittedByContextFit(messages, fittedMessages)
+            if (dropped.isNotEmpty()) {
+                val summary = summarizeAutoCompaction(
+                    provider = provider,
+                    connection = connection,
+                    model = model,
+                    previousSummary = autoCompactedSummary,
+                    messages = dropped,
+                    maxInputTokens = maxInputTokens
+                )
+                if (summary != null) {
+                    autoCompactedSummary = summary
+                    if (runtimeTarget == AgentRuntimeTarget.LOCAL) runCatching {
+                        sessionMemoryRepository.saveSummary(
+                            SessionSummary(
+                                sessionId = sessionId,
+                                summary = summary,
+                                tags = listOf("auto_compacted"),
+                                createdAt = System.currentTimeMillis(),
+                                updatedAt = System.currentTimeMillis(),
+                                workspacePath = workspacePath,
+                                workspaceId = workspaceId,
+                                assistantMode = assistantMode.name,
+                                ownerId = ownerId
+                            )
+                        )
+                    }.onFailure { errorLog("AiRepository", "Failed to persist auto-compacted context", it) }
+                    systemPromptWithAutoContext = systemPrompt.withAutoCompactedContext(summary)
+                    systemPromptTokens = estimatePromptTokens(systemPromptWithAutoContext)
+                    historyBudget = requestInputBudget - toolSchemaTokens - CONTEXT_SAFETY_RESERVE_TOKENS - systemPromptTokens
+                    messages = fittedMessages
+                    fittedMessages = fitMessagesToBudget(messages, historyBudget)
+                }
+            }
             if (messages.isNotEmpty() && fittedMessages.isEmpty()) {
-                send(AgentEvent.Error("The latest message or tool result exceeds the selected model context window", retryable = false))
+                send(AgentEvent.Error("The latest user input or required tool-call metadata exceeds the selected model context window", retryable = false))
                 terminalError = true
                 break
+            }
+            debugLog("AiRepository") {
+                "context iteration=$iterations window=$contextWindowTokens input=$requestInputBudget system=$systemPromptTokens tools=$toolSchemaTokens history=${estimateMessageTokens(fittedMessages)} output=$maxOutputTokens auto_compacted=${autoCompactedSummary != null}"
             }
             messages = fittedMessages
             if (!hasProviderUserQuery(messages)) {
@@ -468,7 +591,7 @@ class AiRepository @Inject constructor(
             val request = ChatRequest(
                 model        = model,
                 messages     = messages,
-                systemPrompt = systemPrompt,
+                systemPrompt = systemPromptWithAutoContext,
                 tools        = tools,
                 maxTokens    = maxOutputTokens,
                 stream       = true,
@@ -509,20 +632,18 @@ class AiRepository @Inject constructor(
                             continueLoop = false
                             return@collect
                         }
-                        val validatedArguments = validateToolArguments(response.name, response.arguments, tools)
-                            .getOrElse { error ->
-                                send(AgentEvent.Error("Invalid arguments for ${response.name}: ${error.message}", retryable = false))
-                                terminalError = true
-                                continueLoop = false
-                                return@collect
-                            }
+                        val validation = validateToolArguments(response.name, response.arguments, tools)
+                        val toolArguments = validation.getOrElse { error ->
+                            invalidToolArgumentErrors[response.id] = error
+                            response.arguments
+                        }
                         hasToolCalls = true
-                        send(AgentEvent.ToolCallStart(response.id, response.name, validatedArguments, response.metadata))
+                        send(AgentEvent.ToolCallStart(response.id, response.name, toolArguments, response.metadata))
 
                         toolCalls.add(ToolCallMessage(
                             id = response.id,
                             name = response.name,
-                            arguments = validatedArguments,
+                            arguments = toolArguments,
                             metadata = response.metadata
                         ))
                     }
@@ -542,7 +663,7 @@ class AiRepository @Inject constructor(
                     is ChatResponse.Incomplete -> {
                         providerTerminal = true
                         retryableFailure = response.reason.takeIf { canContinueStream(response, hasToolCalls) }
-                        if (retryableFailure == null) {
+                        if (retryableFailure == null && !shouldExecuteReceivedToolCalls(response, hasToolCalls)) {
                             send(AgentEvent.Incomplete(response.reason, response.retryable))
                             terminalError = true
                             continueLoop = false
@@ -552,7 +673,7 @@ class AiRepository @Inject constructor(
                     is ChatResponse.Error -> {
                         providerTerminal = true
                         retryableFailure = response.message.takeIf { canContinueStream(response, hasToolCalls) }
-                        if (retryableFailure == null) {
+                        if (retryableFailure == null && !shouldExecuteReceivedToolCalls(response, hasToolCalls)) {
                             send(AgentEvent.Error(response.message, response.retryable))
                             terminalError = true
                             continueLoop = false
@@ -562,7 +683,7 @@ class AiRepository @Inject constructor(
             }
 
             if (terminalError) break
-            if (!providerTerminal) retryableFailure = "Provider stream ended without a terminal event"
+            if (!providerTerminal && !hasToolCalls) retryableFailure = "Provider stream ended without a terminal event"
 
             if (retryableFailure != null) {
                 if (streamContinuations == MAX_STREAM_CONTINUATIONS) {
@@ -617,7 +738,12 @@ class AiRepository @Inject constructor(
                     }
 
                     completedToolCalls.add("${toolCall.name}: ${toolCall.arguments}")
-                    val result = if (runtimeTarget == AgentRuntimeTarget.WINDOWS_BRIDGE && toolCall.name !in allowedToolNames) {
+                    val result = invalidToolArgumentErrors.remove(toolCall.id)?.let { error ->
+                        ToolResult.Error(
+                            message = "Invalid arguments for ${toolCall.name}: ${error.message.orEmpty()}",
+                            errorType = com.amaya.intelligence.tools.ErrorType.VALIDATION_ERROR
+                        )
+                    } ?: if (runtimeTarget == AgentRuntimeTarget.WINDOWS_BRIDGE && toolCall.name !in allowedToolNames) {
                         ToolResult.Error(
                             message = "Tool '${toolCall.name}' is not available in Windows Bridge chat.",
                             errorType = com.amaya.intelligence.tools.ErrorType.PERMISSION_ERROR,
@@ -648,7 +774,20 @@ class AiRepository @Inject constructor(
                         is ToolResult.Error -> "Error: ${result.message}"
                         is ToolResult.RequiresConfirmation -> "Error: Approval could not be completed: ${result.reason}"
                     }
-                    val resultContent = rawResultContent
+                    var resultContent = rawResultContent
+                    if (toolCall.name == "browser") {
+                        val signature = browserErrorSignature(resultContent)
+                        if (signature != null) {
+                            repeatedBrowserErrors = if (signature == lastBrowserErrorSignature) repeatedBrowserErrors + 1 else 1
+                            lastBrowserErrorSignature = signature
+                            repeatedBrowserFailureWarning(signature, repeatedBrowserErrors)?.let { warning ->
+                                resultContent += "\n\n$warning"
+                            }
+                        } else {
+                            lastBrowserErrorSignature = null
+                            repeatedBrowserErrors = 0
+                        }
+                    }
 
                     completedToolResults.add("${toolCall.name}: $resultContent")
                     if (result is ToolResult.Success && toolCall.name == "skill" && toolCall.arguments["operation"] == "view") {
@@ -703,21 +842,6 @@ class AiRepository @Inject constructor(
                         )
                     )
 
-                    if (toolCall.name == "browser") {
-                        val signature = browserErrorSignature(resultContent)
-                        if (signature != null) {
-                            repeatedBrowserErrors = if (signature == lastBrowserErrorSignature) repeatedBrowserErrors + 1 else 1
-                            lastBrowserErrorSignature = signature
-                            if (repeatedBrowserErrors >= 2) {
-                                send(AgentEvent.Error("Browser repeated the same failure ($signature). Stopping to avoid a tool loop; inspect agent.interactive_elements or ask the user for the target.", retryable = true))
-                                continueLoop = false
-                                break
-                            }
-                        } else {
-                            lastBrowserErrorSignature = null
-                            repeatedBrowserErrors = 0
-                        }
-                    }
                 }
             }
         }
@@ -875,41 +999,69 @@ class AiRepository @Inject constructor(
             (tool.name.length + tool.description.length + schema.length + 3) / 4
         }
 
-    private fun fitMessagesToBudget(messages: List<ChatMessage>, maxTokens: Int): List<ChatMessage> {
+    private fun estimatePromptTokens(text: String): Int {
+        if (text.isBlank()) return 0
+        return maxOf((text.length / 4.0).toInt(), (text.split(Regex("\\s+")).size * 1.3).toInt(), 1)
+    }
+
+    private fun estimateMessageTokens(messages: List<ChatMessage>): Int = messages.sumOf(::messageTokenCost)
+
+    private fun messageTokenCost(message: ChatMessage): Int = (
+        message.content.orEmpty().length +
+            message.toolResult?.content.orEmpty().length +
+            message.toolCalls.orEmpty().sumOf { it.arguments.toString().length } +
+            message.responseItems.sumOf(String::length)
+        ) / 4 + 8
+
+    internal fun fitMessagesToBudget(messages: List<ChatMessage>, maxTokens: Int): List<ChatMessage> {
         if (maxTokens <= 0) return emptyList()
-        fun cost(message: ChatMessage): Int = (
-            message.content.orEmpty().length +
-                message.toolResult?.content.orEmpty().length +
-                message.toolCalls.orEmpty().sumOf { it.arguments.toString().length } +
-                message.responseItems.sumOf(String::length)
-            ) / 4 + 8
+        val boundedMessages = compactToolResultsToBudget(messages, maxTokens)
+        val latestUserIndex = boundedMessages.indexOfLast { message ->
+            message.role == MessageRole.USER && (!message.content.isNullOrBlank() || message.images.isNotEmpty())
+        }
+        if (latestUserIndex < 0) return emptyList()
+        val latestUser = boundedMessages[latestUserIndex]
+        val userCost = messageTokenCost(latestUser)
+        if (userCost > maxTokens) return emptyList()
+        val trailing = boundedMessages.drop(latestUserIndex + 1)
         var used = 0
-        var cut = messages.size
+        var cut = trailing.size
         while (cut > 0) {
-            val spanStart = if (messages[cut - 1].role == MessageRole.TOOL) {
-                (cut - 2 downTo 0).firstOrNull { messages[it].role == MessageRole.ASSISTANT } ?: cut - 1
+            val spanStart = if (trailing[cut - 1].role == MessageRole.TOOL) {
+                (cut - 2 downTo 0).firstOrNull { trailing[it].role == MessageRole.ASSISTANT } ?: cut - 1
             } else cut - 1
-            val spanCost = messages.subList(spanStart, cut).sumOf(::cost)
-            if (used + spanCost > maxTokens) {
-                if (cut == messages.size) {
-                    // The newest atomic span cannot fit; fail instead of sending an oversized request.
-                    return emptyList()
-                }
+            val spanCost = trailing.subList(spanStart, cut).sumOf(::messageTokenCost)
+            if (userCost + used + spanCost > maxTokens) {
+                if (cut == trailing.size) return emptyList()
                 break
             }
             used += spanCost
             cut = spanStart
         }
-        val fitted = messages.drop(cut)
-        if (hasProviderUserQuery(fitted)) return fitted
+        return listOf(latestUser) + trailing.drop(cut)
+    }
 
-        // A tool-result suffix alone is invalid for OpenAI-compatible providers.
-        val userQueryIndex = messages.indexOfLast { message ->
+    private fun compactToolResultsToBudget(messages: List<ChatMessage>, maxTokens: Int): List<ChatMessage> {
+        val latestUserIndex = messages.indexOfLast { message ->
             message.role == MessageRole.USER && (!message.content.isNullOrBlank() || message.images.isNotEmpty())
         }
-        if (userQueryIndex < 0) return emptyList()
-        val anchored = messages.drop(userQueryIndex)
-        return anchored.takeIf { it.sumOf(::cost) <= maxTokens }.orEmpty()
+        if (latestUserIndex < 0) return messages
+        val activeTurn = messages.subList(latestUserIndex, messages.size)
+        if (estimateMessageTokens(activeTurn) <= maxTokens) return messages
+        val toolIndexes = (latestUserIndex until messages.size).filter {
+            messages[it].role == MessageRole.TOOL && messages[it].toolResult != null
+        }
+        if (toolIndexes.isEmpty()) return messages
+        val fixedCost = activeTurn.filter { it.role != MessageRole.TOOL }.sumOf(::messageTokenCost) + toolIndexes.size * 8
+        val perResultChars = ((maxTokens - fixedCost).coerceAtLeast(0) * 4 / toolIndexes.size)
+        if (perResultChars <= 0) return messages
+        return messages.mapIndexed { index, message ->
+            if (index !in toolIndexes) message else message.copy(toolResult = message.toolResult?.let { result ->
+                if (result.content.length <= perResultChars) result else result.copy(
+                    content = truncateToolResultForContext(result.content, perResultChars)
+                )
+            })
+        }
     }
 
     private fun browserErrorSignature(resultContent: String): String? {

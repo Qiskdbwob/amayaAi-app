@@ -4,8 +4,12 @@ import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.Types
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -45,15 +49,47 @@ class OpenAiProvider @Inject constructor(
 
     override val name = "OpenAI Compatible"
 
+    @OptIn(DelicateCoroutinesApi::class)
     override suspend fun chat(request: ChatRequest): Flow<ChatResponse> = callbackFlow {
         val eventSourceRef = AtomicReference<EventSource?>()
-        fun sendResponse(response: ChatResponse): Boolean {
-            val result = trySend(response)
-            if (result.isFailure) {
-                eventSourceRef.getAndSet(null)?.cancel()
-                close(IllegalStateException("OpenAI stream event buffer overflow"))
+        val deltaCoalescer = OpenAiDeltaCoalescer()
+        val sendLock = Any()
+        var deltaFlushJob: Job? = null
+
+        fun flushDeltas(cancelScheduledFlush: Boolean = true): Boolean = synchronized(sendLock) {
+            if (cancelScheduledFlush) {
+                deltaFlushJob?.cancel()
+                deltaFlushJob = null
             }
-            return result.isSuccess
+            deltaCoalescer.flush()?.let { trySendBlocking(it).isSuccess } ?: true
+        }
+
+        fun scheduleDeltaFlush() {
+            if (deltaFlushJob?.isActive == true) return
+            deltaFlushJob = launch {
+                delay(24)
+                flushDeltas(cancelScheduledFlush = false)
+                deltaFlushJob = null
+            }
+        }
+
+        fun discardDeltas() = synchronized(sendLock) {
+            deltaFlushJob?.cancel()
+            deltaFlushJob = null
+            deltaCoalescer.clear()
+        }
+
+        fun sendResponse(response: ChatResponse): Boolean = synchronized(sendLock) {
+            if (isClosedForSend) return@synchronized false
+            if (response is ChatResponse.TextDelta || response is ChatResponse.ThinkingDelta) {
+                deltaCoalescer.append(response)?.let { if (!trySendBlocking(it).isSuccess) return@synchronized false }
+                scheduleDeltaFlush()
+                return@synchronized true
+            }
+            deltaFlushJob?.cancel()
+            deltaFlushJob = null
+            deltaCoalescer.flush()?.let { if (!trySendBlocking(it).isSuccess) return@synchronized false }
+            trySendBlocking(response).isSuccess
         }
 
         val settings = settingsProvider()
@@ -130,6 +166,7 @@ class OpenAiProvider @Inject constructor(
                 }
             }
             awaitClose {
+                discardDeltas()
                 officialCall.cancel()
                 officialJob.cancel()
             }
@@ -201,6 +238,7 @@ class OpenAiProvider @Inject constructor(
                 }
             }
             awaitClose {
+                discardDeltas()
                 codexCall.cancel()
                 codexJob.cancel()
             }
@@ -258,7 +296,7 @@ class OpenAiProvider @Inject constructor(
 
                 private fun completeFromFinishReason() {
                     if (terminal || finishReason == null) return
-                    if (finishReason == "tool_calls") {
+                    if (normalizeOpenAiFinishReason(finishReason) == "tool_calls") {
                         if (!toolCallAccumulator.isNotEmpty()) {
                             terminal = true
                             sendResponse(ChatResponse.Error("Provider finished with tool_calls but supplied no complete call", retryable = false))
@@ -271,8 +309,9 @@ class OpenAiProvider @Inject constructor(
                         return
                     }
                     terminal = true
-                    if (finishReason == "stop") {
-                        sendResponse(ChatResponse.Done(usage = latestUsage, finishReason = finishReason))
+                    val normalizedFinishReason = normalizeOpenAiFinishReason(finishReason)
+                    if (isOpenAiCompletedFinishReason(normalizedFinishReason)) {
+                        sendResponse(ChatResponse.Done(usage = latestUsage, finishReason = normalizedFinishReason))
                     } else {
                         sendResponse(ChatResponse.Incomplete("Provider stopped with finish_reason=$finishReason", retryable = false))
                     }
@@ -288,12 +327,14 @@ class OpenAiProvider @Inject constructor(
                         receivedDone = true
                         if (!terminal && flushToolCalls()) {
                             terminal = true
-                            if (finishReason == null || finishReason in setOf("stop", "tool_calls")) {
-                                sendResponse(ChatResponse.Done(usage = latestUsage, finishReason = finishReason))
+                            val normalizedFinishReason = normalizeOpenAiFinishReason(finishReason)
+                            if (normalizedFinishReason == null || isOpenAiCompletedFinishReason(normalizedFinishReason)) {
+                                sendResponse(ChatResponse.Done(usage = latestUsage, finishReason = normalizedFinishReason))
                             } else {
                                 sendResponse(ChatResponse.Incomplete("Provider stopped with finish_reason=$finishReason", retryable = false))
                             }
                         }
+                        if (!flushDeltas()) eventSource.cancel()
                         if (terminal && toolCallAccumulator.isNotEmpty()) eventSource.cancel()
                         close()
                         return
@@ -302,7 +343,9 @@ class OpenAiProvider @Inject constructor(
                     try {
                         val chunk = moshi.adapter(OpenAiStreamChunk::class.java)
                             .fromJson(data) ?: error("Empty Chat Completions stream chunk")
+                        chunk.usage?.let { latestUsage = TokenUsage(it.promptTokens, it.completionTokens) }
 
+                        // Usage/keepalive chunks legitimately omit choices.
                         chunk.choices.firstOrNull()?.let { choice ->
                             // Vendor reasoning field (DeepSeek/vLLM/GLM/Kimi) → ThinkingDelta.
                             choice.delta.reasoningContent?.takeIf { it.isNotEmpty() }?.let {
@@ -325,13 +368,13 @@ class OpenAiProvider @Inject constructor(
                                 )
                             }
 
-                            choice.finishReason?.let { finishReason = it }
-                            chunk.usage?.let { latestUsage = TokenUsage(it.promptTokens, it.completionTokens) }
+                            choice.finishReason?.let { finishReason = normalizeOpenAiFinishReason(it) }
                         }
 
 
                     } catch (e: Exception) {
                         terminal = true
+                        flushDeltas()
                         sendResponse(ChatResponse.Error("Failed to parse chunk: ${e.message}"))
                         eventSource.cancel()
                         close()
@@ -341,11 +384,13 @@ class OpenAiProvider @Inject constructor(
                 override fun onFailure(eventSource: EventSource, t: Throwable?, response: okhttp3.Response?) {
                     // If we already received [DONE], this is just the connection closing normally
                     if (receivedDone) {
+                        flushDeltas()
                         close()
                         return
                     }
                     completeFromFinishReason()
                     if (terminal) {
+                        flushDeltas()
                         close()
                         return
                     }
@@ -364,6 +409,7 @@ class OpenAiProvider @Inject constructor(
                         terminal = true
                         sendResponse(ChatResponse.Incomplete("Provider stream closed without [DONE] or finish_reason"))
                     }
+                    flushDeltas()
                     close()
                 }
             }
@@ -372,6 +418,7 @@ class OpenAiProvider @Inject constructor(
             eventSourceRef.set(eventSource)
 
             awaitClose {
+                discardDeltas()
                 eventSourceRef.getAndSet(null)?.cancel()
             }
         } else {
@@ -416,8 +463,8 @@ class OpenAiProvider @Inject constructor(
                     }
                 }
 
-                val finishReason = choice?.finishReason
-                if (finishReason in setOf("stop", "tool_calls")) {
+                val finishReason = normalizeOpenAiFinishReason(choice?.finishReason)
+                if (isOpenAiCompletedFinishReason(finishReason)) {
                     sendResponse(ChatResponse.Done(
                         usage = openaiResponse?.usage?.let {
                             TokenUsage(it.promptTokens, it.completionTokens)
@@ -1092,7 +1139,7 @@ data class OpenAiStreamChunk(
     val `object`: String? = null,
     val created: Long? = null,
     val model: String? = null,
-    val choices: List<OpenAiStreamChoice>,
+    val choices: List<OpenAiStreamChoice> = emptyList(),
     val usage: OpenAiUsage? = null
 )
 

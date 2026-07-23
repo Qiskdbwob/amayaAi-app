@@ -198,8 +198,7 @@ object ToolUiMapper {
             "browser", "browser_subagent", "chrome-devtools",
             "open_url", "new_page", "close_page", "click_element", "type_text", "clear_input",
             "scroll_page", "get_dom", "get_visible_text", "get_screenshot", "find_element",
-            "wait_for_element", "go_back", "go_forward", "reload_page", "cancel_action",
-            "pause_session", "resume_session" -> ToolUiMetadata(
+            "wait_for_element", "go_back", "go_forward", "reload_page", "cancel_action" -> ToolUiMetadata(
                 category = ToolCategory.WEB,
                 label = safeArgs["url"]?.toString()?.substringAfter("://")?.substringBefore("/")
                     ?: safeArgs["selector"]?.toString()?.take(30)

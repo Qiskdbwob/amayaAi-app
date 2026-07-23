@@ -5,6 +5,7 @@ import android.net.Uri
 import android.view.View
 import android.graphics.PixelFormat
 import android.media.ImageReader
+import android.os.PowerManager
 import org.mozilla.geckoview.GeckoDisplay
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
@@ -45,6 +46,9 @@ class BrowserSessionManager @Inject constructor(
 
     private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
     private val headlessSurfaceSlots = Semaphore(2)
+    private val executionWakeLock = (context.getSystemService(Context.POWER_SERVICE) as PowerManager)
+        .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "amaya:browser-agent")
+        .apply { setReferenceCounted(true) }
     private val sessions = object : LinkedHashMap<SessionKey, BrowserConversationSession>(8, 0.75f, true) {}
     private val _uiState = MutableStateFlow(BrowserUiState())
     val uiState: StateFlow<BrowserUiState> = _uiState.asStateFlow()
@@ -151,10 +155,12 @@ class BrowserSessionManager @Inject constructor(
             ?: return JSONObject().put("status", "error").put("error", "Browser requires an active Agent").toString(2)
         val key = SessionKey(executionContext.conversationId?.let { "conversation:$it" } ?: "agent:$agentId", agentId)
         val session = synchronized(this) { sessionFor(key).also { it.retain() } }
+        executionWakeLock.acquire(BROWSER_ACTION_WAKE_TIMEOUT_MS)
         return try {
             session.setWorkspace(executionContext.workspacePath?.takeIf(String::isNotBlank) ?: workspacePath)
             session.executeBrowserTask(arguments, executionContext)
         } finally {
+            if (executionWakeLock.isHeld) executionWakeLock.release()
             session.release()
             trimSessions()
         }
@@ -163,7 +169,10 @@ class BrowserSessionManager @Inject constructor(
         selected()?.execute(toolName, arguments) ?: BrowserToolResponse.Failure("No active browser session")
     fun cancelFromUser() { selected()?.cancelFromUser() }
 
-    companion object { private const val MAX_RESIDENT_SESSIONS = 6 }
+    companion object {
+        private const val MAX_RESIDENT_SESSIONS = 6
+        private const val BROWSER_ACTION_WAKE_TIMEOUT_MS = 60_000L
+    }
 }
 
 private class BrowserConversationSession(
@@ -198,6 +207,8 @@ private class BrowserConversationSession(
     private var parentStartedAt = BrowserResponseFormatter.nowIso()
     private var parentSummary = "Browser task"
     private val parentSubToolcalls = mutableListOf<JSONObject>()
+    private var pendingApprovalCallId: String? = null
+    private var pendingApprovalStepIndex: Int? = null
     private var conversationKey: String? = null
     private var visibleConversationKey: String? = null
     private var visibleAgentId: Long? = null
@@ -357,7 +368,7 @@ private class BrowserConversationSession(
             callback(null)
             return
         }
-        val selected = if (pendingUploadMultiple) uris.take(10) else uris.take(1)
+        val selected = if (pendingUploadMultiple) uris.toList() else uris.take(1)
         val acceptTypes = pendingUploadAcceptTypes.filter(String::isNotBlank)
         resumeScope.launch(Dispatchers.IO) {
             val staged = runCatching {
@@ -366,18 +377,17 @@ private class BrowserConversationSession(
                 root.mkdirs()
                 selected.mapNotNull { uri ->
                     val type = context.contentResolver.getType(uri).orEmpty()
-                    if (acceptTypes.isNotEmpty() && acceptTypes.none { matchesMime(it, type) }) return@mapNotNull null
+                    if (acceptTypes.isNotEmpty() && acceptTypes.none { matchesMime(it, type) }) {
+                        error("File does not match the web input format: ${queryDisplayName(uri) ?: uri}")
+                    }
                     val name = sanitizeFileName(queryDisplayName(uri) ?: "upload")
                     val target = uniqueFile(root, name)
                     context.contentResolver.openInputStream(uri)?.use { input ->
                         FileOutputStream(target).use { output ->
-                            var total = 0L
                             val buffer = ByteArray(8192)
                             while (true) {
                                 val count = input.read(buffer)
                                 if (count < 0) break
-                                total += count
-                                require(total <= 50L * 1024L * 1024L) { "Upload exceeds 50MB limit" }
                                 output.write(buffer, 0, count)
                             }
                         }
@@ -469,7 +479,7 @@ private class BrowserConversationSession(
                 var total = 0L
                 (response.body ?: error("Download body unavailable")).use { input -> FileOutputStream(target).use { output ->
                     val buffer = ByteArray(8192)
-                    while (true) { val count = input.read(buffer); if (count < 0) break; total += count; require(total <= 100L * 1024L * 1024L) { "Download exceeds 100MB limit" }; output.write(buffer, 0, count) }
+                    while (true) { val count = input.read(buffer); if (count < 0) break; total += count; output.write(buffer, 0, count) }
                 } }
                 val relative = ".amaya/browser/downloads/${target.name}"
                 android.util.Log.i("AmayaBrowser", "download saved path=$relative bytes=$total")
@@ -543,9 +553,10 @@ private class BrowserConversationSession(
         }
         val view = ensureSharedControllerOnMain().first
         controller?.setVisibleFileChooserHost(true)
-        pageRuntimes[_uiState.value.activeTabId]?.session?.let {
-            it.setActive(true)
-            it.setPriorityHint(GeckoSession.PRIORITY_HIGH)
+        pageRuntimes.forEach { (tabId, runtime) ->
+            val active = tabId == _uiState.value.activeTabId
+            runtime.session.setActive(active)
+            runtime.session.setPriorityHint(if (active) GeckoSession.PRIORITY_HIGH else GeckoSession.PRIORITY_DEFAULT)
         }
         if (!pendingRestoreUrl.isNullOrBlank() && controller?.currentUrl() == "about:blank") {
             val url = pendingRestoreUrl ?: return view
@@ -561,6 +572,7 @@ private class BrowserConversationSession(
         detachHeadlessSurface()
         pageRuntimes.values.forEach { runtime ->
             runtime.session.setActive(false)
+            runtime.session.setFocused(false)
             runtime.session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT)
         }
     }
@@ -572,12 +584,12 @@ private class BrowserConversationSession(
     }
 
     private suspend fun attachHeadlessSurfaceOnMain() {
-        if (visibleHost) return
         val tabId = _uiState.value.activeTabId ?: return
         val runtime = pageRuntimes[tabId] ?: return
+        if (runtime.view.isAttachedToWindow) return
         if (runtime.display != null) return
         if (headlessSurfaceHeld) detachHeadlessSurface(releaseSlot = false) else headlessSurfaceSlots.acquire()
-        val imageReader = ImageReader.newInstance(1080, 1920, PixelFormat.RGBA_8888, 2).apply {
+        val imageReader = ImageReader.newInstance(1080, 1920, PixelFormat.RGBX_8888, 2).apply {
             setOnImageAvailableListener({ reader -> reader.acquireLatestImage()?.close() }, null)
         }
         val display = runtime.session.acquireDisplay()
@@ -585,12 +597,14 @@ private class BrowserConversationSession(
         runtime.imageReader = imageReader
         runtime.display = display
         runtime.session.setActive(true)
+        runtime.session.setFocused(true)
         runtime.session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
         headlessSurfaceHeld = true
     }
 
     private fun detachHeadlessSurface(releaseSlot: Boolean = true) {
-        if (!headlessSurfaceHeld) return
+        val hasDisplay = pageRuntimes.values.any { it.display != null }
+        if (!headlessSurfaceHeld && !hasDisplay) return
         pageRuntimes.values.forEach { runtime ->
             runtime.display?.let { display ->
                 runCatching { display.surfaceDestroyed() }
@@ -600,10 +614,12 @@ private class BrowserConversationSession(
             runtime.display = null
             runtime.imageReader = null
             runtime.session.setActive(false)
+            runtime.session.setFocused(false)
             runtime.session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT)
         }
+        val releasePermit = headlessSurfaceHeld
         headlessSurfaceHeld = false
-        if (releaseSlot) headlessSurfaceSlots.release()
+        if (releaseSlot && releasePermit) headlessSurfaceSlots.release()
     }
 
     private fun ensureSharedControllerOnMain(): Pair<GeckoView, AndroidBrowserController> {
@@ -619,6 +635,13 @@ private class BrowserConversationSession(
             setBackgroundColor(android.graphics.Color.WHITE)
             setLayerType(View.LAYER_TYPE_HARDWARE, null)
             setSession(session)
+            // Headless Gecko still needs a logical viewport for native file-input
+            // gestures; the offscreen display supplies the actual pixels.
+            measure(
+                View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY)
+            )
+            layout(0, 0, measuredWidth, measuredHeight)
         }
         session.setActive(false)
         session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT)
@@ -634,11 +657,6 @@ private class BrowserConversationSession(
             onAgentTouch = this::onAgentTouch,
             onDownload = this::handleGeckoDownload,
             onFileChooser = { acceptTypes, multiple, callback ->
-                if (!visibleHost) {
-                    callback(null)
-                    onBrowserError("File selection requires Browser Operator")
-                    return@AndroidBrowserController
-                }
                 fileChooserCallback?.invoke(null)
                 fileChooserCallback = callback
                 pendingUploadAcceptTypes = acceptTypes
@@ -648,7 +666,15 @@ private class BrowserConversationSession(
                     val queued = queuedUploadUris
                     queuedUploadDecision = false
                     queuedUploadUris = null
-                    provideUploadUris(queued)
+                    if (queued.isNullOrEmpty()) {
+                        callback(null)
+                    } else {
+                        // Agent-selected workspace files already have stable FileProvider
+                        // URIs. Pass them directly; staging here changes the filename and
+                        // breaks the upload postcondition.
+                        callback(queued)
+                        _uiState.update { it.copy(uploadPending = false, uploadAcceptTypes = emptyList()) }
+                    }
                 }
             }
         )
@@ -659,7 +685,7 @@ private class BrowserConversationSession(
                 sessionId = sessionId,
                 browserId = browserId,
                 conversationKey = conversationKey,
-                status = if (state.isPaused) BrowserAgentStatus.PAUSED else BrowserAgentStatus.IDLE,
+                status = BrowserAgentStatus.IDLE,
                 currentAction = "Browser ready",
                 lastError = null
             )
@@ -786,16 +812,22 @@ private class BrowserConversationSession(
         }
         _uiState.update { it.copy(browserAccessActive = true) }
         needsHeadlessSurface = !visibleHost
-        if (needsHeadlessSurface) withContext(Dispatchers.Main.immediate) {
+        withContext(Dispatchers.Main.immediate) {
             ensureSharedControllerOnMain()
-            attachHeadlessSurfaceOnMain()
+            if (needsHeadlessSurface) attachHeadlessSurfaceOnMain()
         }
-        val reset = arguments["reset_task"] == true || parentSubToolcalls.isEmpty()
+        val callId = executionContext.toolCallId
+            ?: "browser_task_${UUID.randomUUID().toString().take(8)}"
+        val resumeStep = pendingApprovalStepIndex.takeIf {
+            executionContext.confirmed && pendingApprovalCallId == callId
+        }
+        val reset = resumeStep == null && (arguments["reset_task"] == true || parentSubToolcalls.isEmpty())
         if (reset) {
-            parentTaskId = executionContext.toolCallId
-                ?: "browser_task_${UUID.randomUUID().toString().take(8)}"
+            parentTaskId = callId
             parentStartedAt = BrowserResponseFormatter.nowIso()
             parentSubToolcalls.clear()
+            pendingApprovalCallId = null
+            pendingApprovalStepIndex = null
         }
         arguments["task"]?.toString()?.takeIf { it.isNotBlank() }?.let { parentSummary = it.take(160) }
 
@@ -803,8 +835,9 @@ private class BrowserConversationSession(
         val totalSteps = steps.size.coerceAtLeast(1)
         var lastLabel = "Preparing browser"
         steps.forEachIndexed { index, step ->
+            if (resumeStep != null && index < resumeStep) return@forEachIndexed
             val action = normalizeActionName(step.first)
-            val params = step.second
+            val params = if (executionContext.confirmed) step.second + ("__confirmed" to true) else step.second
             lastLabel = readableAction(action)
             val sub = executeNormalizedSubtool(
                 parentCallId = parentTaskId,
@@ -814,6 +847,13 @@ private class BrowserConversationSession(
                 totalSteps = totalSteps
             )
             parentSubToolcalls += sub
+            if (sub.optJSONObject("error")?.optString("code") == "USER_APPROVAL_REQUIRED") {
+                pendingApprovalCallId = callId
+                pendingApprovalStepIndex = index
+            } else if (resumeStep == index) {
+                pendingApprovalCallId = null
+                pendingApprovalStepIndex = null
+            }
             if (sub.optString("status") in setOf("paused", "cancelled", "error", "timeout")) {
                 return parentSnapshot(lastLabel, index + 1, totalSteps).toString(2)
             }
@@ -844,9 +884,7 @@ private class BrowserConversationSession(
             "analyze_page" -> execute("get_dom", params)
             else -> execute(internalName, params)
         }
-        val response = if (action in HUMAN_VERIFICATION_CHECK_ACTIONS && rawResponse is BrowserToolResponse.Success) {
-            humanVerificationGuard(rawResponse)
-        } else rawResponse
+        val response = rawResponse
         val duration = System.currentTimeMillis() - started
         return BrowserResponseFormatter.subToolResponse(
             id = BrowserResponseFormatter.newCallId(),
@@ -971,10 +1009,6 @@ private class BrowserConversationSession(
     )
 
     suspend fun execute(toolName: String, arguments: Map<String, Any?>): BrowserToolResponse {
-        if (toolName != "resume_session" && toolName != "cancel_action" && _uiState.value.isPaused) {
-            return BrowserToolResponse.Failure("Browser session is paused. Ask the user to resume_session or fill the form manually.")
-        }
-
         val argsPreview = arguments
             .filterKeys { !it.startsWith("__") && it != "text" }
             .entries.joinToString { "${it.key}=${it.value}" }
@@ -993,8 +1027,6 @@ private class BrowserConversationSession(
         val result = try {
             when (toolName) {
                 "cancel_action" -> cancelAction()
-                "pause_session" -> pauseSession("Paused by user or agent")
-                "resume_session" -> resumeSession()
                 else -> executeBrowserTool(toolName, arguments)
             }
         } catch (e: Exception) {
@@ -1007,7 +1039,7 @@ private class BrowserConversationSession(
                 val image = result.metadata["image_base64"] as? String
                 _uiState.update {
                     it.copy(
-                        status = if (toolName == "pause_session") BrowserAgentStatus.PAUSED else BrowserAgentStatus.IDLE,
+                        status = BrowserAgentStatus.IDLE,
                         currentAction = "Completed ${readableAction(toolName)}",
                         screenshotBase64 = image ?: it.screenshotBase64,
                         evaluateResult = if (toolName == "evaluate") result.output else it.evaluateResult,
@@ -1016,20 +1048,12 @@ private class BrowserConversationSession(
                 }
             }
             is BrowserToolResponse.Failure -> {
-                val waitingForHuman = result.metadata["human_verification_required"] == true
-                appendLog(toolName, argsPreview, if (waitingForHuman) "paused" else "error", result.message)
+                appendLog(toolName, argsPreview, "error", result.message)
                 _uiState.update {
                     it.copy(
-                        status = when {
-                            waitingForHuman -> BrowserAgentStatus.WAITING_INPUT
-                            result.recoverable -> BrowserAgentStatus.ERROR
-                            else -> BrowserAgentStatus.CANCELLED
-                        },
-                        isPaused = waitingForHuman || it.isPaused,
-                        humanVerificationRequired = waitingForHuman || it.humanVerificationRequired,
-                        humanVerificationProvider = result.metadata["provider"]?.toString() ?: it.humanVerificationProvider,
-                        currentAction = if (waitingForHuman) "Human verification required" else "Failed ${readableAction(toolName)}",
-                        lastError = if (waitingForHuman) null else result.message
+                        status = if (result.recoverable) BrowserAgentStatus.ERROR else BrowserAgentStatus.CANCELLED,
+                        currentAction = "Failed ${readableAction(toolName)}",
+                        lastError = result.message
                     )
                 }
             }
@@ -1043,7 +1067,6 @@ private class BrowserConversationSession(
             it.copy(
                 status = BrowserAgentStatus.CANCELLED,
                 currentAction = "Cancelled by user",
-                isPaused = false,
                 isCancelled = true
             )
         }
@@ -1061,7 +1084,7 @@ private class BrowserConversationSession(
             "new_page" -> {
                 createTab(arguments["url"]?.toString())
                 val runtime = withContext(Dispatchers.Main.immediate) {
-                    ensureSharedControllerOnMain().also { if (!visibleHost) attachHeadlessSurfaceOnMain() }
+                    ensureSharedControllerOnMain().also { attachHeadlessSurfaceOnMain() }
                 }
                 GeckoBrowserRuntime.attach(context, runtime.second.session, reloadIfNeeded = false)
                 runtime.second.newPage(arguments["url"]?.toString()).also { updateTabAfterNavigation(runtime.second) }
@@ -1161,6 +1184,7 @@ private class BrowserConversationSession(
                     ?: return BrowserToolResponse.Failure("Missing value for select_option")
                 controller.selectOption(selector, value)
             }
+            "upload_file" -> uploadWorkspaceFiles(controller, arguments)
             "find_element" -> {
                 val query = queryArg(arguments)
                 if (query == null) {
@@ -1192,6 +1216,109 @@ private class BrowserConversationSession(
         }
     }
 
+    private suspend fun uploadWorkspaceFiles(controller: AndroidBrowserController, arguments: Map<String, Any?>): BrowserToolResponse {
+        val root = workspacePath?.let(::File)?.canonicalFile
+            ?: return BrowserToolResponse.Failure("Upload requires an active workspace")
+        val rawPaths = when (val paths = arguments["paths"]) {
+            is Iterable<*> -> paths.mapNotNull { it?.toString() }
+            else -> listOfNotNull(arguments["path"]?.toString())
+        }
+        if (rawPaths.isEmpty()) return BrowserToolResponse.Failure("Missing workspace-relative path/paths for upload_file")
+        val files = runCatching {
+            rawPaths.map { raw ->
+                require(raw.isNotBlank() && raw.replace('\\', '/').split('/').none { it == ".." }) { "Invalid workspace path: $raw" }
+                val file = File(root, raw).canonicalFile
+                require(file.path == root.path || file.path.startsWith(root.path.trimEnd(File.separatorChar) + File.separator)) { "Path is outside the active workspace: $raw" }
+                require(file.isFile) { "Workspace file not found: $raw" }
+                file
+            }
+        }.getOrElse { return BrowserToolResponse.Failure(it.message ?: "Invalid upload path") }
+        val selector = selectorArg(arguments)
+            ?: return domBackedFailure(controller, "Missing selector/element_id for upload_file")
+        val accept = controller.fileInputConstraints(selector) ?: return BrowserToolResponse.Failure("Target is not a file input")
+        if (!accept.multiple && files.size > 1) return BrowserToolResponse.Failure("Web input accepts only one file")
+        val rejected = files.firstOrNull { file -> accept.acceptTypes.isNotEmpty() && accept.acceptTypes.none { matchesFileAccept(it, file) } }
+        if (rejected != null) return BrowserToolResponse.Failure("File does not match web input format: ${rejected.name}; accepts ${accept.acceptTypes.joinToString()}")
+        if (!boolArg(arguments, "__confirmed", false)) {
+            return BrowserToolResponse.Failure(
+                "User approval required before selecting workspace files for upload",
+                metadata = mapOf(
+                    "requires_confirmation" to true,
+                    "confirmation_reason" to "Select ${files.size} workspace file(s) for this web form?",
+                    "confirmation_details" to files.joinToString { it.relativeTo(root).invariantSeparatorsPath },
+                    "risk_level" to "medium",
+                    "confirmation_action" to "upload_file"
+                )
+            )
+        }
+        val prepared = controller.beginFileInputAssignment(selector)
+        if (prepared is BrowserToolResponse.Failure) return prepared
+        val chunkError = withContext(Dispatchers.IO) {
+            files.firstNotNullOfOrNull { file ->
+                val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase()) ?: "application/octet-stream"
+                file.inputStream().buffered().use { input ->
+                    val buffer = ByteArray(UPLOAD_CHUNK_BYTES)
+                    var first = true
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        val chunk = android.util.Base64.encodeToString(buffer.copyOf(count), android.util.Base64.NO_WRAP)
+                        val response = withContext(Dispatchers.Main.immediate) {
+                            controller.appendFileInputChunk(file.name, mime, file.lastModified(), chunk, first)
+                        }
+                        if (response is BrowserToolResponse.Failure) return@firstNotNullOfOrNull response
+                        first = false
+                    }
+                    if (first) {
+                        val response = withContext(Dispatchers.Main.immediate) {
+                            controller.appendFileInputChunk(file.name, mime, file.lastModified(), "", true)
+                        }
+                        if (response is BrowserToolResponse.Failure) return@firstNotNullOfOrNull response
+                    }
+                }
+                null
+            }
+        }
+        if (chunkError != null) return chunkError
+        val assigned = controller.finishFileInputAssignment()
+        if (assigned is BrowserToolResponse.Failure) return assigned
+        if (controller.uploadedFileNames(selector).toSet() == files.map { it.name }.toSet()) {
+            return BrowserToolResponse.Success(
+                "Selected ${files.size} workspace file(s) for upload",
+                controller.currentMetadata() + mapOf("files" to files.map { it.relativeTo(root).invariantSeparatorsPath }, "accept" to accept.acceptTypes, "multiple" to accept.multiple)
+            )
+        }
+        val uris = files.map(Uri::fromFile).toTypedArray()
+        queuedUploadDecision = true
+        queuedUploadUris = uris
+        val opened = controller.click(selector)
+        if (opened is BrowserToolResponse.Failure && !opened.message.equals("File selection pending", ignoreCase = true)) {
+            queuedUploadDecision = false
+            queuedUploadUris = null
+            return opened
+        }
+        repeat(30) {
+            if (!queuedUploadDecision && controller.uploadedFileNames(selector).toSet() == files.map { it.name }.toSet()) {
+                return BrowserToolResponse.Success(
+                    "Selected ${files.size} workspace file(s) for upload",
+                    controller.currentMetadata() + mapOf("files" to files.map { it.relativeTo(root).invariantSeparatorsPath }, "accept" to accept.acceptTypes, "multiple" to accept.multiple)
+                )
+            }
+            delay(100)
+        }
+        queuedUploadDecision = false
+        queuedUploadUris = null
+        return BrowserToolResponse.Failure("Web file chooser did not open", recoverable = true)
+    }
+
+    private fun matchesFileAccept(pattern: String, file: File): Boolean {
+        val normalized = pattern.trim().lowercase()
+        if (normalized.isBlank() || normalized == "*/*") return true
+        if (normalized.startsWith('.')) return file.name.lowercase().endsWith(normalized)
+        val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(file.extension.lowercase()).orEmpty()
+        return normalized == mime || (normalized.endsWith("/*") && mime.startsWith(normalized.removeSuffix("*")))
+    }
+
     private suspend fun hydrateRestoredPageIfNeeded(action: String) {
         if (action in setOf("open_url", "new_page", "new_tab", "get_status", "list_pages")) return
         val url = pendingRestoreUrl?.takeIf { it.isNotBlank() && it != "about:blank" } ?: return
@@ -1201,8 +1328,8 @@ private class BrowserConversationSession(
     }
 
     private suspend fun ensureController(): AndroidBrowserController {
-        val active = controller ?: withContext(Dispatchers.Main.immediate) {
-            ensureSharedControllerOnMain().second
+        val active = withContext(Dispatchers.Main.immediate) {
+            ensureSharedControllerOnMain().also { attachHeadlessSurfaceOnMain() }.second
         }
         // A delegated turn may select this persisted session before its GeckoView is
         // mounted. Attach/reload here so DOM actions get the same ready bridge as the UI.
@@ -1226,15 +1353,20 @@ private class BrowserConversationSession(
         _uiState.update { it.copy(activeTabId = target.id, activeUrl = target.url, activeTitle = target.title) }
         val targetRuntime = withContext(Dispatchers.Main.immediate) {
             ensureSharedControllerOnMain().also {
-                if (visibleHost) {
-                    it.second.session.setActive(true)
-                    it.second.session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
-                } else attachHeadlessSurfaceOnMain()
+                it.second.session.setActive(true)
+                it.second.session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
+                attachHeadlessSurfaceOnMain()
             }
         }
-        GeckoBrowserRuntime.attach(context, targetRuntime.second.session, reloadIfNeeded = false)
-        return targetRuntime.second.openUrl(target.url).also {
+        // A background GeckoSession may have lost its bridge while its page stayed
+        // resident. Attach with recovery enabled; otherwise the next DOM action waits
+        // 15 seconds on a dead port.
+        GeckoBrowserRuntime.attach(context, targetRuntime.second.session, reloadIfNeeded = true)
+        return if (targetRuntime.second.currentUrl() == "about:blank" && target.url != "about:blank") {
+            targetRuntime.second.openUrl(target.url).also { updateTabAfterNavigation(targetRuntime.second) }
+        } else {
             updateTabAfterNavigation(targetRuntime.second)
+            BrowserToolResponse.Success("Switched to ${targetRuntime.second.currentUrl()}", targetRuntime.second.currentMetadata())
         }
     }
 
@@ -1283,74 +1415,6 @@ private class BrowserConversationSession(
             )
         }
     }
-
-    private fun pauseSession(message: String): BrowserToolResponse {
-        _uiState.update { it.copy(status = BrowserAgentStatus.PAUSED, isPaused = true, humanVerificationRequired = false, currentAction = message) }
-        return BrowserToolResponse.Success(message)
-    }
-
-    private suspend fun resumeSession(): BrowserToolResponse {
-        val active = ensureController()
-        val challenge = active.detectHumanVerification()
-        if (challenge.first) {
-            val provider = challenge.second ?: _uiState.value.humanVerificationProvider ?: "anti_bot_challenge"
-            _uiState.update {
-                it.copy(
-                    status = BrowserAgentStatus.PAUSED,
-                    isPaused = true,
-                    humanVerificationRequired = true,
-                    humanVerificationProvider = provider,
-                    currentAction = "Waiting for human verification"
-                )
-            }
-            return humanVerificationFailure(provider)
-        }
-        _uiState.update {
-            it.copy(
-                status = BrowserAgentStatus.IDLE,
-                isPaused = false,
-                humanVerificationRequired = false,
-                humanVerificationProvider = null,
-                currentAction = "Session resumed"
-            )
-        }
-        return BrowserToolResponse.Success("Human verification complete; browser session resumed")
-    }
-
-    private suspend fun humanVerificationGuard(success: BrowserToolResponse.Success): BrowserToolResponse {
-        val active = ensureController()
-        var challenge = active.detectHumanVerification()
-        if (!challenge.first) return success
-
-        // Managed challenges often clear themselves. Give them a bounded grace period,
-        // then stop automation rather than repeatedly clicking challenge controls.
-        repeat(12) {
-            delay(250)
-            challenge = active.detectHumanVerification()
-            if (!challenge.first) return success
-        }
-        val provider = challenge.second ?: "anti_bot_challenge"
-        _uiState.update {
-            it.copy(
-                status = BrowserAgentStatus.PAUSED,
-                isPaused = true,
-                humanVerificationRequired = true,
-                humanVerificationProvider = provider,
-                currentAction = "Human verification required"
-            )
-        }
-        return humanVerificationFailure(provider)
-    }
-
-    private fun humanVerificationFailure(provider: String) = BrowserToolResponse.Failure(
-        message = "Human verification required. Complete the challenge in Browser Operator, then resume_session.",
-        recoverable = true,
-        metadata = mapOf(
-            "human_verification_required" to true,
-            "provider" to provider,
-            "allowed_next_actions" to listOf("open_browser_operator", "resume_session", "cancel_action")
-        )
-    )
 
     private fun cancelAction(): BrowserToolResponse {
         cancelFromUser()
@@ -1401,9 +1465,7 @@ private class BrowserConversationSession(
     private fun readableAction(toolName: String): String = toolName.split('_').joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
 
     companion object {
-        private val HUMAN_VERIFICATION_CHECK_ACTIONS = setOf(
-            "open_url", "click", "tap", "press_key", "search", "wait_for_navigation", "reload", "resume_session"
-        )
+        private const val UPLOAD_CHUNK_BYTES = 192 * 1024
     }
     private fun selectorArg(arguments: Map<String, Any?>): String? = firstString(arguments, "element_id", "target", "selector", "query", "id")
     private fun queryArg(arguments: Map<String, Any?>): String? = firstString(arguments, "query", "text", "label", "name", "target", "selector", "element_id")

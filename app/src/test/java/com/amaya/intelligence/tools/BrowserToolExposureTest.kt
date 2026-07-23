@@ -16,9 +16,10 @@ class BrowserToolExposureTest {
     }
 
     @Test
-    fun `browser exposes text search and evaluate action`() {
+    fun `browser exposes text search and evaluate but not agent pause`() {
         assertTrue(BrowserActionCatalog.names.contains("find_text"))
         assertTrue(BrowserActionCatalog.names.contains("evaluate"))
+        assertFalse(BrowserActionCatalog.names.contains("pause_session"))
     }
 
     @Test

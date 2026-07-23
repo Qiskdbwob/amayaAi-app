@@ -89,6 +89,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -211,25 +212,27 @@ fun BrowserOperatorScreen(
                     .padding(top = 8.dp)
                     .clipToBounds()
             ) {
-                AndroidView(
-                    factory = {
-                        (browserView.parent as? ViewGroup)?.removeView(browserView)
-                        browserView
-                    },
-                    update = { view ->
-                        val agentActive = state.isAssistantStreaming && state.browserAccessActive
-                        if (agentActive) browserSessionManager.hideSoftKeyboardForAgent()
-                        view.setOnTouchListener { _, event ->
-                            if (agentActive && !browserSessionManager.isDispatchingAgentInput()) {
-                                if (event.action == android.view.MotionEvent.ACTION_DOWN) showTakeControlPrompt = true
-                                true
-                            } else false
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clipToBounds()
-                )
+                key(state.activeTabId) {
+                    AndroidView(
+                        factory = {
+                            (browserView.parent as? ViewGroup)?.removeView(browserView)
+                            browserView
+                        },
+                        update = { view ->
+                            val agentActive = state.isAssistantStreaming && state.browserAccessActive
+                            if (agentActive) browserSessionManager.hideSoftKeyboardForAgent()
+                            view.setOnTouchListener { _, event ->
+                                if (agentActive && !browserSessionManager.isDispatchingAgentInput()) {
+                                    if (event.action == android.view.MotionEvent.ACTION_DOWN) showTakeControlPrompt = true
+                                    true
+                                } else false
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clipToBounds()
+                    )
+                }
 
                 val agentActive = state.isAssistantStreaming && state.browserAccessActive
                 if (agentActive) {
@@ -255,28 +258,6 @@ fun BrowserOperatorScreen(
                 AgentCursorOverlay(state = state, agentActive = agentActive)
             }
 
-            if (state.humanVerificationRequired) {
-                Surface(
-                    color = Color(0xFFFFB340).copy(alpha = 0.16f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Icon(Icons.Default.Public, null, tint = Color(0xFFFFB340), modifier = Modifier.size(20.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("Human verification required", color = Color.White, fontWeight = FontWeight.SemiBold)
-                            Text("Complete the challenge here. Press Resume when finished.", color = Color.White.copy(alpha = 0.72f), fontSize = 12.sp)
-                        }
-                        TextButton(onClick = { scope.launch { browserSessionManager.execute("resume_session", emptyMap()) } }) {
-                            Text("Resume")
-                        }
-                    }
-                }
-            }
-
             if (state.progress in 0.01f..0.99f) {
                 LinearProgressIndicator(
                     progress = { state.progress },
@@ -292,8 +273,6 @@ fun BrowserOperatorScreen(
                 onAddressChange = { address = it },
                 onGo = { scope.launch { browserSessionManager.execute("open_url", mapOf("url" to address)) } },
                 onClose = onClose,
-                onPause = { scope.launch { browserSessionManager.execute("pause_session", emptyMap()) } },
-                onResume = { scope.launch { browserSessionManager.execute("resume_session", emptyMap()) } },
                 onStop = { browserSessionManager.cancelFromUser() },
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp, max = 360.dp)
             )
@@ -373,13 +352,7 @@ fun BrowserOperatorScreen(
                 }) { Text("Take control") }
             },
             dismissButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    TextButton(onClick = { showTakeControlPrompt = false }) { Text("Keep running") }
-                    TextButton(onClick = {
-                        showTakeControlPrompt = false
-                        scope.launch { browserSessionManager.execute("pause_session", emptyMap()) }
-                    }) { Text("Pause agent") }
-                }
+                TextButton(onClick = { showTakeControlPrompt = false }) { Text("Keep running") }
             }
         )
     }
@@ -1006,7 +979,6 @@ private fun cleanBrowserThinkText(raw: String): String {
 private fun agentPillColor(state: BrowserUiState): Color = when {
     state.isCancelled -> Color(0xFFFF453A)
     state.lastError != null -> Color(0xFFFF453A)
-    state.isPaused -> Color(0xFFFFB340)
     state.isAssistantStreaming && state.browserAccessActive -> Color(0xFF0A84FF)
     state.isAssistantStreaming -> Color(0xFF64D2FF)
     state.status == BrowserAgentStatus.BROWSING -> Color(0xFF0A84FF)
@@ -1017,7 +989,6 @@ private fun agentPillColor(state: BrowserUiState): Color = when {
 private fun agentPillLabel(state: BrowserUiState): String = when {
     state.isCancelled -> "Cancelled"
     state.lastError != null -> "Error"
-    state.isPaused -> "Paused"
     state.isAssistantStreaming && state.browserAccessActive -> "Agent browsing"
     state.isAssistantStreaming -> "Thinking"
     state.status == BrowserAgentStatus.BROWSING -> "Browsing"
