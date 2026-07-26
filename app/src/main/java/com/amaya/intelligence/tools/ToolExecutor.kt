@@ -299,7 +299,8 @@ class ToolExecutor @Inject constructor(
                     ToolParameter("start_line", "integer", "Start reading from this line (1-indexed)", required = false),
                     ToolParameter("end_line", "integer", "Stop reading at this line (inclusive)", required = false),
                     ToolParameter("info_only", "boolean", "Return only metadata (size, modified, permissions) instead of content", required = false),
-                    ToolParameter("max_lines", "integer", "Max lines per file in batch mode (default: 100)", required = false)
+                    ToolParameter("max_lines", "integer", "Max lines per file in batch mode (default: 100)", required = false),
+                    ToolParameter("summary_only", "boolean", "Batch mode: keep only the first and last 10 lines of each file", required = false)
                 )
             ),
             ToolDefinition(

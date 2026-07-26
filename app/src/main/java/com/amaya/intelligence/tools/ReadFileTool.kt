@@ -33,6 +33,8 @@ class ReadFileTool @Inject constructor(
         const val ABSOLUTE_MAX_SIZE = 10 * 1024 * 1024L  // 10MB
         const val BINARY_CHECK_SIZE = 8000
         const val MAX_EXPANDED_DOCUMENT_BYTES = 20L * 1024 * 1024
+        const val MAX_BATCH_FILES = 10
+        const val DEFAULT_BATCH_MAX_LINES = 100
 
         // Document formats supported (PDF disabled - dependency not available)
         val DOCUMENT_EXTENSIONS = setOf(
@@ -66,7 +68,7 @@ class ReadFileTool @Inject constructor(
                 "Missing required argument: path or paths",
                 ErrorType.VALIDATION_ERROR
             )
-            return@withContext executeBatch(pathsList, arguments, executionContext.confirmed)
+            return@withContext executeBatch(pathsList, arguments, executionContext)
         }
 
         val pathStr = arguments["path"] as? String
@@ -134,6 +136,15 @@ class ReadFileTool @Inject constructor(
             val ext = file.extension.lowercase()
             if (ext in DOCUMENT_EXTENSIONS) {
                 return@withContext extractDocument(file, startLine, endLine)
+            }
+
+            // Without this a PDF falls through to the binary check and comes back as
+            // "appears to be binary", which reads like a bug rather than a missing format.
+            if (ext == "pdf") {
+                return@withContext ToolResult.Error(
+                    "PDF support is currently unavailable. Supported document formats: ${DOCUMENT_EXTENSIONS.joinToString()}",
+                    ErrorType.VALIDATION_ERROR
+                )
             }
 
             // Binary check for non-document files
@@ -230,84 +241,197 @@ class ReadFileTool @Inject constructor(
     }
 
     // ── Batch mode ───────────────────────────────────────────────────────────
+    //
+    // One tool call carries one ToolResult, so N files have to share a single output
+    // string. Every section is therefore introduced by a header the UI can parse back
+    // into one card per file:
+    //
+    //     === [2/3] app/src/main/Foo.kt — 312 lines ===
+    //     === [3/3] missing.kt — ERROR: File not found ===
+    //
+    // The index prefix and the status suffix are what make the delimiter unambiguous —
+    // the old "=== name ===" collided with the "=== Sheet 1 ===" markers the spreadsheet
+    // extractor emits, and with any source line that happened to look like a banner.
+    // Header paths are workspace-relative, so two files with the same basename stay
+    // distinguishable.
     private suspend fun executeBatch(
         paths: List<String>,
         arguments: Map<String, Any?>,
-        confirmed: Boolean
+        executionContext: ToolExecutionContext
     ): ToolResult =
         withContext(Dispatchers.IO) {
-            if (paths.size > 10) {
-                return@withContext ToolResult.Error("Too many files: ${paths.size} (max: 10)", ErrorType.SIZE_LIMIT)
+            if (paths.size > MAX_BATCH_FILES) {
+                return@withContext ToolResult.Error(
+                    "Too many files: ${paths.size} (max: $MAX_BATCH_FILES)",
+                    ErrorType.SIZE_LIMIT
+                )
             }
-            val maxLines = (arguments["max_lines"] as? Number)?.toInt()?.coerceIn(1, 500) ?: 100
-            val summaryOnly = arguments["summary_only"] as? Boolean ?: false
 
-            val output = buildString {
-                paths.forEachIndexed { idx, path ->
-                    val file = java.io.File(path)
-                    appendLine("=== ${file.name} ===")
-                    // FIX #6/#15: Validate every path in batch mode through security layer
-                    when (val v = commandValidator.validatePath(path, isWrite = false)) {
-                        is ValidationResult.Denied -> {
-                            appendLine("BLOCKED: ${v.reason}")
-                            appendLine()
-                            return@forEachIndexed
-                        }
-                        is ValidationResult.RequiresConfirmation -> if (!confirmed) {
+            // Validate every path before reading anything. Raising the confirmation from
+            // inside the read loop threw away the files already read and made the retry
+            // redo all of them.
+            val denials = mutableMapOf<String, String>()
+            paths.forEach { path ->
+                when (val v = commandValidator.validatePath(path, isWrite = false)) {
+                    is ValidationResult.Denied -> denials[path] = v.reason
+                    is ValidationResult.RequiresConfirmation ->
+                        if (!executionContext.confirmed) {
                             return@withContext ToolResult.RequiresConfirmation(v.reason, "Path: $path")
                         }
-                        is ValidationResult.Allowed -> { /* proceed */ }
-                    }
-                    if (!file.exists()) { appendLine("ERROR: File not found"); appendLine(); return@forEachIndexed }
-                    if (!file.isFile)   { appendLine("ERROR: Not a file");      appendLine(); return@forEachIndexed }
-                    if (file.length() > ABSOLUTE_MAX_SIZE) {
-                        appendLine("ERROR: File too large: ${formatSize(file.length())} (max: ${formatSize(ABSOLUTE_MAX_SIZE)})")
-                        appendLine()
-                        return@forEachIndexed
-                    }
-                    try {
-                        // Check if document format
-                        val ext = file.extension.lowercase()
-                        if (ext in DOCUMENT_EXTENSIONS) {
-                            val extractedText = when (ext) {
-                                "pdf" -> "ERROR: PDF support unavailable"
-                                "docx" -> extractDocx(file)
-                                "xlsx" -> extractXlsx(file)
-                                "pptx" -> extractPptx(file)
-                                "odt" -> extractOdt(file)
-                                "ods" -> extractOds(file)
-                                "odp" -> extractOdp(file)
-                                "rtf" -> extractRtf(file)
-                                else -> "ERROR: Unsupported format"
-                            }
-                            val lines = extractedText.lines()
-                            appendLine("[${ext.uppercase()}] Words: ~${extractedText.split(Regex("\\s+")).size}")
-                            if (lines.size > maxLines) {
-                                lines.take(maxLines).forEach { appendLine(it) }
-                                appendLine("... (${lines.size - maxLines} more lines)")
-                            } else {
-                                appendLine(extractedText)
-                            }
-                        } else {
-                            val lines = file.readLines(Charsets.UTF_8)
-                            if (summaryOnly && lines.size > 20) {
-                                lines.take(10).forEach { appendLine(it) }
-                                appendLine("... (${lines.size - 20} lines omitted) ...")
-                                lines.takeLast(10).forEach { appendLine(it) }
-                            } else if (lines.size > maxLines) {
-                                lines.take(maxLines).forEach { appendLine(it) }
-                                appendLine("... (${lines.size - maxLines} more lines)")
-                            } else {
-                                // FIX 2.7: lines already read — don't call readText() again (double I/O, race risk)
-                                appendLine(lines.joinToString("\n"))
-                            }
-                        }
-                    } catch (e: Exception) { appendLine("ERROR: ${e.message}") }
-                    appendLine()
+                    is ValidationResult.Allowed -> Unit
                 }
             }
-            ToolResult.Success(output.trimEnd(), metadata = mapOf("files_read" to paths.size))
+
+            val maxLines = (arguments["max_lines"] as? Number)?.toInt()?.coerceIn(1, 500)
+                ?: DEFAULT_BATCH_MAX_LINES
+            val summaryOnly = arguments["summary_only"] as? Boolean ?: false
+            val maxSize = (arguments["max_size"] as? Number)?.toLong()?.coerceIn(1, ABSOLUTE_MAX_SIZE)
+                ?: DEFAULT_MAX_SIZE
+            val charset = runCatching { Charset.forName(arguments["encoding"] as? String ?: "UTF-8") }
+                .getOrElse { Charsets.UTF_8 }
+
+            var read = 0
+            var truncated = 0
+            val output = buildString {
+                paths.forEachIndexed { idx, path ->
+                    val section = readBatchSection(path, denials[path], maxLines, summaryOnly, maxSize, charset)
+                    appendLine(
+                        batchSectionHeader(
+                            index = idx + 1,
+                            total = paths.size,
+                            path = relativizePath(path, executionContext.workspacePath),
+                            note = section.note
+                        )
+                    )
+                    if (section.body.isNotEmpty()) appendLine(section.body)
+                    appendLine()
+                    if (!section.failed) read++
+                    if (section.truncated) truncated++
+                }
+            }
+
+            ToolResult.Success(
+                output.trimEnd(),
+                metadata = mapOf(
+                    "files_requested" to paths.size,
+                    "files_read" to read,
+                    "files_failed" to (paths.size - read),
+                    "files_truncated" to truncated
+                )
+            )
         }
+
+    /** Header the batch UI parses back into one read card per file. */
+    private fun batchSectionHeader(index: Int, total: Int, path: String, note: String): String =
+        "=== [$index/$total] $path — $note ==="
+
+    private class BatchSection(
+        val note: String,
+        val body: String = "",
+        val failed: Boolean = false,
+        val truncated: Boolean = false
+    )
+
+    private fun readBatchSection(
+        path: String,
+        denialReason: String?,
+        maxLines: Int,
+        summaryOnly: Boolean,
+        maxSize: Long,
+        charset: Charset
+    ): BatchSection {
+        if (denialReason != null) return BatchSection("BLOCKED: $denialReason", failed = true)
+
+        val file = File(path)
+        if (!file.exists()) return BatchSection("ERROR: File not found", failed = true)
+        if (!file.isFile) return BatchSection("ERROR: Not a regular file", failed = true)
+        if (file.length() > maxSize) return BatchSection(
+            "ERROR: Too large — ${formatSize(file.length())} (max ${formatSize(maxSize)}); " +
+                "read it on its own with start_line/end_line",
+            failed = true
+        )
+
+        // summary_only keeps the head and the tail; the plain path keeps the head only.
+        val headLimit = if (summaryOnly) 10 else maxLines
+        val tailLimit = if (summaryOnly) 10 else 0
+
+        return try {
+            val ext = file.extension.lowercase()
+            when {
+                ext == "pdf" -> BatchSection("ERROR: PDF support is currently unavailable", failed = true)
+                ext in DOCUMENT_EXTENSIONS -> {
+                    val text = extractDocumentText(file, ext)
+                    val window = LineWindow(headLimit, tailLimit).also { text.lineSequence().forEach(it::add) }
+                    BatchSection(
+                        note = "${ext.uppercase()} · ${windowNote(window)}",
+                        body = window.render(),
+                        truncated = window.truncated
+                    )
+                }
+                isBinaryFile(file) -> BatchSection("ERROR: Binary file", failed = true)
+                else -> {
+                    // Streamed: readLines() materialised the whole file before take(maxLines)
+                    // threw it away, ten files at a time.
+                    val window = LineWindow(headLimit, tailLimit)
+                    file.bufferedReader(charset).useLines { lines -> lines.forEach(window::add) }
+                    BatchSection(
+                        note = windowNote(window),
+                        body = window.render(),
+                        truncated = window.truncated
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            BatchSection("ERROR: ${e.message}", failed = true)
+        }
+    }
+
+    private fun windowNote(window: LineWindow): String =
+        if (window.truncated) "${window.total} lines (showing ${window.shown})"
+        else "${window.total} lines"
+
+    /**
+     * Head/tail line window over a stream, so a batch never holds a whole file in memory
+     * just to print its first hundred lines.
+     */
+    private class LineWindow(private val headLimit: Int, private val tailLimit: Int) {
+        private val head = ArrayList<String>(minOf(headLimit, 512))
+        private val tail = ArrayDeque<String>()
+        var total = 0
+            private set
+
+        fun add(line: String) {
+            total++
+            if (head.size < headLimit) head += line
+            if (tailLimit > 0) {
+                tail.addLast(line)
+                if (tail.size > tailLimit) tail.removeFirst()
+            }
+        }
+
+        private val overlap: Int get() = (head.size + tail.size - total).coerceAtLeast(0)
+        val shown: Int get() = head.size + tail.size - overlap
+        val truncated: Boolean get() = shown < total
+
+        fun render(): String {
+            val omitted = total - head.size - tail.size
+            return if (omitted > 0) {
+                (head + "... ($omitted lines omitted — re-read this file alone for the rest) ..." + tail)
+                    .joinToString("\n")
+            } else {
+                (head + tail.drop(overlap)).joinToString("\n")
+            }
+        }
+    }
+
+    /** Path as the model wrote it: workspace-relative, so basenames stay distinguishable. */
+    private fun relativizePath(path: String, workspacePath: String?): String {
+        val root = workspacePath?.trimEnd('/', '\\').orEmpty()
+        if (root.isNotEmpty() && path.startsWith(root)) {
+            return path.removePrefix(root).trimStart('/', '\\').ifEmpty { File(path).name }
+        }
+        return path
+    }
 
     // ── Info-only mode ───────────────────────────────────────────────────────
     private suspend fun executeInfo(pathStr: String, confirmed: Boolean): ToolResult = withContext(Dispatchers.IO) {
@@ -337,23 +461,11 @@ class ReadFileTool @Inject constructor(
     private suspend fun extractDocument(file: File, startLine: Int?, endLine: Int?): ToolResult = withContext(Dispatchers.IO) {
         try {
             val ext = file.extension.lowercase()
-            val extractedText = when (ext) {
-                "pdf" -> return@withContext ToolResult.Error(
-                    "PDF support is currently unavailable. Supported formats: DOCX, XLSX, PPTX, ODT, ODS, RTF",
-                    ErrorType.VALIDATION_ERROR
-                )
-                "docx" -> extractDocx(file)
-                "xlsx" -> extractXlsx(file)
-                "pptx" -> extractPptx(file)
-                "odt" -> extractOdt(file)
-                "ods" -> extractOds(file)
-                "odp" -> extractOdp(file)
-                "rtf" -> extractRtf(file)
-                else -> return@withContext ToolResult.Error(
-                    "Unsupported document format: $ext",
-                    ErrorType.VALIDATION_ERROR
-                )
-            }
+            if (ext !in DOCUMENT_EXTENSIONS) return@withContext ToolResult.Error(
+                "Unsupported document format: $ext. Supported: ${DOCUMENT_EXTENSIONS.joinToString()}",
+                ErrorType.VALIDATION_ERROR
+            )
+            val extractedText = extractDocumentText(file, ext)
 
             val allLines = extractedText.lines()
             val totalLines = allLines.size
@@ -413,6 +525,17 @@ class ReadFileTool @Inject constructor(
                 ErrorType.EXECUTION_ERROR
             )
         }
+    }
+
+    private fun extractDocumentText(file: File, ext: String): String = when (ext) {
+        "docx" -> extractDocx(file)
+        "xlsx" -> extractXlsx(file)
+        "pptx" -> extractPptx(file)
+        "odt" -> extractOdt(file)
+        "ods" -> extractOds(file)
+        "odp" -> extractOdp(file)
+        "rtf" -> extractRtf(file)
+        else -> throw IllegalArgumentException("Unsupported document format: $ext")
     }
 
     // ── PDF Extraction ──────────────────────────────────────────────────────────

@@ -17,14 +17,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.animation.animateContentSize
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -48,6 +43,14 @@ internal fun ToolCallAnimatedSection(
         exit = ToolCallMotion.exit,
         modifier = modifier
     ) {
+        // Exactly one animation owns this section's height: AnimatedVisibility.
+        //
+        // An animateContentSize() here used to run alongside it. On a leaf tool body
+        // that was invisible, but this same wrapper is what the work-summary card uses
+        // to hold a whole timeline of other cards — so the container spring spent the
+        // whole expand chasing children whose own springs were still running, and the
+        // collapse compounded two curves into one that read slower and looser than a
+        // plain tool card. Parent and child now share one spec and one animation.
         Column(Modifier.fillMaxWidth(), content = content)
     }
 }
@@ -58,28 +61,36 @@ fun ToolCallCard(
     onAccept: (() -> Unit)? = null,
     onDecline: (() -> Unit)? = null,
     onLocalhostLinkClick: ((String) -> Unit)? = null,
-    onInteraction: () -> Unit = {},
-    embeddedText: String? = null
+    embeddedText: String? = null,
+    /**
+     * Set when the card's wrapper is mounting at the same instant and already runs the
+     * fade for it. Two alpha ramps stacked would render this card at roughly half the
+     * opacity of every other one for the length of the animation.
+     */
+    parentOwnsMountFade: Boolean = false
 ) {
-    val shouldAnimate = execution.metadata["animateOnMount"].equals("true", ignoreCase = true)
-    var visible by remember(execution.toolCallId) { mutableStateOf(!shouldAnimate) }
-
-    if (shouldAnimate) {
-        LaunchedEffect(execution.toolCallId) {
-            visible = true
-        }
+    // Decided once per mount, never re-read.
+    //
+    // "animateOnMount" is written into the execution's metadata when the tool starts and
+    // is persisted with the message, so it stays true forever. Read straight from
+    // metadata, the fade therefore replayed every single time the card was composed —
+    // scrolled back into view, or held inside a work-summary card the user just
+    // expanded, where a row of tools would each start from zero height under a spring
+    // that was already running. Only a tool still in flight when its card first appears
+    // has a mount to animate.
+    val shouldAnimate = remember(execution.toolCallId) {
+        !parentOwnsMountFade &&
+            execution.metadata["animateOnMount"].equals("true", ignoreCase = true) &&
+            (execution.status == ToolStatus.PENDING || execution.status == ToolStatus.RUNNING)
     }
-
-    if (shouldAnimate) {
-        AnimatedVisibility(
-            visible = visible,
-            enter = ToolCallMotion.mountFadeIn
-        ) {
-            ToolCardContent(execution, onAccept, onDecline, onLocalhostLinkClick, onInteraction, embeddedText)
-        }
-    } else {
-        ToolCardContent(execution, onAccept, onDecline, onLocalhostLinkClick, onInteraction, embeddedText)
-    }
+    ToolCardContent(
+        execution = execution,
+        onAccept = onAccept,
+        onDecline = onDecline,
+        onLocalhostLinkClick = onLocalhostLinkClick,
+        embeddedText = embeddedText,
+        modifier = Modifier.mountFade(shouldAnimate)
+    )
 }
 
 // ── ToolCardContent (internal) ───────────────────────────────────────────────
@@ -90,8 +101,8 @@ internal fun ToolCardContent(
     onAccept: (() -> Unit)? = null,
     onDecline: (() -> Unit)? = null,
     onLocalhostLinkClick: ((String) -> Unit)? = null,
-    onInteraction: () -> Unit = {},
-    embeddedText: String? = null
+    embeddedText: String? = null,
+    modifier: Modifier = Modifier
 ) {
     val isThinkingCard = execution.isSyntheticThinkingCard()
     val isLocal = execution.metadata["source"].equals("local", ignoreCase = true)
@@ -105,8 +116,24 @@ internal fun ToolCardContent(
     val approvalPending = execution.metadata["approvalState"].equals("pending", ignoreCase = true)
         || (approvalRequired && execution.status == ToolStatus.PENDING)
     val showApprovalActions = approvalRequired && approvalPending && onAccept != null && onDecline != null
+
+    // Auto-expand for an approval prompt, and — the half that was missing — auto-collapse
+    // once, when the tool actually finishes. Both edges are latched, so a card the user
+    // has since opened or closed by hand is never overridden.
+    var autoExpandedForApproval by remember(execution.toolCallId) { mutableStateOf(false) }
+    var autoCollapsedOnce by remember(execution.toolCallId) { mutableStateOf(false) }
+    val isTerminalStatus = execution.status == ToolStatus.SUCCESS || execution.status == ToolStatus.ERROR
     LaunchedEffect(showApprovalActions) {
-        if (showApprovalActions) expanded = true
+        if (showApprovalActions) {
+            expanded = true
+            autoExpandedForApproval = true
+        }
+    }
+    LaunchedEffect(isTerminalStatus) {
+        if (isTerminalStatus && autoExpandedForApproval && !autoCollapsedOnce) {
+            autoCollapsedOnce = true
+            expanded = false
+        }
     }
 
     val iosGreen = Color(0xFF34C759)
@@ -116,12 +143,17 @@ internal fun ToolCardContent(
     val isSubagent = execution.name == "invoke_subagents"
     val isWebSearch = execution.name == "web_search" || execution.name == "search_web" || execution.name == "websearch"
     val isMemoryManage = execution.name == "memory_manage"
+    // A read has nothing worth opening: the file went to the model, and mirroring it in
+    // the timeline turns one card into a wall of source. Only a failed read has a body,
+    // and it holds the reason, not the file.
+    val isFileRead = execution.name == "read_file"
     val hasLocalSemanticBody = execution.status == ToolStatus.ERROR ||
         showApprovalActions ||
-        localToolPath(execution.arguments) != null ||
+        (!isFileRead && localToolPath(execution.arguments) != null) ||
         (execution.metadata["syntheticBrowserStep"] == "true" && (!execution.result.isNullOrBlank() || execution.arguments.isNotEmpty())) ||
         when (execution.name) {
-            "read_file", "list_files", "find_files", "run_shell", "web_search", "update_memory",
+            "read_file" -> false
+            "list_files", "find_files", "run_shell", "web_search", "update_memory",
             "memory_manage", "skill_view", "skill_manage", "session_search", "invoke_subagents", "delegate_agent" ->
                 !execution.result.isNullOrBlank()
             "edit_file" -> execution.hasCanonicalFileDiff() || !execution.result.isNullOrBlank()
@@ -160,20 +192,9 @@ internal fun ToolCardContent(
     }
     val blockBorderColor = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
 
-    val shouldShimmer = execution.status == ToolStatus.RUNNING ||
-        execution.children.any { it.status == ToolStatus.RUNNING }
-    val shimmerProgress = if (shouldShimmer) {
-        val shimmerTransition = rememberInfiniteTransition(label = "tool_shimmer")
-        val animated by shimmerTransition.animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(2500, easing = LinearEasing), RepeatMode.Restart),
-            label = "shimmer_x"
-        )
-        animated
-    } else {
-        0f
-    }
+    val shimmerProgress = rememberToolShimmerProgress(
+        execution.status == ToolStatus.RUNNING || execution.children.any { it.status == ToolStatus.RUNNING }
+    )
 
     val isTaskBoundary = execution.isTaskBoundaryTool()
     val hasTaskBoundaryArgs = isTaskBoundary && (
@@ -199,9 +220,14 @@ internal fun ToolCardContent(
         execution.uiMetadata?.actionIcon != ToolInfoIcon.MESSAGE &&
         (isWebSearch || !isGenericResult || hasInjectedPreview || isTerminal))
 
-    val thinkingVisible = isThinkingCard && !execution.result.isNullOrBlank() && expanded
-    val hasResultDetails = expanded && !isSubagent && !isThinkingCard && (execution.result != null || execution.arguments.isNotEmpty())
-    val hasSubagentResultDetails = expanded && isSubagent && execution.children.isEmpty() && execution.result != null
+    // Gated on canExpand: a tool can lose its body as it reaches a terminal status
+    // (a noisy generic success, for instance), and without this the body would stay
+    // open with no toggle left to close it.
+    val thinkingVisible = isThinkingCard && canExpand && !execution.result.isNullOrBlank() && expanded
+    val hasResultDetails = expanded && canExpand && !isSubagent && !isThinkingCard &&
+        (execution.result != null || execution.arguments.isNotEmpty())
+    val hasSubagentResultDetails = expanded && canExpand && isSubagent &&
+        execution.children.isEmpty() && execution.result != null
     val approvalSectionVisible = showApprovalActions && !approvalSubmitted
     val headerText = resolveToolCallHeaderText(execution, uiMeta, showApprovalActions, approvalPending)
 
@@ -209,14 +235,14 @@ internal fun ToolCardContent(
         shape    = RoundedCornerShape(14.dp),
         color    = bgColor,
         border   = toolCardBorder(),
-        modifier = Modifier.fillMaxWidth()
+        modifier = modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             // HEADER ROW
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .then(if (canExpand) Modifier.clickable { expanded = !expanded; onInteraction() } else Modifier)
+                    .then(if (canExpand) Modifier.clickable { expanded = !expanded } else Modifier)
                     .padding(horizontal = 12.dp, vertical = if (isThinkingCard) 6.dp else 9.dp),
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -238,34 +264,7 @@ internal fun ToolCardContent(
                     overflow   = TextOverflow.Clip,
                     modifier   = Modifier
                         .weight(1f)
-                        .then(
-                            if (execution.status == ToolStatus.RUNNING)
-                                Modifier
-                                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                                    .drawWithContent {
-                                        drawContent()
-                                        val w = size.width
-                                        val peakX = (shimmerProgress * (w * 3f)) - w
-                                        val hw = w * 0.6f
-                                        drawRect(
-                                            brush = Brush.linearGradient(
-                                                colors = listOf(
-                                                    Color.White.copy(alpha = 1f),
-                                                    Color.White.copy(alpha = 0.7f),
-                                                    Color.White.copy(alpha = 0.3f),
-                                                    Color.White.copy(alpha = 0f),
-                                                    Color.White.copy(alpha = 0.3f),
-                                                    Color.White.copy(alpha = 0.7f),
-                                                    Color.White.copy(alpha = 1f)
-                                                ),
-                                                start = Offset(peakX - hw, 0f),
-                                                end   = Offset(peakX + hw, 0f)
-                                            ),
-                                            blendMode = BlendMode.DstIn
-                                        )
-                                    }
-                            else Modifier
-                        )
+                        .toolHeaderShimmer(execution.status == ToolStatus.RUNNING, shimmerProgress)
                         .toolHeaderFade()
                 )
 
@@ -282,7 +281,7 @@ internal fun ToolCardContent(
                 }
             }
 
-            ToolCallAnimatedSection(visible = thinkingVisible) {
+            ToolCallAnimatedSection(visible = thinkingVisible, initiallyVisible = thinkingVisible) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
                     color = if (isDark) Color(0xFF1C1C1E) else Color(0xFFF2F2F7),
@@ -303,7 +302,7 @@ internal fun ToolCardContent(
                 }
             }
 
-            ToolCallAnimatedSection(visible = approvalSectionVisible) {
+            ToolCallAnimatedSection(visible = approvalSectionVisible, initiallyVisible = approvalSectionVisible) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -368,7 +367,7 @@ internal fun ToolCardContent(
                 }
             }
 
-            ToolCallAnimatedSection(visible = showChildren) {
+            ToolCallAnimatedSection(visible = showChildren, initiallyVisible = showChildren) {
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -381,15 +380,14 @@ internal fun ToolCardContent(
                                 iosGreen        = iosGreen,
                                 iosBlue         = iosBlue,
                                 iosRed          = iosRed,
-                                shimmerProgress = shimmerProgress,
-                                onInteraction   = onInteraction
+                                shimmerProgress = shimmerProgress
                             )
                         }
                     }
                 }
             }
 
-            ToolCallAnimatedSection(visible = hasResultDetails) {
+            ToolCallAnimatedSection(visible = hasResultDetails, initiallyVisible = hasResultDetails) {
                 HorizontalDivider(
                     color = if (isDark) Color.White.copy(alpha = 0.15f) else Color.Black.copy(alpha = 0.12f),
                     thickness = 1.dp,
@@ -501,7 +499,7 @@ internal fun ToolCardContent(
                 }
             }
 
-            ToolCallAnimatedSection(visible = hasSubagentResultDetails) {
+            ToolCallAnimatedSection(visible = hasSubagentResultDetails, initiallyVisible = hasSubagentResultDetails) {
                 HorizontalDivider(
                     color = if (isDark) Color.White.copy(alpha = 0.15f) else Color.Black.copy(alpha = 0.12f),
                     thickness = 1.dp,
@@ -539,8 +537,7 @@ internal fun SubagentChildCard(
     iosGreen: Color,
     iosBlue: Color,
     iosRed: Color,
-    shimmerProgress: Float,
-    onInteraction: () -> Unit = {}
+    shimmerProgress: Float
 ) {
     var expanded by remember(child.index) { mutableStateOf(false) }
 
@@ -570,7 +567,7 @@ internal fun SubagentChildCard(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .then(if (canExpand) Modifier.clickable { expanded = !expanded; onInteraction() } else Modifier)
+                    .then(if (canExpand) Modifier.clickable { expanded = !expanded } else Modifier)
                     .padding(horizontal = 10.dp, vertical = 9.dp),
                 verticalAlignment     = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -610,34 +607,7 @@ internal fun SubagentChildCard(
                     overflow   = TextOverflow.Clip,
                     modifier   = Modifier
                         .weight(1f)
-                        .then(
-                            if (child.status == ToolStatus.RUNNING)
-                                Modifier
-                                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                                    .drawWithContent {
-                                        drawContent()
-                                        val w = size.width
-                                        val peakX = (shimmerProgress * (w * 3f)) - w
-                                        val hw = w * 0.6f
-                                        drawRect(
-                                            brush = Brush.linearGradient(
-                                                colors = listOf(
-                                                    Color.White.copy(alpha = 1f),
-                                                    Color.White.copy(alpha = 0.7f),
-                                                    Color.White.copy(alpha = 0.3f),
-                                                    Color.White.copy(alpha = 0f),
-                                                    Color.White.copy(alpha = 0.3f),
-                                                    Color.White.copy(alpha = 0.7f),
-                                                    Color.White.copy(alpha = 1f)
-                                                ),
-                                                start = Offset(peakX - hw, 0f),
-                                                end   = Offset(peakX + hw, 0f)
-                                            ),
-                                            blendMode = BlendMode.DstIn
-                                        )
-                                    }
-                            else Modifier
-                        )
+                        .toolHeaderShimmer(child.status == ToolStatus.RUNNING, shimmerProgress)
                         .toolHeaderFade()
                 )
 

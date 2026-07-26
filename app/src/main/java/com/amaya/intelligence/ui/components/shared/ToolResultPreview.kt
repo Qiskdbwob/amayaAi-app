@@ -306,8 +306,10 @@ private fun LocalToolResultBody(
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         when (toolName) {
+            // Successful reads have no body at all (see ToolCallCard); what reaches here
+            // is the failure note for one file.
             "read_file" -> if (cleanResult.isNotBlank()) {
-                sectionLabel("Content")
+                sectionLabel(if (isError) "Error" else "Content")
                 GenericResultBlock(cleanResult, codeBlockBg, codeTextColor, blockBorderColor, onLocalhostLinkClick)
             }
             "edit_file" -> canonicalDiff().takeIf { it.isNotBlank() }?.let {

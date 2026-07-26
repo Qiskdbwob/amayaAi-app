@@ -5,6 +5,9 @@ import com.amaya.intelligence.domain.models.ToolExecution
 import com.amaya.intelligence.domain.models.ToolInfoIcon
 import com.amaya.intelligence.domain.models.ToolStatus
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -45,7 +48,18 @@ internal data class ToolExecutionGroup(
     val parentToolCallId: String? = null
 )
 
-/** Contiguous local tool calls sharing [toolGroupKey]; only groups with count >= 2. */
+/**
+ * Contiguous local tool calls sharing [toolGroupKey].
+ *
+ * A group is emitted from the *first* groupable execution, not from the second. The
+ * threshold used to be two, which meant a lone running tool rendered as a standalone
+ * [ToolCallCard] and was then re-parented into a [ToolExecutionGroupCard] — under a
+ * different key — the moment a sibling arrived. That unmount/remount threw away the
+ * card's expansion state and its transition state, so its collapse never animated: the
+ * card just blinked shut. Emitting from one keeps every groupable tool inside the same
+ * wrapper for its whole life; [ToolExecutionGroupCard] renders that wrapper invisibly
+ * until there really is more than one child.
+ */
 internal fun buildToolExecutionGroups(steps: List<MessageStep>): List<ToolExecutionGroup> {
     val groups = mutableListOf<ToolExecutionGroup>()
     var index = 0
@@ -59,6 +73,17 @@ internal fun buildToolExecutionGroups(steps: List<MessageStep>): List<ToolExecut
             }
             index++
             continue
+        }
+
+        // A batched read is one execution holding many files; it becomes one card per
+        // file inside its own wrapper, exactly like a batched browser step.
+        if (execution != null && execution.name == "read_file") {
+            val batchReadGroup = synthesizeBatchReadGroup(execution, index)
+            if (batchReadGroup != null) {
+                groups += batchReadGroup
+                index++
+                continue
+            }
         }
 
         val key = execution?.toolGroupKey()
@@ -75,20 +100,28 @@ internal fun buildToolExecutionGroups(steps: List<MessageStep>): List<ToolExecut
             children += next
             index++
         }
-        if (children.size >= 2) {
-            groups += ToolExecutionGroup(
-                key = key,
-                startIndex = start,
-                endIndex = index,
-                executions = children,
-                isActive = children.any {
-                    it.status == ToolStatus.RUNNING || it.status == ToolStatus.PENDING
-                }
-            )
-        }
+        groups += ToolExecutionGroup(
+            key = key,
+            startIndex = start,
+            endIndex = index,
+            executions = children,
+            isActive = children.any {
+                it.status == ToolStatus.RUNNING || it.status == ToolStatus.PENDING
+            }
+        )
         index++
     }
     return groups
+}
+
+/** Mirrors the approval gate [ToolCardContent] applies to the child card itself. */
+private fun ToolExecution.awaitsApproval(): Boolean {
+    val required = metadata["approvalRequired"].equals("true", ignoreCase = true) ||
+        ((metadata["isTerminal"].equals("true", ignoreCase = true) || isShellTool()) &&
+            status == ToolStatus.PENDING)
+    val pending = metadata["approvalState"].equals("pending", ignoreCase = true) ||
+        (required && status == ToolStatus.PENDING)
+    return required && pending
 }
 
 private fun ToolExecution.toolGroupKey(): String? {
@@ -101,96 +134,152 @@ private fun ToolExecution.toolGroupKey(): String? {
     }
 }
 
-/** Non-collapsible group wrapper holding collapsible child [ToolCallCard]s. */
+/**
+ * Wrapper holding collapsible child [ToolCallCard]s.
+ *
+ * The wrapper exists from the first groupable execution so children never change parent
+ * (see [buildToolExecutionGroups]). With a single child it renders as pure structure —
+ * no header, no tint, no border, no inset — and grows its chrome in when a second child
+ * arrives. Every visual difference between the two states is animated, so nothing in the
+ * tree is added or removed except the header row itself.
+ */
 @Composable
 internal fun ToolExecutionGroupCard(
     group: ToolExecutionGroup,
     onToolAccept: ((ToolExecution) -> Unit)? = null,
     onToolDecline: ((ToolExecution) -> Unit)? = null,
-    onLocalhostLinkClick: ((String) -> Unit)? = null,
-    onInteraction: () -> Unit = {}
+    onLocalhostLinkClick: ((String) -> Unit)? = null
 ) {
     val hasError = group.executions.any { it.status == ToolStatus.ERROR }
     val isRunning = group.executions.any { it.status == ToolStatus.RUNNING || it.status == ToolStatus.PENDING }
-    val isBrowserGroup = group.parentToolCallId != null
-    var expanded by remember(group.key, group.executions.first().toolCallId) { mutableStateOf(group.isActive) }
-    LaunchedEffect(group.isActive) {
-        expanded = group.isActive
+    // Synthesised children (browser steps, batched reads) stand in for a single parent
+    // execution; approval, when there is any, belongs to that parent's own card.
+    val isSyntheticGroup = group.parentToolCallId != null
+    val isGroup = group.executions.size >= 2
+
+    // Never opens on its own. The wrapper used to spring open while its tools were still
+    // pending or running and fold shut again when they finished, so every turn played a
+    // burst of detail nobody asked for and then took it away. It stays closed until the
+    // header is tapped.
+    //
+    // The one exception is an approval prompt: Approve and Decline live on the child
+    // card, so a group holding an unanswered one has to be open or the turn cannot move.
+    val awaitingApproval = group.executions.any { it.awaitsApproval() }
+    var expanded by remember(group.key, group.executions.first().toolCallId) {
+        mutableStateOf(awaitingApproval)
     }
+    LaunchedEffect(awaitingApproval) {
+        if (awaitingApproval) expanded = true
+    }
+    // A lone child is never hidden — there is no header to reopen it from.
+    val childrenVisible = !isGroup || expanded
+
+    // Same mount fade as every other timeline card, gated the same way: the group is new
+    // if any of its tools was still in flight when the wrapper first composed. History,
+    // or a re-open of a collapsed work card, appears instantly.
+    val animateMount = remember { group.isActive }
+
     val isDark = isSystemInDarkTheme()
     val tint = when {
         hasError -> MaterialTheme.colorScheme.error
         isRunning -> Color(0xFF007AFF)
         else -> MaterialTheme.colorScheme.primary
     }
-    val background = when {
+    val targetBackground = when {
+        !isGroup -> Color.Transparent
         hasError -> tint.copy(alpha = if (isDark) 0.10f else 0.06f)
         isRunning -> tint.copy(alpha = if (isDark) 0.08f else 0.04f)
         else -> MaterialTheme.colorScheme.surfaceContainerLow
     }
+    val background by animateColorAsState(targetBackground, label = "group_background")
+    // Same tone as toolCardBorder(), but as a plain colour so it can animate to
+    // transparent when the wrapper is holding a single child.
+    val borderColor by animateColorAsState(
+        when {
+            !isGroup -> Color.Transparent
+            isDark -> Color.White.copy(alpha = 0.08f)
+            else -> Color.Black.copy(alpha = 0.08f)
+        },
+        label = "group_border"
+    )
+    val childInset by animateDpAsState(if (isGroup) 6.dp else 0.dp, label = "group_inset")
+    // Surface clips to its shape. With a lone child sitting flush inside it, the wrapper
+    // has to match the child's own 14dp radius or it would shave its corners; it eases
+    // to the group's 12dp as the chrome grows in.
+    val cornerRadius by animateDpAsState(if (isGroup) 12.dp else 14.dp, label = "group_corner")
 
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(cornerRadius),
         color = background,
-        border = toolCardBorder(),
-        modifier = Modifier.fillMaxWidth()
+        border = BorderStroke(1.dp, borderColor),
+        modifier = Modifier.fillMaxWidth().mountFade(animateMount)
     ) {
         Column(Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        expanded = !expanded
-                        onInteraction()
-                    }
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            AnimatedVisibility(
+                visible = isGroup,
+                enter = ToolCallMotion.enter,
+                exit = ToolCallMotion.exit
             ) {
-                ToolLeadIconPill(groupIcon(group.key), tint)
-                Text(
-                    text = ">",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                )
-                Text(
-                    text = groupTitle(group),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Normal,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Clip,
-                    modifier = Modifier.weight(1f).toolHeaderFade()
-                )
-                if (isRunning) {
-                    Icon(Icons.Default.Autorenew, null, modifier = Modifier.size(14.dp), tint = tint)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { expanded = !expanded }
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ToolLeadIconPill(groupIcon(group.key), tint)
+                    Text(
+                        text = ">",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                    )
+                    Text(
+                        text = groupTitle(group),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Normal,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Clip,
+                        modifier = Modifier.weight(1f).toolHeaderFade()
+                    )
+                    if (isRunning) {
+                        Icon(Icons.Default.Autorenew, null, modifier = Modifier.size(14.dp), tint = tint)
+                    }
+                    Icon(
+                        if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                    )
                 }
-                Icon(
-                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                    null,
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                )
             }
             AnimatedVisibility(
-                visible = expanded,
+                visible = childrenVisible,
                 enter = ToolCallMotion.enter,
                 exit = ToolCallMotion.exit
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 6.dp, end = 6.dp, bottom = 6.dp),
+                        .padding(start = childInset, end = childInset, bottom = childInset),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    group.executions.forEach { execution ->
+                    group.executions.forEachIndexed { index, execution ->
                         key(execution.toolCallId) {
                             ToolCallCard(
-                                execution = execution.copy(metadata = execution.metadata + ("groupedChild" to "true")),
-                                onAccept = if (isBrowserGroup) null else onToolAccept?.let { callback -> { callback(execution) } },
-                                onDecline = if (isBrowserGroup) null else onToolDecline?.let { callback -> { callback(execution) } },
+                                // Only a real group shortens its children's headers to
+                                // bare targets; a lone child keeps its full "Read x.kt".
+                                execution = if (isGroup) {
+                                    execution.copy(metadata = execution.metadata + ("groupedChild" to "true"))
+                                } else execution,
+                                onAccept = if (isSyntheticGroup) null else onToolAccept?.let { callback -> { callback(execution) } },
+                                onDecline = if (isSyntheticGroup) null else onToolDecline?.let { callback -> { callback(execution) } },
                                 onLocalhostLinkClick = onLocalhostLinkClick,
-                                onInteraction = onInteraction
+                                // The first child is the one the wrapper appeared with, so
+                                // the wrapper's fade already covers it. Later siblings
+                                // mount on their own and run their own.
+                                parentOwnsMountFade = animateMount && index == 0
                             )
                         }
                     }

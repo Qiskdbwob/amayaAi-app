@@ -3,7 +3,13 @@ package com.amaya.intelligence.ui.components.shared
 import com.amaya.intelligence.domain.models.ToolInfoIcon
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -58,9 +64,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -78,7 +91,6 @@ internal object ToolCallMotion {
         dampingRatio = Spring.DampingRatioNoBouncy,
         stiffness = Spring.StiffnessMedium
     )
-    val mountFadeIn = fadeIn(animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing))
     val enter = expandVertically(animationSpec = motionSpec) + fadeIn(tween(durationMillis = 180, easing = FastOutSlowInEasing))
     val exit = shrinkVertically(animationSpec = motionSpec) + fadeOut(tween(durationMillis = 140, easing = FastOutSlowInEasing))
 }
@@ -94,6 +106,117 @@ internal fun toolCardBorder(): BorderStroke = BorderStroke(
 @Composable
 internal fun toolCardBodyMaxHeight(): Dp =
     (LocalConfiguration.current.screenHeightDp.dp / 4 - 44.dp).coerceAtLeast(120.dp)
+
+/**
+ * Cap on the work-summary card's body while its turn is running.
+ *
+ * Bigger than a tool body — this is the whole turn's activity, not one result — but
+ * still leaves the answer streaming underneath it in view.
+ */
+@Composable
+internal fun workCardLiveBodyMaxHeight(): Dp =
+    (LocalConfiguration.current.screenHeightDp.dp * 0.38f).coerceAtLeast(200.dp)
+
+/**
+ * A block that can be pinned to a maximum height, scrolls internally, and sticks to its
+ * newest content while it is bounded.
+ *
+ * This is what stops a live card from pushing the conversation around: once the content
+ * passes [maxHeight] the block's height stops changing entirely, so a new event scrolls
+ * into view *inside* the card instead of growing it and shoving everything below down.
+ * The edge gradients stand in for a scrollbar.
+ *
+ * @param bounded when false the block is an ordinary Column — no cap, no gesture
+ *        interception, no fades. Toggling it never changes the composition structure, so
+ *        nothing inside is remounted.
+ * @param followKey change it whenever a new event lands in this block. It re-arms the
+ *        stick-to-end latch, so having scrolled up to read an earlier event never leaves
+ *        the block permanently detached from the live one.
+ */
+@Composable
+internal fun ToolFollowingScrollBlock(
+    fadeColor: Color,
+    maxHeight: Dp,
+    bounded: Boolean,
+    followKey: Any? = null,
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val scrollState = rememberScrollState()
+    var stickToEnd by remember { mutableStateOf(true) }
+
+    // A new event re-arms following. Without this the latch was one-way in practice:
+    // one drag anywhere over the block turned it off, and nothing ever turned it back on
+    // for the rest of the turn — the block simply stopped tracking while the turn kept
+    // streaming into it.
+    LaunchedEffect(followKey, bounded) {
+        if (bounded) stickToEnd = true
+    }
+
+    LaunchedEffect(bounded, stickToEnd) {
+        if (!bounded || !stickToEnd) return@LaunchedEffect
+        // Watches the offset as well as the range. Keyed on maxValue alone this stopped
+        // tracking whenever content grew inside a child that is itself capped, or when a
+        // reflow above the tail moved the tail without changing the scroll range at all —
+        // neither of those emits a maxValue change, so the tail quietly drifted off.
+        //
+        // Instant, for the same reason the chat list follows instantly: content can
+        // arrive faster than a duration animation settles, and a chasing scroll reads as
+        // lag. Both values only update after layout, so this lands on real geometry.
+        snapshotFlow { scrollState.maxValue to scrollState.value }
+            .collect { (max, value) -> if (value < max) scrollState.scrollTo(max) }
+    }
+
+    val scrollableState = rememberScrollableState { delta ->
+        stickToEnd = false
+        // Claim only what actually moved. Claiming the whole delta the way the small
+        // tool/thinking bodies do would be wrong here: this block can be nearly two
+        // fifths of the screen, so swallowing edge deltas leaves the user unable to
+        // scroll the conversation at all with a finger anywhere over the card.
+        val consumed = -scrollState.dispatchRawDelta(-delta)
+        // Back at the bottom by hand — resume following.
+        if (!scrollState.canScrollForward) stickToEnd = true
+        consumed
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            // Both the cap and the scroll node are dropped entirely when unbounded, not
+            // just disabled. Modifier.verticalScroll rejects an infinite max-height
+            // constraint even with enabled = false — the node stays attached and still
+            // runs the check — and inside a LazyColumn item that constraint is exactly
+            // what arrives. Dropping modifier elements does not remount anything: the
+            // composition is unchanged, only the node chain is re-diffed.
+            .then(if (bounded) Modifier.heightIn(max = maxHeight) else Modifier)
+            .scrollable(scrollableState, Orientation.Vertical, enabled = bounded)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (bounded) Modifier.verticalScroll(scrollState, enabled = false) else Modifier),
+            content = content
+        )
+        if (bounded && scrollState.canScrollBackward) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(24.dp)
+                    .background(Brush.verticalGradient(listOf(fadeColor, fadeColor.copy(alpha = 0f))))
+            )
+        }
+        if (bounded && scrollState.canScrollForward) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(24.dp)
+                    .background(Brush.verticalGradient(listOf(fadeColor.copy(alpha = 0f), fadeColor)))
+            )
+        }
+    }
+}
 
 /** Scrollable result block with affordance fades. Call only from visible expandable content. */
 @Composable
@@ -139,6 +262,80 @@ internal fun ToolScrollableBlock(
             )
         }
     }
+}
+
+/**
+ * The mount fade shared by every timeline event: message rows, tool cards, thinking
+ * cards, the work-summary card.
+ *
+ * Alpha only, and the content is laid out at its final height from the very first frame.
+ * `AnimatedVisibility(enter = fadeIn())` cannot do that — it composes nothing while
+ * hidden, so the row contributes zero height for a frame and then snaps to full. Inside
+ * a card that is itself expanding, that reads as a jump; at the tail of the chat it
+ * hands the auto-follow loop a target that is still settling.
+ *
+ * @param animate decided once by the caller, from whether this event is genuinely new.
+ *        Anything read back from history, or re-composed because a collapsed parent was
+ *        re-opened, passes false and appears instantly.
+ */
+@Composable
+internal fun Modifier.mountFade(animate: Boolean): Modifier {
+    var mounted by remember { mutableStateOf(!animate) }
+    val alpha by animateFloatAsState(
+        targetValue = if (mounted) 1f else 0f,
+        animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+        label = "mount_fade"
+    )
+    LaunchedEffect(Unit) { mounted = true }
+    return if (animate) graphicsLayer { this.alpha = alpha } else this
+}
+
+/**
+ * Drives [toolHeaderShimmer]. Returns 0 when nothing is running, so an idle card costs
+ * no per-frame invalidation.
+ */
+@Composable
+internal fun rememberToolShimmerProgress(active: Boolean): Float =
+    if (active) {
+        val transition = rememberInfiniteTransition(label = "tool_shimmer")
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(2500, easing = LinearEasing), RepeatMode.Restart),
+            label = "tool_shimmer_progress"
+        ).value
+    } else 0f
+
+/**
+ * Travelling gleam across a running card's header label. Shared by tool cards, subagent
+ * rows, thinking cards and the work-summary card so "this is in progress" reads the same
+ * everywhere.
+ */
+internal fun Modifier.toolHeaderShimmer(active: Boolean, progress: Float): Modifier {
+    if (!active) return this
+    return graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithContent {
+            drawContent()
+            val w = size.width
+            val peakX = (progress * (w * 3f)) - w
+            val hw = w * 0.6f
+            drawRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 1f),
+                        Color.White.copy(alpha = 0.7f),
+                        Color.White.copy(alpha = 0.3f),
+                        Color.White.copy(alpha = 0f),
+                        Color.White.copy(alpha = 0.3f),
+                        Color.White.copy(alpha = 0.7f),
+                        Color.White.copy(alpha = 1f)
+                    ),
+                    start = Offset(peakX - hw, 0f),
+                    end = Offset(peakX + hw, 0f)
+                ),
+                blendMode = BlendMode.DstIn
+            )
+        }
 }
 
 /** Fades an overlong one-line card header without adding an ellipsis. */

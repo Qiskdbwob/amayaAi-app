@@ -1,10 +1,22 @@
 package com.amaya.intelligence.ui.screens.settings.local
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -14,8 +26,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -32,6 +52,16 @@ import com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet
 import com.amaya.intelligence.ui.res.UiStrings
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import kotlinx.coroutines.launch
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInParent
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import kotlin.math.abs
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 
 enum class SettingsScope(val label: String) {
     GLOBAL("Global"), PROJECT("Project"), AGENT("Agent")
@@ -60,7 +90,11 @@ fun LocalSettingsScreen(
     onSelectAgentWorkspace: () -> Unit,
     selectedAgentWorkspace: String?
 ) {
-    var selectedScope by remember { mutableStateOf(initialScope) }
+    val pagerState = rememberPagerState(
+        initialPage = SettingsScope.entries.indexOf(initialScope),
+        pageCount = { SettingsScope.entries.size }
+    )
+    val selectedScope = SettingsScope.entries[pagerState.targetPage]
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val settings by aiSettingsManager.settingsFlow.collectAsState(initial = AiSettings())
@@ -70,50 +104,50 @@ fun LocalSettingsScreen(
 
     Scaffold(containerColor = Color.Transparent, snackbarHost = { SnackbarHost(snackbar) }) {
         Box(Modifier.fillMaxSize().background(colors.groupedBackground)) {
-            Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(22.dp)
-            ) {
-                Spacer(Modifier.statusBarsPadding().height(52.dp))
-                PrimaryTabRow(
-                    selectedTabIndex = selectedScope.ordinal,
-                    containerColor = Color.Transparent,
-                    divider = {}
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                val pageScope = SettingsScope.entries[page]
+                Column(
+                    Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(22.dp)
                 ) {
-                    SettingsScope.entries.forEach { tab ->
-                        Tab(
-                            selected = selectedScope == tab,
-                            onClick = { selectedScope = tab },
-                            text = { Text(tab.label, maxLines = 1) },
-                            modifier = Modifier.heightIn(min = 48.dp)
-                        )
-                    }
-                }
+                    Spacer(Modifier.statusBarsPadding().height(52.dp))
 
-                when (selectedScope) {
-                    SettingsScope.GLOBAL -> GlobalSettings(
-                        settings = settings,
-                        onModels = onNavigateToModels,
-                        onAboutYou = onNavigateToAboutYou,
-                        onMcp = onNavigateToMcp,
-                        onSkills = onNavigateToSkills,
-                        onTerminal = onNavigateToTerminal,
-                        onSelectTheme = { theme -> scope.launch { aiSettingsManager.setTheme(theme) } },
-                        onSnackbar = { text -> scope.launch { snackbar.showSnackbar(text) } }
-                    )
-                    SettingsScope.PROJECT -> ProjectListSettings(projects, onOpenProject)
-                    SettingsScope.AGENT -> AgentListSettings(agentGroups, agents, onOpenAgentGroup)
+                    when (pageScope) {
+                        SettingsScope.GLOBAL -> GlobalSettings(
+                            settings = settings,
+                            onModels = onNavigateToModels,
+                            onAboutYou = onNavigateToAboutYou,
+                            onMcp = onNavigateToMcp,
+                            onSkills = onNavigateToSkills,
+                            onTerminal = onNavigateToTerminal,
+                            onSelectTheme = { theme -> scope.launch { aiSettingsManager.setTheme(theme) } },
+                            onSnackbar = { text -> scope.launch { snackbar.showSnackbar(text) } }
+                        )
+                        SettingsScope.PROJECT -> ProjectListSettings(projects, onOpenProject)
+                        SettingsScope.AGENT -> AgentListSettings(agentGroups, agents, onOpenAgentGroup)
+                    }
+                    
+                    Spacer(Modifier.navigationBarsPadding().height(110.dp))
                 }
-                Spacer(Modifier.height(64.dp))
             }
 
             Box(Modifier.fillMaxWidth().height(170.dp).align(Alignment.TopCenter).background(gradients.topScrim))
+            
+            Box(Modifier.align(Alignment.BottomCenter)) {
+                FloatingPillTabBar(
+                    pagerState = pagerState
+                )
+            }
+
             if (selectedScope != SettingsScope.GLOBAL) {
                 ExtendedFloatingActionButton(
                     onClick = { addSheet = selectedScope },
                     icon = { Icon(Icons.Default.Add, if (selectedScope == SettingsScope.PROJECT) "Add project" else "Add agent group") },
                     text = { Text(if (selectedScope == SettingsScope.PROJECT) "Project" else "Agent") },
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp)
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(bottom = 120.dp, end = 20.dp) // Lift FAB above the enlarged floating tab bar
                 )
             }
             TopAppBar(
@@ -146,6 +180,160 @@ fun LocalSettingsScreen(
             onDismiss = { addSheet = null }
         )
         else -> Unit
+    }
+}
+
+@Composable
+private fun FloatingPillTabBar(
+    pagerState: PagerState
+) {
+    val coroutineScope = rememberCoroutineScope()
+    val colors = iosSettingsColors()
+    var tabLayouts by remember { mutableStateOf(List(SettingsScope.entries.size) { Rect.Zero }) }
+    val density = LocalDensity.current
+
+    Surface(
+        shape = CircleShape,
+        color = colors.groupSurface.copy(alpha = 0.95f),
+        border = BorderStroke(1.dp, colors.border),
+        shadowElevation = 8.dp,
+        modifier = Modifier
+            .padding(bottom = 24.dp)
+            .navigationBarsPadding()
+            .pointerInput(Unit) {
+                detectDragGestures { change, _ ->
+                    change.consume()
+                    val x = change.position.x
+                    var closest = 0
+                    var minDistance = Float.MAX_VALUE
+                    tabLayouts.forEachIndexed { i, rect ->
+                        if (rect != Rect.Zero) {
+                            val dist = abs(rect.center.x - x)
+                            if (dist < minDistance) {
+                                minDistance = dist
+                                closest = i
+                            }
+                        }
+                    }
+                    if (pagerState.targetPage != closest) {
+                        coroutineScope.launch { pagerState.animateScrollToPage(closest) }
+                    }
+                }
+            }
+    ) {
+        Box(modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp).height(IntrinsicSize.Min)) {
+            val currentTab = pagerState.currentPage
+            val fraction = pagerState.currentPageOffsetFraction
+            val actualNextTab = if (fraction > 0f) minOf(currentTab + 1, 2) else maxOf(currentTab - 1, 0)
+            
+            val currentRect = tabLayouts.getOrNull(currentTab) ?: Rect.Zero
+            val nextRect = tabLayouts.getOrNull(actualNextTab) ?: Rect.Zero
+
+            if (currentRect != Rect.Zero && nextRect != Rect.Zero) {
+                val bgX = androidx.compose.ui.unit.lerp(
+                    with(density) { currentRect.left.toDp() },
+                    with(density) { nextRect.left.toDp() },
+                    abs(fraction)
+                )
+                val bgWidth = androidx.compose.ui.unit.lerp(
+                    with(density) { currentRect.width.toDp() },
+                    with(density) { nextRect.width.toDp() },
+                    abs(fraction)
+                )
+
+                Box(
+                    modifier = Modifier
+                        .offset(x = bgX)
+                        .width(bgWidth)
+                        .fillMaxHeight()
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primaryContainer)
+                )
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SettingsScope.entries.forEachIndexed { index, scope ->
+                    val pageOffset = pagerState.currentPage - index + pagerState.currentPageOffsetFraction
+                    val visibilityFraction = (1f - abs(pageOffset)).coerceIn(0f, 1f)
+                    
+                    val contentColor = lerp(colors.secondaryText, MaterialTheme.colorScheme.onPrimaryContainer, visibilityFraction)
+                    val horizontalPadding = androidx.compose.ui.unit.lerp(12.dp, 20.dp, visibilityFraction)
+
+                    val interactionSource = remember { MutableInteractionSource() }
+
+                    Box(
+                        modifier = Modifier
+                            .onGloballyPositioned { coords ->
+                                val rect = coords.boundsInParent()
+                                if (tabLayouts[index] != rect) {
+                                    val newLayouts = tabLayouts.toMutableList()
+                                    newLayouts[index] = rect
+                                    tabLayouts = newLayouts
+                                }
+                            }
+                            .clip(CircleShape)
+                            .clickable(
+                                interactionSource = interactionSource,
+                                indication = null,
+                                onClick = { coroutineScope.launch { pagerState.animateScrollToPage(index) } }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = horizontalPadding, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            val icon = when (scope) {
+                                SettingsScope.GLOBAL -> Icons.Default.Public
+                                SettingsScope.PROJECT -> Icons.Default.FolderOpen
+                                SettingsScope.AGENT -> Icons.Default.SmartToy
+                            }
+                            Icon(icon, contentDescription = scope.label, tint = contentColor, modifier = Modifier.size(22.dp))
+                            
+                            if (visibilityFraction > 0.01f) {
+                                Text(
+                                    text = scope.label,
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                                    color = contentColor,
+                                    modifier = Modifier
+                                        .padding(start = 8.dp * visibilityFraction)
+                                        .graphicsLayer { alpha = visibilityFraction }
+                                        .drawWithContent {
+                                            drawContent()
+                                            if (visibilityFraction < 0.99f && size.width > 0f) {
+                                                val fadePx = 24.dp.toPx() * (1f - visibilityFraction)
+                                                val leftStop = (fadePx / size.width).coerceIn(0f, 0.45f)
+                                                val brush = Brush.horizontalGradient(
+                                                    0f to Color.Transparent,
+                                                    leftStop to Color.Black,
+                                                    (1f - leftStop) to Color.Black,
+                                                    1f to Color.Transparent
+                                                )
+                                                drawRect(brush = brush, blendMode = BlendMode.DstIn)
+                                            }
+                                        }
+                                        .clipToBounds()
+                                        .layout { measurable, constraints ->
+                                            val placeable = measurable.measure(constraints)
+                                            val targetWidth = (placeable.width * visibilityFraction).toInt()
+                                            layout(targetWidth, placeable.height) {
+                                                val x = (targetWidth - placeable.width) / 2
+                                                placeable.placeRelative(x, 0)
+                                            }
+                                        },
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Clip
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

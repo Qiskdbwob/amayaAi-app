@@ -1,5 +1,7 @@
 package com.amaya.intelligence.ui.screens.chat.shared
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -63,42 +65,64 @@ fun ChatEmptyContent(
         return
     }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(top = headerDp, bottom = bottomDp)
-            .then(if (!drawerOpen) Modifier.imePadding() else Modifier),
-        contentAlignment = Alignment.Center
-    ) {
-        if (uiState.isLoadingHistory ||
-            (isRemoteMode && !isBridgeMode && connectionState == ConnectionState.CONNECTING)
-        ) {
-            ConversationSkeleton()
-        } else {
-            val headerSlot: (@Composable () -> Unit)? = when {
-                isBridgeMode && bridgeState.shouldShowBanner -> {
-                    { WindowsBridgeWelcomePill(state = bridgeState) }
-                }
-                isRemoteMode && !isBridgeMode && connectionState != ConnectionState.DISCONNECTED -> {
-                    {
-                        RemoteSessionPill(
-                            sessionMode = uiState.sessionMode,
-                            connectionState = connectionState,
-                            isStreaming = isStreaming
-                        )
-                    }
-                }
-                else -> null
-            }
-            WelcomeScreen(
-                onPromptClick = onInputTextChange,
-                currentWorkspace = uiState.workspacePath,
-                onNewProjectClick = onNavigateToWorkspace,
-                workspaces = workspaces,
-                onWorkspaceClick = onNavigateToWorkspace,
-                showWorkspaceChip = !isBridgeMode,
-                header = headerSlot
+    val showSkeleton = uiState.isLoadingHistory ||
+        (isRemoteMode && !isBridgeMode && connectionState == ConnectionState.CONNECTING)
+
+    // Crossfade rather than a hard cut: history arrives in one shot, and swapping the
+    // placeholder for the real list without a transition is the visible "flicker" when
+    // opening a session.
+    Crossfade(
+        targetState = showSkeleton,
+        animationSpec = tween(durationMillis = 200),
+        label = "chat_empty_content"
+    ) { skeleton ->
+        if (skeleton) {
+            // Top-anchored, and padded to match ChatMessageList's contentPadding
+            // exactly, so the placeholder rows sit where the real messages will land.
+            ConversationSkeleton(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (!drawerOpen) Modifier.imePadding() else Modifier),
+                contentPadding = PaddingValues(
+                    start = 18.dp,
+                    end = 18.dp,
+                    top = headerDp + 8.dp,
+                    bottom = bottomDp
+                )
             )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = headerDp, bottom = bottomDp)
+                    .then(if (!drawerOpen) Modifier.imePadding() else Modifier),
+                contentAlignment = Alignment.Center
+            ) {
+                val headerSlot: (@Composable () -> Unit)? = when {
+                    isBridgeMode && bridgeState.shouldShowBanner -> {
+                        { WindowsBridgeWelcomePill(state = bridgeState) }
+                    }
+                    isRemoteMode && !isBridgeMode && connectionState != ConnectionState.DISCONNECTED -> {
+                        {
+                            RemoteSessionPill(
+                                sessionMode = uiState.sessionMode,
+                                connectionState = connectionState,
+                                isStreaming = isStreaming
+                            )
+                        }
+                    }
+                    else -> null
+                }
+                WelcomeScreen(
+                    onPromptClick = onInputTextChange,
+                    currentWorkspace = uiState.workspacePath,
+                    onNewProjectClick = onNavigateToWorkspace,
+                    workspaces = workspaces,
+                    onWorkspaceClick = onNavigateToWorkspace,
+                    showWorkspaceChip = !isBridgeMode,
+                    header = headerSlot
+                )
+            }
         }
     }
 }

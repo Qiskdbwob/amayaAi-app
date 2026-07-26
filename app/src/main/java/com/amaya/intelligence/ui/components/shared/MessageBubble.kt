@@ -1,14 +1,13 @@
 package com.amaya.intelligence.ui.components.shared
 
 import com.amaya.intelligence.domain.models.*
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.*
@@ -23,16 +22,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.amaya.intelligence.data.remote.api.MessageRole
 import androidx.compose.ui.graphics.asImageBitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
-import org.json.JSONArray
-import org.json.JSONObject
 
 @Composable
 fun MessageBubble(
@@ -40,9 +39,7 @@ fun MessageBubble(
     hideThinkingHeader: Boolean = false,
     onToolAccept: ((ToolExecution) -> Unit)? = null,
     onToolDecline: ((ToolExecution) -> Unit)? = null,
-    onLocalhostLinkClick: ((String) -> Unit)? = null,
-    onInteraction: () -> Unit = {},
-    onThinkingScroll: () -> Unit = {}
+    onLocalhostLinkClick: ((String) -> Unit)? = null
 ) {
     val isUser = message.role == MessageRole.USER
     if (isUser) {
@@ -131,41 +128,45 @@ fun MessageBubble(
                         modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        val finalTextIndex = remember(message.steps, message.metadata) {
-                            finalVisibleTextIndexForSummary(message)
+                        // The split is deliberately independent of whether the turn has
+                        // finished. It used to be gated on completedAt, which meant the
+                        // whole live timeline was destroyed and replaced by a collapsed
+                        // summary card in a single frame the moment the turn ended — an
+                        // unmount can't play an exit animation, so the work "just
+                        // disappeared" instead of folding away. Now the same card exists
+                        // for the whole turn and completion changes exactly one thing:
+                        // its expanded flag.
+                        val split = remember(message.steps, message.metadata) {
+                            splitAssistantTurn(message)
                         }
-                        if (finalTextIndex != null) {
-                            // Steps branch — completed turn wrapped in a
-                            // "Worked for {duration} · N tools" card. Timeline
-                            // steps preserve provider event order.
-                            val summarySteps = summaryTimelineSteps(message, finalTextIndex)
-                            val finalTextStep = message.steps[finalTextIndex] as MessageStep.Text
-                            WorkSummaryCard(
-                                message = message,
-                                steps = summarySteps,
-                                onInteraction = onInteraction
-                            ) {
+                        if (split.wrapInSummary) {
+                            WorkSummaryCard(message = message, steps = split.workSteps) {
                                 StepTimeline(
-                                    steps = summarySteps,
+                                    steps = split.workSteps,
                                     hideThinkingHeader = hideThinkingHeader,
                                     onToolAccept = onToolAccept,
                                     onToolDecline = onToolDecline,
                                     onLocalhostLinkClick = onLocalhostLinkClick,
-                                    onInteraction = onInteraction
+                                    insideCard = true
                                 )
                             }
-                            val finalText = if (message.metadata["source"].equals("remote", ignoreCase = true) && message.content.isNotBlank()) {
-                                message.formattedContent ?: message.content
-                            } else {
-                                finalTextStep.formattedContent ?: finalTextStep.content
-                            }
-                            if (finalText.isNotBlank()) {
-                                key(finalTextStep.id) {
-                                    AssistantTextWithThinking(
-                                        text = finalText,
-                                        hideThinkingHeader = hideThinkingHeader,
-                                        onLocalhostLinkClick = onLocalhostLinkClick
-                                    )
+                            val answerStep = split.answerStep
+                            if (answerStep != null) {
+                                val answerText = if (
+                                    message.metadata["source"].equals("remote", ignoreCase = true) &&
+                                    message.content.isNotBlank()
+                                ) {
+                                    message.formattedContent ?: message.content
+                                } else {
+                                    answerStep.formattedContent ?: answerStep.content
+                                }
+                                if (answerText.isNotBlank()) {
+                                    key(answerStep.id) {
+                                        AssistantTextWithThinking(
+                                            text = answerText,
+                                            onLocalhostLinkClick = onLocalhostLinkClick
+                                        )
+                                    }
                                 }
                             }
                         } else {
@@ -175,8 +176,7 @@ fun MessageBubble(
                                 MessageThinkingBlock(
                                     message = message,
                                     hideWhenDuplicate = hideThinkingHeader,
-                                    onLocalhostLinkClick = onLocalhostLinkClick,
-                                    onBodyScroll = onThinkingScroll
+                                    onLocalhostLinkClick = onLocalhostLinkClick
                                 )
                             }
                             StepTimeline(
@@ -184,8 +184,7 @@ fun MessageBubble(
                                 hideThinkingHeader = hideThinkingHeader,
                                 onToolAccept = onToolAccept,
                                 onToolDecline = onToolDecline,
-                                onLocalhostLinkClick = onLocalhostLinkClick,
-                                onInteraction = onInteraction
+                                onLocalhostLinkClick = onLocalhostLinkClick
                             )
                         }
                     }
@@ -217,8 +216,7 @@ fun MessageBubble(
                                                     group = group,
                                                     onToolAccept = onToolAccept,
                                                     onToolDecline = onToolDecline,
-                                                    onLocalhostLinkClick = onLocalhostLinkClick,
-                                                    onInteraction = onInteraction
+                                                    onLocalhostLinkClick = onLocalhostLinkClick
                                                 )
                                             }
                                         }
@@ -229,8 +227,7 @@ fun MessageBubble(
                                                     execution = execution,
                                                     onAccept = onToolAccept?.let { callback -> { callback(execution) } },
                                                     onDecline = onToolDecline?.let { callback -> { callback(execution) } },
-                                                    onLocalhostLinkClick = onLocalhostLinkClick,
-                                                    onInteraction = onInteraction
+                                                    onLocalhostLinkClick = onLocalhostLinkClick
                                                 )
                                             }
                                         }
@@ -246,15 +243,13 @@ fun MessageBubble(
                         MessageThinkingBlock(
                             message = message,
                             hideWhenDuplicate = hideThinkingHeader,
-                            onLocalhostLinkClick = onLocalhostLinkClick,
-                            onBodyScroll = onThinkingScroll
+                            onLocalhostLinkClick = onLocalhostLinkClick
                         )
 
                         if (message.content.isNotBlank()) {
                             val content = message.formattedContent ?: message.content
                             AssistantTextWithThinking(
                                 text = content,
-                                hideThinkingHeader = hideThinkingHeader,
                                 onLocalhostLinkClick = onLocalhostLinkClick
                             )
                         }
@@ -274,7 +269,13 @@ private fun StepTimeline(
     onToolAccept: ((ToolExecution) -> Unit)?,
     onToolDecline: ((ToolExecution) -> Unit)?,
     onLocalhostLinkClick: ((String) -> Unit)?,
-    onInteraction: () -> Unit
+    /**
+     * True when this timeline is rendered inside the work-summary card. Tool and
+     * thinking blocks already sit in the card's tight vertical rhythm; a bare text step
+     * did not, so it kept the conversation's 12dp block gaps and read noticeably looser
+     * than the blocks either side of it. Type size is unaffected.
+     */
+    insideCard: Boolean = false
 ) {
     val groups = buildToolExecutionGroups(steps)
 
@@ -316,8 +317,7 @@ private fun StepTimeline(
                                         group = group,
                                         onToolAccept = onToolAccept,
                                         onToolDecline = onToolDecline,
-                                        onLocalhostLinkClick = onLocalhostLinkClick,
-                                        onInteraction = onInteraction
+                                        onLocalhostLinkClick = onLocalhostLinkClick
                                     )
                                 }
                             }
@@ -328,8 +328,7 @@ private fun StepTimeline(
                                         execution = step.execution,
                                         onAccept = onToolAccept?.let { callback -> { callback(step.execution) } },
                                         onDecline = onToolDecline?.let { callback -> { callback(step.execution) } },
-                                        onLocalhostLinkClick = onLocalhostLinkClick,
-                                        onInteraction = onInteraction
+                                        onLocalhostLinkClick = onLocalhostLinkClick
                                     )
                                 }
                             }
@@ -343,8 +342,10 @@ private fun StepTimeline(
                     key(step.id) {
                         AssistantTextWithThinking(
                             text = textContent,
-                            hideThinkingHeader = hideThinkingHeader,
-                            onLocalhostLinkClick = onLocalhostLinkClick
+                            onLocalhostLinkClick = onLocalhostLinkClick,
+                            // Same type size as anywhere else — only the vertical gaps
+                            // tighten to the card's rhythm.
+                            blockSpacing = if (insideCard) 4.dp else null
                         )
                     }
                 }
@@ -353,35 +354,81 @@ private fun StepTimeline(
     }
 }
 
+/**
+ * The turn's work, wrapped in a card that folds shut when the turn ends.
+ *
+ * The collapse is a one-way latch modelled on [ThinkingLifecycle], seeded from the
+ * turn's state at mount: a live turn starts open and springs closed exactly once when
+ * `completedAt` lands, while a turn read back from history starts closed with no
+ * animation at all. A manual tap after that is never overridden.
+ */
 @Composable
 private fun WorkSummaryCard(
     message: UiMessage,
     steps: List<MessageStep>,
-    onInteraction: () -> Unit,
     content: @Composable ColumnScope.() -> Unit
 ) {
     if (steps.isEmpty()) return
-    var expanded by remember(message.id) { mutableStateOf(false) }
-    val toolCount = steps.count { it is MessageStep.ToolCall && it.execution.name != "update_todo" && !isThinkingExecution(it.execution) }
-    val duration = formatWorkedDuration(message.timestamp, message.metadata["completedAt"]?.toLongOrNull())
-    val subtitle = "Worked for $duration${if (toolCount > 0) " · $toolCount tool${if (toolCount == 1) "" else "s"}" else ""}"
+    val completedAt = message.metadata["completedAt"]?.toLongOrNull()
+    val isLive = completedAt == null
+
+    var expanded by remember(message.id) { mutableStateOf(isLive) }
+    var collapsedOnce by remember(message.id) { mutableStateOf(!isLive) }
+    LaunchedEffect(isLive) {
+        if (!isLive && !collapsedOnce) {
+            collapsedOnce = true
+            expanded = false
+        }
+    }
+
+    // Height cap on the body while the turn runs.
+    //
+    // Deliberately *not* just `isLive`: it stays on through the collapse at turn end, so
+    // the exit shrinks from the capped height instead of snapping to full first. It is
+    // dropped only when the user opens the finished card by hand, which is when they
+    // actually want the whole timeline.
+    var bounded by remember(message.id) { mutableStateOf(isLive) }
+    LaunchedEffect(isLive) { if (isLive) bounded = true }
+
+    val toolCount = steps.count {
+        it is MessageStep.ToolCall && it.execution.name != "update_todo" && !isThinkingExecution(it.execution)
+    }
+    val toolSuffix = if (toolCount > 0) " · $toolCount tool${if (toolCount == 1) "" else "s"}" else ""
+    val subtitle = if (isLive) {
+        "Working$toolSuffix"
+    } else {
+        "Worked for ${formatWorkedDuration(message.timestamp, completedAt)}$toolSuffix"
+    }
+    val shimmerProgress = rememberToolShimmerProgress(isLive)
+
     val shape = RoundedCornerShape(14.dp)
     val isDark = androidx.compose.foundation.isSystemInDarkTheme()
     val borderColor = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
+    // Same live/idle tone convention as ToolCallCard and ThinkingCard.
+    val iosBlue = Color(0xFF007AFF)
+    val background by animateColorAsState(
+        if (isLive) {
+            if (isDark) iosBlue.copy(alpha = 0.08f) else iosBlue.copy(alpha = 0.04f)
+        } else MaterialTheme.colorScheme.surfaceContainerLow,
+        label = "work_summary_background"
+    )
     Surface(
         shape = shape,
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = background,
         border = androidx.compose.foundation.BorderStroke(1.dp, borderColor),
-        modifier = Modifier.fillMaxWidth().clip(shape)
+        // Same mount fade as the cards it holds — this card appears mid-turn, the moment
+        // the first tool or reasoning step lands, so it is as much a new event as they are.
+        modifier = Modifier.fillMaxWidth().clip(shape).mountFade(remember(message.id) { isLive })
     ) {
         Column(Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(shape)
                     .clickable {
+                        // Opening a finished card by hand means "show me everything".
+                        if (!expanded && !isLive) bounded = false
                         expanded = !expanded
-                        onInteraction()
                     }
                     .padding(horizontal = 12.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -400,7 +447,10 @@ private fun WorkSummaryCard(
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Clip,
-                    modifier = Modifier.weight(1f).toolHeaderFade()
+                    modifier = Modifier
+                        .weight(1f)
+                        .toolHeaderShimmer(isLive, shimmerProgress)
+                        .toolHeaderFade()
                 )
                 Icon(
                     if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
@@ -409,75 +459,88 @@ private fun WorkSummaryCard(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                 )
             }
-            ToolCallAnimatedSection(visible = expanded) {
+            ToolCallAnimatedSection(visible = expanded, initiallyVisible = isLive) {
                 Column {
                     HorizontalDivider(
                         color = borderColor,
                         thickness = 1.dp,
                         modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp)
                     )
-                    Column(
-                        modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        content = content
-                    )
+                    // While the turn runs the body is pinned to a maximum height and
+                    // scrolls internally, sticking to the newest event. Past that height
+                    // the card stops growing altogether, so a tool or reasoning card
+                    // arriving slides into view inside the card instead of pushing the
+                    // answer text below it down the screen.
+                    ToolFollowingScrollBlock(
+                        fadeColor = background.compositeOver(MaterialTheme.colorScheme.background),
+                        maxHeight = workCardLiveBodyMaxHeight(),
+                        bounded = bounded,
+                        // Every new tool or reasoning event re-arms the follow, the same
+                        // way a new message re-arms the chat list's.
+                        followKey = steps.size,
+                        modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 8.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            content = content
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-private fun finalVisibleTextIndexForSummary(message: UiMessage): Int? {
+/**
+ * How an assistant turn is divided between the work card and the answer below it.
+ *
+ * [workSteps] are the ordered tool/reasoning events; [answerStep] is the trailing text
+ * step, rendered outside the card so the answer stays put when the work folds away.
+ * The rule is the same during and after the turn, which is what lets completion be a
+ * pure state change rather than a re-layout.
+ */
+private data class AssistantTurnSplit(
+    val workSteps: List<MessageStep>,
+    val answerStep: MessageStep.Text?,
+    val wrapInSummary: Boolean
+)
+
+private fun splitAssistantTurn(message: UiMessage): AssistantTurnSplit {
     val steps = message.steps
-    if (message.metadata["completedAt"].isNullOrBlank()) return null
-    if (steps.size < 2) return null
-    if (steps.any { it is MessageStep.ToolCall && it.execution.status == ToolStatus.RUNNING }) return null
-
+    val isRemote = message.metadata["source"].equals("remote", ignoreCase = true)
     val browserRanges = browserToolRanges(steps)
-    fun isEmbeddedBrowserText(index: Int): Boolean = browserRanges.any { range -> index in range }
 
-    val meaningful = steps.mapIndexedNotNull { index, step ->
-        when (step) {
-            is MessageStep.Thinking -> index
-            is MessageStep.Text -> index.takeIf {
-                !isEmbeddedBrowserText(index) && (step.formattedContent ?: step.content).isNotBlank()
-            }
-            is MessageStep.ToolCall -> index.takeIf {
-                step.execution.name != "update_todo" &&
-                    (!isThinkingExecution(step.execution) || (!isEmbeddedBrowserText(index) && !step.execution.result.isNullOrBlank()))
-            }
+    val answerIndex = if (isRemote) {
+        // Antigravity state snapshots carry cumulative/duplicated text fragments, so the
+        // answer is the last non-blank Text step wherever it sits, not necessarily last.
+        steps.indices.lastOrNull { index ->
+            val text = steps[index] as? MessageStep.Text ?: return@lastOrNull false
+            (text.formattedContent ?: text.content).isNotBlank()
+        }
+    } else {
+        steps.lastIndex.takeIf { last ->
+            val text = steps.getOrNull(last) as? MessageStep.Text
+            text != null &&
+                (text.formattedContent ?: text.content).isNotBlank() &&
+                browserRanges.none { last in it }
         }
     }
-    if (meaningful.size <= 1) return null
+    val answerStep = answerIndex?.let { steps[it] as? MessageStep.Text }
 
-    val isRemote = message.metadata["source"].equals("remote", ignoreCase = true)
-    if (!isRemote) {
-        val last = meaningful.lastOrNull() ?: return null
-        val lastStep = steps[last] as? MessageStep.Text ?: return null
-        if ((lastStep.formattedContent ?: lastStep.content).isBlank()) return null
-        return last
-    }
-
-    return meaningful.asReversed().firstOrNull { index ->
-        val text = steps[index] as? MessageStep.Text ?: return@firstOrNull false
-        (text.formattedContent ?: text.content).isNotBlank()
-    }
-}
-
-private fun summaryTimelineSteps(message: UiMessage, finalTextIndex: Int): List<MessageStep> {
-    val isRemote = message.metadata["source"].equals("remote", ignoreCase = true)
-    if (!isRemote) return message.steps.take(finalTextIndex)
-
-    // Antigravity state snapshots often contain cumulative/duplicated text fragments.
-    // Keep the final answer outside the summary while retaining ordered tool and
-    // reasoning events inside it.
-    return message.steps.filterIndexed { index, step ->
-        index != finalTextIndex && when (step) {
+    val workSteps = steps.filterIndexed { index, step ->
+        index != answerIndex && when (step) {
             is MessageStep.Thinking -> true
             is MessageStep.ToolCall -> step.execution.name != "update_todo"
-            is MessageStep.Text -> false
+            // Remote keeps only tools and reasoning inside the card; local preserves its
+            // interleaved intermediate text so the timeline still reads in order.
+            is MessageStep.Text -> !isRemote && (step.formattedContent ?: step.content).isNotBlank()
         }
     }
+
+    // A turn of plain text is not "work" — don't hide an answer behind a summary header.
+    val wrapInSummary = workSteps.any { it is MessageStep.Thinking || it is MessageStep.ToolCall }
+    return AssistantTurnSplit(workSteps, answerStep, wrapInSummary)
 }
 
 private fun browserToolRanges(steps: List<MessageStep>): List<IntRange> {
@@ -526,9 +589,14 @@ private fun formatWorkedDuration(startedAt: Long, completedAt: Long?): String {
 @Composable
 fun AssistantTextWithThinking(
     text: String,
-    hideThinkingHeader: Boolean = false,
     onLocalhostLinkClick: ((String) -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /**
+     * Tightens the gap between markdown blocks without changing type size. Set for text
+     * sitting *inside* a card, where its vertical rhythm has to match the tool and
+     * thinking blocks around it rather than the conversation outside.
+     */
+    blockSpacing: Dp? = null
 ) {
     val visible = remember(text) { stripThinkingTags(text) }
     if (visible.isBlank()) return
@@ -536,7 +604,8 @@ fun AssistantTextWithThinking(
         text = visible,
         color = MaterialTheme.colorScheme.onSurface,
         modifier = modifier.fillMaxWidth(),
-        onLocalhostLinkClick = onLocalhostLinkClick
+        onLocalhostLinkClick = onLocalhostLinkClick,
+        blockSpacing = blockSpacing
     )
 }
 

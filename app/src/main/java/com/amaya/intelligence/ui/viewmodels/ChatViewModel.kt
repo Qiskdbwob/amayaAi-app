@@ -23,7 +23,11 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+
+/** Directories never worth walking when resolving an `@` mention. */
+private val WORKSPACE_SCAN_EXCLUDES = setOf(".git", ".gradle", "build", "node_modules")
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 @HiltViewModel
@@ -205,19 +209,27 @@ class ChatViewModel @Inject constructor(
 
         val root = uiState.value.workspacePath?.takeIf(String::isNotBlank)?.let { java.io.File(it) }
             ?.takeIf { it.isDirectory } ?: return@withContext emptyList()
-        root.walkTopDown()
-            .onEnter { it.name !in setOf(".git", ".gradle", "build", "node_modules") }
+        val matches = ArrayList<ProjectFileEntry>(limit)
+        var visited = 0
+        val walk = root.walkTopDown()
+            .onEnter { it.name !in WORKSPACE_SCAN_EXCLUDES }
             .drop(1)
-            .filter { needle.isBlank() || it.name.contains(needle, ignoreCase = true) }
-            .take(limit)
-            .map { file ->
-                ProjectFileEntry(
-                    name = file.name,
-                    path = file.relativeTo(root).path.replace(java.io.File.separatorChar, '/'),
-                    type = if (file.isDirectory) "directory" else "file",
-                    size = if (file.isFile) file.length() else 0L
-                )
-            }.toList()
+            .iterator()
+        while (walk.hasNext()) {
+            // walkTopDown never suspends, so a superseded search would otherwise keep walking the
+            // whole tree on the IO pool while the user is still typing.
+            if (++visited % 256 == 0) ensureActive()
+            val file = walk.next()
+            if (needle.isNotBlank() && !file.name.contains(needle, ignoreCase = true)) continue
+            matches += ProjectFileEntry(
+                name = file.name,
+                path = file.relativeTo(root).path.replace(java.io.File.separatorChar, '/'),
+                type = if (file.isDirectory) "directory" else "file",
+                size = if (file.isFile) file.length() else 0L
+            )
+            if (matches.size >= limit) break
+        }
+        matches
     }
 
     fun getProjectFiles(path: String) {

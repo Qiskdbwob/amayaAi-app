@@ -1,11 +1,5 @@
 package com.amaya.intelligence.ui.components.shared
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,19 +33,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.amaya.intelligence.domain.models.ToolInfoIcon
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -122,7 +110,6 @@ fun ThinkingCard(
     completedAt: Long? = null,
     durationMs: Long? = null,
     onLocalhostLinkClick: ((String) -> Unit)? = null,
-    onBodyScroll: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (text.isBlank()) return
@@ -201,7 +188,6 @@ fun ThinkingCard(
     val bodyScrollState = rememberScrollState()
     val maxBodyHeight = toolCardBodyMaxHeight()
     val fadeHeight = 24.dp
-    val currentOnBodyScroll by rememberUpdatedState(onBodyScroll)
     val followLatest = remember { mutableStateOf(true) }
     LaunchedEffect(isProcessing, followLatest.value) {
         if (!isProcessing || !followLatest.value) return@LaunchedEffect
@@ -210,7 +196,6 @@ fun ThinkingCard(
         }
     }
     val bodyScrollableState = rememberScrollableState { delta ->
-        currentOnBodyScroll()
         followLatest.value = false
         bodyScrollState.dispatchRawDelta(-delta)
         if (!bodyScrollState.canScrollForward) followLatest.value = true
@@ -230,22 +215,18 @@ fun ThinkingCard(
         ms?.let { "Thought for ${formatThinkingDuration(it)}" } ?: "Thought"
     }
 
-    val shouldShimmer = isProcessing
-    val shimmerProgress = if (shouldShimmer) {
-        val transition = rememberInfiniteTransition(label = "thinking_shimmer")
-        transition.animateFloat(
-            initialValue = 0f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(tween(2500, easing = LinearEasing), RepeatMode.Restart),
-            label = "thinking_shimmer_progress"
-        ).value
-    } else 0f
+    val shimmerProgress = rememberToolShimmerProgress(isProcessing)
+
+    // Same mount fade as a tool card, gated the same way: a segment that is live when
+    // its card first appears has something to animate; one read back from history, or
+    // re-composed because a collapsed work card was re-opened, does not.
+    val animateMount = remember { isStreaming }
 
     Surface(
         shape = RoundedCornerShape(14.dp),
         color = bgColor,
         border = toolCardBorder(),
-        modifier = modifier.fillMaxWidth()
+        modifier = modifier.fillMaxWidth().mountFade(animateMount)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             // ── Header row (same layout as ToolCallCard) ────────────────────
@@ -274,34 +255,7 @@ fun ThinkingCard(
                     overflow = TextOverflow.Clip,
                     modifier = Modifier
                         .weight(1f)
-                        .then(
-                            if (isProcessing)
-                                Modifier
-                                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                                    .drawWithContent {
-                                        drawContent()
-                                        val w = size.width
-                                        val peakX = (shimmerProgress * (w * 3f)) - w
-                                        val hw = w * 0.6f
-                                        drawRect(
-                                            brush = Brush.linearGradient(
-                                                colors = listOf(
-                                                    Color.White.copy(alpha = 1f),
-                                                    Color.White.copy(alpha = 0.7f),
-                                                    Color.White.copy(alpha = 0.3f),
-                                                    Color.White.copy(alpha = 0f),
-                                                    Color.White.copy(alpha = 0.3f),
-                                                    Color.White.copy(alpha = 0.7f),
-                                                    Color.White.copy(alpha = 1f)
-                                                ),
-                                                start = Offset(peakX - hw, 0f),
-                                                end = Offset(peakX + hw, 0f)
-                                            ),
-                                            blendMode = BlendMode.DstIn
-                                        )
-                                    }
-                            else Modifier
-                        )
+                        .toolHeaderShimmer(isProcessing, shimmerProgress)
                         .toolHeaderFade()
                 )
 
@@ -480,7 +434,6 @@ fun MessageThinkingBlock(
     message: UiMessage,
     hideWhenDuplicate: Boolean = false,
     onLocalhostLinkClick: ((String) -> Unit)? = null,
-    onBodyScroll: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     if (hideWhenDuplicate) return
@@ -511,8 +464,7 @@ fun MessageThinkingBlock(
                     startedAt = message.thinkingStartedAt,
                     completedAt = completedAt,
                     durationMs = message.thinkingDurationMs,
-                    onLocalhostLinkClick = onLocalhostLinkClick,
-                    onBodyScroll = onBodyScroll
+                    onLocalhostLinkClick = onLocalhostLinkClick
                 )
             }
         }

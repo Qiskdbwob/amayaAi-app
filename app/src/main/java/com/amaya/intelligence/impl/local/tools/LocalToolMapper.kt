@@ -48,8 +48,11 @@ object LocalToolMapper {
         fun fileName(): String? = value("path", "file", "filePath", "TargetFile", "AbsolutePath")
             ?.replace('\\', '/')?.substringAfterLast('/')?.takeIf(String::isNotBlank)
         fun quoted(raw: String?) = raw?.take(40)?.let { "“$it”" }
+        fun batchCount(): Int? = (normalizedArgs["paths"] as? List<*>)
+            ?.count { (it as? String)?.isNotBlank() == true }
+            ?.takeIf { it > 0 }
         return when (normalizedName) {
-            "read_file" -> fileName()?.let { "Read $it" }
+            "read_file" -> fileName()?.let { "Read $it" } ?: batchCount()?.let { "Read $it files" }
             "write_file" -> fileName()?.let { "Write $it" }
             "edit_file" -> fileName()?.let { "Edit $it" }
             "delete_file" -> fileName()?.let { "Delete $it" }

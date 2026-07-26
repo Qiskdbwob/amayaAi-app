@@ -9,8 +9,9 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -45,9 +46,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -117,30 +115,53 @@ fun ChatInput(
         workspacePath?.substringAfterLast("/").orEmpty()
     }
     val hasWorkspace = remember(workspacePath) { !workspacePath.isNullOrBlank() }
-    var commandMode by remember(resetKey) { mutableStateOf<ComposerCommand?>(null) }
-    var commandQuery by remember(resetKey) { mutableStateOf("") }
     var fileResults by remember(resetKey) { mutableStateOf(emptyList<com.amaya.intelligence.domain.models.ProjectFileEntry>()) }
     var isSearchingFiles by remember(resetKey) { mutableStateOf(false) }
-    var commandPillHeightPx by remember(resetKey) { mutableIntStateOf(36) }
-    val density = LocalDensity.current
 
-    LaunchedEffect(text, hasWorkspace) {
-        val token = text.substringAfterLast(' ')
-        val trigger = token.firstOrNull().takeIf { it == '@' || it == '/' }
-        commandMode = when (trigger) {
+    // Derived synchronously, not through a LaunchedEffect: routing '@' through a coroutine costs a
+    // recomposition plus a dispatch before the card can even start animating in.
+    var dismissedForText by remember(resetKey) { mutableStateOf<String?>(null) }
+    val commandToken = remember(text) { text.substringAfterLast(' ') }
+    val commandMode = remember(commandToken, text, dismissedForText) {
+        if (text == dismissedForText) null else when (commandToken.firstOrNull()) {
             '@' -> ComposerCommand.MENTIONS
             '/' -> ComposerCommand.ACTIONS
             else -> null
         }
-        commandQuery = trigger?.let { token.drop(1).trim() }.orEmpty()
-        if (commandMode == ComposerCommand.MENTIONS && hasWorkspace) {
-            isSearchingFiles = true
-            fileResults = runCatching { onSearchWorkspaceFiles(commandQuery) }.getOrDefault(emptyList())
-            isSearchingFiles = false
-        } else if (commandMode != ComposerCommand.MENTIONS) {
+    }
+    val commandQuery = remember(commandToken, commandMode) {
+        if (commandMode == null) "" else commandToken.drop(1).trim()
+    }
+
+    LaunchedEffect(commandMode, commandQuery, hasWorkspace) {
+        if (!hasWorkspace) {
             fileResults = emptyList()
             isSearchingFiles = false
+            return@LaunchedEffect
         }
+        if (commandMode != ComposerCommand.MENTIONS) {
+            // Results are deliberately kept while in '/' mode. Clearing them means every swap back
+            // to '@' restarts from an empty list -> spinner -> full list, which is why '@' and '/'
+            // never looked like the same transition.
+            isSearchingFiles = false
+            return@LaunchedEffect
+        }
+        // Debounce refinements only. Opening the card searches immediately so the list is already
+        // populated on the first frame of the enter animation; every keystroke after that waits,
+        // so typing does not restart the card's size animation or spawn a walk per character.
+        if (commandQuery.isNotEmpty()) kotlinx.coroutines.delay(140)
+        isSearchingFiles = true
+        val results = try {
+            onSearchWorkspaceFiles(commandQuery)
+        } catch (cancellation: kotlinx.coroutines.CancellationException) {
+            // Must not be swallowed: a superseded search would otherwise blank the list to empty
+            // before the replacement lands, which reads as a flicker.
+            throw cancellation
+        } catch (_: Throwable) {
+            emptyList()
+        }
+        fileResults = results
+        isSearchingFiles = false
     }
 
     var showCompactingDone by remember(resetKey) { mutableStateOf(false) }
@@ -303,97 +324,113 @@ fun ChatInput(
             modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.Bottom
         ) {
-            val displayCommandMode = remember { mutableStateOf(commandMode) }
-            val displayQuery = remember { mutableStateOf(commandQuery) }
-            val displayAgents = remember { mutableStateOf(mentionAgents) }
-            val displayFiles = remember { mutableStateOf(fileResults) }
-
-            if (commandMode != null) {
-                displayCommandMode.value = commandMode
-                displayQuery.value = commandQuery
-                displayAgents.value = mentionAgents
-                displayFiles.value = fileResults
-            }
-
             val pillListState = androidx.compose.foundation.lazy.rememberLazyListState()
 
-            val topShadowAlpha by derivedStateOf {
-                if (pillListState.firstVisibleItemIndex > 0) {
-                    0.35f
-                } else {
-                    val offset = pillListState.firstVisibleItemScrollOffset.toFloat()
-                    val maxOffset = 60f
-                    val fraction = (offset / maxOffset).coerceIn(0f, 1f)
-                    0.35f * fraction
+            // Passed as a lambda, not a value: reading the scroll state here in the composition
+            // phase would recompose all of ChatInput — text field, custom Layout and the whole
+            // suggestion list — on every frame the user scrolls the card.
+            val topShadowAlpha = remember(pillListState) {
+                {
+                    if (pillListState.firstVisibleItemIndex > 0) 0.35f
+                    else 0.35f * (pillListState.firstVisibleItemScrollOffset / 60f).coerceIn(0f, 1f)
                 }
             }
 
             val pillVisible = commandMode != null || isCompressing || showCompactingDone
 
-            androidx.compose.animation.AnimatedVisibility(
-                visible = pillVisible,
-                enter = androidx.compose.animation.expandVertically(
+            // Hoisted out of AnimatedVisibility so the content below can tell whether an enter or
+            // exit is currently in flight.
+            val pillTransition = remember(resetKey) { MutableTransitionState(false) }
+            pillTransition.targetState = pillVisible
+
+            // The card renders from a frozen snapshot so the content does not vanish on the first
+            // frame of the exit, leaving an empty card to collapse.
+            val livePill = if (pillVisible) {
+                ComposerPillState(
+                    mode = commandMode,
+                    query = commandQuery,
+                    agents = mentionAgents,
+                    files = fileResults,
+                    isSearching = isSearchingFiles,
+                    showCompact = isCompressing || showCompactingDone,
+                    compactDone = showCompactingDone,
+                    compactCanceled = isCanceled
+                )
+            } else null
+            val lastPill = remember { mutableStateOf(livePill) }
+            if (livePill != null && livePill != lastPill.value) lastPill.value = livePill
+            val pill = livePill ?: lastPill.value
+
+            // shrinkVertically is what makes the close visible: it shrinks the clip around content
+            // that is still being drawn, so the card collapses down behind the composer. An outer
+            // animateContentSize cannot do that — it only sees the child disappear once the exit
+            // has already finished, so the card would vanish and then an empty gap would close.
+            AnimatedVisibility(
+                visibleState = pillTransition,
+                enter = expandVertically(
                     expandFrom = Alignment.Bottom,
-                    animationSpec = androidx.compose.animation.core.spring(stiffness = 400f, dampingRatio = 0.85f)
-                ) + androidx.compose.animation.slideInVertically(
-                    initialOffsetY = { it },
-                    animationSpec = androidx.compose.animation.core.spring(stiffness = 400f, dampingRatio = 0.85f)
-                ) + androidx.compose.animation.fadeIn(
-                    animationSpec = androidx.compose.animation.core.tween(200)
-                ),
-                exit = androidx.compose.animation.shrinkVertically(
+                    animationSpec = spring(stiffness = 800f, dampingRatio = 1f)
+                ) + fadeIn(animationSpec = tween(140)),
+                exit = shrinkVertically(
                     shrinkTowards = Alignment.Bottom,
-                    animationSpec = androidx.compose.animation.core.spring(stiffness = 400f, dampingRatio = 0.85f)
-                ) + androidx.compose.animation.slideOutVertically(
-                    targetOffsetY = { it },
-                    animationSpec = androidx.compose.animation.core.spring(stiffness = 400f, dampingRatio = 0.85f)
-                ) + androidx.compose.animation.fadeOut(
-                    animationSpec = androidx.compose.animation.core.tween(150)
-                ),
+                    animationSpec = spring(stiffness = 800f, dampingRatio = 1f)
+                ) + fadeOut(animationSpec = tween(180)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 20.dp)
                     .offset(y = 1.dp)
                     .zIndex(0f)
-                    .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
-                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 0.dp, bottomEnd = 0.dp))
-                    .pillShadowOverlay(topShadowAlpha = topShadowAlpha)
+                    .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
             ) {
                 Surface(
-                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
                     color = MaterialTheme.colorScheme.surfaceContainerHigh,
                     border = BorderStroke(0.7.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
                     tonalElevation = 0.dp,
                     shadowElevation = 0.dp,
-                    modifier = Modifier.fillMaxWidth()
+                    // The overlay lives inside the content lambda so it sits under the same alpha
+                    // layer as fadeIn/fadeOut. On the AnimatedVisibility modifier it would be
+                    // outside the fade, and the gradient would keep painting at full strength after
+                    // the card itself had already faded away.
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pillShadowOverlay(topShadowAlpha = topShadowAlpha)
                 ) {
                     Column(
                         Modifier
                             .fillMaxWidth()
                             .animateContentSize(
-                                animationSpec = androidx.compose.animation.core.spring(stiffness = 400f, dampingRatio = 0.85f),
+                                // Only animates in-place resize, and only while the card is settled.
+                                // While an enter or exit is running, expand/shrink already owns this
+                                // axis, so resize snaps instead. Two springs on one axis is exactly
+                                // what made swapping '@' for '/' — a close immediately followed by
+                                // an open, with the content changing mid-flight — jump.
+                                animationSpec = if (pillTransition.isIdle) {
+                                    spring(stiffness = 800f, dampingRatio = 1f)
+                                } else snap(),
                                 alignment = Alignment.BottomStart
                             )
                     ) {
-                        if (commandMode != null) {
+                        if (pill?.mode != null) {
                             ComposerCommandPill(
-                                mode = displayCommandMode.value,
-                                query = displayQuery.value,
-                                agents = displayAgents.value,
-                                files = displayFiles.value,
-                                isSearching = isSearchingFiles,
+                                mode = pill.mode,
+                                query = pill.query,
+                                agents = pill.agents,
+                                files = pill.files,
+                                isSearching = pill.isSearching,
                                 listState = pillListState,
                                 onSelect = { value ->
-                                    val token = text.substringAfterLast(' ')
-                                    onTextChange(text.dropLast(token.length) + value + " ")
-                                    commandMode = null
+                                    // Dismiss on this exact text so the card closes on the same
+                                    // frame, without waiting for onTextChange to round-trip.
+                                    dismissedForText = text
+                                    onTextChange(text.dropLast(commandToken.length) + value + " ")
                                 }
                             )
                         }
-                        if (isCompressing || showCompactingDone) {
+                        if (pill?.showCompact == true) {
                             CompactProgressPill(
-                                isDone = showCompactingDone,
-                                isCanceled = isCanceled
+                                isDone = pill.compactDone,
+                                isCanceled = pill.compactCanceled
                             )
                         }
                     }
@@ -658,38 +695,32 @@ private fun ComposerAttachmentButton(
                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
             )
         }
-        DropdownMenu(
+        // Anchored to the '+' button and forced upwards: the composer sits on the bottom edge,
+        // so "below the anchor" never fits and Material's fallback would fling the menu to the
+        // bottom of the window, behind the IME.
+        AmayaDropdownMenu(
             expanded = showMenu,
             onDismissRequest = { showMenu = false },
-            properties = androidx.compose.ui.window.PopupProperties(focusable = false),
-            shape = RoundedCornerShape(16.dp),
-            tonalElevation = 6.dp,
-            shadowElevation = 8.dp,
-            offset = androidx.compose.ui.unit.DpOffset(0.dp, 6.dp),
-            modifier = Modifier.widthIn(min = 180.dp)
+            alignment = AmayaMenuAlignment.Start,
+            placement = AmayaMenuPlacement.Above,
+            focusable = false
         ) {
-            DropdownMenuItem(
-                text = { Text("Attach file") },
+            AmayaDropdownMenuItem(
+                text = "Attach file",
+                icon = Icons.Default.AttachFile,
                 onClick = {
                     showMenu = false
                     onAttachFile()
-                },
-                modifier = Modifier
-                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                    .clip(RoundedCornerShape(12.dp)),
-                leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) }
+                }
             )
             if (onAttachImage != null) {
-                DropdownMenuItem(
-                    text = { Text("Attach image") },
+                AmayaDropdownMenuItem(
+                    text = "Attach image",
+                    icon = Icons.Default.Image,
                     onClick = {
                         showMenu = false
                         onAttachImage()
-                    },
-                    modifier = Modifier
-                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                        .clip(RoundedCornerShape(12.dp)),
-                    leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) }
+                    }
                 )
             }
         }
@@ -765,7 +796,7 @@ private fun CompactProgressPill(modifier: Modifier = Modifier, isDone: Boolean =
             displayText,
             style = MaterialTheme.typography.labelLarge,
             modifier = Modifier
-                .graphicsLayer { compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen }
+                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
                 .drawWithContent {
                     drawContent()
                     val w = size.width
@@ -844,6 +875,18 @@ private enum class ComposerCommand { MENTIONS, ACTIONS }
 
 private data class ComposerSuggestion(val label: String, val detail: String, val value: String)
 
+/** Snapshot of everything the command card draws, so it can outlive its own exit animation. */
+private data class ComposerPillState(
+    val mode: ComposerCommand?,
+    val query: String,
+    val agents: List<ChatMentionAgent>,
+    val files: List<com.amaya.intelligence.domain.models.ProjectFileEntry>,
+    val isSearching: Boolean,
+    val showCompact: Boolean,
+    val compactDone: Boolean,
+    val compactCanceled: Boolean
+)
+
 @Composable
 private fun ComposerCommandPill(
     mode: ComposerCommand?,
@@ -870,17 +913,33 @@ private fun ComposerCommandPill(
     }
     Box(modifier = modifier.fillMaxWidth()) {
         Column(Modifier.heightIn(max = 240.dp)) {
-            val isEmpty = mode == ComposerCommand.MENTIONS && filteredAgents.isEmpty() && files.isEmpty() && !isSearching
-            androidx.compose.animation.Crossfade(targetState = isEmpty, label = "pillCrossfade") { showEmpty ->
-                    if (showEmpty) {
-                        Text(
-                            if (query.isBlank()) "No agents or workspace files" else "No matching agents or files",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
-                        )
-                    } else {
-                        LazyColumn(Modifier.heightIn(max = 230.dp), state = listState, contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp)) {
+            // Both modes resolve their empty state the same way. Previously only MENTIONS had one,
+            // so '/zzz' collapsed the card to a bare sliver while '@zzz' showed a message.
+            val isEmpty = when (mode) {
+                ComposerCommand.MENTIONS -> filteredAgents.isEmpty() && files.isEmpty() && !isSearching
+                ComposerCommand.ACTIONS -> filteredActions.isEmpty()
+            }
+            val emptyLabel = when (mode) {
+                ComposerCommand.MENTIONS ->
+                    if (query.isBlank()) "No agents or workspace files" else "No matching agents or files"
+                ComposerCommand.ACTIONS -> "No matching commands"
+            }
+            // Deliberately a plain swap, not Crossfade: Crossfade keeps both branches composed, so
+            // the card would measure max(list, placeholder) for the whole transition and only then
+            // snap down. Height is owned by the caller's animateContentSize instead.
+            if (isEmpty) {
+                Text(
+                    emptyLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+                )
+            } else {
+                LazyColumn(
+                    Modifier.heightIn(max = 230.dp),
+                    state = listState,
+                    contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp)
+                ) {
                     if (mode == ComposerCommand.MENTIONS) {
                         if (filteredAgents.isNotEmpty()) {
                             items(filteredAgents, key = { "agent:${it.groupName}:${it.name}" }) { agent ->
@@ -902,9 +961,13 @@ private fun ComposerCommandPill(
                                 )
                             }
                         }
-                        if (isSearching) item {
-                            Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        // Only when there is nothing else to show. Appending a spinner row below
+                        // existing results grows then shrinks the card on every keystroke.
+                        if (isSearching && filteredAgents.isEmpty() && files.isEmpty()) {
+                            item(key = "searching") {
+                                Box(Modifier.fillMaxWidth().height(48.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                }
                             }
                         }
                     } else {
@@ -913,7 +976,6 @@ private fun ComposerCommandPill(
                                 onSelect(com.amaya.intelligence.domain.models.commandMarkdown(action.value))
                             }
                         }
-                    }
                     }
                 }
             }
@@ -1003,33 +1065,34 @@ private fun ReasoningEffortButton(
                 }
             }
         }
-        DropdownMenu(
+        // Opens to the right of the button and upwards; the window-edge clamp in the position
+        // provider keeps it on screen if the button sits close to the right margin.
+        AmayaDropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            properties = androidx.compose.ui.window.PopupProperties(focusable = false),
-            shape = RoundedCornerShape(16.dp),
-            tonalElevation = 6.dp,
-            shadowElevation = 8.dp,
-            offset = androidx.compose.ui.unit.DpOffset(0.dp, 6.dp),
-            modifier = Modifier.widthIn(min = 180.dp)
+            alignment = AmayaMenuAlignment.Start,
+            placement = AmayaMenuPlacement.Above,
+            minWidth = 180.dp,
+            focusable = false
         ) {
             com.amaya.intelligence.data.remote.api.ThinkingEffort.entries.forEach { level ->
-                DropdownMenuItem(
-                    text = { Text(level.label()) },
+                AmayaDropdownMenuItem(
+                    text = level.label(),
+                    selected = level == effort,
+                    trailing = if (level == effort) {
+                        {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    } else null,
                     onClick = {
                         onEffortChange(level)
                         expanded = false
-                    },
-                    modifier = Modifier
-                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(
-                            if (level == effort) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
-                            else Color.Transparent
-                        ),
-                    colors = MenuDefaults.itemColors(
-                        textColor = MaterialTheme.colorScheme.onSurface
-                    )
+                    }
                 )
             }
         }
@@ -1043,30 +1106,29 @@ private fun com.amaya.intelligence.data.remote.api.ThinkingEffort.label(): Strin
     com.amaya.intelligence.data.remote.api.ThinkingEffort.HIGH -> "High"
 }
 
-private fun Modifier.pillShadowOverlay(topShadowAlpha: Float = 0.35f): Modifier = this
+private fun Modifier.pillShadowOverlay(topShadowAlpha: () -> Float): Modifier = this
     .drawWithContent {
         drawContent()
         val gradientHeight = 16.dp.toPx()
 
-        if (topShadowAlpha > 0f) {
+        val top = topShadowAlpha()
+        if (top > 0f) {
             drawRect(
-                brush = androidx.compose.ui.graphics.Brush.verticalGradient(
-                    0.0f to androidx.compose.ui.graphics.Color.Black.copy(alpha = topShadowAlpha),
-                    1.0f to androidx.compose.ui.graphics.Color.Transparent,
+                brush = Brush.verticalGradient(
+                    0.0f to Color.Black.copy(alpha = top),
+                    1.0f to Color.Transparent,
                     startY = 0f,
                     endY = gradientHeight
-                ),
-                blendMode = androidx.compose.ui.graphics.BlendMode.SrcAtop
+                )
             )
         }
 
         drawRect(
-            brush = androidx.compose.ui.graphics.Brush.verticalGradient(
-                0.0f to androidx.compose.ui.graphics.Color.Transparent,
-                1.0f to androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.35f),
+            brush = Brush.verticalGradient(
+                0.0f to Color.Transparent,
+                1.0f to Color.Black.copy(alpha = 0.35f),
                 startY = (size.height - gradientHeight).coerceAtLeast(0f),
                 endY = size.height
-            ),
-            blendMode = androidx.compose.ui.graphics.BlendMode.SrcAtop
+            )
         )
     }

@@ -74,7 +74,10 @@ internal fun localToolHeader(execution: ToolExecution): String? {
     }
 
     return when (execution.name) {
-        "read_file" -> arg("paths")?.let { "Read files" } ?: fileName()?.let { "Read $it" }
+        // Only reached while a batch is awaiting approval — once it runs it is rendered
+        // as one card per file (see synthesizeBatchReadGroup).
+        "read_file" -> batchPathCount(execution.arguments)?.let { "Read $it files" }
+            ?: fileName()?.let { "Read $it" }
         "write_file" -> fileName()?.let { "${verb("Write", "Wrote")} $it" }
         "edit_file" -> fileName()?.let { "${verb("Edit", "Edited")} $it" }
         "create_directory" -> fileName()?.let { "${verb("Create", "Created")} $it" }
@@ -100,6 +103,12 @@ internal fun localToolHeader(execution: ToolExecution): String? {
         else -> null
     }
 }
+
+/** Number of files in a `read_file` batch, or null when the call names a single path. */
+internal fun batchPathCount(arguments: Map<String, Any?>): Int? =
+    (arguments["paths"] as? List<*>)
+        ?.count { (it as? String)?.isNotBlank() == true }
+        ?.takeIf { it > 0 }
 
 internal fun localToolPath(arguments: Map<String, Any?>): String? =
     listOf("path", "TargetFile", "AbsolutePath", "file", "filePath", "working_dir")

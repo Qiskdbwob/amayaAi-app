@@ -2,14 +2,18 @@ package com.amaya.intelligence.utils
 
 import android.os.SystemClock
 import android.util.Log
+import com.amaya.intelligence.BuildConfig
 
 /**
- * Temporary local streaming profiler. Filter with:
+ * Local streaming profiler. Filter with:
  * adb logcat -s LocalStreamPerf
+ *
+ * Debug builds only — the callers sit on hot paths (every inbound delta, every markdown
+ * parse), so this must never cost anything in release.
  */
 object LocalStreamPerfLog {
     private const val TAG = "LocalStreamPerf"
-    private const val ENABLED = true
+    val ENABLED = BuildConfig.DEBUG
     private const val SUMMARY_INTERVAL_MS = 1_000L
     private const val SLOW_RENDER_MS = 12L
 

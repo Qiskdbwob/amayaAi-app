@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
@@ -65,6 +66,12 @@ class MainActivity : androidx.appcompat.app.AppCompatActivity() {
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Must run BEFORE super.onCreate() — it swaps Theme.Amaya.Splash for the
+        // postSplashScreenTheme (Theme.Amaya) that AppCompat expects. The splash is
+        // a static icon, so nothing holds it: it leaves as soon as the first frame
+        // is ready.
+        installSplashScreen()
+
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         consumeConversationIntent(intent)

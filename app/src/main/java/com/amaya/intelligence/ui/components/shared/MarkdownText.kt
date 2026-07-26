@@ -10,7 +10,6 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.ClickableText
 import androidx.compose.material.icons.Icons
@@ -22,10 +21,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -34,8 +31,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 import com.amaya.intelligence.utils.LocalStreamPerfLog
 import kotlinx.coroutines.delay
@@ -57,8 +56,8 @@ private sealed class MdBlock {
     object HorizontalRule : MdBlock()
 }
 
-private data class ListEntry(val text: String, val indent: Int = 0)
-private data class TaskEntry(val text: String, val checked: Boolean)
+private data class ListEntry(val text: String, val indent: Int = 0, val number: Int = 1)
+private data class TaskEntry(val text: String, val checked: Boolean, val indent: Int = 0)
 
 // ═══════════════════════════════════════════════════════════════════
 //  Regex constants — compiled once
@@ -67,10 +66,111 @@ private data class TaskEntry(val text: String, val checked: Boolean)
 private val HEADING_RE = Regex("^(#{1,6})\\s+(.*)")
 private val HR_RE = Regex("^[-*_]{3,}\\s*$")
 private val UL_RE = Regex("^(\\s*)[-*+]\\s+(.*)")
-private val OL_RE = Regex("^(\\s*)\\d+[.)\\s]\\s*(.*)")
-private val TASK_RE = Regex("^\\s*[-*+]\\s+\\[([ xX])]\\s+(.*)")
+// The marker must be a real "1." / "1)" — an earlier `[.)\s]` also accepted a space,
+// which turned any paragraph opening with a number ("2024 was a long year") into a list.
+private val OL_RE = Regex("^(\\s*)(\\d{1,9})[.)]\\s+(.*)")
+private val TASK_RE = Regex("^(\\s*)[-*+]\\s+\\[([ xX])]\\s*(.*)")
 private val TABLE_SEP_RE = Regex("^\\|?[\\s:]*-{2,}[\\s:]*([|][\\s:]*-{2,}[\\s:]*)*\\|?\\s*$")
 private val BQ_RE = Regex("^>\\s?(.*)")
+
+// ═══════════════════════════════════════════════════════════════════
+//  Type scale
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Headings are derived from the *effective body size* rather than from
+ * `MaterialTheme.typography`, for two reasons: the app's `PremiumTypography` leaves
+ * `headlineLarge`/`headlineSmall`/`titleSmall` undefined — so `#` fell through to the
+ * Material default of 32sp against 16sp body text, while `######` landed at 14sp, i.e.
+ * *smaller* than body — and callers that pass a custom `fontSize` used to get headings
+ * that ignored it entirely.
+ */
+// An even ladder — one consistent step per level, wide enough that neighbouring levels are
+// still tellable apart. Against a 16sp body that lands on 24 / 22 / 20 / 18 / 17 / 16.
+private val HEADING_SCALE = floatArrayOf(1.5f, 1.375f, 1.25f, 1.125f, 1.0625f, 1f)
+private val HEADING_SCALE_COMPACT = floatArrayOf(1.36f, 1.27f, 1.18f, 1.09f, 1.05f, 1f)
+
+private fun headingStyle(base: TextStyle, level: Int, compact: Boolean): TextStyle {
+    val scale = (if (compact) HEADING_SCALE_COMPACT else HEADING_SCALE)[(level - 1).coerceIn(0, 5)]
+    val size = base.fontSize * scale
+    return base.copy(
+        fontSize      = size,
+        lineHeight    = size * 1.35f,
+        fontWeight    = FontWeight.SemiBold,
+        letterSpacing = 0.sp
+    )
+}
+
+/** Weight used for `**bold**` and headings — SemiBold, not Bold, so it sits closer to body text. */
+private val MD_BOLD = FontWeight.SemiBold
+
+// Inline `code` carries no background — it is distinguished by its letterforms alone: a
+// monospace face set lighter than the body it sits in, with the tracking opened up slightly
+// so the fixed-width glyphs read as deliberate rather than cramped.
+private val MD_CODE_WEIGHT = FontWeight.Light
+private val MD_CODE_TRACKING = 0.6.sp
+
+/** `==mark==` tint. Amber reads as a highlighter in both light and dark surfaces. */
+private val MARK_TINT = Color(0xFFFFD60A)
+
+// The monochrome scheme makes `primary` almost indistinguishable from body text, so links
+// get a dedicated accent picked against the *text* colour: light text implies a dark (or
+// blue-bubble) background, dark text implies a light one.
+private val LINK_ON_DARK  = Color(0xFF64D2FF)
+private val LINK_ON_LIGHT = Color(0xFF0A84FF)
+
+private fun linkColorFor(textColor: Color): Color =
+    if (textColor.luminance() > 0.6f) LINK_ON_DARK else LINK_ON_LIGHT
+
+private fun codeFontSizeFor(style: TextStyle): TextUnit =
+    if (style.fontSize.isSpecified) style.fontSize * 0.92f else 13.sp
+
+/**
+ * Long code spans are usually file paths or URLs, which contain no space and so lay out as one
+ * unbreakable run — it either overflowed the bubble or pushed the whole line onto its own row.
+ * Zero-width spaces after path separators give the layout somewhere to wrap without adding any
+ * visible character.
+ */
+private fun codeWithSoftBreaks(code: String): String {
+    if (code.length <= 20 || code.any { it.isWhitespace() }) return code
+    return buildString(code.length + 8) {
+        code.forEachIndexed { idx, c ->
+            append(c)
+            if (idx < code.lastIndex && (c == '/' || c == '\\' || c == '.' || c == '_' || c == '-')) {
+                append('\u200B')
+            }
+        }
+    }
+}
+
+/**
+ * Ordered lists are numbered per indent level, so nested lists restart at their own first
+ * number instead of continuing the parent's run, and a list that starts at `3.` keeps its
+ * numbering instead of being renumbered from 1.
+ */
+private fun orderedListNumbers(items: List<ListEntry>): List<Int> {
+    val counters = HashMap<Int, Int>()
+    var prevIndent = -1
+    return items.map { item ->
+        when {
+            item.indent > prevIndent -> counters[item.indent] = item.number
+            else -> {
+                if (item.indent < prevIndent) {
+                    counters.keys.filter { it > item.indent }.forEach { counters.remove(it) }
+                }
+                counters[item.indent] = counters[item.indent]?.plus(1) ?: item.number
+            }
+        }
+        prevIndent = item.indent
+        counters[item.indent] ?: item.number
+    }
+}
+
+private fun bulletGlyph(indent: Int): String = when (indent % 3) {
+    0    -> "•"
+    1    -> "◦"
+    else -> "▪"
+}
 
 // ═══════════════════════════════════════════════════════════════════
 //  Top-level composable
@@ -85,64 +185,69 @@ fun MarkdownText(
     fontSize: androidx.compose.ui.unit.TextUnit = 16.sp,
     lineHeight: androidx.compose.ui.unit.TextUnit = 24.sp,
     onLocalhostLinkClick: ((String) -> Unit)? = null,
-    enableFileReferenceIcons: Boolean = false
+    enableFileReferenceIcons: Boolean = false,
+    /**
+     * Overrides the gap between markdown blocks without touching type size. Lets text
+     * keep normal reading metrics while adopting a tighter vertical rhythm — e.g. body
+     * text sitting inside a card, between blocks that are spaced much more closely than
+     * the conversation is.
+     */
+    blockSpacing: Dp? = null
 ) {
-    val blocks = remember(text) {
-        val startNs = System.nanoTime()
-        val parsed = parseBlocks(text)
-        LocalStreamPerfLog.onMarkdownParsed(
-            textChars = text.length,
-            blocks = parsed.size,
-            elapsedMs = (System.nanoTime() - startNs) / 1_000_000,
-            compact = compact
-        )
-        parsed
-    }
+    val blocks = remember(text) { parseBlocksCached(text, compact) }
     val scheme   = MaterialTheme.colorScheme
     val typo     = MaterialTheme.typography
-    val spacing  = if (compact) 4.dp else 12.dp
+    val spacing  = blockSpacing ?: if (compact) 4.dp else 12.dp
+
+    // One body style for every text block. `PremiumTypography.bodyMedium` is ExtraLight (W200)
+    // with 0.25sp tracking; inheriting that made body text hairline-thin and pushed the jump to
+    // bold out to 500 weight units. Markdown pins its own weight and tracking instead.
+    val bodyStyle = if (compact) {
+        typo.bodySmall.copy(
+            fontSize = 11.sp, lineHeight = 16.sp,
+            fontWeight = FontWeight.Normal, letterSpacing = 0.sp
+        )
+    } else {
+        typo.bodyMedium.copy(
+            fontSize = fontSize, lineHeight = lineHeight,
+            fontWeight = FontWeight.Normal, letterSpacing = 0.sp
+        )
+    }
+    val listIndent = if (compact) 12.dp else 16.dp
+    val listGap    = if (compact) 2.dp else 5.dp
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(spacing)) {
         blocks.forEach { block ->
             when (block) {
 
                 is MdBlock.Heading -> {
-                    val style = if (compact) when (block.level) {
-                        1    -> typo.labelLarge.copy(fontSize = 12.sp, lineHeight = 16.sp)
-                        2    -> typo.labelMedium.copy(fontSize = 11.sp, lineHeight = 15.sp)
-                        else -> typo.labelSmall.copy(fontSize = 10.sp, lineHeight = 14.sp)
-                    } else when (block.level) {
-                        1    -> typo.headlineLarge
-                        2    -> typo.headlineMedium
-                        3    -> typo.headlineSmall
-                        4    -> typo.titleLarge
-                        5    -> typo.titleMedium
-                        else -> typo.titleSmall
+                    // No rule under h1/h2 — block spacing already separates sections, and an
+                    // underline is a document convention rather than a chat one. The lead-in
+                    // gap shrinks with depth, so rank reads from the spacing as well as the
+                    // size — which is what keeps the lower levels distinguishable once their
+                    // sizes converge on the body.
+                    val headingLead = when (block.level) {
+                        1    -> if (compact) 8.dp else 16.dp
+                        2    -> if (compact) 6.dp else 13.dp
+                        3    -> if (compact) 5.dp else 10.dp
+                        else -> if (compact) 3.dp else 7.dp
                     }
                     InlineText(
                         text     = block.text,
                         color    = color,
-                        style    = style.copy(fontWeight = FontWeight.Bold),
-                        modifier = Modifier.padding(top = if (!compact && block.level <= 2) 8.dp else 2.dp),
+                        style    = headingStyle(bodyStyle, block.level, compact),
+                        modifier = Modifier.padding(top = headingLead),
                         compact  = compact,
                         onLocalhostLinkClick = onLocalhostLinkClick,
                         enableFileReferenceIcons = enableFileReferenceIcons
                     )
-                    if (!compact && block.level <= 2) {
-                        HorizontalDivider(
-                            color     = scheme.outlineVariant.copy(alpha = 0.4f),
-                            thickness = 0.5.dp
-                        )
-                    }
                 }
 
                 is MdBlock.Paragraph -> {
-                    val style = if (compact) typo.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp)
-                                else typo.bodyMedium.copy(fontSize = fontSize, lineHeight = lineHeight)
                     InlineText(
                         text    = block.text,
                         color   = color,
-                        style   = style,
+                        style   = bodyStyle,
                         compact = compact,
                         onLocalhostLinkClick = onLocalhostLinkClick,
                         enableFileReferenceIcons = enableFileReferenceIcons
@@ -200,16 +305,17 @@ fun MarkdownText(
                 }
 
                 is MdBlock.UnorderedList -> {
-                    val bodyStyle = if (compact) typo.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp)
-                                   else typo.bodyMedium.copy(fontSize = fontSize, lineHeight = lineHeight)
-                    Column(verticalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 4.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(listGap)) {
                         block.items.forEach { item ->
-                            Row(modifier = Modifier.padding(start = (item.indent * 12).dp)) {
+                            Row(
+                                modifier = Modifier.padding(start = listIndent * item.indent),
+                                verticalAlignment = Alignment.Top
+                            ) {
                                 Text(
-                                    "\u2022",
+                                    bulletGlyph(item.indent),
                                     style = bodyStyle,
-                                    color = color.copy(alpha = 0.6f),
-                                    modifier = Modifier.width(if (compact) 12.dp else 16.dp)
+                                    color = color.copy(alpha = 0.55f),
+                                    modifier = Modifier.width(if (compact) 14.dp else 18.dp)
                                 )
                                 InlineText(text = item.text, color = color,
                                     style = bodyStyle, compact = compact, onLocalhostLinkClick = onLocalhostLinkClick, enableFileReferenceIcons = enableFileReferenceIcons)
@@ -219,16 +325,21 @@ fun MarkdownText(
                 }
 
                 is MdBlock.OrderedList -> {
-                    val bodyStyle = if (compact) typo.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp)
-                                   else typo.bodyMedium.copy(fontSize = fontSize, lineHeight = lineHeight)
-                    Column(verticalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 4.dp)) {
+                    val numbers = remember(block.items) { orderedListNumbers(block.items) }
+                    Column(verticalArrangement = Arrangement.spacedBy(listGap)) {
                         block.items.forEachIndexed { idx, item ->
-                            Row(modifier = Modifier.padding(start = (item.indent * 12).dp)) {
+                            Row(
+                                modifier = Modifier.padding(start = listIndent * item.indent),
+                                verticalAlignment = Alignment.Top
+                            ) {
                                 Text(
-                                    "${idx + 1}.",
+                                    "${numbers.getOrElse(idx) { idx + 1 }}.",
                                     style = bodyStyle,
-                                    color = color.copy(alpha = 0.6f),
-                                    modifier = Modifier.width(if (compact) 18.dp else 24.dp)
+                                    color = color.copy(alpha = 0.55f),
+                                    // widthIn, not width — a fixed column clipped "10." into the text.
+                                    modifier = Modifier
+                                        .widthIn(min = if (compact) 16.dp else 20.dp)
+                                        .padding(end = if (compact) 3.dp else 5.dp)
                                 )
                                 InlineText(text = item.text, color = color,
                                     style = bodyStyle, compact = compact, onLocalhostLinkClick = onLocalhostLinkClick, enableFileReferenceIcons = enableFileReferenceIcons)
@@ -238,15 +349,20 @@ fun MarkdownText(
                 }
 
                 is MdBlock.TaskList -> {
-                    val bodyStyle = if (compact) typo.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp)
-                                   else typo.bodyMedium.copy(fontSize = fontSize, lineHeight = lineHeight)
-                    Column(verticalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 4.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(listGap)) {
                         block.items.forEach { item ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                modifier = Modifier.padding(start = listIndent * item.indent),
+                                verticalAlignment = Alignment.Top
+                            ) {
                                 Icon(
                                     if (item.checked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
                                     null,
-                                    modifier = Modifier.size(if (compact) 14.dp else 18.dp),
+                                    // Nudged down so the box sits on the first line's optical
+                                    // centre now that the row is top-aligned for wrapped text.
+                                    modifier = Modifier
+                                        .padding(top = if (compact) 1.dp else 2.dp)
+                                        .size(if (compact) 14.dp else 18.dp),
                                     tint = if (item.checked) scheme.primary else color.copy(alpha = 0.4f)
                                 )
                                 Spacer(Modifier.width(if (compact) 4.dp else 6.dp))
@@ -258,16 +374,18 @@ fun MarkdownText(
                 }
 
                 is MdBlock.BlockQuote -> {
-                    Row {
+                    // IntrinsicSize.Min gives the Row a bounded height so the rule can fill it.
+                    // Inside a LazyColumn the incoming maxHeight is Infinity, and fillMaxHeight is
+                    // a no-op there — the bar collapsed to zero and the quote lost its marker.
+                    Row(modifier = Modifier.height(IntrinsicSize.Min)) {
                         Box(modifier = Modifier
                             .width(if (compact) 2.dp else 3.dp)
                             .fillMaxHeight()
-                            .background(scheme.primary.copy(alpha = 0.5f), RoundedCornerShape(2.dp))
+                            .background(color.copy(alpha = 0.28f), RoundedCornerShape(2.dp))
                         )
                         Spacer(Modifier.width(if (compact) 6.dp else 10.dp))
-                        InlineText(text = block.text, color = color.copy(alpha = 0.7f),
-                            style = if (compact) typo.bodySmall.copy(fontSize = 11.sp, lineHeight = 16.sp)
-                                    else typo.bodyMedium.copy(fontSize = fontSize, lineHeight = lineHeight, fontStyle = FontStyle.Italic),
+                        InlineText(text = block.text, color = color.copy(alpha = 0.75f),
+                            style = bodyStyle,
                             compact = compact, onLocalhostLinkClick = onLocalhostLinkClick, enableFileReferenceIcons = enableFileReferenceIcons)
                     }
                 }
@@ -315,7 +433,7 @@ fun MarkdownText(
                                                 tableWrapText(h),
                                                 style = if (compact) typo.labelSmall.copy(fontSize = 9.sp, lineHeight = 12.sp) else typo.labelSmall,
                                                 color = color,
-                                                fontWeight = FontWeight.Bold,
+                                                fontWeight = MD_BOLD,
                                                 modifier = Modifier.width(columnWidths[index].dp)
                                             )
                                         }
@@ -335,7 +453,8 @@ fun MarkdownText(
                                                 InlineText(
                                                     tableWrapText(cell),
                                                     color = color.copy(alpha = 0.84f),
-                                                    style = if (compact) typo.bodySmall.copy(fontSize = 9.sp, lineHeight = 13.sp) else typo.bodySmall,
+                                                    style = if (compact) typo.bodySmall.copy(fontSize = 9.sp, lineHeight = 13.sp, fontWeight = FontWeight.Normal)
+                                                            else typo.bodySmall.copy(fontWeight = FontWeight.Normal),
                                                     modifier = Modifier.width(columnWidths[index].dp),
                                                     compact = compact,
                                                     onLocalhostLinkClick = onLocalhostLinkClick,
@@ -388,21 +507,23 @@ private fun InlineText(
     onLocalhostLinkClick: ((String) -> Unit)? = null,
     enableFileReferenceIcons: Boolean = false
 ) {
-    val scheme = MaterialTheme.colorScheme
     val uriHandler = LocalUriHandler.current
+    val linkColor = linkColorFor(color)
+    val codeSize = codeFontSizeFor(style)
+    val markBg = MARK_TINT.copy(alpha = if (isSystemInDarkTheme()) 0.30f else 0.36f)
 
     if (enableFileReferenceIcons && text.contains("](file:///")) {
         // Use segment-based rendering to show file icons inline
         val context = LocalContext.current
         val assetNames = remember(context) { loadFileTypeIconAssetNames(context) }
-        val segments = remember(text, color, scheme.primary, scheme.surfaceVariant, scheme.onSurface) {
-            parseInlineSegments(text, color, scheme.primary, scheme.surfaceVariant, scheme.onSurface)
+        val segments = remember(text, color, linkColor, codeSize, markBg) {
+            parseInlineSegments(text, color, linkColor, codeSize, markBg)
         }
         InlineContentRenderer(
             segments = segments,
             style = style,
             color = color,
-            linkColor = scheme.primary,
+            linkColor = linkColor,
             compact = compact,
             assetNames = assetNames,
             modifier = modifier,
@@ -410,8 +531,10 @@ private fun InlineText(
             onLocalhostLinkClick = onLocalhostLinkClick
         )
     } else {
-        val annotated = remember(text, color) {
-            parseInline(text, color, scheme.primary, scheme.surfaceVariant, scheme.onSurface)
+        // Every colour and size read inside the block is a key — without them a theme switch
+        // left the cached AnnotatedString (and so links and code) painted in the old palette.
+        val annotated = remember(text, color, linkColor, codeSize, markBg) {
+            parseInline(text, color, linkColor, codeSize, markBg)
         }
         ClickableText(
             text = annotated,
@@ -519,10 +642,38 @@ private fun parseInline(
     text: String,
     color: Color,
     linkColor: Color,
-    codeBg: Color,
-    codeFg: Color
+    codeFontSize: TextUnit,
+    markBg: Color
 ): AnnotatedString = buildAnnotatedString {
-    parseInlineToBuilder(text, this, color, linkColor, codeBg, codeFg)
+    parseInlineToBuilder(text, this, color, linkColor, codeFontSize, markBg)
+}
+
+/**
+ * Finds the closing run of [delim] at or after [from], honouring CommonMark's flanking rules:
+ * the delimiter may not be preceded by whitespace, and an underscore delimiter may not be
+ * followed by a word character. Without this, `indexOf` alone turned `snake_case_name` into
+ * "snake*case*name".
+ */
+private fun findClosingDelim(src: String, from: Int, delim: String, underscore: Boolean): Int {
+    var idx = src.indexOf(delim, from)
+    while (idx >= 0) {
+        val prev = src.getOrNull(idx - 1)
+        val next = src.getOrNull(idx + delim.length)
+        val prevOk = prev != null && !prev.isWhitespace()
+        val nextOk = !underscore || next == null || !next.isLetterOrDigit()
+        if (prevOk && nextOk) return idx
+        idx = src.indexOf(delim, idx + 1)
+    }
+    return -1
+}
+
+/** An underscore run only opens emphasis when it is not sitting inside a word. */
+private fun opensEmphasis(src: String, i: Int, delim: String): Boolean {
+    val next = src.getOrNull(i + delim.length) ?: return false
+    if (next.isWhitespace()) return false
+    if (delim[0] != '_') return true
+    val prev = src.getOrNull(i - 1)
+    return prev == null || !prev.isLetterOrDigit()
 }
 
 private fun parseInlineToBuilder(
@@ -530,8 +681,8 @@ private fun parseInlineToBuilder(
     builder: AnnotatedString.Builder,
     color: Color,
     linkColor: Color,
-    codeBg: Color,
-    codeFg: Color
+    codeFontSize: TextUnit,
+    markBg: Color
 ) {
     var i = 0
     with(builder) {
@@ -543,66 +694,86 @@ private fun parseInlineToBuilder(
                 }
 
                 // Bold italic  ***text*** or ___text___
-                matchesAt(src, i, "***") || matchesAt(src, i, "___") -> {
+                (matchesAt(src, i, "***") || matchesAt(src, i, "___")) &&
+                    opensEmphasis(src, i, src.substring(i, i + 3)) -> {
                     val delim = src.substring(i, i + 3)
-                    val end = src.indexOf(delim, i + 3)
+                    val end = findClosingDelim(src, i + 3, delim, delim[0] == '_')
                     if (end > i) {
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold, fontStyle = FontStyle.Italic)) {
-                            parseInlineToBuilder(src.substring(i + 3, end), builder, color, linkColor, codeBg, codeFg)
+                        withStyle(SpanStyle(fontWeight = MD_BOLD, fontStyle = FontStyle.Italic)) {
+                            parseInlineToBuilder(src.substring(i + 3, end), builder, color, linkColor, codeFontSize, markBg)
                         }
                         i = end + 3
                     } else { append(src[i]); i++ }
                 }
 
                 // Bold  **text** or __text__
-                matchesAt(src, i, "**") || matchesAt(src, i, "__") -> {
+                (matchesAt(src, i, "**") || matchesAt(src, i, "__")) &&
+                    opensEmphasis(src, i, src.substring(i, i + 2)) -> {
                     val delim = src.substring(i, i + 2)
-                    val end = src.indexOf(delim, i + 2)
+                    val end = findClosingDelim(src, i + 2, delim, delim[0] == '_')
                     if (end > i) {
-                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
-                            parseInlineToBuilder(src.substring(i + 2, end), builder, color, linkColor, codeBg, codeFg)
+                        withStyle(SpanStyle(fontWeight = MD_BOLD)) {
+                            parseInlineToBuilder(src.substring(i + 2, end), builder, color, linkColor, codeFontSize, markBg)
                         }
                         i = end + 2
                     } else { append(src[i]); i++ }
                 }
 
-                // Strikethrough ~~text~~
-                matchesAt(src, i, "~~") -> {
-                    val end = src.indexOf("~~", i + 2)
+                // Strikethrough ~~text~~ — same flanking guard as the other paired delimiters
+                matchesAt(src, i, "~~") && opensEmphasis(src, i, "~~") -> {
+                    val end = findClosingDelim(src, i + 2, "~~", underscore = false)
                     if (end > i) {
                         withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
-                            parseInlineToBuilder(src.substring(i + 2, end), builder, color, linkColor, codeBg, codeFg)
+                            parseInlineToBuilder(src.substring(i + 2, end), builder, color, linkColor, codeFontSize, markBg)
+                        }
+                        i = end + 2
+                    } else { append(src[i]); i++ }
+                }
+
+                // Highlight ==text== — a marker-pen wash, the one place a background belongs.
+                // Flanking rules matter here: a bare indexOf let prose like "check x == y
+                // and a == b" open a highlight and swallow everything between the two
+                // comparisons.
+                matchesAt(src, i, "==") && opensEmphasis(src, i, "==") -> {
+                    val end = findClosingDelim(src, i + 2, "==", underscore = false)
+                    if (end > i + 2) {
+                        withStyle(SpanStyle(background = markBg)) {
+                            parseInlineToBuilder(src.substring(i + 2, end), builder, color, linkColor, codeFontSize, markBg)
                         }
                         i = end + 2
                     } else { append(src[i]); i++ }
                 }
 
                 // Italic  *text* or _text_
-                (src[i] == '*' || src[i] == '_') && i + 1 < src.length && src[i + 1] != ' ' -> {
-                    val delim = src[i]
-                    val end = src.indexOf(delim, i + 1)
-                    if (end > i && end < src.length) {
+                (src[i] == '*' || src[i] == '_') && opensEmphasis(src, i, src.substring(i, i + 1)) -> {
+                    val delim = src[i].toString()
+                    val end = findClosingDelim(src, i + 1, delim, delim[0] == '_')
+                    if (end > i) {
                         withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-                            parseInlineToBuilder(src.substring(i + 1, end), builder, color, linkColor, codeBg, codeFg)
+                            parseInlineToBuilder(src.substring(i + 1, end), builder, color, linkColor, codeFontSize, markBg)
                         }
                         i = end + 1
                     } else { append(src[i]); i++ }
                 }
 
-                // Inline code `text`
+                // Inline code — ``text with ` inside`` or `text`.
+                // No background at all. The span reads as code purely from its own letterforms:
+                // monospace, a lighter weight than the surrounding body, and airier tracking.
+                // Nothing is drawn behind it, so it never interrupts the line the way a filled
+                // box does.
                 src[i] == '`' -> {
-                    val end = src.indexOf('`', i + 1)
+                    val fence = if (matchesAt(src, i, "``")) "``" else "`"
+                    val end = src.indexOf(fence, i + fence.length)
                     if (end > i) {
                         withStyle(SpanStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 13.sp,
-                            background = codeBg,
-                            color = codeFg,
-                            letterSpacing = 0.3.sp
+                            fontFamily    = FontFamily.Monospace,
+                            fontSize      = codeFontSize,
+                            fontWeight    = MD_CODE_WEIGHT,
+                            letterSpacing = MD_CODE_TRACKING
                         )) {
-                            append("\u00A0${src.substring(i + 1, end)}\u00A0")
+                            append(codeWithSoftBreaks(src.substring(i + fence.length, end).trim()))
                         }
-                        i = end + 1
+                        i = end + fence.length
                     } else { append(src[i]); i++ }
                 }
 
@@ -650,8 +821,6 @@ private fun parseInlineToBuilder(
                     val matchResult = matchesLocalhostLink(src, i)!!
                     val fullMatch = matchResult.value
                     val isUrlMatch = LOCALHOST_URL_REGEX.find(fullMatch) != null
-                    
-                    android.util.Log.d("MarkdownText", "Localhost link detected: $fullMatch")
 
                     val host: String
                     val portGroup: String?
@@ -672,8 +841,7 @@ private fun parseInlineToBuilder(
                     }
 
                     val (annotation, displayText) = parseLocalhostAnnotation(host, portGroup, pathGroup, isUrlMatch)
-                    android.util.Log.d("MarkdownText", "Annotation: $annotation, Display: $displayText")
-                    
+
                     pushStringAnnotation(tag = "LOCALHOST", annotation = annotation)
                     withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.None, fontWeight = FontWeight.Medium)) {
                         append(displayText)
@@ -776,8 +944,8 @@ private fun parseInlineSegments(
     text: String,
     color: Color,
     linkColor: Color,
-    codeBg: Color,
-    codeFg: Color
+    codeFontSize: TextUnit,
+    markBg: Color
 ): List<InlineSegment> {
     val result = mutableListOf<InlineSegment>()
     val src = text
@@ -819,7 +987,7 @@ private fun parseInlineSegments(
         // as plain text once we know no more file links exist, or just handle char-by-char.
         // For simplicity and zero-duplication: re-use the existing parser on the non-file-link
         // portions by processing one character at a time into the current builder.
-        parseInlineSingleChar(src, i, builder, color, linkColor, codeBg, codeFg).let { newI ->
+        parseInlineSingleChar(src, i, builder, color, linkColor, codeFontSize, markBg).let { newI ->
             i = newI
         }
     }
@@ -838,15 +1006,15 @@ private fun parseInlineSingleChar(
     builder: AnnotatedString.Builder,
     color: Color,
     linkColor: Color,
-    codeBg: Color,
-    codeFg: Color
+    codeFontSize: TextUnit,
+    markBg: Color
 ): Int {
     // Find the next '[' after i — everything before it is safe to parse as a chunk.
     val nextBracket = src.indexOf('[', i)
     val chunkEnd = if (nextBracket == -1) src.length else nextBracket
     if (chunkEnd > i) {
         // No '[' in this range → parse safely as a chunk (bold, italic, code, URLs etc.)
-        parseInlineToBuilder(src.substring(i, chunkEnd), builder, color, linkColor, codeBg, codeFg)
+        parseInlineToBuilder(src.substring(i, chunkEnd), builder, color, linkColor, codeFontSize, markBg)
         return chunkEnd
     }
     // We are AT a '['. Find the matching ](…) to pass the full link token as one chunk,
@@ -856,12 +1024,12 @@ private fun parseInlineSingleChar(
         val closeParens = src.indexOf(')', closeBracket + 2)
         if (closeParens > closeBracket) {
             // Full [label](url) token — pass to parseInlineToBuilder in one shot
-            parseInlineToBuilder(src.substring(i, closeParens + 1), builder, color, linkColor, codeBg, codeFg)
+            parseInlineToBuilder(src.substring(i, closeParens + 1), builder, color, linkColor, codeFontSize, markBg)
             return closeParens + 1
         }
     }
     // Bare '[' with no matching structure — just emit the character
-    parseInlineToBuilder("[", builder, color, linkColor, codeBg, codeFg)
+    parseInlineToBuilder("[", builder, color, linkColor, codeFontSize, markBg)
     return i + 1
 }
 
@@ -887,94 +1055,7 @@ internal fun extractMarkdownFilePaths(text: String): List<String> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  Code block card
-// ═══════════════════════════════════════════════════════════════════
-
-@Composable
-private fun CodeBlockCard(language: String, code: String) {
-    val clipboard = LocalClipboardManager.current
-    val scope = rememberCoroutineScope()
-    var copied by remember { mutableStateOf(false) }
-    val scheme = MaterialTheme.colorScheme
-
-    // Code block uses surfaceContainerHighest as background (darkest tonal surface)
-    // so it visually "pops" from the chat background in both light and dark mode.
-    val codeBackground  = scheme.surfaceContainerHighest
-    val codeHeaderBg    = scheme.surfaceContainer
-    val codeLangColor   = scheme.onSurfaceVariant
-    val codeTextColor   = scheme.onSurface
-    val codeCopiedColor = scheme.primary
-
-    val borderColor = if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(10.dp),
-        color = codeBackground,
-        border = BorderStroke(1.dp, borderColor),
-        shadowElevation = 0.dp
-    ) {
-        Column {
-            // Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(codeHeaderBg)
-                    .padding(horizontal = 14.dp, vertical = 7.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = language.ifBlank { "text" }.lowercase(),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = codeLangColor,
-                    fontFamily = FontFamily.Monospace,
-                    letterSpacing = 0.5.sp
-                )
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickable {
-                            clipboard.setText(AnnotatedString(code))
-                            scope.launch { copied = true; delay(2000); copied = false }
-                        }
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Icon(
-                        if (copied) Icons.Default.Done else Icons.Default.ContentCopy,
-                        contentDescription = null,
-                        modifier = Modifier.size(13.dp),
-                        tint = if (copied) codeCopiedColor else codeLangColor
-                    )
-                    Text(
-                        if (copied) "Copied!" else "Copy",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (copied) codeCopiedColor else codeLangColor
-                    )
-                }
-            }
-
-            // Code body
-            Box(
-                modifier = Modifier
-                    .horizontalScroll(rememberScrollState())
-                    .padding(14.dp)
-            ) {
-                Text(
-                    text = code,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 13.sp,
-                    lineHeight = 20.sp,
-                    color = codeTextColor
-                )
-            }
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  Table card
+//  Table measurement helpers
 // ═══════════════════════════════════════════════════════════════════
 
 private fun tableColumnWidthValues(headers: List<String>, rows: List<List<String>>, compact: Boolean): List<Float> {
@@ -1010,86 +1091,111 @@ private fun tableWrapText(value: String, chunkSize: Int = 28): String {
     }
 }
 
-@Composable
-private fun TableCard(
-    headers: List<String>,
-    rows: List<List<String>>,
-    textColor: Color,
-    scheme: ColorScheme
-) {
-    val colCount = headers.size
-    val baseColumnWidths = remember(headers, rows) { tableColumnWidthValues(headers, rows, compact = false) }
-    val cellPaddingH = 12.dp
-    val scrollState = rememberScrollState()
-    val borderColor = if (isSystemInDarkTheme()) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(10.dp),
-        color = scheme.surfaceContainerLow,
-        border = BorderStroke(1.dp, borderColor),
-        tonalElevation = 0.dp
-    ) {
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val rawTableWidth = (baseColumnWidths.sum() + cellPaddingH.value * 2 * colCount).dp
-            val tableWidth = maxOf(maxWidth, rawTableWidth)
-            val extraWidth = (tableWidth.value - rawTableWidth.value).coerceAtLeast(0f)
-            val expandable = baseColumnWidths.map { it >= 120f }
-            val expandableCount = expandable.count { it }.takeIf { it > 0 } ?: colCount.coerceAtLeast(1)
-            val columnWidths = baseColumnWidths.mapIndexed { index, width ->
-                width + if (expandable.getOrElse(index) { false } || expandable.none { it }) extraWidth / expandableCount else 0f
-            }
-
-            Box(modifier = Modifier.horizontalScroll(scrollState)) {
-                Column(modifier = Modifier.width(tableWidth)) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(scheme.surfaceContainerHigh)
-                            .padding(vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        headers.forEachIndexed { index, h ->
-                            InlineText(
-                                text = tableWrapText(h),
-                                color = textColor,
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                modifier = Modifier.width(columnWidths[index].dp).padding(horizontal = cellPaddingH)
-                            )
-                        }
-                    }
-                    HorizontalDivider(color = borderColor)
-
-                    rows.forEachIndexed { idx, row ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .then(if (idx % 2 == 1) Modifier.background(scheme.surfaceContainerLowest) else Modifier)
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            for (c in 0 until colCount) {
-                                InlineText(
-                                    text = tableWrapText(row.getOrElse(c) { "" }),
-                                    color = textColor.copy(alpha = 0.85f),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.width(columnWidths[c].dp).padding(horizontal = cellPaddingH)
-                                )
-                            }
-                        }
-                        if (idx < rows.lastIndex) {
-                            HorizontalDivider(color = borderColor.copy(alpha = 0.35f))
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════
 //  Block parser
 // ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Process-wide memo for the block AST.
+ *
+ * [MarkdownText]'s own `remember(text)` is scoped to the composable instance, and
+ * LazyColumn destroys rows the moment they leave the viewport — so without this every
+ * scroll back through history re-parses from scratch, and opening a long conversation
+ * parses the whole first window on the main thread in one frame. The AST is immutable
+ * and keyed purely by the source text, so it is safe to share across instances.
+ *
+ * Streaming still parses once per emitted string: each token produces a new key. Those
+ * intermediate entries age out of the LRU on their own.
+ *
+ * Budgeted by character count rather than entry count — a chat holds a handful of very
+ * long answers alongside many one-liners, and a flat "200 entries" cap would size itself
+ * off the worst case. Anything past [MARKDOWN_CACHE_MAX_ENTRY_CHARS] is parsed but not
+ * stored, so one huge document can't evict everything else.
+ */
+private const val MARKDOWN_CACHE_BUDGET_CHARS = 512_000
+private const val MARKDOWN_CACHE_MAX_ENTRY_CHARS = 64_000
+
+private val markdownBlockCache =
+    object : android.util.LruCache<String, List<MdBlock>>(MARKDOWN_CACHE_BUDGET_CHARS) {
+        override fun sizeOf(key: String, value: List<MdBlock>): Int = key.length.coerceAtLeast(1)
+    }
+
+private fun parseBlocksCached(text: String, compact: Boolean): List<MdBlock> {
+    markdownBlockCache.get(text)?.let { return it }
+    val startNs = System.nanoTime()
+    val parsed = parseBlocks(text)
+    LocalStreamPerfLog.onMarkdownParsed(
+        textChars = text.length,
+        blocks = parsed.size,
+        elapsedMs = (System.nanoTime() - startNs) / 1_000_000,
+        compact = compact
+    )
+    if (text.length <= MARKDOWN_CACHE_MAX_ENTRY_CHARS) markdownBlockCache.put(text, parsed)
+    return parsed
+}
+
+/** True when [line] opens a block of its own and therefore cannot be list/paragraph continuation. */
+private fun startsNewBlock(line: String): Boolean {
+    val t = line.trim()
+    return t.startsWith("```") || HEADING_RE.matches(t) || HR_RE.matches(t) || BQ_RE.matches(t) ||
+        (t.startsWith("|") && t.count { it == '|' } >= 3) || TABLE_SEP_RE.matches(t) ||
+        TASK_RE.matches(line) || UL_RE.matches(line) || OL_RE.matches(line)
+}
+
+private data class RawListItem(val markerLine: String, val continuation: String)
+
+/**
+ * Collects the items of one list, tolerating the two shapes models actually emit: blank lines
+ * between items ("loose" lists) and wrapped prose indented under an item.
+ *
+ * The previous `while (RE.matches(lines[i]))` loop stopped at the first blank line, so a loose
+ * ordered list became one single-item block per entry — and since numbering was rendered from
+ * the index within a block, every item was labelled "1.".
+ */
+private fun collectListItems(
+    lines: List<String>,
+    startIndex: Int,
+    isItem: (String) -> Boolean
+): Pair<List<RawListItem>, Int> {
+    val markers = mutableListOf<String>()
+    val continuations = mutableListOf<StringBuilder>()
+    var i = startIndex
+    var sawBlank = false
+
+    while (i < lines.size) {
+        val line = lines[i]
+        if (line.isBlank()) {
+            var j = i + 1
+            while (j < lines.size && lines[j].isBlank()) j++
+            // The blank only stays inside the list when another item of the same kind follows.
+            if (j < lines.size && isItem(lines[j])) { sawBlank = true; i = j; continue }
+            break
+        }
+        if (isItem(line)) {
+            markers += line
+            continuations += StringBuilder()
+            sawBlank = false
+            i++
+            continue
+        }
+        if (!sawBlank && markers.isNotEmpty() && line.first().isWhitespace() && !startsNewBlock(line)) {
+            continuations.last().append('\n').append(line.trim())
+            i++
+            continue
+        }
+        break
+    }
+    return markers.mapIndexed { idx, m -> RawListItem(m, continuations[idx].toString()) } to i
+}
+
+/**
+ * Maps raw leading-space counts to nesting levels by rank rather than dividing by a fixed
+ * width, so 2-, 3- and 4-space conventions all nest one level per step.
+ */
+private fun indentLevels(widths: List<Int>): List<Int> {
+    val ranks = widths.distinct().sorted()
+    return widths.map { ranks.indexOf(it) }
+}
 
 private fun parseBlocks(text: String): List<MdBlock> {
     val result = mutableListOf<MdBlock>()
@@ -1133,12 +1239,14 @@ private fun parseBlocks(text: String): List<MdBlock> {
                 val bqLines = mutableListOf<String>()
                 while (i < lines.size) {
                     val l = lines[i].trim()
-                    val m = BQ_RE.find(l)
-                    if (m != null) { bqLines += m.groupValues[1]; i++ }
-                    else if (l.isEmpty() || l == ">") { i++ } // skip blank bq lines
-                    else break
+                    if (l.isEmpty()) break              // a blank line closes the quote
+                    val m = BQ_RE.find(l) ?: break
+                    bqLines += m.groupValues[1]
+                    i++
                 }
-                result += MdBlock.BlockQuote(bqLines.joinToString(" "))
+                // Joined on newlines, not spaces — collapsing them flattened every paragraph
+                // break inside a quote into one run-on line.
+                result += MdBlock.BlockQuote(bqLines.joinToString("\n").trim())
             }
 
             // Table  —  line starts with | and has at least 2 |
@@ -1162,35 +1270,45 @@ private fun parseBlocks(text: String): List<MdBlock> {
 
             // Task list item
             TASK_RE.matches(raw) -> {
-                val tasks = mutableListOf<TaskEntry>()
-                while (i < lines.size && TASK_RE.matches(lines[i])) {
-                    val m = TASK_RE.find(lines[i])!!
-                    tasks += TaskEntry(m.groupValues[2], m.groupValues[1].lowercase() == "x")
-                    i++
-                }
-                result += MdBlock.TaskList(tasks)
+                val (raws, next) = collectListItems(lines, i) { TASK_RE.matches(it) }
+                i = next
+                val levels = indentLevels(raws.map { TASK_RE.find(it.markerLine)!!.groupValues[1].length })
+                result += MdBlock.TaskList(raws.mapIndexed { idx, item ->
+                    val m = TASK_RE.find(item.markerLine)!!
+                    TaskEntry(
+                        text    = m.groupValues[3] + item.continuation,
+                        checked = m.groupValues[2].lowercase() == "x",
+                        indent  = levels[idx]
+                    )
+                })
             }
 
             // Unordered list
             UL_RE.matches(raw) -> {
-                val items = mutableListOf<ListEntry>()
-                while (i < lines.size && UL_RE.matches(lines[i])) {
-                    val m = UL_RE.find(lines[i])!!
-                    items += ListEntry(m.groupValues[2], m.groupValues[1].length / 2)
-                    i++
-                }
-                result += MdBlock.UnorderedList(items)
+                val isItem = { l: String -> UL_RE.matches(l) && !TASK_RE.matches(l) }
+                val (raws, next) = collectListItems(lines, i, isItem)
+                i = next
+                val levels = indentLevels(raws.map { UL_RE.find(it.markerLine)!!.groupValues[1].length })
+                result += MdBlock.UnorderedList(raws.mapIndexed { idx, item ->
+                    val m = UL_RE.find(item.markerLine)!!
+                    ListEntry(text = m.groupValues[2] + item.continuation, indent = levels[idx])
+                })
             }
 
             // Ordered list
             OL_RE.matches(raw) -> {
-                val items = mutableListOf<ListEntry>()
-                while (i < lines.size && OL_RE.matches(lines[i])) {
-                    val m = OL_RE.find(lines[i])!!
-                    items += ListEntry(m.groupValues[2], m.groupValues[1].length / 2)
-                    i++
-                }
-                result += MdBlock.OrderedList(items)
+                val (raws, next) = collectListItems(lines, i) { OL_RE.matches(it) }
+                i = next
+                val levels = indentLevels(raws.map { OL_RE.find(it.markerLine)!!.groupValues[1].length })
+                result += MdBlock.OrderedList(raws.mapIndexed { idx, item ->
+                    val m = OL_RE.find(item.markerLine)!!
+                    ListEntry(
+                        text   = m.groupValues[3] + item.continuation,
+                        indent = levels[idx],
+                        // Authored number is kept so a list starting at "3." isn't renumbered.
+                        number = m.groupValues[2].toIntOrNull() ?: (idx + 1)
+                    )
+                })
             }
 
             // Fall-through: paragraph
@@ -1199,14 +1317,8 @@ private fun parseBlocks(text: String): List<MdBlock> {
                 val paraLines = mutableListOf<String>()
                 while (i < lines.size) {
                     val l = lines[i]
-                    val t = l.trim()
-                    if (t.isEmpty() || t.startsWith("```") || HEADING_RE.matches(t) ||
-                        HR_RE.matches(t) || BQ_RE.matches(t) ||
-                        (t.startsWith("|") && t.count { it == '|' } >= 3) ||
-                        TABLE_SEP_RE.matches(t) || TASK_RE.matches(l) ||
-                        UL_RE.matches(l) || OL_RE.matches(l)
-                    ) break
-                    paraLines += t
+                    if (l.isBlank() || startsNewBlock(l)) break
+                    paraLines += l.trim()
                     i++
                 }
                 if (paraLines.isNotEmpty()) {
