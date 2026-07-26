@@ -1,6 +1,7 @@
 package com.amaya.intelligence.impl.local.browser
 
 import android.content.Context
+import android.os.SystemClock
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -16,16 +17,25 @@ import java.util.UUID
 object GeckoBrowserRuntime {
     private const val EXTENSION_ID = "browser-bridge@amaya.local"
     private const val NATIVE_APP = "browser_bridge"
+    private const val PROCESS_GONE_MESSAGE = "Browser content process was killed"
+    private const val READY_TIMEOUT_MS = 8_000L
+    private const val RECOVERY_READY_TIMEOUT_MS = 6_000L
+    private const val LIVENESS_TRUST_MS = 3_000L
 
     private var runtime: GeckoRuntime? = null
     private var extension: WebExtension? = null
     private var installing: CompletableDeferred<WebExtension>? = null
     private val attaching = mutableMapOf<GeckoSession, CompletableDeferred<Unit>>()
     private val delegated = mutableSetOf<GeckoSession>()
+    private val processGone = mutableSetOf<GeckoSession>()
     private val ports = mutableMapOf<GeckoSession, WebExtension.Port>()
     private val pending = mutableMapOf<String, CompletableDeferred<JSONObject>>()
     private val pendingSessions = mutableMapOf<String, GeckoSession>()
     private val readySessions = mutableSetOf<GeckoSession>()
+    private val lastReplyAt = mutableMapOf<GeckoSession, Long>()
+
+    /** Raised when a session's content process is gone; only close()+open() can recover it. */
+    class BridgeUnrecoverable(message: String) : IllegalStateException(message)
 
     @Synchronized
     private fun portFor(session: GeckoSession): WebExtension.Port? = ports[session]
@@ -53,7 +63,7 @@ object GeckoBrowserRuntime {
 
     @Synchronized
     private fun completePending(id: String, result: JSONObject) {
-        pendingSessions.remove(id)
+        pendingSessions.remove(id)?.let { lastReplyAt[it] = SystemClock.uptimeMillis() }
         pending.remove(id)?.complete(result)
     }
 
@@ -65,7 +75,10 @@ object GeckoBrowserRuntime {
 
     @Synchronized
     private fun markReady(session: GeckoSession, port: WebExtension.Port) {
-        if (ports[session] === port) readySessions.add(session)
+        if (ports[session] === port) {
+            readySessions.add(session)
+            lastReplyAt[session] = SystemClock.uptimeMillis()
+        }
     }
 
     @Synchronized
@@ -84,37 +97,83 @@ object GeckoBrowserRuntime {
         delegated.remove(session)
         ports.remove(session)
         readySessions.remove(session)
+        lastReplyAt.remove(session)
+        processGone.remove(session)
         failPending(session, "Browser session closed")
         attaching.remove(session)?.cancel()
+    }
+
+    /**
+     * The content process that hosted this session died. Gecko keeps the session object
+     * alive but it can never run script again, so drop every cached bridge fact and make
+     * later calls fail immediately instead of waiting out a readiness timeout.
+     */
+    @Synchronized
+    fun markProcessGone(session: GeckoSession) {
+        processGone.add(session)
+        delegated.remove(session)
+        ports.remove(session)
+        readySessions.remove(session)
+        lastReplyAt.remove(session)
+        attaching.remove(session)?.cancel()
+        failPending(session, PROCESS_GONE_MESSAGE)
+    }
+
+    @Synchronized
+    fun isProcessGone(session: GeckoSession): Boolean = session in processGone
+
+    /**
+     * True when this session had a working bridge that stopped answering, which only
+     * close()+open() can fix. A process killed while the app was backgrounded leaves a
+     * stale port behind without any disconnect callback, so readiness state alone lies.
+     * Sessions that were never attached return false: the normal attach path covers them.
+     */
+    suspend fun isBridgeStale(session: GeckoSession, timeoutMs: Long = 2_000): Boolean {
+        if (isProcessGone(session)) return true
+        if (!session.isOpen) return true
+        if (synchronized(this) { session !in delegated } || !isReady(session)) return false
+        val idleFor = synchronized(this) { lastReplyAt[session]?.let { SystemClock.uptimeMillis() - it } }
+        if (idleFor != null && idleFor < LIVENESS_TRUST_MS) return false
+        return runCatching { evaluate(session, "1", timeoutMs) }.isFailure
     }
 
     fun get(context: Context): GeckoRuntime = runtime ?: GeckoRuntime.create(context.applicationContext).also { runtime = it }
 
     suspend fun attach(context: Context, session: GeckoSession, reloadIfNeeded: Boolean = true) {
+        if (isProcessGone(session)) throw BridgeUnrecoverable(PROCESS_GONE_MESSAGE)
         if (synchronized(this) { session in delegated && isReady(session) }) return
 
-        val (deferred, shouldAttach) = synchronized(this) {
-            attaching[session]?.let { it to false }
-                ?: if (session in delegated) CompletableDeferred<Unit>().also { it.complete(Unit) }.let { it to false }
-                else CompletableDeferred<Unit>().also { attaching[session] = it }.let { it to true }
-        }
-        if (!shouldAttach) {
-            if (!reloadIfNeeded && session in delegated) return
-            if (portFor(session) == null) {
-                withContext(Dispatchers.Main.immediate) { session.reload() }
-            }
-            if (awaitReady(session, 15_000)) return
-            // Screen-off resource suspension can leave Gecko's document resident while
-            // its extension delegate no longer reconnects. Re-register once; the next
-            // DOM action waits for the fresh port instead of inheriting a dead delegate.
-            synchronized(this) {
-                delegated.remove(session)
-                ports.remove(session)
-                readySessions.remove(session)
-            }
-            attach(context, session, reloadIfNeeded = true)
+        val inFlight = synchronized(this) { attaching[session] }
+        if (inFlight != null) {
+            runCatching { inFlight.await() }
+        } else if (synchronized(this) { session !in delegated }) {
+            // First registration for this session. The caller's own navigation (or the
+            // reload it asked for) brings the bridge up; DOM calls wait for readiness
+            // themselves, so returning here keeps navigation actions from stalling.
+            registerDelegate(context, session, reloadIfNeeded)
             return
         }
+        if (!reloadIfNeeded) return
+
+        // Delegated but silent: the document outlived its bridge. Reload once, re-register
+        // once. A killed content process answers neither, so report it as unrecoverable
+        // instead of retrying forever - only close()+open() can bring that session back.
+        if (portFor(session) == null) withContext(Dispatchers.Main.immediate) { session.reload() }
+        if (awaitReady(session, READY_TIMEOUT_MS)) return
+        if (isProcessGone(session)) throw BridgeUnrecoverable(PROCESS_GONE_MESSAGE)
+        synchronized(this) {
+            delegated.remove(session)
+            ports.remove(session)
+            readySessions.remove(session)
+        }
+        registerDelegate(context, session, reloadIfNeeded = true)
+        if (awaitReady(session, RECOVERY_READY_TIMEOUT_MS)) return
+        throw BridgeUnrecoverable("Browser bridge did not reconnect")
+    }
+
+    private suspend fun registerDelegate(context: Context, session: GeckoSession, reloadIfNeeded: Boolean) {
+        val deferred = CompletableDeferred<Unit>()
+        synchronized(this) { attaching[session] = deferred }
         try {
             val webExtension = ensureExtension(context)
             withContext(Dispatchers.Main.immediate) {
@@ -144,29 +203,35 @@ object GeckoBrowserRuntime {
                 // actions load their target immediately and must not race a second reload.
                 if (reloadIfNeeded) session.reload()
             }
-            synchronized(this) { attaching.remove(session) }
             deferred.complete(Unit)
         } catch (error: Throwable) {
-            synchronized(this) { attaching.remove(session) }
             deferred.completeExceptionally(error)
             throw error
+        } finally {
+            // Always clear the in-flight marker; a cancelled caller used to leave a
+            // dangling entry that made every later attach skip registration.
+            synchronized(this) { if (attaching[session] === deferred) attaching.remove(session) }
         }
-        deferred.await()
     }
 
     suspend fun awaitReady(session: GeckoSession, timeoutMs: Long): Boolean = withTimeoutOrNull(timeoutMs) {
-        while (!isReady(session)) kotlinx.coroutines.delay(25)
+        while (!isReady(session)) {
+            if (isProcessGone(session)) return@withTimeoutOrNull false
+            kotlinx.coroutines.delay(25)
+        }
         true
     } == true
 
     suspend fun evaluate(session: GeckoSession, script: String, timeoutMs: Long = 10_000): String {
         Log.d("AmayaBrowser", "evaluate start session=$session timeoutMs=$timeoutMs")
+        if (isProcessGone(session)) throw BridgeUnrecoverable(PROCESS_GONE_MESSAGE)
         val id = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<JSONObject>()
         addPending(session, id, deferred)
         try {
             val port = withTimeout(timeoutMs) {
                 while (true) {
+                    if (isProcessGone(session)) throw BridgeUnrecoverable(PROCESS_GONE_MESSAGE)
                     if (isReady(session)) portFor(session)?.let { return@withTimeout it }
                     kotlinx.coroutines.delay(25)
                 }

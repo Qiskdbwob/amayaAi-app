@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
@@ -60,7 +61,7 @@ class BrowserSessionManager @Inject constructor(
     @Synchronized
     private fun sessionFor(key: SessionKey): BrowserConversationSession {
         sessions[key]?.let { return it }
-        val session = BrowserConversationSession(context, headlessSurfaceSlots).apply {
+        val session = BrowserConversationSession(context, headlessSurfaceSlots, ::evictIdleHeadlessSurface).apply {
             resetForConversation(key.conversationKey, key.agentId)
             setWorkspace(workspacePath)
         }
@@ -144,6 +145,23 @@ class BrowserSessionManager @Inject constructor(
         owner?.releaseSharedBrowserView()
         trimSessions()
     }
+
+    /**
+     * The operator host stopped or resumed without leaving composition. A stopped host no
+     * longer keeps its page alive on its own, so the session has to hold active state, high
+     * priority, and an offscreen display until it comes back.
+     */
+    fun onHostVisibilityChanged(visible: Boolean) {
+        synchronized(this) { sharedViewOwner?.let(sessions::get) }?.setHostVisible(visible)
+    }
+
+    /** Frees one offscreen surface slot from an idle conversation so a busy one can warm up. */
+    private fun evictIdleHeadlessSurface(requester: BrowserConversationSession) {
+        val victim = synchronized(this) {
+            sessions.values.firstOrNull { it !== requester && it.holdsHeadlessSurface() && !it.isExecuting() }
+        }
+        victim?.releaseHeadlessSurface()
+    }
     fun isDispatchingAgentInput(): Boolean = selected()?.isDispatchingAgentInput() == true
     fun hideSoftKeyboardForAgent() { selected()?.hideSoftKeyboardForAgent() }
     fun onAssistantStreamingChanged(streaming: Boolean) { selected()?.onAssistantStreamingChanged(streaming) }
@@ -178,6 +196,7 @@ class BrowserSessionManager @Inject constructor(
 private class BrowserConversationSession(
     private val context: Context,
     private val headlessSurfaceSlots: Semaphore,
+    private val requestHeadlessSlot: (BrowserConversationSession) -> Unit,
 ) {
     private var sessionId = newSessionId()
     private val initialTab = BrowserPageTab()
@@ -194,7 +213,8 @@ private class BrowserConversationSession(
         val session: GeckoSession,
         val controller: AndroidBrowserController,
         var display: GeckoDisplay? = null,
-        var imageReader: ImageReader? = null
+        var imageReader: ImageReader? = null,
+        var processGone: Boolean = false
     )
 
     @Volatile private var controller: AndroidBrowserController? = null
@@ -569,12 +589,48 @@ private class BrowserConversationSession(
     fun releaseSharedBrowserView() {
         visibleHost = false
         controller?.setVisibleFileChooserHost(false)
+        // A task in flight still needs its page: hand it to the offscreen display instead
+        // of deactivating the session, which would let Android kill the content process.
+        if (isExecuting()) {
+            moveToOffscreenDisplay()
+            return
+        }
         detachHeadlessSurface()
         pageRuntimes.values.forEach { runtime ->
             runtime.session.setActive(false)
             runtime.session.setFocused(false)
             runtime.session.setPriorityHint(GeckoSession.PRIORITY_DEFAULT)
         }
+    }
+
+    fun setHostVisible(visible: Boolean) {
+        if (visibleHost == visible) return
+        visibleHost = visible
+        controller?.setVisibleFileChooserHost(visible)
+        if (visible) {
+            // Release the offscreen display before the recreated GeckoView surface claims it.
+            detachHeadlessSurface()
+            val active = _uiState.value.activeTabId
+            pageRuntimes.forEach { (tabId, runtime) ->
+                runtime.session.setActive(tabId == active)
+                runtime.session.setPriorityHint(if (tabId == active) GeckoSession.PRIORITY_HIGH else GeckoSession.PRIORITY_DEFAULT)
+            }
+        } else {
+            moveToOffscreenDisplay()
+        }
+    }
+
+    /**
+     * A stopped host usually keeps its GeckoView display, so the page survives as long as the
+     * session stays active and high priority. Re-assert that first, then try the offscreen
+     * display for hosts that really did release their surface.
+     */
+    private fun moveToOffscreenDisplay() {
+        pageRuntimes[_uiState.value.activeTabId]?.session?.let { session ->
+            session.setActive(true)
+            session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
+        }
+        resumeScope.launch { runCatching { attachHeadlessSurfaceOnMain() } }
     }
 
     fun isDispatchingAgentInput(): Boolean = controller?.isDispatchingAgentInput == true
@@ -586,13 +642,29 @@ private class BrowserConversationSession(
     private suspend fun attachHeadlessSurfaceOnMain() {
         val tabId = _uiState.value.activeTabId ?: return
         val runtime = pageRuntimes[tabId] ?: return
-        if (runtime.view.isAttachedToWindow) return
+        // Only a *visible* host paints the session. A stopped activity keeps its GeckoView
+        // attached while its surface is gone, so isAttachedToWindow alone used to skip the
+        // offscreen display and leave the content process eligible for reclaim.
+        if (visibleHost && runtime.view.isAttachedToWindow) return
         if (runtime.display != null) return
-        if (headlessSurfaceHeld) detachHeadlessSurface(releaseSlot = false) else headlessSurfaceSlots.acquire()
+        if (headlessSurfaceHeld) detachHeadlessSurface(releaseSlot = false)
+        else if (!acquireHeadlessSlot()) {
+            // Every slot belongs to a session that is also busy. Run without the offscreen
+            // display; the action still works, the page just stays reclaimable.
+            android.util.Log.w("AmayaBrowser", "no offscreen browser surface slot available")
+            return
+        }
         val imageReader = ImageReader.newInstance(1080, 1920, PixelFormat.RGBX_8888, 2).apply {
             setOnImageAvailableListener({ reader -> reader.acquireLatestImage()?.close() }, null)
         }
-        val display = runtime.session.acquireDisplay()
+        val display = runCatching { runtime.session.acquireDisplay() }.getOrElse { error ->
+            // Expected while a stopped-but-composed host still owns the display; that display
+            // keeps the page alive on its own, so this is a no-op rather than a failure.
+            android.util.Log.d("AmayaBrowser", "offscreen display unavailable: ${error.message}")
+            imageReader.close()
+            headlessSurfaceSlots.release()
+            return
+        }
         display.surfaceChanged(GeckoDisplay.SurfaceInfo.Builder(imageReader.surface).size(1080, 1920).build())
         runtime.imageReader = imageReader
         runtime.display = display
@@ -601,6 +673,17 @@ private class BrowserConversationSession(
         runtime.session.setPriorityHint(GeckoSession.PRIORITY_HIGH)
         headlessSurfaceHeld = true
     }
+
+    private suspend fun acquireHeadlessSlot(): Boolean {
+        if (headlessSurfaceSlots.tryAcquire()) return true
+        requestHeadlessSlot(this)
+        if (headlessSurfaceSlots.tryAcquire()) return true
+        return withTimeoutOrNull(HEADLESS_SLOT_WAIT_MS) { headlessSurfaceSlots.acquire(); true } == true
+    }
+
+    fun holdsHeadlessSurface(): Boolean = headlessSurfaceHeld
+
+    fun releaseHeadlessSurface() = detachHeadlessSurface()
 
     private fun detachHeadlessSurface(releaseSlot: Boolean = true) {
         val hasDisplay = pageRuntimes.values.any { it.display != null }
@@ -656,6 +739,7 @@ private class BrowserConversationSession(
             onError = this::onBrowserError,
             onAgentTouch = this::onAgentTouch,
             onDownload = this::handleGeckoDownload,
+            onProcessGone = { lastUrl -> handleProcessGone(tabId, lastUrl) },
             onFileChooser = { acceptTypes, multiple, callback ->
                 fileChooserCallback?.invoke(null)
                 fileChooserCallback = callback
@@ -782,6 +866,17 @@ private class BrowserConversationSession(
         }
     }
 
+    private fun handleProcessGone(tabId: String, lastUrl: String) {
+        pageRuntimes[tabId]?.processGone = true
+        // Keep the reclaimed page's URL in tab state; recovery reloads from it.
+        if (lastUrl.isNotBlank() && lastUrl != "about:blank") {
+            _uiState.update { state ->
+                state.copy(tabs = state.tabs.map { tab -> if (tab.id == tabId) tab.copy(url = lastUrl) else tab })
+            }
+            persistState(_uiState.value)
+        }
+    }
+
     fun onBrowserError(message: String) {
         _uiState.update { it.copy(status = BrowserAgentStatus.ERROR, lastError = message, currentAction = "Browser error") }
         appendLog("browser", "", "error", message)
@@ -860,7 +955,10 @@ private class BrowserConversationSession(
         }
         parentSnapshot(lastLabel, totalSteps, totalSteps).toString(2)
         } finally {
-            if (needsHeadlessSurface) withContext(Dispatchers.Main.immediate) { detachHeadlessSurface() }
+            // The offscreen display stays attached between tool calls on purpose. An agent
+            // thinks for seconds between browser actions, and a detached session is reclaimed
+            // by Android within a few seconds of the app leaving the foreground.
+            if (needsHeadlessSurface && visibleHost) withContext(Dispatchers.Main.immediate) { detachHeadlessSurface() }
             if (restoreKey != null && restoreKey != conversationKey) {
                 resetForConversation(restoreKey, restoreAgentId)
             }
@@ -1030,6 +1128,7 @@ private class BrowserConversationSession(
                 else -> executeBrowserTool(toolName, arguments)
             }
         } catch (e: Exception) {
+            android.util.Log.e("AmayaBrowser", "$toolName failed", e)
             BrowserToolResponse.Failure("${toolName} failed: ${e.message ?: e::class.java.simpleName}")
         }
 
@@ -1331,10 +1430,53 @@ private class BrowserConversationSession(
         val active = withContext(Dispatchers.Main.immediate) {
             ensureSharedControllerOnMain().also { attachHeadlessSurfaceOnMain() }.second
         }
+        val tabId = _uiState.value.activeTabId
+        // A page whose content process died keeps a stale bridge port and never answers
+        // again. Rebuild the session instead of waiting out every action's timeout.
+        if (pageRuntimes[tabId]?.processGone == true || GeckoBrowserRuntime.isBridgeStale(active.session)) {
+            return recoverActiveRuntime()
+        }
         // A delegated turn may select this persisted session before its GeckoView is
         // mounted. Attach/reload here so DOM actions get the same ready bridge as the UI.
-        GeckoBrowserRuntime.attach(context, active.session, reloadIfNeeded = active.currentUrl() != "about:blank")
-        return active
+        return try {
+            GeckoBrowserRuntime.attach(context, active.session, reloadIfNeeded = active.currentUrl() != "about:blank")
+            active
+        } catch (_: GeckoBrowserRuntime.BridgeUnrecoverable) {
+            recoverActiveRuntime()
+        }
+    }
+
+    /**
+     * Replaces the active tab's dead GeckoSession with a fresh one and reloads the page it
+     * was showing, so the agent's next action continues where the reclaimed process stopped.
+     */
+    private suspend fun recoverActiveRuntime(): AndroidBrowserController {
+        val tabId = _uiState.value.activeTabId
+        val restoreUrl = _uiState.value.tabs.firstOrNull { it.id == tabId }?.url
+            ?.takeIf { it.isNotBlank() && it != "about:blank" }
+        android.util.Log.w("AmayaBrowser", "rebuilding reclaimed browser session tab=$tabId url=$restoreUrl")
+        val rebuilt = withContext(Dispatchers.Main.immediate) {
+            tabId?.let(::discardRuntimeOnMain)
+            ensureSharedControllerOnMain().also { attachHeadlessSurfaceOnMain() }.second
+        }
+        _uiState.update { it.copy(currentAction = "Restoring reclaimed browser page") }
+        GeckoBrowserRuntime.attach(context, rebuilt.session, reloadIfNeeded = false)
+        if (restoreUrl != null) rebuilt.openUrl(restoreUrl)
+        return rebuilt
+    }
+
+    private fun discardRuntimeOnMain(tabId: String) {
+        val runtime = pageRuntimes.remove(tabId) ?: return
+        runtime.display?.let { display ->
+            runCatching { display.surfaceDestroyed() }
+            runCatching { runtime.session.releaseDisplay(display) }
+        }
+        runtime.imageReader?.close()
+        runtime.display = null
+        runtime.imageReader = null
+        GeckoBrowserRuntime.detach(runtime.session)
+        runCatching { runtime.session.close() }
+        if (controller === runtime.controller) controller = null
     }
 
     private fun createTab(url: String?) {
@@ -1466,6 +1608,7 @@ private class BrowserConversationSession(
 
     companion object {
         private const val UPLOAD_CHUNK_BYTES = 192 * 1024
+        private const val HEADLESS_SLOT_WAIT_MS = 5_000L
     }
     private fun selectorArg(arguments: Map<String, Any?>): String? = firstString(arguments, "element_id", "target", "selector", "query", "id")
     private fun queryArg(arguments: Map<String, Any?>): String? = firstString(arguments, "query", "text", "label", "name", "target", "selector", "element_id")

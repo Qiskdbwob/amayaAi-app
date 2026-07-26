@@ -103,6 +103,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -168,8 +171,23 @@ fun BrowserOperatorScreen(
 
     val browserView = remember(state.activeTabId) { browserSessionManager.acquireSharedBrowserView() }
 
-    DisposableEffect(Unit) {
-        onDispose { browserSessionManager.releaseSharedBrowserView() }
+    // Backgrounding this host destroys the GeckoView surface while the screen stays
+    // composed. Report it so the session moves to its offscreen display instead of
+    // losing Gecko's content process to Android reclaim.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> browserSessionManager.onHostVisibilityChanged(true)
+                Lifecycle.Event.ON_STOP -> browserSessionManager.onHostVisibilityChanged(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            browserSessionManager.releaseSharedBrowserView()
+        }
     }
 
     Scaffold(

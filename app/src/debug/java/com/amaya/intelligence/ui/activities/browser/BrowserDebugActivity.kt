@@ -38,6 +38,7 @@ class BrowserDebugActivity : AppCompatActivity() {
     @Inject lateinit var manager: BrowserSessionManager
     private lateinit var output: TextView
     private val running = AtomicBoolean(false)
+    private var hostsVisibleBrowser = false
     private val headlessSessions = mutableListOf<GeckoSession>()
     private val offscreenDisplays = mutableListOf<Triple<GeckoSession, GeckoDisplay, Pair<SurfaceTexture, Surface>>>()
     private val debugMode by lazy { intent.getStringExtra("mode") ?: if (intent.getBooleanExtra("headless", false)) "gecko-headless" else "visible" }
@@ -66,10 +67,23 @@ class BrowserDebugActivity : AppCompatActivity() {
         root.addView(output, LinearLayout.LayoutParams(-1, 260))
         setContentView(root)
         root.addView(manager.acquireSharedBrowserView(), 0, LinearLayout.LayoutParams(-1, 0, 1f))
+        hostsVisibleBrowser = true
         if (running.compareAndSet(false, true)) lifecycleScope.launch {
             delay(500)
             if (debugMode == "real-web-ux") runRealWebStressSuite() else runSuite()
         }
+    }
+
+    // Mirrors BrowserOperatorScreen: a stopped host loses its GeckoView surface, so the
+    // session must move to its offscreen display or Android reclaims the content process.
+    override fun onStart() {
+        super.onStart()
+        if (hostsVisibleBrowser) manager.onHostVisibilityChanged(true)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (hostsVisibleBrowser) manager.onHostVisibilityChanged(false)
     }
 
     private suspend fun runRealWebStressSuite() {

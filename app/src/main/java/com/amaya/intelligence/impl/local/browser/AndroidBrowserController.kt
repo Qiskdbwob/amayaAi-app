@@ -34,7 +34,8 @@ class AndroidBrowserController(
     private val onAgentTouch: (x: Float, y: Float) -> Unit = { _, _ -> },
     private val capturePixels: () -> GeckoResult<Bitmap> = geckoView::capturePixels,
     private val onDownload: (response: WebResponse) -> Unit = {},
-    private val onFileChooser: (acceptTypes: Array<String>, multiple: Boolean, callback: (Array<Uri>?) -> Unit) -> Unit = { _, _, callback -> callback(null) }
+    private val onFileChooser: (acceptTypes: Array<String>, multiple: Boolean, callback: (Array<Uri>?) -> Unit) -> Unit = { _, _, callback -> callback(null) },
+    private val onProcessGone: (lastUrl: String) -> Unit = {}
 ) {
     @Volatile var isDispatchingAgentInput: Boolean = false
         private set
@@ -57,6 +58,14 @@ class AndroidBrowserController(
     }
 
     fun setVisibleFileChooserHost(visible: Boolean) { visibleFileChooserHost = visible }
+
+    private fun handleContentProcessGone(session: GeckoSession, reason: String) {
+        Log.w("AmayaBrowser", "content process $reason session=$session url=$currentUrlValue")
+        pageFinished = true
+        pageLoadSucceeded = false
+        GeckoBrowserRuntime.markProcessGone(session)
+        onProcessGone(currentUrlValue)
+    }
 
     private fun configureGecko() {
         session.navigationDelegate = object : GeckoSession.NavigationDelegate {
@@ -101,6 +110,11 @@ class AndroidBrowserController(
                 externalResponseVersion++
                 onDownload(response)
             }
+            // Android reclaims Gecko's content process within seconds of the app leaving the
+            // foreground. The session object stays usable-looking but can never run script
+            // again, so publish the death instead of letting later actions wait it out.
+            override fun onKill(session: GeckoSession) = handleContentProcessGone(session, "killed")
+            override fun onCrash(session: GeckoSession) = handleContentProcessGone(session, "crashed")
         }
         session.scrollDelegate = object : GeckoSession.ScrollDelegate {
             override fun onScrollChanged(session: GeckoSession, scrollX: Int, scrollY: Int) { onScrollChanged(scrollX, scrollY) }
