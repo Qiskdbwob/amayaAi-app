@@ -1,5 +1,6 @@
 package com.amaya.intelligence.impl.bridge.windows.services
 
+import com.amaya.intelligence.impl.common.conversation.ConversationJsonCodec
 import com.amaya.intelligence.data.local.dao.ConversationDao
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.data.local.entity.ConversationScope
@@ -23,9 +24,10 @@ import com.amaya.intelligence.domain.models.ToolExecution
 import com.amaya.intelligence.domain.models.ToolStatus
 import com.amaya.intelligence.domain.models.UiMessage
 import com.amaya.intelligence.impl.local.toChatMessages
-import com.amaya.intelligence.impl.bridge.windows.WindowsBridgeConnectionState
+import com.amaya.intelligence.impl.bridge.windows.toChatConnectionState
 import com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeController
 
+import com.amaya.intelligence.impl.common.mappers.ModelSelectionKey
 import com.amaya.intelligence.impl.common.mappers.ModelUiMapper
 import com.amaya.intelligence.impl.common.mappers.ToolUiMapper
 import kotlinx.coroutines.CoroutineScope
@@ -57,7 +59,7 @@ class WindowsBridgeIntelligenceService @Inject constructor(
 
     private val _uiState = MutableStateFlow(ChatUiState(
         sessionMode = IntelligenceSessionManager.SessionMode.WINDOWS_BRIDGE,
-        connectionState = mapConnectionState(bridgeController.currentConnectionState())
+        connectionState = bridgeController.currentConnectionState().toChatConnectionState()
     ))
     override val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
@@ -103,7 +105,7 @@ class WindowsBridgeIntelligenceService @Inject constructor(
         scope.launch {
             while (true) {
                 _uiState.update {
-                    it.copy(connectionState = mapConnectionState(bridgeController.currentConnectionState()))
+                    it.copy(connectionState = bridgeController.currentConnectionState().toChatConnectionState())
                 }
                 delay(500)
             }
@@ -215,7 +217,7 @@ class WindowsBridgeIntelligenceService @Inject constructor(
             _uiState.update {
                 it.copy(
                     conversationId = entity.id.toString(),
-                    messages = parseMessagesFromJson(entity.messagesJson),
+                    messages = ConversationJsonCodec.parseWindowsBridge(entity.messagesJson),
                     totalInputTokens = 0,
                     totalOutputTokens = 0,
                     error = null,
@@ -237,14 +239,8 @@ class WindowsBridgeIntelligenceService @Inject constructor(
 
     override fun selectModel(modelKey: String) {
         scope.launch {
-            val parts = modelKey.split('|', limit = 3)
-            if (parts.size != 3 || parts[0] != "model") return@launch
-            settingsManager.setActiveModel(
-                com.amaya.intelligence.data.remote.api.ActiveModelSelection(
-                    connectionId = parts[1],
-                    modelId = parts[2]
-                )
-            )
+            val selection = ModelSelectionKey.parse(modelKey) ?: return@launch
+            settingsManager.setActiveModel(selection.toSelection())
         }
     }
 
@@ -410,7 +406,7 @@ class WindowsBridgeIntelligenceService @Inject constructor(
         val title = messages.firstOrNull { it.role == MessageRole.USER }?.content
             ?.split("\\s+".toRegex())?.take(5)?.joinToString(" ")?.take(50)
             ?.ifBlank { "Windows Bridge Chat" } ?: "Windows Bridge Chat"
-        val messagesJson = serializeMessagesToJson(messages)
+        val messagesJson = ConversationJsonCodec.serializeWindowsBridge(messages)
         val existingId = currentConversationId
         return@withLock if (existingId != null) {
             val existing = conversationDao.getConversationById(existingId)
@@ -442,136 +438,4 @@ class WindowsBridgeIntelligenceService @Inject constructor(
         return id
     }
 
-    private fun serializeMessagesToJson(messages: List<UiMessage>): String = JSONArray().apply {
-        messages.forEach { msg ->
-            put(JSONObject().apply {
-                put("id", msg.id)
-                put("role", msg.role.name)
-                put("content", msg.content)
-                put("timestamp", msg.timestamp)
-                put("metadata", JSONObject(msg.metadata))
-                put("toolExecutions", JSONArray().apply {
-                    msg.toolExecutions.forEach { put(serializeToolExecution(it)) }
-                })
-                put("steps", JSONArray().apply {
-                    msg.steps.forEach { step ->
-                        when (step) {
-                            is MessageStep.Thinking -> put(JSONObject().apply {
-                                put("id", step.id)
-                                put("type", "thinking")
-                                put("text", step.text)
-                                put("isStreaming", step.isStreaming)
-                                step.startedAt?.let { put("startedAt", it) }
-                                step.durationMs?.let { put("durationMs", it) }
-                            })
-                            is MessageStep.Text -> put(JSONObject().apply {
-                                put("id", step.id)
-                                put("type", "text")
-                                put("content", step.content)
-                            })
-                            is MessageStep.ToolCall -> put(JSONObject().apply {
-                                put("id", step.id)
-                                put("type", "toolCall")
-                                put("execution", serializeToolExecution(step.execution))
-                            })
-                        }
-                    }
-                })
-            })
-        }
-    }.toString()
-
-    private fun serializeToolExecution(exec: ToolExecution): JSONObject = JSONObject().apply {
-        put("toolCallId", exec.toolCallId)
-        put("name", exec.name)
-        put("arguments", JSONObject(exec.arguments))
-        put("result", exec.result ?: JSONObject.NULL)
-        put("status", exec.status.name)
-        put("metadata", JSONObject(exec.metadata))
-    }
-
-    private fun parseMessagesFromJson(json: String): List<UiMessage> {
-        if (json.isBlank()) return emptyList()
-        return runCatching {
-            val arr = JSONArray(json)
-            (0 until arr.length()).map { i ->
-                val obj = arr.getJSONObject(i)
-                val metadata = obj.optJSONObject("metadata")?.toStringMap() ?: emptyMap()
-                val tools = obj.optJSONArray("toolExecutions")?.let { execArr ->
-                    (0 until execArr.length()).map { parseToolExecution(execArr.getJSONObject(it)) }
-                } ?: emptyList()
-                val steps = obj.optJSONArray("steps")?.let { stepsArr ->
-                    (0 until stepsArr.length()).mapNotNull { idx ->
-                        val step = stepsArr.getJSONObject(idx)
-                        when (step.optString("type")) {
-                            "thinking" -> MessageStep.Thinking(
-                                id = step.optString("id", UUID.randomUUID().toString()),
-                                text = step.optString("text"),
-                                isStreaming = step.optBoolean("isStreaming"),
-                                startedAt = step.optLong("startedAt", 0L).takeIf { it > 0 },
-                                durationMs = step.optLong("durationMs", 0L).takeIf { it > 0 }
-                            )
-                            "text" -> MessageStep.Text(
-                                id = step.optString("id", UUID.randomUUID().toString()),
-                                content = step.optString("content")
-                            )
-                            "toolCall" -> MessageStep.ToolCall(
-                                id = step.optString("id", UUID.randomUUID().toString()),
-                                execution = parseToolExecution(step.getJSONObject("execution"))
-                            )
-                            else -> null
-                        }
-                    }
-                } ?: emptyList()
-                UiMessage(
-                    id = obj.optString("id", UUID.randomUUID().toString()),
-                    role = runCatching { MessageRole.valueOf(obj.optString("role")) }.getOrDefault(MessageRole.USER),
-                    content = obj.optString("content"),
-                    timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
-                    metadata = metadata,
-                    toolExecutions = tools,
-                    steps = steps
-                )
-            }
-        }.getOrDefault(emptyList())
-    }
-
-    private fun parseToolExecution(obj: JSONObject): ToolExecution {
-        val args = obj.optJSONObject("arguments")?.toAnyMap() ?: emptyMap()
-        val metadata = obj.optJSONObject("metadata")?.toStringMap() ?: emptyMap()
-        val name = obj.optString("name")
-        return ToolExecution(
-            toolCallId = obj.optString("toolCallId", UUID.randomUUID().toString()),
-            name = name,
-            arguments = args,
-            result = obj.optString("result").takeIf { it.isNotBlank() && it != "null" },
-            status = runCatching { ToolStatus.valueOf(obj.optString("status")) }.getOrDefault(ToolStatus.PENDING),
-            metadata = metadata,
-            uiMetadata = ToolUiMapper.getToolUiMetadata(name, args, metadata)
-        )
-    }
-
-    private fun JSONObject.toStringMap(): Map<String, String> = buildMap {
-        keys().forEach { key -> put(key, optString(key, "")) }
-    }
-
-    private fun JSONObject.toAnyMap(): Map<String, Any?> = buildMap {
-        keys().forEach { key -> put(key, opt(key)) }
-    }
-
-    private fun formatTokenCount(count: Int): String = when {
-        count >= 1_000_000 -> if (count % 1_000_000 == 0) "${count / 1_000_000}M" else String.format("%.1fM", count / 1_000_000.0)
-        count >= 1_000 -> if (count % 1_000 == 0) "${count / 1_000}k" else String.format("%.1fk", count / 1_000.0)
-        else -> count.toString()
-    }
-
-    private fun mapConnectionState(state: WindowsBridgeConnectionState): ConnectionState = when (state) {
-        WindowsBridgeConnectionState.CONNECTED,
-        WindowsBridgeConnectionState.PAUSED -> ConnectionState.CONNECTED
-        WindowsBridgeConnectionState.CONNECTING,
-        WindowsBridgeConnectionState.RECONNECTING,
-        WindowsBridgeConnectionState.CLOSING -> ConnectionState.CONNECTING
-        WindowsBridgeConnectionState.DISCONNECTED,
-        WindowsBridgeConnectionState.ERROR -> ConnectionState.DISCONNECTED
-    }
 }

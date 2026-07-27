@@ -14,12 +14,10 @@ import kotlin.random.Random
 
 class ContextPlanTest {
 
-    private fun user(text: String) = ChatMessage(MessageRole.USER, text)
-    private fun assistant(text: String) = ChatMessage(MessageRole.ASSISTANT, text)
-    private fun toolCall(id: String, name: String = "read_file") =
-        ChatMessage(MessageRole.ASSISTANT, toolCalls = listOf(ToolCallMessage(id, name, mapOf("path" to "a.kt"))))
-    private fun toolResult(id: String, content: String) =
-        ChatMessage(MessageRole.TOOL, toolResult = ToolResultMessage(id, content))
+    private fun user(text: String) = contextUser(text)
+    private fun assistant(text: String) = contextAssistant(text)
+    private fun toolCall(id: String, name: String = "read_file") = contextToolCall(id, name)
+    private fun toolResult(id: String, content: String) = contextToolResult(id, content)
 
     /**
      * The regression from commit 28c499e9: the whole prefix was dropped on every request regardless

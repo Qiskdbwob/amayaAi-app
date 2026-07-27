@@ -2,6 +2,7 @@ package com.amaya.intelligence.data.repository
 
 import com.amaya.intelligence.data.local.files.FileSessionStore
 import com.amaya.intelligence.data.local.files.FileWorkspaceMemoryStore
+import com.amaya.intelligence.data.local.files.canonicalWorkspacePath
 import com.amaya.intelligence.domain.models.AssistantMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -274,7 +275,7 @@ class FileSessionMemoryRepository @Inject constructor(
             .firstNotNullOfOrNull { it.optString("workspaceId").takeIf(String::isNotBlank) }
             ?: sessionWorkspacePath(summary, records)?.let { workspaceStore.resolve(it, create = false)?.id }
 
-    private fun canonicalWorkspacePath(path: String): String = runCatching { java.io.File(path).canonicalPath }.getOrDefault(path)
+
 
     private fun scoreSession(
         sessionId: String,
@@ -420,7 +421,7 @@ class FileSessionMemoryRepository @Inject constructor(
         return SessionSummary(
             sessionId,
             summary,
-            inferTags(summary + " " + tools.joinToString(" ")),
+            SessionTagger.infer(summary + " " + tools.joinToString(" "), limit = 8),
             created,
             latest,
             sessionWorkspacePath(null, records),
@@ -487,13 +488,6 @@ class FileSessionMemoryRepository @Inject constructor(
             }
         }
         return terms.toList()
-    }
-
-    private fun inferTags(text: String): List<String> {
-        val lower = text.lowercase()
-        return listOf("android", "webview", "oauth", "browser", "skill", "memory", "reminder", "kotlin", "gradle")
-            .filter { it in lower }
-            .take(8)
     }
 
     companion object {

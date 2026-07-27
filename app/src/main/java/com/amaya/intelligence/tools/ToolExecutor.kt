@@ -340,7 +340,7 @@ class ToolExecutor @Inject constructor(
                     Do NOT use for basic file operations - use native tools instead.""".trimIndent(),
                 parameters = listOf(
                     ToolParameter("command", "string", "The shell command to run", required = true),
-                    ToolParameter("timeout_ms", "integer", "Timeout in milliseconds (default: 30000, max: 300000)", required = false)
+                    ToolParameter("timeout_ms", "integer", "Timeout in milliseconds (default: ${RunShellTool.DEFAULT_TIMEOUT_MS}, max: ${RunShellTool.MAX_TIMEOUT_MS})", required = false)
                 )
             ),
             ToolDefinition(
@@ -412,9 +412,9 @@ class ToolExecutor @Inject constructor(
                 parameters = listOf(
                     ToolParameter("query", "string", "Search query. Optional when urls is provided.", required = false),
                     ToolParameter("urls", "array", "Known URLs to fetch directly. Can be combined with query results.", required = false, items = "string"),
-                    ToolParameter("max_results", "integer", "Maximum search results to collect (default: 5, max: 10).", required = false),
-                    ToolParameter("max_pages", "integer", "Maximum result/URL pages to fetch and extract (default: max_results, max: 10).", required = false),
-                    ToolParameter("max_chars_per_page", "integer", "Maximum extracted text characters per page (default: 5000, max: 12000).", required = false)
+                    ToolParameter("max_results", "integer", "Maximum search results to collect (default: ${WebSearchTool.DEFAULT_MAX_RESULTS}, max: ${WebSearchTool.MAX_MAX_RESULTS}).", required = false),
+                    ToolParameter("max_pages", "integer", "Maximum result/URL pages to fetch and extract (default: max_results, max: ${WebSearchTool.MAX_MAX_PAGES}).", required = false),
+                    ToolParameter("max_chars_per_page", "integer", "Maximum extracted text characters per page (default: ${WebSearchTool.DEFAULT_MAX_CHARS_PER_PAGE}, max: ${WebSearchTool.MAX_MAX_CHARS_PER_PAGE}).", required = false)
                 )
             ),
             // ── Todo / Task list tool ──────────────────────────────────────────────
@@ -644,8 +644,13 @@ private val bridgeToolSanitizedToWire: Map<String, String> by lazy {
 fun resolveBridgeToolWireName(sanitized: String): String =
     bridgeToolSanitizedToWire[sanitized] ?: sanitized
 
+internal const val MAX_TOOL_DESCRIPTION_CHARS = 1023
+
+internal fun truncateToolDescription(description: String): String =
+    if (description.length > MAX_TOOL_DESCRIPTION_CHARS) description.take(MAX_TOOL_DESCRIPTION_CHARS) + "…" else description
+
 fun ToolDefinition.toAiToolDefinition(truncateDesc: Boolean = false): com.amaya.intelligence.data.remote.api.AiToolDefinition {
-    fun String.maybeTruncate() = if (truncateDesc && length > 1023) take(1023) + "…" else this
+    fun String.maybeTruncate() = if (truncateDesc) truncateToolDescription(this) else this
     // Sanitize the name: OpenAI only accepts ^[a-zA-Z0-9_-]+$ — dots are not allowed.
     // Bridge tool names (e.g. "screen.capture") are sanitized here and reversed in McpToolExecutor.
     val safeName = sanitizeBridgeToolName(name)

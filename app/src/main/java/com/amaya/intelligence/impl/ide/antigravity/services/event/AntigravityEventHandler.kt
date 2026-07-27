@@ -2,7 +2,8 @@ package com.amaya.intelligence.impl.ide.antigravity.services.event
 
 import com.amaya.intelligence.domain.models.*
 import com.amaya.intelligence.impl.ide.antigravity.client.*
-import com.amaya.intelligence.impl.ide.antigravity.client.RemoteWorkspace as ClientRemoteWorkspace
+import com.amaya.intelligence.impl.ide.antigravity.event.*
+import com.amaya.intelligence.impl.ide.antigravity.event.RemoteWorkspace as ClientRemoteWorkspace
 import com.amaya.intelligence.impl.ide.antigravity.services.streaming.StreamingStateManager
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import kotlinx.coroutines.CoroutineScope
@@ -26,7 +27,7 @@ class AntigravityEventHandler(
     private val messageHandler = MessageEventHandler(stateManager, onUiStateUpdate)
     private val workspaceHandler = WorkspaceEventHandler(onUiStateUpdate, onConversationsUpdate, onProjectFilesUpdate, onWorkspacesUpdate, client)
     private val errorHandler = ErrorEventHandler(scope, client, stateManager, onUiStateUpdate)
-    
+
     fun handleEvent(event: RemoteEvent, currentConversationId: String?) {
         runCatching {
             when (event) {
@@ -54,10 +55,10 @@ class AntigravityEventHandler(
                 else -> {}
             }
         }.onFailure { ex ->
-            android.util.Log.e("AntigravityEventHandler", "Error in handleEvent: ${ex.message}", ex)
+            android.util.Log.e("AntigravityEventHandler", "Error handling event", ex)
         }
     }
-    
+
     fun resolveConversationId(id: String): String {
         return workspaceHandler.resolveConversationId(id)
     }

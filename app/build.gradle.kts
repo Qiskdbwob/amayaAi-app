@@ -19,16 +19,6 @@ android {
     namespace = "com.amaya.intelligence"
     compileSdk = 36
 
-    sourceSets {
-        getByName("main") {
-            res.srcDirs(
-                "src/main/res",
-                "src/main/res-agent",
-                "src/main/res-remote"
-            )
-        }
-    }
-
     defaultConfig {
         applicationId = "com.amaya.intelligence"
         minSdk = 26
@@ -71,9 +61,9 @@ android {
             isMinifyEnabled = false
             applicationIdSuffix = ".debug"
         }
-        // Profileable build for daily testing: AOT-compiled by ART at install and
-        // picks up the bundled baseline profile. Fixes the ~5s cold-start JIT jank
-        // seen on debug (debuggable builds cannot be AOT-compiled by ART).
+        // Profileable production-like build for daily performance testing. It uses
+        // release code/resources, debug signing, and deliberately skips R8/shrinking.
+        // Final distribution validation must still use the signed release build.
         create("benchmark") {
             initWith(buildTypes.getByName("release"))
             isMinifyEnabled = false

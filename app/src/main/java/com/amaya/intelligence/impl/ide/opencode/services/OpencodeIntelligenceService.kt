@@ -18,7 +18,8 @@ import com.amaya.intelligence.domain.models.RemoteWorkspace
 import com.amaya.intelligence.domain.models.ToolExecution
 import com.amaya.intelligence.domain.models.ToolStatus
 import com.amaya.intelligence.domain.models.UiMessage
-import com.amaya.intelligence.impl.bridge.windows.WindowsBridgeConnectionState
+import com.amaya.intelligence.impl.bridge.windows.toChatConnectionState
+import com.amaya.intelligence.impl.common.conversation.ConversationJsonCodec
 import com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeController
 
 import com.amaya.intelligence.impl.ide.opencode.OpencodeClient
@@ -60,7 +61,7 @@ class OpencodeIntelligenceService @Inject constructor(
     private val _uiState = MutableStateFlow(
         ChatUiState(
             sessionMode = IntelligenceSessionManager.SessionMode.OPENCODE,
-            connectionState = mapConnectionState(bridgeController.currentConnectionState()),
+            connectionState = bridgeController.currentConnectionState().toChatConnectionState(),
             conversationModeId = AgentModes.BUILD
         )
     )
@@ -98,7 +99,7 @@ class OpencodeIntelligenceService @Inject constructor(
         }
         scope.launch {
             while (true) {
-                _uiState.update { it.copy(connectionState = mapConnectionState(bridgeController.currentConnectionState())) }
+                _uiState.update { it.copy(connectionState = bridgeController.currentConnectionState().toChatConnectionState()) }
                 delay(750)
             }
         }
@@ -187,8 +188,8 @@ class OpencodeIntelligenceService @Inject constructor(
                     ?.takeIf { it.scope == ConversationScope.OPENCODE.wireName }
                     ?: return@launch
                 currentRoomConversationId = entity.id
-                val parsed = parseMessagesFromJson(entity.messagesJson)
-                val opencodeSession = extractOpencodeSessionId(entity.messagesJson)
+                val parsed = ConversationJsonCodec.parseOpencode(entity.messagesJson)
+                val opencodeSession = ConversationJsonCodec.extractOpencodeSessionId(entity.messagesJson)
                 activeSessionId = opencodeSession
                 currentAssistantMessageId = null
                 _uiState.update {
@@ -218,7 +219,7 @@ class OpencodeIntelligenceService @Inject constructor(
             scope.launch {
                 val entity = conversationDao.getConversationById(longId) ?: return@launch
                 if (entity.scope != ConversationScope.OPENCODE.wireName) return@launch
-                val opencodeSession = extractOpencodeSessionId(entity.messagesJson)
+                val opencodeSession = ConversationJsonCodec.extractOpencodeSessionId(entity.messagesJson)
                 conversationDao.deleteConversationById(longId)
                 if (currentRoomConversationId == longId) {
                     currentRoomConversationId = null
@@ -665,7 +666,7 @@ class OpencodeIntelligenceService @Inject constructor(
             ?.ifBlank { "Opencode Chat" }
             ?: "Opencode Chat"
         val now = System.currentTimeMillis()
-        val json = serializeMessagesToJson(messages, opencodeSessionId)
+        val json = ConversationJsonCodec.serializeOpencode(messages, opencodeSessionId)
         val existing = currentRoomConversationId
         return@withLock if (existing != null) {
             val row = conversationDao.getConversationById(existing)
@@ -697,131 +698,6 @@ class OpencodeIntelligenceService @Inject constructor(
         return id
     }
 
-    private fun serializeMessagesToJson(
-        messages: List<UiMessage>,
-        opencodeSessionId: String?
-    ): String {
-        val root = JSONObject().apply {
-            put("opencodeSessionId", opencodeSessionId ?: JSONObject.NULL)
-            put("messages", JSONArray().apply {
-                messages.forEach { msg -> put(serializeMessage(msg)) }
-            })
-        }
-        return root.toString()
-    }
-
-    private fun serializeMessage(msg: UiMessage): JSONObject = JSONObject().apply {
-        put("id", msg.id)
-        put("role", msg.role.name)
-        put("content", msg.content)
-        put("timestamp", msg.timestamp)
-        msg.thinking?.let { put("thinking", it) }
-        msg.thinkingDurationMs?.let { put("thinkingDurationMs", it) }
-        put("steps", JSONArray().apply {
-            msg.steps.forEach { step ->
-                when (step) {
-                    is MessageStep.Thinking -> put(JSONObject().apply {
-                        put("id", step.id)
-                        put("type", "thinking")
-                        put("text", step.text)
-                        put("isStreaming", step.isStreaming)
-                        step.startedAt?.let { put("startedAt", it) }
-                        step.durationMs?.let { put("durationMs", it) }
-                    })
-                    is MessageStep.Text -> put(JSONObject().apply {
-                        put("id", step.id)
-                        put("type", "text")
-                        put("content", step.content)
-                    })
-                    is MessageStep.ToolCall -> put(JSONObject().apply {
-                        put("id", step.id)
-                        put("type", "toolCall")
-                        put("execution", JSONObject().apply {
-                            put("toolCallId", step.execution.toolCallId)
-                            put("name", step.execution.name)
-                            put("status", step.execution.status.name)
-                            put("result", step.execution.result ?: JSONObject.NULL)
-                        })
-                    })
-                }
-            }
-        })
-    }
-
-    private fun parseMessagesFromJson(json: String): List<UiMessage> {
-        return runCatching {
-            val root = JSONObject(json)
-            val arr = root.optJSONArray("messages") ?: JSONArray()
-            (0 until arr.length()).mapNotNull { i ->
-                val obj = arr.optJSONObject(i) ?: return@mapNotNull null
-                val steps = mutableListOf<MessageStep>()
-                val tools = mutableListOf<ToolExecution>()
-                val stepsArr = obj.optJSONArray("steps")
-                if (stepsArr != null) {
-                    for (j in 0 until stepsArr.length()) {
-                        val step = stepsArr.optJSONObject(j) ?: continue
-                        when (step.optString("type")) {
-                            "thinking" -> steps.add(
-                                MessageStep.Thinking(
-                                    id = step.optString("id", UUID.randomUUID().toString()),
-                                    text = step.optString("text"),
-                                    isStreaming = step.optBoolean("isStreaming"),
-                                    startedAt = step.optLong("startedAt", 0L).takeIf { it > 0 },
-                                    durationMs = step.optLong("durationMs", 0L).takeIf { it > 0 }
-                                )
-                            )
-                            "text" -> steps.add(
-                                MessageStep.Text(
-                                    id = step.optString("id", UUID.randomUUID().toString()),
-                                    content = step.optString("content")
-                                )
-                            )
-                            "toolCall" -> {
-                                val exec = step.optJSONObject("execution") ?: continue
-                                val execution = ToolExecution(
-                                    toolCallId = exec.optString("toolCallId", UUID.randomUUID().toString()),
-                                    name = exec.optString("name"),
-                                    arguments = emptyMap(),
-                                    status = runCatching {
-                                        ToolStatus.valueOf(exec.optString("status"))
-                                    }.getOrDefault(ToolStatus.SUCCESS),
-                                    result = exec.optString("result").takeIf { it.isNotBlank() && it != "null" }
-                                )
-                                tools.add(execution)
-                                steps.add(MessageStep.ToolCall(id = step.optString("id", UUID.randomUUID().toString()), execution = execution))
-                            }
-                        }
-                    }
-                }
-                UiMessage(
-                    id = obj.optString("id", UUID.randomUUID().toString()),
-                    role = runCatching { MessageRole.valueOf(obj.optString("role")) }
-                        .getOrDefault(MessageRole.USER),
-                    content = obj.optString("content"),
-                    thinking = obj.optString("thinking").takeIf { it.isNotBlank() },
-                    thinkingDurationMs = obj.optLong("thinkingDurationMs", 0L).takeIf { it > 0 },
-                    timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
-                    toolExecutions = tools,
-                    steps = steps
-                )
-            }
-        }.getOrDefault(emptyList())
-    }
-
-    private fun extractOpencodeSessionId(json: String): String? = runCatching {
-        val root = JSONObject(json)
-        root.optString("opencodeSessionId").takeIf { it.isNotBlank() && it != "null" }
-    }.getOrNull()
-
-    private fun mapConnectionState(state: WindowsBridgeConnectionState): ConnectionState = when (state) {
-        WindowsBridgeConnectionState.CONNECTED,
-        WindowsBridgeConnectionState.PAUSED -> ConnectionState.CONNECTED
-        WindowsBridgeConnectionState.CONNECTING,
-        WindowsBridgeConnectionState.RECONNECTING,
-        WindowsBridgeConnectionState.CLOSING -> ConnectionState.CONNECTING
-        WindowsBridgeConnectionState.DISCONNECTED,
-        WindowsBridgeConnectionState.ERROR -> ConnectionState.DISCONNECTED
-    }
 
     // ── Models → ModelOption ───────────────────────────────────────────────
 
@@ -868,7 +744,7 @@ class OpencodeIntelligenceService @Inject constructor(
             val existing = conversationDao.getOpencodeConversations()
             val existingBySessionId: Map<String, com.amaya.intelligence.data.local.entity.ConversationEntity> =
                 existing.mapNotNull { row ->
-                    val sid = extractOpencodeSessionId(row.messagesJson) ?: return@mapNotNull null
+                    val sid = ConversationJsonCodec.extractOpencodeSessionId(row.messagesJson) ?: return@mapNotNull null
                     sid to row
                 }.toMap()
             for (session in sessions) {
@@ -910,16 +786,11 @@ class OpencodeIntelligenceService @Inject constructor(
     private suspend fun purgeConversationByOpencodeSessionId(sessionId: String) {
         val rows = conversationDao.getOpencodeConversations()
         for (row in rows) {
-            val sid = extractOpencodeSessionId(row.messagesJson)
+            val sid = ConversationJsonCodec.extractOpencodeSessionId(row.messagesJson)
             if (sid == sessionId) {
                 conversationDao.deleteConversationById(row.id)
             }
         }
     }
 
-    private fun formatTokenCount(count: Int): String = when {
-        count >= 1_000_000 -> if (count % 1_000_000 == 0) "${count / 1_000_000}M" else String.format("%.1fM", count / 1_000_000.0)
-        count >= 1_000 -> if (count % 1_000 == 0) "${count / 1_000}k" else String.format("%.1fk", count / 1_000.0)
-        else -> count.toString()
-    }
 }

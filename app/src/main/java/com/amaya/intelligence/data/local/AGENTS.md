@@ -26,7 +26,8 @@ data/local/
 ├─ files/
 │	├─ FileSessionStore.kt
 │	├─ FileSkillStore.kt
-│	└─ FileWorkspaceMemoryStore.kt
+│	├─ FileWorkspaceMemoryStore.kt
+│	└─ WorkspacePathCanonicalizer.kt
 └─ db/
 	├─ migrations/
 	└─ AppDatabase.kt
@@ -42,6 +43,7 @@ data/local/
 - `files/FileSessionStore.kt`: file locations for session recall records and summaries; deleting model context must also remove the matching conversation-scoped recall records.
 - `files/FileSkillStore.kt`: file locations and safe names for local reusable skill documents.
 - `files/FileWorkspaceMemoryStore.kt`: stable workspace UUID metadata, canonical-root resolution, and explicit moved-root remapping for memory/session scoping.
+- `files/WorkspacePathCanonicalizer.kt`: shared canonical workspace-path normalization with explicit fallback policy.
 
 ## Key Source Code
 - `entity/ProjectEntity.kt`: persisted project metadata.

@@ -4,6 +4,7 @@ import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.domain.models.*
 import com.amaya.intelligence.impl.ide.antigravity.AntigravityProtocol
 import com.amaya.intelligence.impl.ide.antigravity.client.*
+import com.amaya.intelligence.impl.ide.antigravity.event.*
 import com.amaya.intelligence.impl.ide.antigravity.services.mapper.AntigravityMessageMapper
 import com.amaya.intelligence.impl.ide.antigravity.services.streaming.StreamingStateManager
 
@@ -16,12 +17,12 @@ class StateSyncEventHandler(
 ) {
     fun handleStateSync(event: RemoteEvent.StateSync, currentConversationId: String?) {
         val serverConversationId = event.conversationId
-        
+
         if (!isForActiveConversation(serverConversationId, currentConversationId)) {
             com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerDrop("StateSync", serverConversationId, currentConversationId)
             return
         }
-        
+
         if (!serverConversationId.isNullOrBlank() && serverConversationId != currentConversationId) {
             com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerNote("STATE_SYNC", "conversation switch current=${currentConversationId ?: "-"} server=$serverConversationId clearState")
             stateManager.clearAll()
@@ -99,7 +100,7 @@ class StateSyncEventHandler(
             stateManager.clearAll()
         }
     }
-    
+
     fun handleConversationLoaded(event: RemoteEvent.ConversationLoaded) {
         val messages = AntigravityMessageMapper.mapRemoteMessages(event.messages, isStreaming = false)
         onUiStateUpdate { state ->
@@ -126,7 +127,7 @@ class StateSyncEventHandler(
             stateManager.clearAll()
         }
     }
-    
+
     fun handleStateUpdate(event: RemoteEvent.StateUpdate, currentConversationId: String?): Boolean {
         if (!isForActiveConversation(event.conversationId, currentConversationId)) {
             com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerDrop("StateUpdate", event.conversationId, currentConversationId)
@@ -146,13 +147,13 @@ class StateSyncEventHandler(
         }
         return true
     }
-    
+
     private fun isForActiveConversation(eventConversationId: String?, currentConversationId: String?): Boolean {
         if (eventConversationId.isNullOrBlank()) return true
         if (currentConversationId.isNullOrBlank()) return true
         return eventConversationId == currentConversationId
     }
-    
+
     private fun shouldPreserveLocalStreamingOverSync(
         local: List<UiMessage>,
         incoming: List<UiMessage>
@@ -301,7 +302,7 @@ class StateSyncEventHandler(
             incoming + missingUsers
         }
     }
-    
+
     private fun isRunningSyntheticThinking(message: UiMessage?): Boolean {
         if (message == null) return false
         return message.steps.any { step ->

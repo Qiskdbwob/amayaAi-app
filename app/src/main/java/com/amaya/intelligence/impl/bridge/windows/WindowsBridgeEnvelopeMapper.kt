@@ -40,9 +40,9 @@ internal object WindowsBridgeEnvelopeMapper {
         put(KEY_DEVICE_ID, envelope.deviceId)
         put(KEY_SEQ, envelope.seq)
         put(KEY_TIMESTAMP, envelope.timestamp)
-        put(KEY_PAYLOAD, mapToJson(envelope.payload))
+        put(KEY_PAYLOAD, bridgeMapToJson(envelope.payload))
         if (envelope.metadata.isNotEmpty()) {
-            put(KEY_METADATA, mapToJson(envelope.metadata))
+            put(KEY_METADATA, bridgeMapToJson(envelope.metadata))
         }
     }
 
@@ -224,28 +224,6 @@ internal object WindowsBridgeEnvelopeMapper {
     }
 
     // ── JSON <-> Map helpers ─────────────────────────────────────────────────
-
-    private fun mapToJson(map: Map<String, Any?>): JSONObject {
-        val obj = JSONObject()
-        for ((key, value) in map) obj.put(key, anyToJson(value))
-        return obj
-    }
-
-    private fun anyToJson(value: Any?): Any {
-        return when (value) {
-            null -> JSONObject.NULL
-            is String, is Boolean, is Int, is Long, is Double, is Float -> value
-            is Number -> value
-            is Map<*, *> -> {
-                val obj = JSONObject()
-                for ((k, v) in value) obj.put(k.toString(), anyToJson(v))
-                obj
-            }
-            is List<*> -> JSONArray().apply { value.forEach { put(anyToJson(it)) } }
-            is Array<*> -> JSONArray().apply { value.forEach { put(anyToJson(it)) } }
-            else -> value.toString()
-        }
-    }
 
     internal fun jsonObjectToMap(obj: JSONObject): Map<String, Any?> {
         val out = LinkedHashMap<String, Any?>(obj.length())

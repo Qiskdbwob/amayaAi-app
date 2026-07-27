@@ -52,7 +52,7 @@ class WindowsBridgeChatActivity : AppCompatActivity() {
                             // Windows Bridge chat has no separate workspace screen;
                             // reuse the Remote Session screen for reconfiguring the
                             // connection.
-                            com.amaya.intelligence.ui.activities.remote.RemoteSessionActivity
+                            com.amaya.intelligence.ui.activities.antigravity.RemoteSessionActivity
                                 .start(this@WindowsBridgeChatActivity)
                         },
                         onNavigateToOpencode = {

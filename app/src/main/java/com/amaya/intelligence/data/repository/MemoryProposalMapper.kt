@@ -6,7 +6,6 @@ import com.amaya.intelligence.domain.memory.MemoryScope
 import com.amaya.intelligence.domain.memory.MemoryType
 import com.amaya.intelligence.domain.memory.PendingProposal
 import com.amaya.intelligence.domain.memory.PendingProposalAction
-import com.amaya.intelligence.domain.memory.PendingProposalStatus
 import com.amaya.intelligence.domain.memory.PendingProposalType
 
 

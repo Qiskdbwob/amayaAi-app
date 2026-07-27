@@ -210,7 +210,6 @@ fun ChatBottomSection(
                     scope.launch {
                         when {
                             imgBase64 != null -> {
-                                android.util.Log.d("ChatBottomSection", "Calling onSendMessageWithImage: text=${text.take(30)}, base64Len=${imgBase64.length}, mime=$imgMime, name=$imgName")
                                 onSendMessageWithImage(text, imgBase64, imgMime ?: "image/*", imgName ?: "image")
                             }
                             path != null -> {

@@ -3,6 +3,10 @@
 ## Scope
 - This file applies to `app/src/main/java/com/amaya/intelligence/data/remote/` and its children.
 
+## Status
+
+Remote provider logic is **incomplete and deferred** while product direction changes. See `docs/local/audits/VISION-HOLD.md`. Keep only shared/core remote API maintenance active unless explicitly requested.
+
 ## Remote Data Rules
 - Keep API clients, request/response models, and remote settings storage in this subtree.
 - Treat this layer as the boundary between Android and external services.
@@ -23,22 +27,26 @@
 data/remote/
 ├─ AGENTS.md
 ├─ api/
+├─ auth/codex/                   # placeholder for auth extraction
 ├─ mcp/
-└─ repository/
+├─ provider/{anthropic,gemini,openai}/ # provider split placeholders
+└─ settings/                     # settings extraction placeholder
 ```
 
 ## File Functions
 - `AGENTS.md`: rules for remote data and service integration.
-- `api/`: provider request/response models, settings, and auth-related code.
+- `api/`: current provider request/response models, settings, and auth-related code during staged migration.
+- `auth/codex/`: reserved placeholder for Codex auth extraction.
 - `mcp/`: MCP client/executor code that talks to external services.
-- `repository/`: repository implementations that coordinate remote state and persistence.
+- `provider/`: provider protocol extraction; `provider/openai/OpenAiWireModels.kt` owns OpenAI wire DTOs.
+- `settings/`: reserved placeholder for settings and credential-store extraction.
 
 ## Key Source Code
 - `api/AiSettings.kt`: provider connections, active model selection, credential access, and settings persistence.
 - `api/ProviderRegistry.kt`: stable provider presets and adapter mapping; no model catalog or inferred metadata.
 - `api/ProviderModelService.kt`: provider-owned model discovery, GitHub catalog mapping, and provider URL validation.
 - `api/GeminiProvider.kt`: Gemini request/response models and streaming parsing.
-- `api/OpenAiProvider.kt`: OpenAI Responses, compatible Chat Completions, and subscription transport.
+- `api/OpenAiProvider.kt`: OpenAI Responses, compatible Chat Completions, and subscription transport orchestration; DTOs live under `provider/openai/`.
 - `api/OpenAiRequestCodec.kt`: testable OpenAI request-shape helpers.
 - `api/OpenAiStreamProtocol.kt`: terminal-state and indexed tool-call stream guards.
 - `api/ResponseBodyLimits.kt`: bounded remote response-body reads.

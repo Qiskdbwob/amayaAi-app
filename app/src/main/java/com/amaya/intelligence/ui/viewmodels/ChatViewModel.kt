@@ -119,7 +119,6 @@ class ChatViewModel @Inject constructor(
     }
 
     fun sendMessageWithImage(content: String, imageBase64: String, mimeType: String, fileName: String) {
-        android.util.Log.d("ChatViewModel", "sendMessageWithImage: content=${content.take(50)}, mimeType=$mimeType, base64Len=${imageBase64.length}, fileName=$fileName")
         _scrollEvent.tryEmit(ScrollReason.NEW_MESSAGE)
         intelligenceService.sendMessageWithImage(content, imageBase64, mimeType, fileName)
     }

@@ -73,6 +73,16 @@ $summary = @()
 if (-not $SkipApk) {
     Step "Building Android APK (release)"
 
+    $envFile = Join-Path $root '.env.local'
+    $keystoreFile = Join-Path $root 'release.keystore'
+    if (-not (Test-Path $envFile)) { Fail "Android distribution requires .env.local" }
+    if (-not (Test-Path $keystoreFile)) { Fail "Android distribution requires release.keystore" }
+    $releaseSecrets = Get-Content $envFile -Raw
+    if ($releaseSecrets -notmatch '(?m)^AMAYA_KEYSTORE_PASSWORD=.+$' -or
+        $releaseSecrets -notmatch '(?m)^AMAYA_KEY_ALIAS=.+$') {
+        Fail "Android distribution requires AMAYA_KEYSTORE_PASSWORD and AMAYA_KEY_ALIAS"
+    }
+
     Push-Location $root
     try {
         & .\gradlew.bat assembleRelease --quiet --console=plain

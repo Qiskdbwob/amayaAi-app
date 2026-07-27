@@ -21,26 +21,6 @@ import androidx.compose.ui.unit.sp
 import org.json.JSONObject
 
 /**
- * Shared badge component for status/mode labels.
- */
-@Composable
-fun BadgeLabel(text: String, color: Color) {
-    Surface(
-        shape = RoundedCornerShape(4.dp),
-        color = color.copy(alpha = 0.12f)
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Bold,
-            color = color,
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-        )
-    }
-}
-
-/**
  * Renders tool-specific argument previews inside an expanded ToolCallCard.
  * Uses ToolCategory for primary rendering logic, with toolName for specific behavior.
  */

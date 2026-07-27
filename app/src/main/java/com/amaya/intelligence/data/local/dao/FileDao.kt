@@ -2,7 +2,6 @@ package com.amaya.intelligence.data.local.dao
 
 import androidx.room.*
 import com.amaya.intelligence.data.local.entity.FileEntity
-import com.amaya.intelligence.data.local.entity.FileFtsEntity
 import kotlinx.coroutines.flow.Flow
 
 @Dao

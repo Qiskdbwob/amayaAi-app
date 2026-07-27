@@ -1,0 +1,119 @@
+package com.amaya.intelligence.data.repository
+
+import com.amaya.intelligence.data.remote.api.AiToolDefinition
+import org.json.JSONObject
+
+/** Validates and normalizes provider-emitted tool arguments before execution. */
+internal class AiToolArgumentValidator {
+    fun validate(
+        name: String,
+        arguments: Map<String, Any?>,
+        tools: List<AiToolDefinition>
+    ): Result<Map<String, Any?>> = runCatching {
+        val definition = tools.firstOrNull { it.name == name } ?: error("Tool was not advertised")
+        definition.rawParametersJson?.let { schema ->
+            @Suppress("UNCHECKED_CAST")
+            val normalized = normalizeJsonSchemaValue(JSONObject(schema), arguments) as Map<String, Any?>
+            validateJsonSchema(JSONObject(schema), normalized, "arguments")
+            return@runCatching normalized
+        }
+
+        val normalized = arguments.toMutableMap()
+        definition.parameters.properties.forEach { (key, property) ->
+            if (property.type.equals("integer", ignoreCase = true) && key in normalized) {
+                normalized[key] = normalizeIntegerArgument(normalized[key])
+            }
+        }
+        val missing = definition.parameters.required.filter { it !in normalized || normalized[it] == null }
+        require(missing.isEmpty()) { "Missing required properties: ${missing.joinToString()}" }
+        if (!definition.parameters.additionalProperties) {
+            val unknown = normalized.keys - definition.parameters.properties.keys
+            require(unknown.isEmpty()) { "Unknown properties: ${unknown.joinToString()}" }
+        }
+        definition.parameters.properties.forEach { (key, property) ->
+            val value = normalized[key] ?: return@forEach
+            val validType = when (property.type.lowercase()) {
+                "string" -> value is String
+                "integer" -> value is Number && value.toDouble() % 1.0 == 0.0
+                "number" -> value is Number
+                "boolean" -> value is Boolean
+                "array" -> value is List<*>
+                "object" -> value is Map<*, *>
+                else -> true
+            }
+            require(validType) { "$key must be ${property.type}" }
+            property.enum?.let { allowed -> require(value.toString() in allowed) { "$key is not an allowed value" } }
+        }
+        normalized
+    }
+
+    private fun normalizeJsonSchemaValue(schema: JSONObject, value: Any?): Any? {
+        val types = schemaTypes(schema)
+        val scalar = if (types.any { it.equals("integer", true) } && types.none { it.equals("string", true) }) {
+            normalizeIntegerArgument(value)
+        } else value
+        return when (scalar) {
+            is Map<*, *> -> {
+                val properties = schema.optJSONObject("properties") ?: return scalar
+                scalar.entries.associate { (key, child) ->
+                    val name = key.toString()
+                    name to (properties.optJSONObject(name)?.let { normalizeJsonSchemaValue(it, child) } ?: child)
+                }
+            }
+            is List<*> -> schema.optJSONObject("items")?.let { itemSchema ->
+                scalar.map { normalizeJsonSchemaValue(itemSchema, it) }
+            } ?: scalar
+            else -> scalar
+        }
+    }
+
+    private fun validateJsonSchema(schema: JSONObject, value: Any?, path: String) {
+        val types = schemaTypes(schema)
+        if (value == null) {
+            require("null" in types || schema.optBoolean("nullable")) { "$path cannot be null" }
+            return
+        }
+        val matches = types.isEmpty() || types.any { type ->
+            when (type.lowercase()) {
+                "object" -> value is Map<*, *>
+                "array" -> value is List<*>
+                "string" -> value is String
+                "integer" -> value is Number && value.toDouble() % 1.0 == 0.0
+                "number" -> value is Number
+                "boolean" -> value is Boolean
+                "null" -> false
+                else -> true
+            }
+        }
+        require(matches) { "$path must be ${types.joinToString(" or ")}" }
+        schema.optJSONArray("enum")?.let { allowed ->
+            require((0 until allowed.length()).any { allowed.opt(it) == value }) { "$path is not an allowed value" }
+        }
+        when (value) {
+            is Map<*, *> -> {
+                val properties = schema.optJSONObject("properties") ?: JSONObject()
+                val required = schema.optJSONArray("required")
+                if (required != null) for (index in 0 until required.length()) {
+                    val key = required.optString(index)
+                    require(value.containsKey(key) && value[key] != null) { "Missing required property: $path.$key" }
+                }
+                if (schema.has("additionalProperties") && schema.opt("additionalProperties") == false) {
+                    require(value.keys.all { properties.has(it.toString()) }) { "Unknown properties in $path" }
+                }
+                value.forEach { (key, child) ->
+                    properties.optJSONObject(key.toString())?.let { validateJsonSchema(it, child, "$path.$key") }
+                }
+            }
+            is List<*> -> schema.optJSONObject("items")?.let { itemSchema ->
+                value.forEachIndexed { index, child -> validateJsonSchema(itemSchema, child, "$path[$index]") }
+            }
+        }
+    }
+
+    private fun schemaTypes(schema: JSONObject): List<String> = buildList {
+        schema.optString("type").takeIf(String::isNotBlank)?.let(::add)
+        schema.optJSONArray("type")?.let { array ->
+            for (index in 0 until array.length()) add(array.optString(index))
+        }
+    }
+}

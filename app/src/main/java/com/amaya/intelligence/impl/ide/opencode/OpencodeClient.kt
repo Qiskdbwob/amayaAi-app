@@ -2,6 +2,7 @@ package com.amaya.intelligence.impl.ide.opencode
 
 import com.amaya.intelligence.domain.bridge.AgentEventKind
 import com.amaya.intelligence.domain.bridge.AgentMessagePart
+import com.amaya.intelligence.domain.bridge.AgentRuntimeIds
 import com.amaya.intelligence.domain.bridge.BridgeEnvelope
 import com.amaya.intelligence.domain.bridge.BridgeMessageType
 import com.amaya.intelligence.impl.bridge.windows.tools.OpencodeBridgeTransport
@@ -102,14 +103,14 @@ class OpencodeClient @Inject constructor(
 
     fun requestRuntimeStatus() = send(
         BridgeMessageType.AGENT_RUNTIME_STATUS_REQUEST,
-        mapOf("runtimeId" to OPENCODE_RUNTIME_ID)
+        mapOf("runtimeId" to AgentRuntimeIds.OPENCODE)
     )
 
     fun startRuntime(port: Int? = null, hostname: String? = null, configJson: String? = null) =
         send(
             BridgeMessageType.AGENT_RUNTIME_START,
             buildMap {
-                put("runtimeId", OPENCODE_RUNTIME_ID)
+                put("runtimeId", AgentRuntimeIds.OPENCODE)
                 if (port != null) put("port", port)
                 if (hostname != null) put("hostname", hostname)
                 if (configJson != null) put("configJson", configJson)
@@ -118,49 +119,49 @@ class OpencodeClient @Inject constructor(
 
     fun stopRuntime() = send(
         BridgeMessageType.AGENT_RUNTIME_STOP,
-        mapOf("runtimeId" to OPENCODE_RUNTIME_ID)
+        mapOf("runtimeId" to AgentRuntimeIds.OPENCODE)
     )
 
     fun restartRuntime() = send(
         BridgeMessageType.AGENT_RUNTIME_RESTART,
-        mapOf("runtimeId" to OPENCODE_RUNTIME_ID)
+        mapOf("runtimeId" to AgentRuntimeIds.OPENCODE)
     )
 
     fun requestConfig() = send(
         BridgeMessageType.AGENT_CONFIG_REQUEST,
-        mapOf("runtimeId" to OPENCODE_RUNTIME_ID)
+        mapOf("runtimeId" to AgentRuntimeIds.OPENCODE)
     )
 
     fun requestProviders() = send(
         BridgeMessageType.AGENT_PROVIDER_LIST_REQUEST,
-        mapOf("runtimeId" to OPENCODE_RUNTIME_ID)
+        mapOf("runtimeId" to AgentRuntimeIds.OPENCODE)
     )
 
     fun requestModels() = send(
         BridgeMessageType.AGENT_MODEL_LIST_REQUEST,
-        mapOf("runtimeId" to OPENCODE_RUNTIME_ID)
+        mapOf("runtimeId" to AgentRuntimeIds.OPENCODE)
     )
 
     fun requestMcp() = send(
         BridgeMessageType.AGENT_MCP_LIST_REQUEST,
-        mapOf("runtimeId" to OPENCODE_RUNTIME_ID)
+        mapOf("runtimeId" to AgentRuntimeIds.OPENCODE)
     )
 
     fun requestSessions() = send(
         BridgeMessageType.AGENT_SESSION_LIST_REQUEST,
-        mapOf("runtimeId" to OPENCODE_RUNTIME_ID)
+        mapOf("runtimeId" to AgentRuntimeIds.OPENCODE)
     )
 
     fun requestSessionMessages(sessionId: String) = send(
         BridgeMessageType.AGENT_SESSION_MESSAGES_REQUEST,
-        mapOf("runtimeId" to OPENCODE_RUNTIME_ID, "sessionId" to sessionId)
+        mapOf("runtimeId" to AgentRuntimeIds.OPENCODE, "sessionId" to sessionId)
     )
 
     fun createSession(title: String? = null, agent: String? = null, modelId: String? = null, providerId: String? = null) =
         send(
             BridgeMessageType.AGENT_SESSION_CREATE,
             buildMap {
-                put("runtimeId", OPENCODE_RUNTIME_ID)
+                put("runtimeId", AgentRuntimeIds.OPENCODE)
                 if (title != null) put("title", title)
                 if (agent != null) put("agent", agent)
                 if (providerId != null && modelId != null) {
@@ -171,7 +172,7 @@ class OpencodeClient @Inject constructor(
 
     fun deleteSession(sessionId: String) = send(
         BridgeMessageType.AGENT_SESSION_DELETE,
-        mapOf("runtimeId" to OPENCODE_RUNTIME_ID, "sessionId" to sessionId)
+        mapOf("runtimeId" to AgentRuntimeIds.OPENCODE, "sessionId" to sessionId)
     )
 
     fun sendPrompt(
@@ -189,7 +190,7 @@ class OpencodeClient @Inject constructor(
         send(
             BridgeMessageType.AGENT_SESSION_PROMPT,
             buildMap {
-                put("runtimeId", OPENCODE_RUNTIME_ID)
+                put("runtimeId", AgentRuntimeIds.OPENCODE)
                 put("sessionId", sessionId)
                 put("parts", parts)
                 if (agent != null) put("agent", agent)
@@ -202,13 +203,13 @@ class OpencodeClient @Inject constructor(
 
     fun abortPrompt(sessionId: String) = send(
         BridgeMessageType.AGENT_SESSION_ABORT,
-        mapOf("runtimeId" to OPENCODE_RUNTIME_ID, "sessionId" to sessionId)
+        mapOf("runtimeId" to AgentRuntimeIds.OPENCODE, "sessionId" to sessionId)
     )
 
     fun replyPermission(sessionId: String, permissionId: String, reply: String) = send(
         BridgeMessageType.AGENT_PERMISSION_REPLY,
         mapOf(
-            "runtimeId" to OPENCODE_RUNTIME_ID,
+            "runtimeId" to AgentRuntimeIds.OPENCODE,
             "sessionId" to sessionId,
             "permissionId" to permissionId,
             "reply" to reply

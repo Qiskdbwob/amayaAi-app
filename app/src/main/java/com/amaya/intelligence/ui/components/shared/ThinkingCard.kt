@@ -61,18 +61,8 @@ import com.amaya.intelligence.domain.models.UiMessage
 // ToolCallAnimatedSection so the motion is byte-for-byte identical to a tool
 // block. The lead icon reuses ToolLeadIconPill with a fixed non-green tint
 // (iOS blue) so reasoning never reads as a "success/tool" at a glance.
-private fun formatThinkingDuration(durationMs: Long): String {
-    val totalSeconds = (durationMs / 1000).coerceAtLeast(0L)
-    val seconds = if (totalSeconds == 0L && durationMs > 0L) 1L else totalSeconds
-    val hours = seconds / 3600
-    val minutes = (seconds % 3600) / 60
-    val secs = seconds % 60
-    return when {
-        hours > 0 -> "${hours}h ${minutes}m"
-        minutes > 0 -> "${minutes}m ${secs}s"
-        else -> "${secs}s"
-    }
-}
+private fun formatThinkingDuration(durationMs: Long): String =
+    formatCompactDuration(durationMs, minimumSeconds = if (durationMs > 0L) 1L else 0L)
 
 /** Two-state machine driving the auto-collapse rule for ThinkingCard.
  *  PROCESSING = reasoning segment still in progress (body visible),

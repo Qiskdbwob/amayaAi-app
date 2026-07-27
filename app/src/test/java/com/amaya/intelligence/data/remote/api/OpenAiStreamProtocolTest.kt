@@ -1,5 +1,7 @@
 package com.amaya.intelligence.data.remote.api
 
+import com.amaya.intelligence.data.remote.provider.openai.OpenAiStreamChoice
+import com.amaya.intelligence.data.remote.provider.openai.OpenAiStreamChunk
 import org.junit.Assert.assertEquals
 import com.squareup.moshi.Moshi
 import org.junit.Assert.assertNull

@@ -1,6 +1,5 @@
 package com.amaya.intelligence.data.remote.api
 
-import org.json.JSONArray
 import org.json.JSONObject
 
 // ── Public enums ─────────────────────────────────────────────────────────────

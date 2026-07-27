@@ -4,7 +4,8 @@ import com.amaya.intelligence.domain.models.*
 
 import com.amaya.intelligence.impl.common.mappers.ModelUiMapper
 import com.amaya.intelligence.impl.ide.antigravity.client.*
-import com.amaya.intelligence.impl.ide.antigravity.client.RemoteWorkspace as ClientRemoteWorkspace
+import com.amaya.intelligence.impl.ide.antigravity.event.*
+import com.amaya.intelligence.impl.ide.antigravity.event.RemoteWorkspace as ClientRemoteWorkspace
 import com.amaya.intelligence.impl.ide.antigravity.services.streaming.StreamingStateManager
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import java.text.NumberFormat
@@ -23,7 +24,7 @@ class WorkspaceEventHandler(
     private val conversationIdMap = ConcurrentHashMap<Long, String>()
     private var lastConversationsRefreshAt = 0L
     private var _conversationsSnapshot = emptyList<ConversationEntity>()
-    
+
     fun handleConversationsList(event: RemoteEvent.ConversationsList) {
         val entities = event.conversations.map { meta ->
             val pseudoId = meta.id.hashCode().toLong()
@@ -40,18 +41,17 @@ class WorkspaceEventHandler(
         _conversationsSnapshot = entities
         onConversationsUpdate(entities)
     }
-    
+
     fun handleModelSelected(event: RemoteEvent.ModelSelected) {
         onUiStateUpdate { state -> state.copy(
             selectedModel = event.modelId,
             activeModelKey = event.modelId
         )}
     }
-    
+
     fun handleActiveConversation(event: RemoteEvent.ActiveConversation, currentConversationId: String?, stateManager: StreamingStateManager) {
-        android.util.Log.i("WorkspaceEventHandler", "ActiveConversation event: ${event.conversationId} (current: $currentConversationId)")
         com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerNote("ACTIVE_CONVERSATION", "event=${event.conversationId} current=${currentConversationId ?: "-"}")
-        
+
         if (currentConversationId != event.conversationId) {
             com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerNote("ACTIVE_CONVERSATION", "switch clear stateManager current=${currentConversationId ?: "-"} next=${event.conversationId}")
             stateManager.clearAll()
@@ -71,10 +71,6 @@ class WorkspaceEventHandler(
     }
 
     fun handleTitleGenerated(event: RemoteEvent.TitleGenerated) {
-        android.util.Log.i(
-            "WorkspaceEventHandler",
-            "TitleGenerated event: ${event.title.take(80)} for conversation=${event.conversationId}"
-        )
         val targetId = event.conversationId?.hashCode()?.toLong() ?: return
         val patched = _conversationsSnapshot.map { entity ->
             if (entity.id == targetId) entity.copy(title = event.title.take(60)) else entity
@@ -83,14 +79,14 @@ class WorkspaceEventHandler(
         onConversationsUpdate(patched)
         refreshConversationsList("title_generated")
     }
-    
+
     fun handleCurrentWorkspace(event: RemoteEvent.CurrentWorkspace) {
         onUiStateUpdate { state -> state.copy(workspacePath = event.path) }
         if (event.path.isNotBlank()) {
             client.getProjectFiles(event.path)
         }
     }
-    
+
     fun handleNewConversation(event: RemoteEvent.NewConversation, stateManager: StreamingStateManager) {
         if (!event.conversationId.isNullOrBlank()) {
             onUiStateUpdate { state -> state.copy(conversationId = event.conversationId) }
@@ -105,12 +101,12 @@ class WorkspaceEventHandler(
             serverIp = event.serverIp ?: state.serverIp
         ) }
     }
-    
+
     fun handleProjectFiles(event: RemoteEvent.ProjectFiles) {
         val files = event.files.map { it.toProjectFileEntry() }
         onProjectFilesUpdate(files, event.path)
     }
-    
+
     fun handleWorkspacesList(event: RemoteEvent.WorkspacesList) {
         val workspaces = event.workspaces.map { (it as ClientRemoteWorkspace).toDomainWorkspace() }
         onWorkspacesUpdate(workspaces)
@@ -125,10 +121,9 @@ class WorkspaceEventHandler(
         val now = System.currentTimeMillis()
         if (!force && now - lastConversationsRefreshAt < 1200L) return
         lastConversationsRefreshAt = now
-        android.util.Log.i("WorkspaceEventHandler", "Refreshing conversations list due to $reason")
         client.getConversations()
     }
-    
+
     fun handleModelsList(event: RemoteEvent.ModelsList) {
 
         val selectorItems = event.models.map { m ->
@@ -148,7 +143,7 @@ class WorkspaceEventHandler(
             selectedModel = event.selectedModelId
         )}
     }
-    
+
     fun resolveConversationId(id: String): String {
         val asLong = id.toLongOrNull()
         if (asLong != null) {
@@ -156,7 +151,7 @@ class WorkspaceEventHandler(
         }
         return id
     }
-    
+
     // Extension functions for remote model mapping
     private fun RemoteFileEntry.toProjectFileEntry(): ProjectFileEntry {
         return ProjectFileEntry(

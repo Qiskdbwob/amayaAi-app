@@ -1,4 +1,4 @@
-﻿package com.amaya.intelligence.data.repository
+package com.amaya.intelligence.data.repository
 
 import com.amaya.intelligence.data.local.dao.FileDao
 import com.amaya.intelligence.data.local.dao.FileMetadataDao
@@ -6,6 +6,7 @@ import com.amaya.intelligence.data.local.dao.ProjectDao
 import com.amaya.intelligence.data.local.entity.FileEntity
 import com.amaya.intelligence.data.local.entity.FileMetadataEntity
 import com.amaya.intelligence.data.local.entity.ProjectEntity
+import com.amaya.intelligence.tools.formatFileSize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -13,6 +14,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
 import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -25,10 +27,10 @@ import kotlin.io.path.getLastModifiedTime
 
 /**
  * Repository for managing file indexing and synchronization.
- * 
+ *
  * This repository handles the synchronization between the file system
  * and the local database. It's the core of the "Memory" layer.
- * 
+ *
  * KEY OPERATIONS:
  * 1. Scan: Walk the file tree and index all files
  * 2. Sync: Update database with changed/new/deleted files
@@ -40,7 +42,7 @@ class FileIndexRepository @Inject constructor(
     private val fileDao: FileDao,
     private val fileMetadataDao: FileMetadataDao
 ) {
-    
+
     companion object {
         // Skip these directories during indexing
         private val EXCLUDED_DIRS = setOf(
@@ -49,7 +51,7 @@ class FileIndexRepository @Inject constructor(
             "__pycache__", ".pytest_cache",
             "target", ".idea", ".vscode"
         )
-        
+
         // Skip these file patterns
         private val EXCLUDED_PATTERNS = listOf(
             Regex(""".*\.(class|jar|war|ear|zip|tar|gz|rar)$"""),
@@ -57,15 +59,15 @@ class FileIndexRepository @Inject constructor(
             Regex(""".*\.(mp3|mp4|avi|mov|wav)$"""),
             Regex(""".*\.(pdf|doc|docx|xls|xlsx)$""")
         )
-        
+
         // Maximum file size to index (1MB)
         private const val MAX_FILE_SIZE = 1024 * 1024L
     }
-    
+
     // ========================================================================
     // PROJECT OPERATIONS
     // ========================================================================
-    
+
     suspend fun addProject(name: String, rootPath: String): Long {
         val project = ProjectEntity(
             name = name,
@@ -73,31 +75,31 @@ class FileIndexRepository @Inject constructor(
         )
         return projectDao.insert(project)
     }
-    
+
     fun observeProjects(): Flow<List<ProjectEntity>> = projectDao.observeAll()
-    
+
     fun observeActiveProject(): Flow<ProjectEntity?> = projectDao.observeActiveProject()
-    
+
     suspend fun setActiveProject(projectId: Long) {
         projectDao.setActiveProject(projectId)
     }
-    
+
     suspend fun deleteProject(projectId: Long) {
         projectDao.deleteById(projectId)
     }
-    
+
     // ========================================================================
     // FILE INDEXING
     // ========================================================================
-    
+
     /**
      * Scan and index a project directory.
-     * 
+     *
      * WHY NATIVE API (java.nio.file):
      * Using Files.walk() is 10-100x faster than spawning shell processes
      * like `find` or `ls -R` for each directory. On Android, process forking
      * is especially expensive due to Zygote overhead.
-     * 
+     *
      * @param projectId ID of the project to scan
      * @param rootPath Root directory path
      * @param onProgress Callback for progress updates (0.0 to 1.0)
@@ -108,15 +110,15 @@ class FileIndexRepository @Inject constructor(
         onProgress: ((Float) -> Unit)? = null
     ): ScanResult = withContext(Dispatchers.IO) {
         val scanStartTime = System.currentTimeMillis()
-        val root = Path.of(rootPath)
-        
+        val root = Paths.get(rootPath)
+
         if (!Files.exists(root) || !Files.isDirectory(root)) {
             return@withContext ScanResult.Error("Path does not exist or is not a directory")
         }
-        
+
         // Collect all files first to calculate progress
         val filesToIndex = mutableListOf<Path>()
-        
+
         try {
             Files.walk(root)
                 .filter { path ->
@@ -134,30 +136,30 @@ class FileIndexRepository @Inject constructor(
         } catch (e: Exception) {
             return@withContext ScanResult.Error("Failed to walk directory: ${e.message}")
         }
-        
+
         // Get existing hashes for change detection
-        val existingHashes = fileDao.getAllHashes(projectId).associate { 
-            it.relativePath to it.contentHash 
+        val existingHashes = fileDao.getAllHashes(projectId).associate {
+            it.relativePath to it.contentHash
         }
-        
+
         val entities = mutableListOf<FileEntity>()
         var processed = 0
         var newFiles = 0
         var updatedFiles = 0
         var skippedFiles = 0
-        
+
         for (path in filesToIndex) {
             try {
                 val relativePath = root.relativize(path).toString()
                 val isDir = path.isDirectory()
-                
+
                 // Calculate hash for files (not directories)
                 val hash = if (!isDir && path.fileSize() <= MAX_FILE_SIZE) {
                     calculateMd5(path)
                 } else {
                     ""
                 }
-                
+
                 // Check if file changed
                 val existingHash = existingHashes[relativePath]
                 when {
@@ -165,7 +167,7 @@ class FileIndexRepository @Inject constructor(
                     existingHash != hash -> updatedFiles++
                     else -> skippedFiles++
                 }
-                
+
                 val entity = FileEntity(
                     projectId = projectId,
                     relativePath = relativePath,
@@ -178,7 +180,7 @@ class FileIndexRepository @Inject constructor(
                     isDirectory = isDir
                 )
                 entities.add(entity)
-                
+
                 processed++
                 if (processed % 100 == 0) {
                     onProgress?.invoke(processed.toFloat() / filesToIndex.size)
@@ -188,18 +190,18 @@ class FileIndexRepository @Inject constructor(
                 skippedFiles++
             }
         }
-        
+
         // Batch insert all files
         fileDao.insertAll(entities)
-        
+
         // Delete files that no longer exist
         val deletedCount = fileDao.deleteStaleFiles(projectId, scanStartTime)
-        
+
         // Update project metadata
         projectDao.updateScanStatus(projectId, scanStartTime, entities.size)
-        
+
         onProgress?.invoke(1.0f)
-        
+
         ScanResult.Success(
             totalFiles = entities.size,
             newFiles = newFiles,
@@ -208,10 +210,10 @@ class FileIndexRepository @Inject constructor(
             skippedFiles = skippedFiles
         )
     }
-    
+
     /**
      * Calculate MD5 hash of a file.
-     * 
+     *
      * WHY MD5:
      * - Fast enough for file change detection
      * - We're not using it for security, just change detection
@@ -228,39 +230,39 @@ class FileIndexRepository @Inject constructor(
         }
         return digest.digest().joinToString("") { "%02x".format(it) }
     }
-    
+
     // ========================================================================
     // FILE QUERIES
     // ========================================================================
-    
+
     suspend fun getFiles(projectId: Long): List<FileEntity> {
         return fileDao.getByProject(projectId).first()
     }
-    
+
     fun observeFiles(projectId: Long): Flow<List<FileEntity>> {
         return fileDao.observeByProject(projectId)
     }
-    
+
     suspend fun searchFiles(projectId: Long, query: String): List<FileEntity> {
         // Format query for FTS (add * for prefix matching)
         val ftsQuery = "$query*"
         return fileDao.searchByName(projectId, ftsQuery)
     }
-    
+
     suspend fun getFileByPath(projectId: Long, relativePath: String): FileEntity? {
         return fileDao.getByPath(projectId, relativePath)
     }
-    
+
     /**
      * Build a project tree structure for AI context.
-     * 
+     *
      * This creates a compact representation of the project structure
      * that can be sent to the AI without including file contents.
      */
     suspend fun buildProjectTree(projectId: Long): ProjectTree {
         val files = fileDao.getByProject(projectId).first()
         val project = projectDao.getById(projectId)
-        
+
         return ProjectTree(
             projectName = project?.name ?: "Unknown",
             rootPath = project?.rootPath ?: "",
@@ -287,7 +289,7 @@ sealed class ScanResult {
         val deletedFiles: Int,
         val skippedFiles: Int
     ) : ScanResult()
-    
+
     data class Error(val message: String) : ScanResult()
 }
 
@@ -305,7 +307,7 @@ data class ProjectTree(
         val extension: String?,
         val sizeBytes: Long
     )
-    
+
     /**
      * Convert to a string representation for AI prompts.
      */
@@ -314,21 +316,15 @@ data class ProjectTree(
         sb.appendLine("Project: $projectName")
         sb.appendLine("Root: $rootPath")
         sb.appendLine("Files:")
-        
+
         files.sortedBy { it.path }.forEach { node ->
             val prefix = if (node.isDirectory) "📁" else "📄"
             val size = if (node.isDirectory) "" else " (${formatSize(node.sizeBytes)})"
             sb.appendLine("  $prefix ${node.path}$size")
         }
-        
+
         return sb.toString()
     }
-    
-    private fun formatSize(bytes: Long): String {
-        return when {
-            bytes < 1024 -> "$bytes B"
-            bytes < 1024 * 1024 -> "${bytes / 1024} KB"
-            else -> "${bytes / (1024 * 1024)} MB"
-        }
-    }
+
+    private fun formatSize(bytes: Long): String = formatFileSize(bytes)
 }

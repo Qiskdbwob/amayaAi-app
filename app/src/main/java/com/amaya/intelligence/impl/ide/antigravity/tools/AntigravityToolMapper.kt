@@ -2,6 +2,7 @@ package com.amaya.intelligence.impl.ide.antigravity.tools
 
 import com.amaya.intelligence.impl.common.mappers.ToolUiMapper
 import com.amaya.intelligence.domain.models.ToolUiMetadata
+import com.amaya.intelligence.tools.firstToolArgument
 import com.amaya.intelligence.impl.ide.antigravity.AntigravityProtocol
 
 /**
@@ -12,15 +13,6 @@ import com.amaya.intelligence.impl.ide.antigravity.AntigravityProtocol
  */
 object AntigravityToolMapper {
 
-    private fun firstNonNull(map: Map<String, Any?>, vararg keys: String): Any? {
-        keys.forEach { key ->
-            if (map.containsKey(key)) {
-                val value = map[key]
-                if (value != null && value.toString().isNotBlank()) return value
-            }
-        }
-        return null
-    }
 
     /**
      * Maps the raw tool name from Antigravity to a normalized name.
@@ -68,7 +60,7 @@ object AntigravityToolMapper {
         val normalizedName = mapToolName(toolName)
         val mapped = args.toMutableMap()
 
-        mapped["summary"] = firstNonNull(
+        mapped["summary"] = firstToolArgument(
             mapped,
             "summary",
             "Summary",
@@ -79,10 +71,10 @@ object AntigravityToolMapper {
             "TaskSummary",
             "taskSummary"
         )
-        
+
         when (normalizedName) {
             "run_shell" -> {
-                mapped["command"] = firstNonNull(
+                mapped["command"] = firstToolArgument(
                     mapped,
                     "command",
                     "CommandLine",
@@ -91,12 +83,12 @@ object AntigravityToolMapper {
                     "proposedCommandLine",
                     "cmd"
                 ) ?: mapped.values.firstOrNull()?.toString()
-                mapped["cwd"] = firstNonNull(mapped, "cwd", "Cwd", "DirectoryPath", "searchPath")
+                mapped["cwd"] = firstToolArgument(mapped, "cwd", "Cwd", "DirectoryPath", "searchPath")
             }
             "check_status_terminal" -> {
-                mapped["commandId"] = firstNonNull(mapped, "commandId", "CommandId", "ProcessID", "processId", "PID")
-                mapped["waitSeconds"] = firstNonNull(mapped, "waitSeconds", "WaitDurationSeconds", "waitDurationSeconds", "WaitTime", "waitTime") ?: "0"
-                mapped["maxChars"] = firstNonNull(mapped, "maxChars", "OutputCharacterCount", "outputCharacterCount", "MaxChars")
+                mapped["commandId"] = firstToolArgument(mapped, "commandId", "CommandId", "ProcessID", "processId", "PID")
+                mapped["waitSeconds"] = firstToolArgument(mapped, "waitSeconds", "WaitDurationSeconds", "waitDurationSeconds", "WaitTime", "waitTime") ?: "0"
+                mapped["maxChars"] = firstToolArgument(mapped, "maxChars", "OutputCharacterCount", "outputCharacterCount", "MaxChars")
             }
             "send_command_input" -> {
                 mapped["command"] = "Input " + (mapped["Input"] ?: mapped["CommandId"] ?: "")
@@ -105,27 +97,27 @@ object AntigravityToolMapper {
                 mapped["command"] = "Read " + (mapped["ProcessID"] ?: "")
             }
             "read_file" -> {
-                mapped["path"] = firstNonNull(mapped, "path", "AbsolutePath", "absolutePath", "absolutePathUri", "File", "file", "filePath", "uri")
+                mapped["path"] = firstToolArgument(mapped, "path", "AbsolutePath", "absolutePath", "absolutePathUri", "File", "file", "filePath", "uri")
             }
             "write_file" -> {
-                mapped["path"] = firstNonNull(mapped, "path", "TargetFile", "targetFile", "AbsolutePath", "absolutePath", "File", "file", "filePath", "uri")
-                mapped["targetContent"] = firstNonNull(mapped, "targetContent", "TargetContent")
-                mapped["replacementContent"] = firstNonNull(mapped, "replacementContent", "ReplacementContent", "CodeContent", "codeContent")
-                mapped["replacementChunks"] = firstNonNull(mapped, "replacementChunks", "ReplacementChunks")
+                mapped["path"] = firstToolArgument(mapped, "path", "TargetFile", "targetFile", "AbsolutePath", "absolutePath", "File", "file", "filePath", "uri")
+                mapped["targetContent"] = firstToolArgument(mapped, "targetContent", "TargetContent")
+                mapped["replacementContent"] = firstToolArgument(mapped, "replacementContent", "ReplacementContent", "CodeContent", "codeContent")
+                mapped["replacementChunks"] = firstToolArgument(mapped, "replacementChunks", "ReplacementChunks")
             }
             "edit_file" -> {
-                mapped["path"] = firstNonNull(mapped, "path", "TargetFile", "targetFile", "AbsolutePath", "absolutePath", "File", "file", "filePath", "uri")
-                mapped["targetContent"] = firstNonNull(mapped, "targetContent", "TargetContent")
-                mapped["replacementContent"] = firstNonNull(mapped, "replacementContent", "ReplacementContent", "CodeContent", "codeContent")
-                mapped["replacementChunks"] = firstNonNull(mapped, "replacementChunks", "ReplacementChunks")
+                mapped["path"] = firstToolArgument(mapped, "path", "TargetFile", "targetFile", "AbsolutePath", "absolutePath", "File", "file", "filePath", "uri")
+                mapped["targetContent"] = firstToolArgument(mapped, "targetContent", "TargetContent")
+                mapped["replacementContent"] = firstToolArgument(mapped, "replacementContent", "ReplacementContent", "CodeContent", "codeContent")
+                mapped["replacementChunks"] = firstToolArgument(mapped, "replacementChunks", "ReplacementChunks")
             }
             "find_files" -> {
-                mapped["query"] = firstNonNull(mapped, "query", "Query", "content", "Pattern", "pattern")
-                mapped["path"] = firstNonNull(mapped, "path", "SearchPath", "searchPath", "SearchDirectory", "searchDirectory", "DirectoryPath", "directoryPath")
+                mapped["query"] = firstToolArgument(mapped, "query", "Query", "content", "Pattern", "pattern")
+                mapped["path"] = firstToolArgument(mapped, "path", "SearchPath", "searchPath", "SearchDirectory", "searchDirectory", "DirectoryPath", "directoryPath")
                 mapped["pattern"] = mapped["Pattern"] ?: mapped["pattern"]
             }
             "list_files" -> {
-                mapped["path"] = firstNonNull(mapped, "path", "DirectoryPath", "directoryPath", "directoryPathUri", "SearchDirectory", "searchDirectory")
+                mapped["path"] = firstToolArgument(mapped, "path", "DirectoryPath", "directoryPath", "directoryPathUri", "SearchDirectory", "searchDirectory")
             }
             "browser" -> {
                 mapped["task"] = mapped["Task"] ?: mapped["task"] ?: mapped["Url"] ?: mapped["url"] ?: mapped["query"] ?: mapped["task"]
@@ -151,14 +143,14 @@ object AntigravityToolMapper {
                 mapped["prompt"] = mapped["Prompt"] ?: mapped["prompt"]
             }
         }
-        
+
         // Map generic metadata that applies to all tools
         if (mapped["complexity"] == null) mapped["complexity"] = mapped["Complexity"] ?: mapped["complexity"]
         if (mapped["content"] == null) mapped["content"] = mapped["Description"] ?: mapped["description"] ?: mapped["Instruction"] ?: mapped["instruction"]
-        
+
         // Ensure original_name is preserved
         mapped["original_name"] = args["original_name"] ?: toolName
-        
+
         return mapped
     }
 

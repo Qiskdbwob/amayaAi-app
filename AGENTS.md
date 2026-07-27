@@ -53,7 +53,8 @@ amaya/
 - `AGENTS.md`: repo-wide coordination and routing rules.
 - `amaya-remote-extension/AGENTS.md`: extension-specific rules for TypeScript, controllers, IDE abstraction, and tests.
 - `docs/`: browser toolcall references plus the current provider/model settings contract in `models.md`.
-- `app/AGENTS.md`: Android-wide rules for Compose, Gradle, Hilt, persistence, runtime services, and browser UI/runtime work.
+- `docs/local/audits/VISION-HOLD.md`: marks Antigravity, Opencode, Windows Bridge, remote-session, and coupled remote UI logic as incomplete and deferred while product direction changes.
+- `app/AGENTS.md`: Android-wide rules for Compose, Gradle, Hilt, persistence, runtime services, browser UI/runtime work, and staged target-package seams from the local deep audit.
 - `app/src/main/java/com/amaya/intelligence/data/remote/AGENTS.md`: Android remote API, settings, and model mapping guidance.
 - `app/src/main/java/com/amaya/intelligence/data/local/AGENTS.md`: Android local storage and database guidance.
 - `app/src/main/java/com/amaya/intelligence/impl/ide/antigravity/AGENTS.md`: Antigravity remote runtime guidance.
@@ -81,6 +82,7 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/impl/ide/opencode/`: Opencode CLI agent client, models, and IntelligenceService driven by the Windows Bridge `agent.*` envelopes.
 - `app/src/main/java/com/amaya/intelligence/impl/common/mappers/ModelUiMapper.kt`: provider/runtime model mapping into shared chat options.
 - `app/src/main/java/com/amaya/intelligence/impl/local/`: local runtime, browser automation, service, tool execution flow, Agent rendered-history clearing, and model-summary context compression.
+- `app/src/main/java/com/amaya/intelligence/util/`: one app utility package; diagnostics/performance/network helpers live here.
 - `app/src/main/java/com/amaya/intelligence/ui/activities/browser/`: fullscreen browser operator entry point.
 - `app/src/main/java/com/amaya/intelligence/ui/activities/models/`: Manage Models entry point for provider connections and chat-visible models.
 - `app/src/main/java/com/amaya/intelligence/ui/activities/opencode/`: activities for Opencode landing, chat, and settings screens.
@@ -97,8 +99,11 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/tools/CapabilityToolMapper.kt`: canonical capability-operation mapping to existing handlers.
 - `app/src/main/java/com/amaya/intelligence/tools/MemoryManageTool.kt`: active user/workspace saved-memory list/search/update tool with optimistic version checks. User-memory proposals are removed; direct tool/manual writes remain. Daily-log, global Important Memory, model-owned importance, and memory archive/delete/restore capabilities are removed.
 - `app/src/main/java/com/amaya/intelligence/tools/SkillManageTool.kt`: explicit reusable-skill management tool.
-- `app/src/main/java/com/amaya/intelligence/utils/LocalStreamPerfLog.kt`: temporary local streaming profiler.
+- `app/src/main/java/com/amaya/intelligence/util/LocalStreamPerfLog.kt`: temporary local streaming profiler.
 - `app/src/main/java/com/amaya/intelligence/impl/local/browser/`: WebView controller, session manager, DOM inspection, and safety guard.
 - `windows-bridge/`: Electron Windows bridge main process, transport, permissions, audit, and native helper runtime.
 - `windows-bridge/src/agents/`: CLI coding-agent runtimes (opencode, claude-code, codex) behind the shared `AgentProvider` contract.
 - `baselineprofile/src/main/java/com/amaya/intelligence/baselineprofile/BaselineProfileGenerator.kt`: macrobenchmark that captures the app cold-start baseline profile bundled into `:app`.
+- `scripts/audit-android-code.py`: reusable Python inventory for large files, long lines, dead-code/import candidates, package/manifest drift, exact duplicate blocks, hardcoded literals, stale markers, and empty directories.
+- `scripts/map-android-filetree.py`: deterministic Android text-file tree with per-file line counts; output: `docs/local/audits/ANDROID-FILETREE-LINE-MAP.md`.
+- Deferred remote/bridge work: see `docs/local/audits/VISION-HOLD.md`; focus audits on local/core paths until the product direction is explicit.

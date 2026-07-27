@@ -2,6 +2,7 @@ package com.amaya.intelligence.data.repository
 
 import android.content.Context
 import com.amaya.intelligence.data.local.files.FileWorkspaceMemoryStore
+import com.amaya.intelligence.data.local.files.canonicalWorkspacePath
 import com.amaya.intelligence.domain.memory.MemoryAction
 import com.amaya.intelligence.domain.memory.MemoryClassifier
 import com.amaya.intelligence.domain.memory.MemoryDeduper
@@ -436,7 +437,6 @@ class FileMemoryRepository @Inject constructor(
         ?.takeIf(String::isNotBlank)
         ?.let(::canonicalWorkspacePath)
 
-    private fun canonicalWorkspacePath(path: String): String = File(path).canonicalPath
 
     private fun targetFor(type: MemoryType, workspacePath: String?): String = when (type) {
         MemoryType.USER_PROFILE -> "records.jsonl#user"

@@ -43,9 +43,15 @@ class WebSearchTool @Inject constructor(
             .build()
     }
 
-    private companion object {
-        const val MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024
-        const val MAX_REDIRECTS = 5
+    companion object {
+        const val DEFAULT_MAX_RESULTS = 5
+        const val MAX_MAX_RESULTS = 10
+        const val MAX_MAX_PAGES = 10
+        const val MIN_MAX_CHARS_PER_PAGE = 800
+        const val DEFAULT_MAX_CHARS_PER_PAGE = 5_000
+        const val MAX_MAX_CHARS_PER_PAGE = 12_000
+        private const val MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024
+        private const val MAX_REDIRECTS = 5
     }
 
     override suspend fun execute(arguments: Map<String, Any?>): ToolResult = withContext(Dispatchers.IO) {
@@ -58,9 +64,10 @@ class WebSearchTool @Inject constructor(
             )
         }
 
-        val maxResults = arguments.intArg("max_results", 5).coerceIn(1, 10)
-        val maxPages = arguments.intArg("max_pages", maxResults).coerceIn(1, 10)
-        val maxCharsPerPage = arguments.intArg("max_chars_per_page", 5000).coerceIn(800, 12000)
+        val maxResults = arguments.intArg("max_results", DEFAULT_MAX_RESULTS).coerceIn(1, MAX_MAX_RESULTS)
+        val maxPages = arguments.intArg("max_pages", maxResults).coerceIn(1, MAX_MAX_PAGES)
+        val maxCharsPerPage = arguments.intArg("max_chars_per_page", DEFAULT_MAX_CHARS_PER_PAGE)
+            .coerceIn(MIN_MAX_CHARS_PER_PAGE, MAX_MAX_CHARS_PER_PAGE)
         val includeSearchOnly = arguments.boolArg("include_search_results", true)
 
         try {

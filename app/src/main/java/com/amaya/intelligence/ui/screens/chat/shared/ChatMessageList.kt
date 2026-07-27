@@ -28,7 +28,7 @@ import com.amaya.intelligence.ui.components.shared.mountFade
 import com.amaya.intelligence.ui.components.shared.extractMarkdownFilePaths
 import com.amaya.intelligence.ui.components.shared.prefetchFileTypeIcons
 import com.amaya.intelligence.ui.components.shared.resolveFileTypeSourcePath
-import com.amaya.intelligence.utils.LocalStreamPerfLog
+import com.amaya.intelligence.util.LocalStreamPerfLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first

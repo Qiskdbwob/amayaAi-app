@@ -5,10 +5,10 @@ import com.amaya.intelligence.domain.models.*
 import com.amaya.intelligence.domain.ai.IntelligenceService
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.impl.ide.antigravity.client.RemoteSessionClient
-import com.amaya.intelligence.impl.ide.antigravity.client.RemoteEvent
-import com.amaya.intelligence.impl.ide.antigravity.client.RemoteAttachment
-import com.amaya.intelligence.impl.ide.antigravity.client.RemoteFileEntry as ClientRemoteFileEntry
-import com.amaya.intelligence.impl.ide.antigravity.client.RemoteWorkspace as ClientRemoteWorkspace
+import com.amaya.intelligence.impl.ide.antigravity.event.RemoteEvent
+import com.amaya.intelligence.impl.ide.antigravity.event.RemoteAttachment
+import com.amaya.intelligence.impl.ide.antigravity.event.RemoteFileEntry as ClientRemoteFileEntry
+import com.amaya.intelligence.impl.ide.antigravity.event.RemoteWorkspace as ClientRemoteWorkspace
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.impl.ide.antigravity.services.streaming.StreamingStateManager
 import com.amaya.intelligence.impl.ide.antigravity.services.event.AntigravityEventHandler
@@ -48,14 +48,14 @@ class AntigravityIntelligenceService @Inject constructor(
     private val stateManager = StreamingStateManager()
     private val locallyStoppedConversations = mutableMapOf<String, Long>()
     private var hasBootstrappedRemoteWorkspace = false
-    
+
     private val eventHandler = AntigravityEventHandler(
         scope = scope,
         client = client,
         stateManager = stateManager,
         onUiStateUpdate = { update -> _uiState.update(update) },
         onConversationsUpdate = { entities -> _conversations.value = entities },
-        onProjectFilesUpdate = { files, path -> 
+        onProjectFilesUpdate = { files, path ->
             _projectFiles.value = files
             _projectPath.value = path
         },
@@ -97,7 +97,7 @@ class AntigravityIntelligenceService @Inject constructor(
         activeId?.let { locallyStoppedConversations.remove(it) }
         AntigravityRemoteDebugLog.handlerNote("SERVICE_SEND", "text len=${content.length} cid=${activeId ?: "-"} mode=$mode state=${AntigravityRemoteDebugLog.stateSummary(_uiState.value)}")
         client.sendMessage(content, activeId, mode)
-        
+
         // Optimistic update
         val userMsg = UiMessage(
             role = MessageRole.USER,
@@ -107,14 +107,13 @@ class AntigravityIntelligenceService @Inject constructor(
     }
 
     override fun sendMessageWithImage(content: String, imageBase64: String, mimeType: String, fileName: String) {
-        android.util.Log.d("AntigravityIntelligenceService", "sendMessageWithImage: content=${content.take(50)}, mimeType=$mimeType, base64Len=${imageBase64.length}, fileName=$fileName")
         val activeId = _uiState.value.conversationId
         val mode = _uiState.value.conversationMode.wireValue
         val attachment = RemoteAttachment(mimeType, imageBase64, fileName)
         activeId?.let { locallyStoppedConversations.remove(it) }
         AntigravityRemoteDebugLog.handlerNote("SERVICE_SEND_IMAGE", "text len=${content.length} cid=${activeId ?: "-"} mode=$mode mime=$mimeType file=$fileName state=${AntigravityRemoteDebugLog.stateSummary(_uiState.value)}")
         client.sendMessage(content, activeId, mode, listOf(attachment))
-        
+
         // Optimistic update with image attachment
         val userMsg = UiMessage(
             role = MessageRole.USER,

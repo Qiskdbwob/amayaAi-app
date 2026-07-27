@@ -376,8 +376,8 @@ class EditFileTool @Inject constructor(
 
             // Replace plain text within XML text node values.
             // We escape oldContent for XML comparison, then replace.
-            val oldEscaped = oldContent.escapeXml()
-            val newEscaped = newContent.escapeXml()
+            val oldEscaped = oldContent.escapeXmlText()
+            val newEscaped = newContent.escapeXmlText()
 
             // Count occurrences before replacing
             var count = 0
@@ -417,11 +417,4 @@ class EditFileTool @Inject constructor(
         return Pair(true, totalReplacements)
     }
 
-    // XML escape helper (same as WriteFileTool)
-    private fun String.escapeXml(): String = this
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\"", "&quot;")
-        .replace("'", "&apos;")
 }

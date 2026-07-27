@@ -2,8 +2,8 @@ package com.amaya.intelligence.impl.ide.antigravity.services.mapper
 
 import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.domain.models.*
-import com.amaya.intelligence.impl.ide.antigravity.client.RemoteChatMessage
-import com.amaya.intelligence.impl.ide.antigravity.client.RemoteToolExecution
+import com.amaya.intelligence.impl.ide.antigravity.event.RemoteChatMessage
+import com.amaya.intelligence.impl.ide.antigravity.event.RemoteToolExecution
 import com.amaya.intelligence.impl.ide.antigravity.AntigravityProtocol
 import com.amaya.intelligence.impl.ide.antigravity.tools.AntigravityToolMapper
 
@@ -12,7 +12,7 @@ import com.amaya.intelligence.impl.ide.antigravity.tools.AntigravityToolMapper
  * Handles thinking tool synthesis, message consolidation, and deduplication.
  */
 object AntigravityMessageMapper {
-    
+
     fun mapRemoteMessages(
         messages: List<RemoteChatMessage>,
         isStreaming: Boolean
@@ -28,7 +28,7 @@ object AntigravityMessageMapper {
             val role = if (msg.role == "assistant") MessageRole.ASSISTANT else MessageRole.USER
             val baseMetadata = msg.metadata + mapOf("source" to "remote")
             val mappedRemoteTools = msg.toolExecutions.map { it.toToolExecution() }.toMutableList()
-            
+
             val hasThinkingField = !msg.thinking.isNullOrBlank()
             val hasThinkingTools = mappedRemoteTools.any {
                 it.metadata[AntigravityProtocol.ToolMarkers.THINKING_TOOL_META_KEY] == "true" ||
@@ -134,9 +134,9 @@ object AntigravityMessageMapper {
 
         return mapped
     }
-    
 
-    
+
+
     private fun stableRemoteMessageId(metadata: Map<String, String>, role: MessageRole, fallbackIndex: Int): String {
         val start = metadata["startStepIndex"]?.trim().orEmpty()
         val end = metadata["endStepIndex"]?.trim().orEmpty()
@@ -145,7 +145,7 @@ object AntigravityMessageMapper {
         }
         return "remote-${role.name.lowercase()}-$fallbackIndex"
     }
-    
+
     private fun isThinkingTool(tool: ToolExecution): Boolean {
         return tool.name.equals(AntigravityProtocol.ToolMarkers.THINKING_TOOL_NAME, ignoreCase = true) ||
             tool.metadata[AntigravityProtocol.ToolMarkers.THINKING_TOOL_META_KEY].equals("true", ignoreCase = true) ||
@@ -153,7 +153,7 @@ object AntigravityMessageMapper {
     }
 
 
-    
+
     fun preserveRemoteLifecycleMetadata(local: List<UiMessage>, incoming: List<UiMessage>): List<UiMessage> {
         return AntigravityTimelineMetadata.preserveLifecycle(local, incoming)
     }
@@ -165,7 +165,7 @@ object AntigravityMessageMapper {
     fun normalizeUserText(text: String): String {
         return text.replace(Regex("\\s+"), " ").trim()
     }
-    
+
     fun extractThoughtTitle(markdown: String): String? {
         val lines = markdown
             .trim()
@@ -227,7 +227,7 @@ object AntigravityMessageMapper {
 
         return truncated.takeIf { it.isNotBlank() }
     }
-    
+
     // Extension to map remote model to domain ToolExecution
     private fun RemoteToolExecution.toToolExecution(): ToolExecution {
         val normalizedName = AntigravityToolMapper.mapToolName(name)

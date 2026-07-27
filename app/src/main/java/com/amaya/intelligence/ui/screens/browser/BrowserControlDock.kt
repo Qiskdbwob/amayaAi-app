@@ -69,6 +69,7 @@ import com.amaya.intelligence.impl.local.browser.BrowserAgentStatus
 import com.amaya.intelligence.impl.local.browser.BrowserToolLog
 import com.amaya.intelligence.impl.local.browser.BrowserUiState
 import com.amaya.intelligence.ui.components.shared.MarkdownText
+import com.amaya.intelligence.ui.components.shared.formatCompactDuration
 import com.amaya.intelligence.ui.components.shared.ToolLeadIconPill
 import com.amaya.intelligence.ui.components.shared.mapToolIcon
 import java.net.URI
@@ -101,10 +102,7 @@ fun BrowserControlDock(
         } else {
             lastTime - firstTime
         }
-        val seconds = (elapsed / 1000).coerceAtLeast(1L)
-        val minutes = seconds / 60
-        val secs = seconds % 60
-        if (minutes > 0) "${minutes}m ${secs}s" else "${secs}s"
+        formatCompactDuration(elapsed, minimumSeconds = 1L)
     }
 
     val toolCount = remember(logs) {
@@ -351,16 +349,6 @@ fun BrowserControlDock(
 }
 
 @Composable
-private fun MiniButton(label: String, onClick: () -> Unit, isDark: Boolean = true) {
-    val bg = if (isDark) Color.White.copy(alpha = 0.05f) else Color.Black.copy(alpha = 0.05f)
-    val border = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.08f)
-    val textColor = if (isDark) Color.White.copy(alpha = 0.84f) else Color.Black.copy(alpha = 0.80f)
-    Surface(shape = RoundedCornerShape(999.dp), color = bg, border = BorderStroke(1.dp, border), modifier = Modifier.clickable { onClick() }) {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = textColor, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
-    }
-}
-
-@Composable
 private fun BrowserEmptyText(text: String) {
     Text(text, style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.58f), modifier = Modifier.padding(start = 4.dp, bottom = 2.dp))
 }
@@ -389,48 +377,6 @@ private fun browserLiveLogs(state: BrowserUiState): List<BrowserToolLog> {
     return completed
 }
 
-private fun browserLiveTitle(state: BrowserUiState, logs: List<BrowserToolLog>): String {
-    val liveText = cleanStreamText(state.assistantStreamText)
-    if (liveText.isNotBlank()) return liveText
-    val latest = logs.lastOrNull()
-    if (latest != null) {
-        val message = cleanStreamText(latest.message)
-        if (message.isNotBlank()) return message
-        val target = browserLogTarget(latest)
-        if (target.isNotBlank()) return browserActionLabel(latest.toolName) + " · $target"
-        return browserActionLabel(latest.toolName)
-    }
-    return state.activeTitle.takeIf { it.isNotBlank() } ?: "Page"
-}
-
-private fun dockStatusColor(state: BrowserUiState): Color = when {
-    state.isCancelled -> Color(0xFFFF453A)
-    state.lastError != null -> Color(0xFFFF453A)
-    state.isAssistantStreaming && state.browserAccessActive -> Color(0xFF0A84FF)
-    state.isAssistantStreaming -> Color(0xFF64D2FF)
-    state.status == BrowserAgentStatus.BROWSING -> Color(0xFF0A84FF)
-    state.status == BrowserAgentStatus.COMPLETED -> Color(0xFF34C759)
-    else -> Color(0xFF8E8E93)
-}
-
-private fun dockStatusLabel(state: BrowserUiState): String = when {
-    state.isCancelled -> "Cancelled"
-    state.lastError != null -> "Error"
-    state.isAssistantStreaming && state.browserAccessActive -> "Agent browsing"
-    state.isAssistantStreaming -> "Thinking"
-    state.status == BrowserAgentStatus.BROWSING -> "Browsing"
-    state.status == BrowserAgentStatus.COMPLETED -> "Done"
-    else -> "Ready"
-}
-
-private fun browserStatusColor(status: String): Color = when (status.lowercase()) {
-    "success" -> Color(0xFF34C759)
-    "running" -> Color(0xFF0A84FF)
-    "paused", "waiting" -> Color(0xFFFFB340)
-    "error", "cancelled" -> Color(0xFFFF453A)
-    else -> Color(0xFF8E8E93)
-}
-
 @Composable
 private fun BrowserDockSubtoolLeadIcon(tool: String, status: String, color: Color) {
     Surface(
@@ -453,25 +399,7 @@ private fun BrowserDockSubtoolLeadIcon(tool: String, status: String, color: Colo
     }
 }
 
-private fun hasOpenThinkingTag(text: String): Boolean {
-    val open = Regex("<think>", RegexOption.IGNORE_CASE).findAll(text).lastOrNull()?.range?.first
-    val close = Regex("</think>", RegexOption.IGNORE_CASE).findAll(text).lastOrNull()?.range?.first
-    return open != null && (close == null || open > close)
-}
-
-private fun browserDockToolIcon(tool: String): ToolInfoIcon {
-    val normalized = tool.removePrefix("browser.").lowercase()
-    return when (normalized) {
-        "open_url", "new_page", "new_tab", "reload", "reload_page", "go_back", "go_forward" -> ToolInfoIcon.WORLD
-        "get_dom", "analyze_page", "observe", "get_visible_text" -> ToolInfoIcon.READ
-        "click", "click_element", "tap", "press_key" -> ToolInfoIcon.MOUSE
-        "type", "type_text", "clear_input" -> ToolInfoIcon.EDIT
-        "scroll", "scroll_page", "swipe" -> ToolInfoIcon.MOUSE
-        "search", "find_element", "wait_for_element" -> ToolInfoIcon.SEARCH
-        "get_screenshot", "screenshot" -> ToolInfoIcon.IMAGE
-        else -> ToolInfoIcon.BROWSER
-    }
-}
+private fun browserDockToolIcon(tool: String): ToolInfoIcon = browserToolIcon(tool)
 
 private fun browserLogIcon(log: BrowserToolLog) = when (log.toolName.lowercase()) {
     "thinking" -> Icons.Default.Lightbulb
@@ -488,47 +416,7 @@ private fun browserLogIcon(log: BrowserToolLog) = when (log.toolName.lowercase()
     }
 }
 
-private fun browserActionLabel(name: String): String {
-    val normalized = name.removePrefix("browser.").lowercase()
-    return when (normalized) {
-        "new_page", "new_tab" -> "Open new tab"
-        "open_url" -> "Open page"
-        "get_dom", "analyze_page", "observe" -> "Observe page"
-        "get_visible_text" -> "Read visible text"
-        "click", "click_element" -> "Click element"
-        "tap" -> "Tap screen"
-        "type", "type_text" -> "Type text"
-        "clear_input" -> "Clear field"
-        "press_key" -> "Press key"
-        "scroll", "scroll_page", "swipe" -> "Scroll page"
-        "search" -> "Search page"
-        "find_element" -> "Find element"
-        "wait_for_element" -> "Wait for element"
-        "get_screenshot", "screenshot" -> "Capture screenshot"
-        "go_back" -> "Go back"
-        "go_forward" -> "Go forward"
-        "reload_page", "reload" -> "Reload page"
-        else -> normalized.split('_', '-').filter { it.isNotBlank() }.joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
-    }
-}
-
-private fun browserLogTarget(log: BrowserToolLog): String {
-    val source = listOf(log.argumentsPreview, log.message).joinToString(" ")
-    Regex("https?://[^\\s,]+", RegexOption.IGNORE_CASE).find(source)?.value?.let { url ->
-        return runCatching { URI(url).host ?: url }.getOrDefault(url).removePrefix("www.")
-    }
-    Regex("url=([^,\\s]+)", RegexOption.IGNORE_CASE).find(source)?.groupValues?.getOrNull(1)?.let { return it }
-    Regex("query=([^,]+)", RegexOption.IGNORE_CASE).find(source)?.groupValues?.getOrNull(1)?.let { return it.trim() }
-    Regex("text=([^,]+)", RegexOption.IGNORE_CASE).find(source)?.groupValues?.getOrNull(1)?.let { return it.trim() }
-    return ""
-}
-
-private fun cleanStreamText(raw: String): String {
-    if (raw.isBlank()) return ""
-    var text = raw.replace(Regex("<think>(.*?)</think>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))) { match -> match.groupValues.getOrNull(1).orEmpty() }
-    text = text.replace(Regex("</?think>", RegexOption.IGNORE_CASE), "")
-    return text.trim()
-}
+private fun cleanStreamText(raw: String): String = cleanBrowserThinkText(raw)
 
 private data class BrowserTextPart(val text: String, val isThinking: Boolean)
 

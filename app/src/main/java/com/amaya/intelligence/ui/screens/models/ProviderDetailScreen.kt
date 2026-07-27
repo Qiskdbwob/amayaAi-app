@@ -35,7 +35,7 @@ fun ProviderDetailScreen(
     val operation by viewModel.operation.collectAsState()
     val connection = settings.connections.firstOrNull { it.id == connectionId }
     val colors = rememberModelSettingsColors()
-    
+
     // UI State
     var availableModels by remember(connectionId) { mutableStateOf<List<ConfiguredModel>>(emptyList()) }
     var selectedIds by remember(connectionId) { mutableStateOf<Set<String>>(emptySet()) }
@@ -63,7 +63,7 @@ fun ProviderDetailScreen(
 
     val hasUnsavedChanges = selectedIds != initialSelectedIds
     var query by remember { mutableStateOf("") }
-    
+
     val filteredModels = remember(availableModels, query) {
         val value = query.trim().lowercase()
         if (value.isBlank()) availableModels else availableModels.filter {
@@ -130,8 +130,8 @@ fun ProviderDetailScreen(
         }
     ) { paddingValues ->
         LazyColumn(
+            contentPadding = PaddingValues(top = paddingValues.calculateTopPadding(), start = 20.dp, end = 20.dp, bottom = 80.dp),
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 80.dp),
             verticalArrangement = Arrangement.spacedBy(22.dp)
         ) {
             item {
@@ -157,10 +157,10 @@ fun ProviderDetailScreen(
                         )
                         ModelDivider(colors)
                         ModelSettingsRow(
-                            Icons.Default.Refresh, 
-                            "Refresh Models", 
-                            if (operation.loading) "Loading…" else "Load from provider", 
-                            colors, 
+                            Icons.Default.Refresh,
+                            "Refresh Models",
+                            if (operation.loading) "Loading…" else "Load from provider",
+                            colors,
                             onClick = {
                                 viewModel.refresh(connection) { refreshed ->
                                     availableModels = (availableModels + refreshed).distinctBy { it.id }
@@ -199,7 +199,7 @@ fun ProviderDetailScreen(
                     )
                 )
             }
-            
+
             item {
                 Text("Models", style = MaterialTheme.typography.labelMedium, color = colors.headerText, modifier = Modifier.padding(start = 16.dp))
                 Spacer(Modifier.height(7.dp))
@@ -384,7 +384,7 @@ fun ModernModelToggleRow(
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                model.displayName, 
+                model.displayName,
                 color = colors.primaryText,
                 fontWeight = FontWeight.Medium,
                 fontSize = 16.sp
@@ -392,7 +392,7 @@ fun ModernModelToggleRow(
             if (model.displayName != model.id) {
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    model.id, 
+                    model.id,
                     color = colors.secondaryText,
                     fontSize = 13.sp
                 )

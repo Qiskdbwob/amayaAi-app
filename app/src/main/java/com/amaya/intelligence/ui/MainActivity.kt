@@ -222,7 +222,7 @@ private fun AppContent(
                         viewModel.uiState.value.let { onNavigateToSettings(it.assistantMode, it.ownerId, it.workspacePath) }
                     },
                     onNavigateToRemoteSession = {
-                        context.startActivity(android.content.Intent(context, com.amaya.intelligence.ui.activities.remote.RemoteSessionActivity::class.java))
+                        context.startActivity(android.content.Intent(context, com.amaya.intelligence.ui.activities.antigravity.RemoteSessionActivity::class.java))
                     }
                 )
                 ChatScreen(
@@ -235,7 +235,7 @@ private fun AppContent(
                     onNavigateToWorkspace = onNavigateToProjects,
                     onNavigateToAgents = onNavigateToAgents,
                     onNavigateToRemoteSession = {
-                        context.startActivity(android.content.Intent(context, com.amaya.intelligence.ui.activities.remote.RemoteSessionActivity::class.java))
+                        context.startActivity(android.content.Intent(context, com.amaya.intelligence.ui.activities.antigravity.RemoteSessionActivity::class.java))
                     }
                 )
             }

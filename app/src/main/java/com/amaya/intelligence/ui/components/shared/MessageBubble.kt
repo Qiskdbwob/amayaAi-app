@@ -567,18 +567,8 @@ private fun isThinkingExecution(execution: ToolExecution): Boolean {
         execution.metadata["thinkingTool"].equals("true", ignoreCase = true)
 }
 
-private fun formatWorkedDuration(startedAt: Long, completedAt: Long?): String {
-    val elapsedMs = ((completedAt ?: System.currentTimeMillis()) - startedAt).coerceAtLeast(0L)
-    val seconds = (elapsedMs / 1000).coerceAtLeast(1L)
-    val hours = seconds / 3600
-    val minutes = (seconds % 3600) / 60
-    val secs = seconds % 60
-    return when {
-        hours > 0 -> "${hours}h ${minutes}m"
-        minutes > 0 -> "${minutes}m ${secs}s"
-        else -> "${secs}s"
-    }
-}
+private fun formatWorkedDuration(startedAt: Long, completedAt: Long?): String =
+    formatCompactDuration((completedAt ?: System.currentTimeMillis()) - startedAt, minimumSeconds = 1L)
 
 /**
  * Render the visible (non-thinking) answer body. Thinking is intentionally

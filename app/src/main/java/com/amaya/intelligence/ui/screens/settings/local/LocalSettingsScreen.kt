@@ -102,8 +102,8 @@ fun LocalSettingsScreen(
     val gradients = LocalAmayaGradients.current
     var addSheet by remember { mutableStateOf<SettingsScope?>(null) }
 
-    Scaffold(containerColor = Color.Transparent, snackbarHost = { SnackbarHost(snackbar) }) {
-        Box(Modifier.fillMaxSize().background(colors.groupedBackground)) {
+    Scaffold(containerColor = Color.Transparent, snackbarHost = { SnackbarHost(snackbar) }) { paddingValues ->
+        Box(Modifier.padding(paddingValues).fillMaxSize().background(colors.groupedBackground)) {
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize()
@@ -129,13 +129,13 @@ fun LocalSettingsScreen(
                         SettingsScope.PROJECT -> ProjectListSettings(projects, onOpenProject)
                         SettingsScope.AGENT -> AgentListSettings(agentGroups, agents, onOpenAgentGroup)
                     }
-                    
+
                     Spacer(Modifier.navigationBarsPadding().height(110.dp))
                 }
             }
 
             Box(Modifier.fillMaxWidth().height(170.dp).align(Alignment.TopCenter).background(gradients.topScrim))
-            
+
             Box(Modifier.align(Alignment.BottomCenter)) {
                 FloatingPillTabBar(
                     pagerState = pagerState
@@ -225,7 +225,7 @@ private fun FloatingPillTabBar(
             val currentTab = pagerState.currentPage
             val fraction = pagerState.currentPageOffsetFraction
             val actualNextTab = if (fraction > 0f) minOf(currentTab + 1, 2) else maxOf(currentTab - 1, 0)
-            
+
             val currentRect = tabLayouts.getOrNull(currentTab) ?: Rect.Zero
             val nextRect = tabLayouts.getOrNull(actualNextTab) ?: Rect.Zero
 
@@ -258,7 +258,7 @@ private fun FloatingPillTabBar(
                 SettingsScope.entries.forEachIndexed { index, scope ->
                     val pageOffset = pagerState.currentPage - index + pagerState.currentPageOffsetFraction
                     val visibilityFraction = (1f - abs(pageOffset)).coerceIn(0f, 1f)
-                    
+
                     val contentColor = lerp(colors.secondaryText, MaterialTheme.colorScheme.onPrimaryContainer, visibilityFraction)
                     val horizontalPadding = androidx.compose.ui.unit.lerp(12.dp, 20.dp, visibilityFraction)
 
@@ -293,7 +293,7 @@ private fun FloatingPillTabBar(
                                 SettingsScope.AGENT -> Icons.Default.SmartToy
                             }
                             Icon(icon, contentDescription = scope.label, tint = contentColor, modifier = Modifier.size(22.dp))
-                            
+
                             if (visibilityFraction > 0.01f) {
                                 Text(
                                     text = scope.label,

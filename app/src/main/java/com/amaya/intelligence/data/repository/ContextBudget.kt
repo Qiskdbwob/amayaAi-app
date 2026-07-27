@@ -57,6 +57,7 @@ internal class CostCache(
  * then overflow at the provider.
  */
 internal object TokenEstimator {
+    const val DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768
     /** Conservative chars-per-token. Latin prose sits near 4; JSON, code, and Indonesian run denser. */
     private const val BASE_CHARS_PER_TOKEN = 3.4
 

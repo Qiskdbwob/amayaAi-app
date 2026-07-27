@@ -1,5 +1,8 @@
 package com.amaya.intelligence.data.repository
 
+import com.amaya.intelligence.data.repository.chat.fallbackConversationTitle
+import com.amaya.intelligence.data.repository.chat.sanitizeConversationTitle
+
 import com.amaya.intelligence.ui.screens.chat.shared.hyperTextFrame
 import kotlin.test.Test
 import kotlin.test.assertEquals

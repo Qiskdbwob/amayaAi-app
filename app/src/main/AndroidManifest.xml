@@ -197,18 +197,6 @@
 
         <!-- New modular remote activities -->
         <activity
-            android:name=".ui.activities.agent.remote.RemoteAgentActivity"
-            android:exported="false"
-            android:windowSoftInputMode="adjustResize"
-            android:theme="@style/Theme.Amaya" />
-
-        <activity
-            android:name=".ui.activities.chat.remote.RemoteChatActivity"
-            android:exported="false"
-            android:windowSoftInputMode="adjustResize"
-            android:theme="@style/Theme.Amaya" />
-
-        <activity
             android:name=".ui.activities.mcp.remote.RemoteMcpActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize"
@@ -216,12 +204,6 @@
 
         <activity
             android:name=".ui.activities.cronjob.remote.RemoteCronJobActivity"
-            android:exported="false"
-            android:windowSoftInputMode="adjustResize"
-            android:theme="@style/Theme.Amaya" />
-
-        <activity
-            android:name=".ui.activities.project.remote.RemoteProjectActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.Amaya" />
@@ -263,11 +245,6 @@
 
         <!-- Foreground service for AI operations -->
         <service
-            android:name=".service.AiOperationService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
-
-        <service
             android:name=".service.AiSessionNotificationService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
@@ -299,7 +276,7 @@
         </receiver>
 
         <activity
-            android:name=".ui.activities.remote.RemoteSessionActivity"
+            android:name=".ui.activities.antigravity.RemoteSessionActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize"
@@ -339,7 +316,7 @@
             android:exported="false" />
 
         <activity
-            android:name=".ui.activities.remote.RemoteChatActivity"
+            android:name=".ui.activities.antigravity.RemoteChatActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize"
@@ -347,7 +324,7 @@
             android:exported="false" />
 
         <activity
-            android:name=".ui.activities.remote.RemoteProjectActivity"
+            android:name=".ui.activities.antigravity.RemoteProjectActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize"
@@ -355,7 +332,7 @@
             android:exported="false" />
 
         <activity
-            android:name=".ui.activities.remote.QrScannerActivity"
+            android:name=".ui.activities.antigravity.QrScannerActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize"

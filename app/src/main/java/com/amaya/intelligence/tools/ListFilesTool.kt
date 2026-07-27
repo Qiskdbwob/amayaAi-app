@@ -180,13 +180,7 @@ class ListFilesTool @Inject constructor(
         }
     }
 
-    private fun formatSize(bytes: Long): String {
-        return when {
-            bytes >= 1024 * 1024 -> "${bytes / (1024 * 1024)}MB"
-            bytes >= 1024 -> "${bytes / 1024}KB"
-            else -> "${bytes}B"
-        }
-    }
+    private fun formatSize(bytes: Long): String = formatFileSize(bytes, spaced = false)
 
     private data class FileInfo(
         val name: String,

@@ -9,14 +9,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.gestures.animateScrollBy
-import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,7 +33,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.BlendMode
 
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,91 +54,13 @@ import com.amaya.intelligence.ui.components.local.TodoSheet
 import com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet
 import com.amaya.intelligence.ui.activities.agent.local.LocalAgentConfigActivity
 import com.amaya.intelligence.ui.activities.browser.BrowserOperatorActivity
-import com.amaya.intelligence.utils.NetworkUtils
+import com.amaya.intelligence.util.NetworkUtils
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-
-/**
- * How close to the end of the content the user has to be for the list to keep
- * following new content. Anything stricter (pixel-exact) makes a few pixels of
- * drift silently disable auto-follow.
- */
-private val CHAT_AUTO_FOLLOW_THRESHOLD = 72.dp
-
-/**
- * How long after the user sends a message the list keeps following growth even if the
- * provider has not flagged the turn active yet. Long enough to cover the round trip from
- * "message appended" to "streaming", short enough that it can't be mistaken for a tap.
- */
-private const val CHAT_FOLLOW_BURST_MS = 800L
-
-/**
- * Non-observable flag telling the two auto-follow coroutines apart: while it is
- * set, the list is being scrolled by us, not dragged by the user. Deliberately
- * not a [androidx.compose.runtime.MutableState] — flipping it must not recompose.
- */
-private class ChatScrollOwner {
-    var following = false
-}
-
-/**
- * How far the rendered content now reaches past the bottom of the viewport,
- * in pixels. 0 means the tail of the conversation is fully on screen.
- *
- * `canScrollForward` is the authority here: during streaming the tail item is
- * pushed below the viewport and drops out of `visibleItemsInfo` entirely, so a
- * measurement based on visible items alone would report "nothing below" exactly
- * when the most content is hidden.
- */
-private fun LazyListState.distanceToContentEnd(): Int {
-    if (!canScrollForward) return 0
-    val info = layoutInfo
-    val total = info.totalItemsCount
-    if (total == 0) return 0
-    // Tail item not rendered at all — it is somewhere below, distance unknown
-    // but definitely more than a viewport.
-    val last = info.visibleItemsInfo.lastOrNull { it.index == total - 1 }
-        ?: return info.viewportEndOffset - info.viewportStartOffset
-    return ((last.offset + last.size) - info.viewportEndOffset).coerceAtLeast(0)
-}
-
-/** Instant move to the end of the content. No-op when already there. */
-private suspend fun LazyListState.snapToContentEnd() {
-    if (!canScrollForward) return
-    val info = layoutInfo
-    val total = info.totalItemsCount
-    if (total == 0) return
-    val last = info.visibleItemsInfo.lastOrNull { it.index == total - 1 }
-    if (last == null) {
-        scrollToItem(total - 1, Int.MAX_VALUE)
-        return
-    }
-    val distance = (last.offset + last.size) - info.viewportEndOffset
-    if (distance > 0) scrollBy(distance.toFloat())
-}
-
-/** Animated move to the end of the content — for explicit user actions only. */
-private suspend fun LazyListState.animateToContentEnd() {
-    if (!canScrollForward) return
-    val total = layoutInfo.totalItemsCount
-    if (total == 0) return
-    if (layoutInfo.visibleItemsInfo.none { it.index == total - 1 }) {
-        animateScrollToItem(total - 1)
-    }
-    // Settle the remainder: the tail item can be taller than the viewport.
-    val info = layoutInfo
-    val last = info.visibleItemsInfo.lastOrNull { it.index == info.totalItemsCount - 1 } ?: return
-    val distance = (last.offset + last.size) - info.viewportEndOffset
-    if (distance > 0) animateScrollBy(distance.toFloat())
-}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -192,7 +110,6 @@ fun ChatScreen(
     val connectionState = uiState.connectionState
     val workspaces by viewModel.workspaces.collectAsState()
 
-    // Action delegates
     val doSendMessage: (String) -> Unit = remember(viewModel) { { viewModel.sendMessage(it) } }
     val doSendMessageWithImage: (String, String, String, String) -> Unit = remember(viewModel) {
         { content, base64, mime, name -> viewModel.sendMessageWithImage(content, base64, mime, name) }
@@ -210,7 +127,6 @@ fun ChatScreen(
     val doLoadMoreConversations: () -> Unit = remember(viewModel) { { viewModel.loadMoreConversations() } }
 
     val listState = rememberLazyListState()
-    val density = LocalDensity.current
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val drawerVisible = drawerState.currentValue == DrawerValue.Open ||
@@ -245,16 +161,11 @@ fun ChatScreen(
     var selectedLocalhostLink by remember { mutableStateOf<LocalhostLinkInfo?>(null) }
     var localIp by remember { mutableStateOf("127.0.0.1") }
 
-    // Get local IP address on launch as fallback
     LaunchedEffect(Unit) {
-        withContext(Dispatchers.IO) {
-            localIp = NetworkUtils.getLocalIpAddress()
-        }
+        withContext(Dispatchers.IO) { localIp = NetworkUtils.getLocalIpAddress() }
     }
-
     val inputText = remember(composerKey) { mutableStateOf("") }
 
-    // Use server IP from extension if available, otherwise fallback to device local IP
     val serverIp = uiState.serverIp ?: localIp
 
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -294,7 +205,6 @@ fun ChatScreen(
                         val rawMimeType = contentResolver.getType(uri) ?: "image/*"
                         val fileName = uri.lastPathSegment?.substringAfterLast("/") ?: "image"
 
-                        // Load and compress image to avoid API limits
                         val inputStream = contentResolver.openInputStream(uri)
                         if (inputStream == null) return@withContext null
 
@@ -303,7 +213,6 @@ fun ChatScreen(
 
                         if (bitmap == null) return@withContext null
 
-                        // Scale down if too large (max 2048px on longest side)
                         val maxDim = 2048
                         val width = bitmap.width
                         val height = bitmap.height
@@ -316,9 +225,6 @@ fun ChatScreen(
                             bitmap
                         }
 
-                        // Adaptive compression: compress until under 180KB base64 (safe for inline upload)
-                        // This avoids artifact upload issues with large images
-                        // Base64 is ~33% larger than binary, so target ~135KB binary
                         val maxBinarySize = 135_000 // ~135KB binary = ~180KB base64
                         var quality = 85
                         var bytes: ByteArray
@@ -334,21 +240,16 @@ fun ChatScreen(
                         outputStream.close()
 
                         val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                        android.util.Log.d("ChatScreen", "Image compressed: ${bytes.size} bytes -> ${base64.length} base64 chars, final quality=$quality")
-
-                        // Recycle bitmaps to free memory
                         if (scaledBitmap !== bitmap) scaledBitmap.recycle()
                         bitmap.recycle()
 
-                        // Always use JPEG since we compressed as JPEG
                         Triple(base64, "image/jpeg", fileName.removeSuffix(".png").removeSuffix(".webp") + ".jpg")
                     } catch (e: Exception) {
-                        android.util.Log.e("ChatScreen", "Image processing failed", e)
+                        com.amaya.intelligence.util.errorLog("ChatScreen", "Image processing failed", e)
                         null
                     }
                 }
                 result?.let { (base64, mime, name) ->
-                    android.util.Log.d("ChatScreen", "Image attached: base64Len=${base64.length}, mime=$mime, name=$name")
                     attachedImageBase64 = base64
                     attachedImageMimeType = mime
                     attachedImageName = name
@@ -383,143 +284,14 @@ fun ChatScreen(
         }
     }
 
-    // ── Auto-follow ──────────────────────────────────────────────────────────
-    // The composer floats over the list, so the list has to be told to keep the
-    // tail of the conversation above it. Three concerns, kept deliberately apart:
-    //
-    //   [contentReach]      observation only — how far the rendered content now
-    //                       reaches past the bottom of the viewport.
-    //   position tracking   arms/disarms following from the user's own scrolling,
-    //                       continuously, so nothing is recomputed when content
-    //                       lands and there is no race with the layout pass.
-    //   the follow decision reacts to the content growing, never to the user
-    //                       moving, and moves the list instantly.
-    var shouldAutoScroll by remember { mutableStateOf(true) }
-    // Opening another conversation must start armed. Following is disarmed by the user
-    // scrolling up, and that flag used to survive the session switch — so a session
-    // opened after reading back through the previous one never followed at all.
-    LaunchedEffect(conversationKey) { shouldAutoScroll = true }
-    val scrollOwner = remember { ChatScrollOwner() }
-    val drawerVisibleState = rememberUpdatedState(drawerVisible)
-    val contentReach = remember(listState) { snapshotFlow { listState.distanceToContentEnd() } }
-
-    // "Is the model still producing?" — the signal that separates content arriving from
-    // content the user unfolded.
-    val turnActiveState = rememberUpdatedState(uiState.isLoading || uiState.isStreaming)
-
-    // A short window in which growth is followed even though no turn is running.
-    //
-    // The turn gate alone is too blunt: the bottom of the screen moves for reasons that
-    // are nothing to do with the user unfolding a card — the keyboard opening, the
-    // composer gaining a line or a banner, a fresh message landing before the provider
-    // has flagged the turn active. Each of those arms this window; a tap on a card
-    // header does not.
-    val followBurst = remember { mutableStateOf(false) }
-    val armFollowBurst = remember {
-        MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
-    }
-    LaunchedEffect(Unit) {
-        // collectLatest: a fresh arm restarts the window rather than queueing behind it.
-        armFollowBurst.collectLatest {
-            followBurst.value = true
-            try {
-                delay(CHAT_FOLLOW_BURST_MS)
-            } finally {
-                followBurst.value = false
-            }
-        }
-    }
-
-    // Bottom chrome watcher. A shrinking viewport is the keyboard coming up; a growing
-    // composer is an extra line or a banner. Either way the tail has to stay above it.
-    LaunchedEffect(listState, inputBarHeight) {
-        var previousViewport = 0
-        var previousComposer = inputBarHeight.intValue
-        snapshotFlow {
-            val info = listState.layoutInfo
-            (info.viewportEndOffset - info.viewportStartOffset) to inputBarHeight.intValue
-        }.collect { (viewport, composer) ->
-            val viewportShrank = previousViewport != 0 && viewport < previousViewport
-            val composerGrew = composer > previousComposer
-            previousViewport = viewport
-            previousComposer = composer
-            if (viewportShrank || composerGrew) armFollowBurst.tryEmit(Unit)
-        }
-    }
-
-    // Position tracking. Content growing past the bottom must NEVER disarm
-    // following — that is the whole point of streaming — so the disarm branch
-    // requires a scroll that we did not start ourselves. Re-arming is
-    // threshold-based so a few pixels of drift do not strand the user.
-    LaunchedEffect(contentReach, density) {
-        val thresholdPx = with(density) { CHAT_AUTO_FOLLOW_THRESHOLD.toPx() }
-        contentReach.collect { reach ->
-            when {
-                reach <= thresholdPx -> shouldAutoScroll = true
-                listState.isScrollInProgress && !scrollOwner.following -> shouldAutoScroll = false
-            }
-        }
-    }
-
-    // The follow decision. Growth is "the content reaches further past the
-    // bottom than it did a moment ago" — a new message, a live tool card, and
-    // streaming text all look identical from here. The move is instant: a
-    // duration-based animation would spend the whole answer chasing text that
-    // grows faster than it can settle.
-    //
-    // Gated on the turn being active (or the burst window above), because there is one
-    // other thing that makes content grow: the user opening a card. Following that pins
-    // the bottom edge and shoves the header they just tapped up off the screen — worst
-    // with a work-summary card, which unfolds a whole timeline at once. Model output and
-    // moving chrome follow; a tap does not.
-    LaunchedEffect(contentReach) {
-        var previousReach = 0
-        contentReach.collect { reach ->
-            val grew = reach > previousReach
-            previousReach = reach
-            if (!grew || !shouldAutoScroll || drawerVisibleState.value) return@collect
-            if (!turnActiveState.value && !followBurst.value) return@collect
-            if (listState.isScrollInProgress && !scrollOwner.following) return@collect
-            scrollOwner.following = true
-            try {
-                listState.snapToContentEnd()
-            } finally {
-                scrollOwner.following = false
-                // Anything still hanging below counts as fresh growth, so a
-                // single burst that outruns one scroll settles on the next pass.
-                previousReach = 0
-            }
-        }
-    }
-
-    // The one explicit, user-triggered jump — the only place a duration
-    // animation belongs.
-    val jumpToBottom: () -> Unit = {
-        shouldAutoScroll = true
-        scope.launch {
-            scrollOwner.following = true
-            try {
-                listState.animateToContentEnd()
-            } finally {
-                scrollOwner.following = false
-            }
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        scrollEventFlow.collect { reason ->
-            when (reason) {
-                // The user just sent something: re-arm following. The growth
-                // observer above carries them to it as soon as it renders.
-                ChatViewModel.ScrollReason.NEW_MESSAGE -> {
-                    shouldAutoScroll = true
-                    armFollowBurst.tryEmit(Unit)
-                }
-                // Tool cards are ordinary content growth — nothing extra to do.
-                ChatViewModel.ScrollReason.NEW_TOOL -> Unit
-            }
-        }
-    }
+    val autoFollow = rememberChatAutoFollow(
+        listState = listState,
+        conversationKey = conversationKey,
+        drawerVisible = drawerVisible,
+        turnActive = uiState.isLoading || uiState.isStreaming,
+        inputBarHeight = inputBarHeight,
+        scrollEvents = scrollEventFlow
+    )
 
     BackHandler(
         enabled = uiState.messages.isNotEmpty() ||
@@ -551,7 +323,6 @@ fun ChatScreen(
         com.amaya.intelligence.domain.models.AssistantMode.AGENT -> activeAgentGroupLabel
     }
 
-    // WindowInsets
     val statusBarInsets = WindowInsets.statusBars.asPaddingValues()
     val statusBarHeight = statusBarInsets.calculateTopPadding()
     val navBarHeight = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -628,7 +399,6 @@ fun ChatScreen(
         }
     ) {
         Box(modifier = Modifier.fillMaxSize().background(bgColor)) {
-            // Content area
             if (uiState.messages.isEmpty()) {
                 ChatEmptyContent(
                     isRemoteMode = isRemoteMode,
@@ -662,12 +432,11 @@ fun ChatScreen(
                         selectedLocalhostLink = LocalhostLinkInfoParser.parse(annotationItem, serverIp)
                         showLocalhostLinkSheet = true
                     },
-                    onScrollToBottomClick = jumpToBottom,
-                    shouldAutoScroll = shouldAutoScroll
+                    onScrollToBottomClick = autoFollow.jumpToBottom,
+                    shouldAutoScroll = autoFollow.shouldAutoScroll
                 )
             }
 
-            // Localhost Link Bottom Sheet
             if (showLocalhostLinkSheet && selectedLocalhostLink != null) {
                 LocalhostLinkBottomSheet(
                     linkInfo = selectedLocalhostLink!!,
@@ -677,15 +446,12 @@ fun ChatScreen(
                         selectedLocalhostLink = null
                     },
                     onCopyLink = { url ->
-                        // Copy link callback - can be used for analytics or additional handling
-                    },
+                        },
                     onOpenLink = { url ->
-                        // Open link callback - can be used for analytics or additional handling
-                    }
+                        }
                 )
             }
 
-            // Gradient scrim for status bar
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -741,7 +507,6 @@ fun ChatScreen(
                 }
             )
 
-            // Bottom section
             ChatBottomSection(
                 modifier = Modifier.align(Alignment.BottomStart),
                 inputText = inputText,
@@ -795,7 +560,6 @@ fun ChatScreen(
         }
     }
 
-    // Bottom sheets
     if (showDeleteAgentChatSheet) {
         var deleteContext by remember(uiState.conversationId) { mutableStateOf(false) }
         StandardModalBottomSheet(
@@ -925,259 +689,5 @@ fun ChatScreen(
             },
             onDismiss = { showDisconnectDialog = false }
         )
-    }
-}
-
-@Composable
-private fun ChatFloatingTopBar(
-    title: String,
-    subtitle: String?,
-    isRemoteMode: Boolean,
-    isBridgeMode: Boolean,
-    onMenuClick: () -> Unit,
-    onTitleClick: () -> Unit,
-    showNewChat: Boolean,
-    onNewChatClick: () -> Unit,
-    showAgentMenu: Boolean,
-    onAgentMenuClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    agentMenu: @Composable () -> Unit = {}
-) {
-    val isDark = isSystemInDarkTheme()
-    val orbColor = if (isDark) Color(0xFF202228).copy(alpha = 0.92f) else Color(0xFFFAFAFC).copy(alpha = 0.96f)
-    val borderColor = if (isDark) Color.White.copy(alpha = 0.14f) else Color.Black.copy(alpha = 0.10f)
-
-
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .statusBarsPadding()
-            .padding(horizontal = 18.dp, vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        LiquidOrbButton(
-            icon = Icons.Default.Menu,
-            contentDescription = "Menu",
-            color = orbColor,
-            borderColor = borderColor,
-            onClick = onMenuClick
-        )
-
-        Spacer(modifier = Modifier.width(12.dp))
-
-        if (title.isNotEmpty() || !subtitle.isNullOrBlank()) {
-            FadingTitleLayout(
-                title = title,
-                subtitle = subtitle,
-                modifier = Modifier
-                    .weight(1f)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = onTitleClick
-                    )
-            )
-        } else {
-            Spacer(modifier = Modifier.weight(1f))
-        }
-
-        Spacer(modifier = Modifier.width(18.dp))
-
-        when {
-            // The menu is composed inside the button's own Box so the popup anchors to the orb.
-            // It used to be emitted at screen level with a hardcoded DpOffset(180.dp, 48.dp),
-            // which put it wherever that offset happened to land on a given screen size.
-            showAgentMenu -> Box {
-                LiquidOrbButton(
-                    icon = Icons.Default.MoreVert,
-                    contentDescription = "Agent menu",
-                    color = orbColor,
-                    borderColor = borderColor,
-                    onClick = onAgentMenuClick
-                )
-                agentMenu()
-            }
-            showNewChat -> LiquidOrbButton(
-                icon = Icons.Default.Add,
-                contentDescription = "New Chat",
-                color = orbColor,
-                borderColor = borderColor,
-                onClick = onNewChatClick
-            )
-            else -> Spacer(Modifier.size(48.dp))
-        }
-    }
-}
-
-@Composable
-private fun AgentChatMenu(
-    expanded: Boolean,
-    onOpenBrowser: () -> Unit,
-    onConfigure: () -> Unit,
-    onDeleteChat: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    com.amaya.intelligence.ui.components.shared.AmayaDropdownMenu(
-        expanded = expanded,
-        onDismissRequest = onDismiss,
-        alignment = com.amaya.intelligence.ui.components.shared.AmayaMenuAlignment.End,
-        placement = com.amaya.intelligence.ui.components.shared.AmayaMenuPlacement.Below
-    ) {
-        com.amaya.intelligence.ui.components.shared.AmayaDropdownMenuItem(
-            text = "Open browser",
-            icon = Icons.Default.OpenInBrowser,
-            onClick = onOpenBrowser
-        )
-        com.amaya.intelligence.ui.components.shared.AmayaDropdownMenuItem(
-            text = "Configure agent",
-            icon = Icons.Default.Settings,
-            onClick = onConfigure
-        )
-        com.amaya.intelligence.ui.components.shared.AmayaDropdownMenuItem(
-            text = "Delete chat",
-            icon = Icons.Default.Delete,
-            destructive = true,
-            onClick = onDeleteChat
-        )
-    }
-}
-
-@Composable
-private fun FadingTitleLayout(
-    title: String,
-    subtitle: String?,
-    modifier: Modifier = Modifier
-) {
-    var isOverflowing by remember { mutableStateOf(false) }
-    val renderedTitle = rememberHyperText(title)
-
-    androidx.compose.ui.layout.Layout(
-        modifier = modifier,
-        content = {
-            Column(
-                modifier = Modifier
-                    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                    .drawWithContent {
-                        drawContent()
-                        if (isOverflowing) {
-                            val fadeStartPx = 64.dp.toPx()
-                            val fadeEndPx = 24.dp.toPx()
-                            drawRect(
-                                brush = Brush.horizontalGradient(
-                                    colorStops = arrayOf(
-                                        0.0f to Color.Black,
-                                        0.2f to Color.Black.copy(alpha = 0.9f),
-                                        0.4f to Color.Black.copy(alpha = 0.7f),
-                                        0.6f to Color.Black.copy(alpha = 0.4f),
-                                        0.8f to Color.Black.copy(alpha = 0.15f),
-                                        1.0f to Color.Transparent
-                                    ),
-                                    startX = size.width - fadeStartPx,
-                                    endX = size.width - fadeEndPx
-                                ),
-                                blendMode = BlendMode.DstIn
-                            )
-                        }
-                    }
-            ) {
-                if (title.isNotEmpty()) {
-                    Text(
-                        text = renderedTitle,
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Normal),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Visible
-                    )
-                }
-                if (!subtitle.isNullOrBlank()) {
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Normal),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Visible
-                    )
-                }
-            }
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = "Session Info",
-                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                modifier = Modifier.padding(start = 4.dp).size(20.dp)
-            )
-        }
-    ) { measurables, constraints ->
-        val textMeasurable = measurables[0]
-        val iconMeasurable = measurables[1]
-
-        val iconPlaceable = iconMeasurable.measure(constraints.copy(minWidth = 0))
-        val iconWidth = iconPlaceable.width
-
-        val textIntrinsicWidth = textMeasurable.maxIntrinsicWidth(constraints.maxHeight)
-        val totalIntrinsicWidth = textIntrinsicWidth + iconWidth
-
-        val overflowing = totalIntrinsicWidth > constraints.maxWidth
-
-        val textPlaceable = textMeasurable.measure(
-            if (overflowing) {
-                constraints.copy(maxWidth = constraints.maxWidth, minWidth = 0)
-            } else {
-                constraints.copy(maxWidth = textIntrinsicWidth, minWidth = 0)
-            }
-        )
-
-        if (isOverflowing != overflowing) {
-            isOverflowing = overflowing
-        }
-
-        val width = if (constraints.hasBoundedWidth && constraints.minWidth == constraints.maxWidth) {
-            constraints.maxWidth
-        } else if (overflowing) {
-            constraints.maxWidth
-        } else {
-            totalIntrinsicWidth
-        }
-
-        val height = maxOf(textPlaceable.height, iconPlaceable.height)
-
-        layout(width, height) {
-            textPlaceable.placeRelative(0, (height - textPlaceable.height) / 2)
-            if (overflowing) {
-                iconPlaceable.placeRelative(width - iconWidth, (height - iconPlaceable.height) / 2)
-            } else {
-                iconPlaceable.placeRelative(textPlaceable.width, (height - iconPlaceable.height) / 2)
-            }
-        }
-    }
-}
-
-@Composable
-private fun LiquidOrbButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
-    color: Color,
-    borderColor: Color,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        onClick = onClick,
-        shape = CircleShape,
-        color = color,
-        border = BorderStroke(0.7.dp, borderColor),
-        shadowElevation = 0.dp,
-        tonalElevation = 0.dp,
-        modifier = modifier.size(42.dp)
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                icon,
-                contentDescription = contentDescription,
-                tint = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.size(20.dp)
-            )
-        }
     }
 }

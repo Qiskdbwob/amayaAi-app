@@ -71,8 +71,8 @@ fun OpencodeSettingsScreen(
         viewModel.loadConfig()
     }
 
-    Scaffold(containerColor = Color.Transparent) { _ ->
-        Box(modifier = Modifier.fillMaxSize().background(colors.groupedBackground)) {
+    Scaffold(containerColor = Color.Transparent) { paddingValues ->
+        Box(Modifier.padding(paddingValues).fillMaxSize().background(Color.Transparent)) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()

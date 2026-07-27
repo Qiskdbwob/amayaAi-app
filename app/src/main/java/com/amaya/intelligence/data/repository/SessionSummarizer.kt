@@ -17,7 +17,7 @@ class DeterministicSessionSummarizer @Inject constructor(
         val summary = SessionSummary(
             sessionId = sessionId,
             summary = summaryText,
-            tags = inferTags(summaryText),
+            tags = SessionTagger.infer(summaryText),
             createdAt = now,
             updatedAt = now,
             workspacePath = sessionMemoryRepository.sessionWorkspacePath(sessionId),
@@ -29,9 +29,4 @@ class DeterministicSessionSummarizer @Inject constructor(
         summary
     }
 
-    private fun inferTags(text: String): List<String> {
-        val lower = text.lowercase()
-        return listOf("android", "webview", "oauth", "browser", "skill", "memory", "reminder", "kotlin", "gradle")
-            .filter { it in lower }
-    }
 }

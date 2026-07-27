@@ -172,12 +172,6 @@ fun standardModalBottomSheetProperties(dismissible: Boolean = true) = ModalBotto
 )
 
 
-@Composable
-fun isImeVisible(): Boolean {
-    val density = LocalDensity.current
-    return WindowInsets.ime.getBottom(density) > 0
-}
-
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun imeAnimationProgress(): Float {

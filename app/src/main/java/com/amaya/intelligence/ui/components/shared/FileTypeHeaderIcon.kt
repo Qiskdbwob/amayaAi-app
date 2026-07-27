@@ -346,25 +346,3 @@ internal fun resolveFileTypeSourcePath(execution: ToolExecution): String? {
         execution.arguments["cwd"]?.toString()
     ).firstOrNull { it.isNotBlank() }
 }
-
-internal fun shouldUseFileTypeIcon(execution: ToolExecution): Boolean {
-    val path = resolveFileTypeSourcePath(execution) ?: return false
-    val fileName = path.substringAfterLast('/').substringAfterLast('\\').trim()
-    if (fileName.isBlank()) return false
-
-    val normalizedStem = normalizeFileTypeKey(fileName.substringBeforeLast('.', fileName))
-    val normalizedFileName = normalizeFileTypeKey(fileName)
-    val normalizedPath = normalizeFileTypeKey(path)
-    val ext = fileName.substringAfterLast('.', "").lowercase()
-
-    if (execution.uiMetadata?.category != ToolCategory.FILE_IO) return false
-
-    return ext in setOf(
-        "kt", "kts", "java", "class", "ts", "tsx", "js", "jsx", "mjs", "cjs",
-        "json", "json5", "jsonc", "md", "markdown", "mdx", "yml", "yaml",
-        "py", "pyw", "html", "htm", "css", "scss", "sass", "less",
-        "xml", "gradle", "sh", "bash", "zsh", "fish", "ps1", "psm1", "psd1",
-        "rb", "go", "rs", "groovy", "toml", "ini", "properties", "txt",
-        "sql", "hcl", "tf", "tfvars"
-    ) || resolveSpecialFileTypeCandidates(normalizedFileName, normalizedStem, normalizedPath).isNotEmpty()
-}

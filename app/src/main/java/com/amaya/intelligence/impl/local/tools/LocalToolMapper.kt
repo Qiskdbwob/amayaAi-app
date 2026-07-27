@@ -2,6 +2,7 @@ package com.amaya.intelligence.impl.local.tools
 
 import com.amaya.intelligence.impl.common.mappers.ToolUiMapper
 import com.amaya.intelligence.domain.models.ToolUiMetadata
+import com.amaya.intelligence.tools.firstToolArgument
 
 /**
  * Local-specific tool name and argument mapper.
@@ -9,15 +10,6 @@ import com.amaya.intelligence.domain.models.ToolUiMetadata
  */
 object LocalToolMapper {
 
-    private fun firstNonNull(map: Map<String, Any?>, vararg keys: String): Any? {
-        keys.forEach { key ->
-            if (map.containsKey(key)) {
-                val value = map[key]
-                if (value != null && value.toString().isNotBlank()) return value
-            }
-        }
-        return null
-    }
 
     /**
      * Maps local tool names to normalized names.
@@ -77,7 +69,7 @@ object LocalToolMapper {
         val normalizedName = mapToolName(capabilityCall?.handlerName ?: toolName)
         val mapped = (capabilityCall?.arguments ?: args).toMutableMap()
 
-        mapped["summary"] = firstNonNull(
+        mapped["summary"] = firstToolArgument(
             mapped,
             "summary",
             "Summary",
@@ -91,7 +83,7 @@ object LocalToolMapper {
 
         when (normalizedName) {
             "run_shell" -> {
-                mapped["command"] = firstNonNull(mapped, "command", "cmd", "CommandLine", "commandLine")
+                mapped["command"] = firstToolArgument(mapped, "command", "cmd", "CommandLine", "commandLine")
                 mapped.remove("cwd")
                 mapped.remove("Cwd")
                 mapped.remove("DirectoryPath")
@@ -99,34 +91,34 @@ object LocalToolMapper {
                 mapped.remove("working_dir")
             }
             "check_status_terminal" -> {
-                mapped["commandId"] = firstNonNull(mapped, "commandId", "CommandId", "ProcessID", "processId", "PID")
-                mapped["waitSeconds"] = firstNonNull(mapped, "waitSeconds", "WaitDurationSeconds", "WaitTime") ?: "0"
-                mapped["maxChars"] = firstNonNull(mapped, "maxChars", "OutputCharacterCount", "MaxChars")
+                mapped["commandId"] = firstToolArgument(mapped, "commandId", "CommandId", "ProcessID", "processId", "PID")
+                mapped["waitSeconds"] = firstToolArgument(mapped, "waitSeconds", "WaitDurationSeconds", "WaitTime") ?: "0"
+                mapped["maxChars"] = firstToolArgument(mapped, "maxChars", "OutputCharacterCount", "MaxChars")
             }
             "read_file" -> {
-                mapped["path"] = firstNonNull(mapped, "path", "file", "filePath", "AbsolutePath")
+                mapped["path"] = firstToolArgument(mapped, "path", "file", "filePath", "AbsolutePath")
             }
             "write_file", "edit_file" -> {
-                mapped["path"] = firstNonNull(mapped, "path", "file", "filePath", "TargetFile")
-                mapped["targetContent"] = firstNonNull(mapped, "targetContent", "TargetContent")
-                mapped["replacementContent"] = firstNonNull(
+                mapped["path"] = firstToolArgument(mapped, "path", "file", "filePath", "TargetFile")
+                mapped["targetContent"] = firstToolArgument(mapped, "targetContent", "TargetContent")
+                mapped["replacementContent"] = firstToolArgument(
                     mapped,
                     "replacementContent",
                     "ReplacementContent",
                     "CodeContent",
                     "codeContent"
                 )
-                mapped["replacementChunks"] = firstNonNull(mapped, "replacementChunks", "ReplacementChunks")
+                mapped["replacementChunks"] = firstToolArgument(mapped, "replacementChunks", "ReplacementChunks")
             }
             "find_files", "grep_search" -> {
-                mapped["query"] = firstNonNull(mapped, "query", "pattern", "search", "Query")
-                mapped["path"] = firstNonNull(mapped, "path", "directory", "SearchPath", "SearchDirectory")
+                mapped["query"] = firstToolArgument(mapped, "query", "pattern", "search", "Query")
+                mapped["path"] = firstToolArgument(mapped, "path", "directory", "SearchPath", "SearchDirectory")
             }
             "list_files" -> {
-                mapped["path"] = firstNonNull(mapped, "path", "directory", "DirectoryPath")
+                mapped["path"] = firstToolArgument(mapped, "path", "directory", "DirectoryPath")
             }
             "task_boundary" -> {
-                mapped["taskStatus"] = firstNonNull(mapped, "taskStatus", "TaskStatus", "status", "status_text")
+                mapped["taskStatus"] = firstToolArgument(mapped, "taskStatus", "TaskStatus", "status", "status_text")
             }
         }
 

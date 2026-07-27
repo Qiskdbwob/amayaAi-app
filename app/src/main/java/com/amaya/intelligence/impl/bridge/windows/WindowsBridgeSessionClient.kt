@@ -315,105 +315,10 @@ class WindowsBridgeSessionClient(
 
     private fun dispatch(envelope: BridgeEnvelope) {
         envelope.sessionId?.let { currentSessionId = it }
-        when (envelope.type) {
-            BridgeMessageType.SESSION_CREATED -> {
-                val sid = envelope.sessionId ?: (envelope.payload["sessionId"] as? String)
-                if (sid != null) currentSessionId = sid
-                emit(WindowsBridgeClientEvent.SessionCreated(sid ?: ""))
-            }
-            BridgeMessageType.SESSION_CLOSED -> {
-                val reason = envelope.payload["reason"] as? String
-                WindowsBridgeLogger.sessionClosed(envelope.sessionId, reason)
-                emit(WindowsBridgeClientEvent.SessionClosed(envelope.sessionId, reason))
-            }
-            BridgeMessageType.DEVICE_PAIRED -> {
-                val paired = envelope.payload["deviceId"] as? String ?: envelope.deviceId
-                emit(WindowsBridgeClientEvent.DevicePaired(envelope.sessionId, paired))
-            }
-            BridgeMessageType.DEVICE_DISCONNECTED -> {
-                val reason = envelope.payload["reason"] as? String
-                emit(WindowsBridgeClientEvent.DeviceDisconnected(envelope.sessionId, reason))
-            }
-            BridgeMessageType.SCREEN_FRAME ->
-                emit(WindowsBridgeClientEvent.ScreenFrameReceived(envelope))
-            BridgeMessageType.SCREEN_CAPTURE_RESULT ->
-                emit(WindowsBridgeClientEvent.ScreenCaptureResultReceived(envelope))
-            BridgeMessageType.TOOL_RESULT -> {
-                WindowsBridgeEnvelopeMapper.decodeToolResult(envelope)?.let {
-                    emit(WindowsBridgeClientEvent.ToolResultReceived(it))
-                } ?: emit(WindowsBridgeClientEvent.EnvelopeReceived(envelope))
-            }
-            BridgeMessageType.TOOL_ERROR -> {
-                WindowsBridgeEnvelopeMapper.decodeToolError(envelope)?.let {
-                    emit(WindowsBridgeClientEvent.ToolErrorReceived(it))
-                } ?: emit(WindowsBridgeClientEvent.EnvelopeReceived(envelope))
-            }
-            BridgeMessageType.APPROVAL_REQUEST -> {
-                WindowsBridgeEnvelopeMapper.decodeApprovalRequest(envelope)?.let {
-                    emit(WindowsBridgeClientEvent.ApprovalRequestReceived(it))
-                } ?: emit(WindowsBridgeClientEvent.EnvelopeReceived(envelope))
-            }
-            BridgeMessageType.APPROVAL_ACCEPTED ->
-                emit(WindowsBridgeClientEvent.ApprovalAcceptedReceived(envelope))
-            BridgeMessageType.APPROVAL_REJECTED ->
-                emit(WindowsBridgeClientEvent.ApprovalRejectedReceived(envelope))
-            BridgeMessageType.AGENT_STATUS,
-            BridgeMessageType.AGENT_STEP,
-            BridgeMessageType.AGENT_PAUSED,
-            BridgeMessageType.AGENT_RESUMED,
-            BridgeMessageType.AGENT_CANCELLED ->
-                emit(WindowsBridgeClientEvent.AgentUpdateReceived(envelope.type, envelope))
-            BridgeMessageType.AUDIT_EVENT -> {
-                WindowsBridgeEnvelopeMapper.decodeAuditEvent(envelope)?.let {
-                    emit(WindowsBridgeClientEvent.AuditEventReceived(it))
-                } ?: emit(WindowsBridgeClientEvent.EnvelopeReceived(envelope))
-            }
-            BridgeMessageType.ERROR -> {
-                WindowsBridgeEnvelopeMapper.decodeProtocolError(envelope)?.let {
-                    WindowsBridgeLogger.protocolError("${it.code}: ${it.message}")
-                    emit(WindowsBridgeClientEvent.ProtocolError(it))
-                } ?: emit(WindowsBridgeClientEvent.EnvelopeReceived(envelope))
-            }
-            BridgeMessageType.TOOL_CALL ->
-                // Unexpected (bridge shouldn't initiate tool calls), but forward raw.
-                emit(WindowsBridgeClientEvent.EnvelopeReceived(envelope))
-            // CLI agent runtime (opencode / claude-code / codex) envelopes —
-            // forwarded raw so downstream agent clients can decode themselves.
-            BridgeMessageType.AGENT_RUNTIME_STATUS_REQUEST,
-            BridgeMessageType.AGENT_RUNTIME_START,
-            BridgeMessageType.AGENT_RUNTIME_STOP,
-            BridgeMessageType.AGENT_RUNTIME_RESTART,
-            BridgeMessageType.AGENT_CONFIG_REQUEST,
-            BridgeMessageType.AGENT_PROVIDER_LIST_REQUEST,
-            BridgeMessageType.AGENT_MODEL_LIST_REQUEST,
-            BridgeMessageType.AGENT_MCP_LIST_REQUEST,
-            BridgeMessageType.AGENT_SESSION_LIST_REQUEST,
-            BridgeMessageType.AGENT_SESSION_CREATE,
-            BridgeMessageType.AGENT_SESSION_DELETE,
-            BridgeMessageType.AGENT_SESSION_PROMPT,
-            BridgeMessageType.AGENT_SESSION_ABORT,
-            BridgeMessageType.AGENT_PERMISSION_REPLY,
-            BridgeMessageType.AGENT_QUESTION_REPLY,
-            BridgeMessageType.AGENT_RUNTIME_STATUS,
-            BridgeMessageType.AGENT_CONFIG,
-            BridgeMessageType.AGENT_PROVIDER_LIST,
-            BridgeMessageType.AGENT_MODEL_LIST,
-            BridgeMessageType.AGENT_MCP_LIST,
-            BridgeMessageType.AGENT_SESSION_LIST,
-            BridgeMessageType.AGENT_SESSION_CREATED,
-            BridgeMessageType.AGENT_SESSION_DELETED,
-            BridgeMessageType.AGENT_SESSION_MESSAGES_REQUEST,
-            BridgeMessageType.AGENT_SESSION_MESSAGES,
-            BridgeMessageType.AGENT_EVENT,
-            BridgeMessageType.AGENT_PTY_OPEN,
-            BridgeMessageType.AGENT_PTY_RESIZE,
-            BridgeMessageType.AGENT_PTY_INPUT,
-            BridgeMessageType.AGENT_PTY_CLOSE,
-            BridgeMessageType.AGENT_PTY_OPENED,
-            BridgeMessageType.AGENT_PTY_OUTPUT,
-            BridgeMessageType.AGENT_PTY_CLOSED ->
-                emit(WindowsBridgeClientEvent.EnvelopeReceived(envelope))
+        if (envelope.type == BridgeMessageType.SESSION_CLOSED) {
+            WindowsBridgeLogger.sessionClosed(envelope.sessionId, envelope.payload["reason"] as? String)
         }
+        WindowsBridgeEnvelopeDispatcher.dispatch(envelope, ::emit)
     }
 
     private fun sendSessionControl(type: BridgeMessageType) {

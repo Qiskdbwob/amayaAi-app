@@ -15,6 +15,9 @@ import java.net.URI
 import java.util.ArrayDeque
 import com.amaya.intelligence.domain.models.ConnectionState
 import com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog
+import com.amaya.intelligence.util.debugLog
+import com.amaya.intelligence.util.errorLog
+import com.amaya.intelligence.impl.ide.antigravity.event.*
 
 /**
  * WebSocket client that connects to Antigravity IDE extension server.
@@ -103,10 +106,10 @@ class RemoteSessionClient @Inject constructor(
             reconnectJob = null
             reconnectDelay = INITIAL_RECONNECT_DELAY
         }
-        
+
         // If we're already connecting/connected to THIS ip/port, don't restart unless forced.
         if (lastIp == ip && lastPort == port && _connectionState.value != ConnectionState.DISCONNECTED) {
-            android.util.Log.v("RemoteSessionClient", "Already connecting/connected to $ip:$port, skipping redundant connect")
+            debugLog("RemoteSessionClient") { "Already connecting/connected; skipping redundant connect" }
             return
         }
 
@@ -114,11 +117,11 @@ class RemoteSessionClient @Inject constructor(
         lastPort = port
         prefs?.edit()?.putString(KEY_LAST_IP, ip)?.putInt(KEY_LAST_PORT, port)?.apply()
 
-        android.util.Log.i("RemoteSessionClient", "Connecting to $ip:$port (isReconnect=$isReconnect)")
-        
+        debugLog("RemoteSessionClient") { "Connecting (isReconnect=$isReconnect)" }
+
         postConnectRefreshJob?.cancel()
         postConnectRefreshJob = null
-        
+
         disconnectInternal()
 
         _connectionState.value = ConnectionState.CONNECTING
@@ -128,9 +131,9 @@ class RemoteSessionClient @Inject constructor(
         val newClient = object : WebSocketClient(uri) {
             override fun onOpen(handshakedata: ServerHandshake?) {
                 if (this@RemoteSessionClient.wsClient != this) return
-                android.util.Log.i("RemoteSessionClient", "WebSocket onOpen: $ip:$port")
+                debugLog("RemoteSessionClient") { "WebSocket onOpen" }
                 AntigravityRemoteDebugLog.connection("OPEN ip=$ip port=$port reconnect=$isReconnect lastSeq=$lastSeqId serverSession=${lastServerSessionId ?: "-"}")
-                
+
                 _connectionState.value = ConnectionState.CONNECTED
                 _serverInfo.value = "$ip:$port"
                 _errorMessage.value = null
@@ -138,7 +141,7 @@ class RemoteSessionClient @Inject constructor(
                 runCatching { RemoteSessionForegroundService.updateStatus(appContext, RemoteSessionForegroundService.STATE_CONNECTED) }
                 reconnecting = false
                 reconnectDelay = INITIAL_RECONNECT_DELAY
-                
+
                 flushPendingCommands()
                 // Keep seq cursor across reconnects to the same extension server. If the
                 // extension restarted, the next inbound serverSessionId change resets it
@@ -154,10 +157,10 @@ class RemoteSessionClient @Inject constructor(
 
             override fun onClose(code: Int, reason: String?, remote: Boolean) {
                 if (this@RemoteSessionClient.wsClient != this) {
-                    android.util.Log.v("RemoteSessionClient", "Stale WebSocket onClose ignored")
+                    debugLog("RemoteSessionClient") { "Stale WebSocket onClose ignored" }
                     return
                 }
-                android.util.Log.w("RemoteSessionClient", "WebSocket onClose: code=$code, reason=$reason, remote=$remote, manual=$isManualDisconnect")
+                debugLog("RemoteSessionClient") { "WebSocket onClose: code=$code remote=$remote manual=$isManualDisconnect" }
                 AntigravityRemoteDebugLog.connection("CLOSE code=$code reason=${reason ?: "-"} remote=$remote manual=$isManualDisconnect lastSeq=$lastSeqId")
 
                 _connectionState.value = ConnectionState.DISCONNECTED
@@ -171,7 +174,7 @@ class RemoteSessionClient @Inject constructor(
 
             override fun onError(ex: Exception?) {
                 if (this@RemoteSessionClient.wsClient != this) return
-                android.util.Log.e("RemoteSessionClient", "WebSocket onError: ${ex?.message}")
+                errorLog("RemoteSessionClient", "WebSocket onError", ex)
                 AntigravityRemoteDebugLog.connection("ERROR ${ex?.message ?: "unknown"}")
                 _errorMessage.value = "Connection error: ${ex?.message ?: "unknown"}"
             }
@@ -185,12 +188,12 @@ class RemoteSessionClient @Inject constructor(
     private fun onMessage(message: String) {
         runCatching {
             val json = JSONObject(message)
-            val type = json.optString("event").takeIf { it.isNotBlank() } 
-                ?: json.optString("type").takeIf { it.isNotBlank() } 
+            val type = json.optString("event").takeIf { it.isNotBlank() }
+                ?: json.optString("type").takeIf { it.isNotBlank() }
                 ?: return@runCatching
-            
+
             if (type != "text_delta" && type != "stream_progress" && type != "tool_activity") {
-                android.util.Log.v("RemoteSessionClient", "Received message: $type (seq=${json.optInt("seqId", -1)})")
+                debugLog("RemoteSessionClient") { "Received message: $type (seq=${json.optInt("seqId", -1)})" }
             }
             AntigravityRemoteDebugLog.rawInbound(
                 type = type,
@@ -205,10 +208,7 @@ class RemoteSessionClient @Inject constructor(
             val sid = json.optNullableString("serverSessionId") ?: json.optNullableString("sessionId")
             sid?.let { newSid ->
                 if (newSid != lastServerSessionId) {
-                    android.util.Log.i(
-                        "RemoteSessionClient",
-                        "Server session changed ($lastServerSessionId -> $newSid). Resetting seq cursor."
-                    )
+                    debugLog("RemoteSessionClient") { "Server session changed; resetting seq cursor" }
                     lastServerSessionId = newSid
                     prefs?.edit()?.putString(KEY_LAST_SERVER_SESSION_ID, newSid)?.putInt(KEY_LAST_SEQ_ID, -1)?.apply()
                     lastSeqId = -1 // Reset sequence on new session
@@ -271,7 +271,7 @@ class RemoteSessionClient @Inject constructor(
                 _events.tryEmit(event)
             }
         }.onFailure { ex ->
-            android.util.Log.e("RemoteSessionClient", "Error processing message: ${ex.message}", ex)
+            errorLog("RemoteSessionClient", "Error processing message", ex)
         }
     }
 
@@ -353,10 +353,7 @@ class RemoteSessionClient @Inject constructor(
     // ── Commands to Antigravity ──────────────────────────────────
 
     fun sendMessage(content: String, conversationId: String? = null, mode: String? = null, attachments: List<RemoteAttachment> = emptyList()) {
-        android.util.Log.d("RemoteSessionClient", "sendMessage: content=${content.take(50)}..., attachments=${attachments.size}")
-        attachments.forEachIndexed { idx, att ->
-            android.util.Log.d("RemoteSessionClient", "Attachment[$idx]: mimeType=${att.mimeType}, dataLen=${att.dataBase64.length}, fileName=${att.fileName}")
-        }
+        debugLog("RemoteSessionClient") { "sendMessage attachments=${attachments.size}" }
         sendCommand("send_message", JSONObject().apply {
             put("content", content)
             if (conversationId != null) {
@@ -606,10 +603,10 @@ class RemoteSessionClient @Inject constructor(
     private fun parseEvent(json: JSONObject): RemoteEvent? {
         val data = json.optJSONObject("data")
         val seqId = json.optInt("seqId", 0)
-        val conversationId = data?.optString("conversationId", "")?.takeIf { it.isNotBlank() } 
+        val conversationId = data?.optString("conversationId", "")?.takeIf { it.isNotBlank() }
             ?: json.optString("conversationId", "").takeIf { it.isNotBlank() }
         val serverIp = json.optNullableString("serverIp")
-        
+
         val eventType = json.optString("event").takeIf { it.isNotBlank() } ?: json.optString("type")
         return when (eventType) {
             "state_sync" -> {
@@ -932,7 +929,7 @@ class RemoteSessionClient @Inject constructor(
             }
             val thinking = obj.optNullableString("thinking")
                 ?: obj.optNullableString("thinkingPreview")
-            
+
             // Parse attachments
             val attachmentsArr = obj.optJSONArray("attachments")
             val attachments = mutableListOf<MessageAttachment>()
@@ -946,7 +943,7 @@ class RemoteSessionClient @Inject constructor(
                     ))
                 }
             }
-            
+
             RemoteChatMessage(
                 role = obj.optString("role", "user"),
                 content = content,
@@ -1035,7 +1032,7 @@ class RemoteSessionClient @Inject constructor(
     private fun updateForegroundStatus(event: RemoteEvent) {
         val now = System.currentTimeMillis()
         val context = appContext
-        
+
         // Critical states (start/stop) bypass rate limit
         val isCritical = event is RemoteEvent.ToolCallStart || event is RemoteEvent.StreamDone || event is RemoteEvent.Error
 
@@ -1091,273 +1088,3 @@ class RemoteSessionClient @Inject constructor(
         return optString(key).takeIf { it.isNotBlank() }
     }
 }
-
-// ── Data Models ──────────────────────────────────────────────────
-
-sealed class RemoteEvent {
-    abstract val seqId: Int
-    abstract val conversationId: String?
-    open val serverIp: String? = null
-
-    data class StateSync(
-        val messages: List<RemoteChatMessage>,
-        val isLoading: Boolean,
-        val isStreaming: Boolean,
-        val currentModel: String,
-        val toolExecutions: List<RemoteToolExecution>,
-        val conversationMode: String? = null,
-        val appName: String = "Antigravity",
-        val appVersion: String = "",
-        val currentWorkspace: RemoteWorkspace? = null,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null,
-        override val serverIp: String? = null
-    ) : RemoteEvent()
-
-    data class StateUpdate(
-        val isLoading: Boolean,
-        val isStreaming: Boolean,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null,
-        override val serverIp: String? = null
-    ) : RemoteEvent()
-
-    data class TextDelta(
-        val text: String,
-        val stepIndex: String? = null,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class StreamProgress(
-        override val conversationId: String,
-        val sizeDelta: Int,
-        val totalGrowth: Int,
-        override val seqId: Int = 0
-    ) : RemoteEvent()
-
-    data class ToolCallStart(
-        val toolCallId: String,
-        val name: String,
-        val arguments: Map<String, Any?>,
-        val metadata: Map<String, String> = emptyMap(),
-        val status: String = "RUNNING",
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class ToolCallResult(
-        val toolCallId: String,
-        val name: String? = null,
-        val result: String,
-        val isError: Boolean,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null,
-        override val serverIp: String? = null
-    ) : RemoteEvent()
-
-    data class ToolActivity(
-        val type: String,
-        val file: String = "",
-        val terminalData: String = "",
-        override val seqId: Int = 0,
-        override val conversationId: String? = null,
-        override val serverIp: String? = null
-    ) : RemoteEvent()
-
-    data class StreamDone(
-        val stopReason: String? = null,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class Error(
-        val message: String,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class ConfirmationRequired(
-        val title: String,
-        val description: String,
-        val riskLevel: String,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class NewAssistantMessage(
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-    data class NewConversation(
-        override val seqId: Int = 0,
-        override val conversationId: String? = null,
-        override val serverIp: String? = null
-    ) : RemoteEvent()
-
-    data class ExternalActivity(
-        override val conversationId: String,
-        override val seqId: Int = 0
-    ) : RemoteEvent()
-
-    data class UserMessage(
-        val content: String,
-        val attachments: List<MessageAttachment> = emptyList(),
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class AiThinking(
-        val text: String,
-        val stepIndex: String = "",
-        val isRunning: Boolean = true,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class TitleGenerated(
-        val title: String,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class StatusChange(
-        val status: String,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class ConversationsList(
-        val conversations: List<RemoteConversationMeta>,
-        val currentWorkspacePath: String? = null,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class ModelsList(
-        val models: List<RemoteModelInfo>,
-        val selectedModelId: String,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class ConversationLoaded(
-        override val conversationId: String,
-        val messages: List<RemoteChatMessage>,
-        val conversationMode: String? = null,
-        override val seqId: Int = 0,
-        override val serverIp: String? = null
-    ) : RemoteEvent()
-
-    data class DebugLog(
-        val message: String,
-        val timestamp: Long,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class ModelSelected(
-        val modelId: String,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class WorkspacesList(
-        val workspaces: List<RemoteWorkspace>,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class ProjectFiles(
-        val files: List<RemoteFileEntry>,
-        val path: String,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class FileDiff(
-        val diff: String,
-        val error: String? = null,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class FileContent(
-        val path: String,
-        val content: String,
-        val error: String? = null,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-
-    data class ActiveConversation(
-        override val conversationId: String,
-        override val seqId: Int = 0,
-        override val serverIp: String? = null
-    ) : RemoteEvent()
-
-    data class CurrentWorkspace(
-        val name: String,
-        val path: String,
-        override val seqId: Int = 0,
-        override val conversationId: String? = null
-    ) : RemoteEvent()
-}
-
-data class RemoteChatMessage(
-    val role: String,
-    val content: String,
-    val thinking: String? = null,
-    val intent: String? = null,
-    val toolExecutions: List<RemoteToolExecution> = emptyList(),
-    val metadata: Map<String, String> = emptyMap(),
-    val attachments: List<MessageAttachment> = emptyList()
-)
-
-data class RemoteToolExecution(
-    val toolCallId: String,
-    val name: String,
-    val arguments: Map<String, Any?>,
-    val result: String? = null,
-    val status: String = "PENDING",
-    val metadata: Map<String, String> = emptyMap()
-)
-
-data class RemoteAttachment(
-    val mimeType: String,
-    val dataBase64: String,
-    val fileName: String = ""
-)
-
-data class RemoteConversationMeta(
-    val id: String,
-    val lastModified: Long,
-    val size: Long,
-    val title: String = "",
-    val preview: String = "",
-    val workspacePath: String = ""
-)
-
-data class RemoteModelInfo(
-    val id: String,
-    val label: String,
-    val isRecommended: Boolean,
-    val quota: Double,
-    val quotaLabel: String? = null,
-    val resetTime: String? = null,
-    val tagTitle: String? = null,
-    val supportsImages: Boolean
-)
-
-data class RemoteWorkspace(
-    val name: String,
-    val path: String,
-    val isCurrent: Boolean = false
-)
-
-data class RemoteFileEntry(
-    val name: String,
-    val path: String,
-    val type: String, // "file" or "directory"
-    val size: Long = 0
-)

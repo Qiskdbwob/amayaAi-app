@@ -65,7 +65,7 @@ import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.screens.project.shared.FileListItem
 import com.amaya.intelligence.ui.theme.SectionShape
 import com.amaya.intelligence.ui.viewmodels.ChatViewModel
-import java.nio.file.Path
+import java.nio.file.Paths
 
 private data class IosProjectBrowserColors(
     val groupedBackground: Color,
@@ -115,7 +115,7 @@ private fun normalizeRemotePath(path: String?): String? {
 }
 
 private fun remoteParentPath(path: String): String? {
-    return runCatching { Path.of(path).parent?.toString() }.getOrNull()?.takeIf { it.isNotBlank() }
+    return runCatching { Paths.get(path).parent?.toString() }.getOrNull()?.takeIf { it.isNotBlank() }
 }
 
 private fun remoteChildPath(basePath: String, segment: String): String {

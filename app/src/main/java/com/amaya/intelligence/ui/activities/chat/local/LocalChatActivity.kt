@@ -43,7 +43,7 @@ class LocalChatActivity : AppCompatActivity() {
                         com.amaya.intelligence.ui.activities.project.local.LocalProjectActivity.start(this)
                     },
                     onNavigateToRemoteSession = {
-                        startActivity(android.content.Intent(this, com.amaya.intelligence.ui.activities.remote.RemoteSessionActivity::class.java))
+                        startActivity(android.content.Intent(this, com.amaya.intelligence.ui.activities.antigravity.RemoteSessionActivity::class.java))
                     },
                     onExit = { finish() }
                 )

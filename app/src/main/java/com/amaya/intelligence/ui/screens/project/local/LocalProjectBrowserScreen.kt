@@ -26,6 +26,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.Paths
+import java.util.stream.Collectors
 import kotlin.io.path.isDirectory
 import kotlin.io.path.isHidden
 import kotlin.io.path.name
@@ -76,19 +78,19 @@ fun LocalProjectBrowserScreen(
     onDismiss: () -> Unit
 ) {
     val colors = iosProjectBrowserColors()
-    var currentPath by remember { 
-        mutableStateOf(Environment.getExternalStorageDirectory().absolutePath) 
+    var currentPath by remember {
+        mutableStateOf(Environment.getExternalStorageDirectory().absolutePath)
     }
     var files by remember { mutableStateOf<List<ProjectFileEntry>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var searchQuery by remember { mutableStateOf("") }
     var showHidden by remember { mutableStateOf(false) }
-    
+
     val filteredFiles = remember(files, searchQuery) {
         if (searchQuery.isBlank()) files
         else files.filter { it.name.contains(searchQuery, ignoreCase = true) }
     }
-    
+
     LaunchedEffect(currentPath, showHidden) {
         isLoading = true
         files = loadLocalFiles(currentPath, showHidden)
@@ -124,20 +126,20 @@ fun LocalProjectBrowserScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 16.dp),
-                    placeholder = { 
+                    placeholder = {
                         Text(
-                            "Search files...", 
+                            "Search files...",
                             style = MaterialTheme.typography.bodyLarge,
                             color = colors.secondaryText
-                        ) 
+                        )
                     },
-                    leadingIcon = { 
+                    leadingIcon = {
                         Icon(
-                            Icons.Default.Search, 
-                            null, 
+                            Icons.Default.Search,
+                            null,
                             modifier = Modifier.size(20.dp),
                             tint = colors.iconTint
-                        ) 
+                        )
                     },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
@@ -156,12 +158,12 @@ fun LocalProjectBrowserScreen(
                     ),
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.primaryText)
                 )
-                
+
                 BreadcrumbBar(
                     path = currentPath,
                     onNavigate = { currentPath = it }
                 )
-                
+
                 Spacer(Modifier.height(16.dp))
 
                 Box(modifier = Modifier.weight(1f)) {
@@ -205,13 +207,13 @@ fun LocalProjectBrowserScreen(
                                     FileListItem(
                                         item = ProjectFileEntry(
                                             name = "..",
-                                            path = Path.of(currentPath).parent?.toString() ?: "/",
+                                            path = Paths.get(currentPath).parent?.toString() ?: "/",
                                             type = "directory",
                                             size = 0
                                         ),
                                         onClick = { selected ->
                                             if (selected.name == "..") {
-                                                currentPath = Path.of(currentPath).parent?.toString() ?: "/"
+                                                currentPath = Paths.get(currentPath).parent?.toString() ?: "/"
                                             } else {
                                                 currentPath = selected.path
                                             }
@@ -222,12 +224,12 @@ fun LocalProjectBrowserScreen(
                                     )
                                 }
                             }
-                            
+
                             items(filteredFiles.size, key = { filteredFiles[it].path }) { index ->
                                 val item = filteredFiles[index]
                                 val isFirst = index == 0 && (currentPath == "/" || currentPath == Environment.getExternalStorageDirectory().absolutePath)
                                 val isLast = index == filteredFiles.size - 1
-                                
+
                                 FileListItem(
                                     item = item,
                                     onClick = { selected ->
@@ -246,9 +248,9 @@ fun LocalProjectBrowserScreen(
             }
 
             TopAppBar(
-                title = { 
+                title = {
                     Text(
-                        "Workspace", 
+                        "Workspace",
                         style = MaterialTheme.typography.titleLarge,
                         modifier = Modifier.padding(start = 12.dp),
                         fontWeight = FontWeight.SemiBold
@@ -276,14 +278,14 @@ fun LocalProjectBrowserScreen(
     }
 }
 
-private suspend fun loadLocalFiles(path: String, showHidden: Boolean): List<ProjectFileEntry> = 
+private suspend fun loadLocalFiles(path: String, showHidden: Boolean): List<ProjectFileEntry> =
     withContext(Dispatchers.IO) {
         try {
-            val dir = Path.of(path)
+            val dir = Paths.get(path)
             if (!Files.exists(dir) || !Files.isDirectory(dir)) {
                 return@withContext emptyList()
             }
-            
+
             Files.list(dir).use { stream ->
                 stream
                     .filter { showHidden || !it.isHidden() }
@@ -295,7 +297,7 @@ private suspend fun loadLocalFiles(path: String, showHidden: Boolean): List<Proj
                             size = if (file.isDirectory()) 0 else Files.size(file)
                         )
                     }
-                    .toList()
+                    .collect(Collectors.toList())
                     .sortedWith(compareBy({ it.type != "directory" }, { it.name.lowercase() }))
             }
         } catch (e: Exception) {

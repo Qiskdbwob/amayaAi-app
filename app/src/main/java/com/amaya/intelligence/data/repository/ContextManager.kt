@@ -25,7 +25,7 @@ data class ContextBuildRequest(
     val workspacePath: String?,
     val conversationId: Long?,
     val maxOutputTokens: Int,
-    val contextWindowTokens: Int = 32_768,
+    val contextWindowTokens: Int = TokenEstimator.DEFAULT_CONTEXT_WINDOW_TOKENS,
     val toolSchemaTokens: Int = 0,
     val userImages: List<ChatImage> = emptyList(),
     val assistantMode: AssistantMode = AssistantMode.forWorkspace(workspacePath),

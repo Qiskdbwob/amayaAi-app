@@ -1,6 +1,7 @@
 package com.amaya.intelligence.impl.bridge.windows.tools
 
 import com.amaya.intelligence.domain.bridge.BridgeToolError
+import com.amaya.intelligence.impl.bridge.windows.bridgeMapToJson
 import com.amaya.intelligence.domain.bridge.BridgeToolErrorCode
 import com.amaya.intelligence.domain.bridge.BridgeToolResult
 import com.amaya.intelligence.domain.bridge.BridgeToolResultStatus
@@ -33,7 +34,7 @@ internal object WindowsBridgeToolResultMapper {
             put("ok", true)
             put("tool", result.tool)
             put("status", result.status.wireName)
-            put("result", mapToJson(resultMap))
+            put("result", bridgeMapToJson(resultMap))
             put("startedAt", result.startedAt)
             put("finishedAt", result.finishedAt)
             put("durationMs", result.durationMs)
@@ -59,7 +60,7 @@ internal object WindowsBridgeToolResultMapper {
             put("error", JSONObject().apply {
                 put("code", error.code.wireName)
                 put("message", error.message)
-                if (error.details.isNotEmpty()) put("details", mapToJson(error.details))
+                if (error.details.isNotEmpty()) put("details", bridgeMapToJson(error.details))
             })
         }
         return ToolResult.Error(
@@ -167,23 +168,4 @@ internal object WindowsBridgeToolResultMapper {
         BridgeToolErrorCode.UNKNOWN -> ErrorType.EXECUTION_ERROR
     }
 
-    private fun mapToJson(map: Map<String, Any?>): JSONObject {
-        val obj = JSONObject()
-        for ((key, value) in map) obj.put(key, anyToJson(value))
-        return obj
-    }
-
-    private fun anyToJson(value: Any?): Any = when (value) {
-        null -> JSONObject.NULL
-        is String, is Boolean, is Int, is Long, is Double, is Float -> value
-        is Number -> value
-        is Map<*, *> -> {
-            val obj = JSONObject()
-            for ((k, v) in value) obj.put(k.toString(), anyToJson(v))
-            obj
-        }
-        is List<*> -> JSONArray().apply { value.forEach { put(anyToJson(it)) } }
-        is Array<*> -> JSONArray().apply { value.forEach { put(anyToJson(it)) } }
-        else -> value.toString()
-    }
 }

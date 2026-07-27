@@ -4,6 +4,7 @@ import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.domain.models.*
 import com.amaya.intelligence.impl.ide.antigravity.AntigravityProtocol
 import com.amaya.intelligence.impl.ide.antigravity.client.*
+import com.amaya.intelligence.impl.ide.antigravity.event.*
 import com.amaya.intelligence.impl.ide.antigravity.tools.AntigravityToolMapper
 import com.amaya.intelligence.impl.ide.antigravity.services.streaming.StreamingStateManager
 
@@ -20,7 +21,7 @@ class ToolCallEventHandler(
             return false
         }
         stateManager.setPhase(StreamingStateManager.StreamPhase.TOOL)
-        
+
         val normalizedName = AntigravityToolMapper.mapToolName(event.name)
         val normalizedArgs = AntigravityToolMapper.mapToolArgs(event.name, event.arguments)
         val remoteMetadata = event.metadata + mapOf(
@@ -28,7 +29,7 @@ class ToolCallEventHandler(
             "animateOnMount" to "true"
         )
         val uiMeta = AntigravityToolMapper.getUiMetadata(event.name, event.arguments, remoteMetadata)
-        
+
         val status = when (event.status.uppercase()) {
             "PENDING", "WAITING", "STANDBY" -> ToolStatus.PENDING
             "RUNNING" -> ToolStatus.RUNNING
@@ -45,7 +46,7 @@ class ToolCallEventHandler(
             metadata = remoteMetadata,
             uiMetadata = uiMeta
         )
-        
+
         onUiStateUpdate { state ->
             val finalizedMsgs = finalizeRunningThinkingOnLastAssistant(state.messages)
             val updatedMsgs = updateToolInMessages(finalizedMsgs, event.toolCallId) { tool ->
@@ -92,7 +93,7 @@ class ToolCallEventHandler(
         }
         return true
     }
-    
+
     fun handleToolCallResult(event: RemoteEvent.ToolCallResult, currentConversationId: String?): Boolean {
         if (!isForActiveConversation(event.conversationId, currentConversationId)) {
             com.amaya.intelligence.impl.ide.antigravity.services.AntigravityRemoteDebugLog.handlerDrop("ToolResult", event.conversationId, currentConversationId)
@@ -100,7 +101,7 @@ class ToolCallEventHandler(
         }
         stateManager.setPhase(StreamingStateManager.StreamPhase.TOOL)
         val extractedResult = AntigravityToolMapper.extractToolResult(event.result)
-        
+
         onUiStateUpdate { state ->
             val transform: (ToolExecution) -> ToolExecution = { tool ->
                 val isPlaceholder = extractedResult.isGenericPlaceholderResult()
@@ -125,20 +126,20 @@ class ToolCallEventHandler(
         }
         return true
     }
-    
+
     private fun isForActiveConversation(eventConversationId: String?, currentConversationId: String?): Boolean {
         if (eventConversationId.isNullOrBlank()) return true
         if (currentConversationId.isNullOrBlank()) return true
         return eventConversationId == currentConversationId
     }
-    
+
     private fun finalizeRunningThinkingOnLastAssistant(messages: List<UiMessage>): List<UiMessage> {
         val idx = messages.indexOfLast { it.role == MessageRole.ASSISTANT }
         if (idx == -1) return messages
-        
+
         val msg = messages[idx]
         if (!hasSyntheticThinkingTool(msg)) return messages
-        
+
         val updatedTools = msg.toolExecutions.map { tool ->
             if ((tool.metadata[AntigravityProtocol.ToolMarkers.THINKING_TOOL_META_KEY] == "true" ||
                     tool.name.equals(AntigravityProtocol.ToolMarkers.THINKING_TOOL_NAME, ignoreCase = true)) &&
@@ -149,9 +150,9 @@ class ToolCallEventHandler(
                 tool
             }
         }
-        
+
         val updatedSteps = msg.steps.map { step ->
-            if (step is MessageStep.ToolCall && 
+            if (step is MessageStep.ToolCall &&
                 (step.execution.metadata[AntigravityProtocol.ToolMarkers.THINKING_TOOL_META_KEY] == "true" ||
                  step.execution.name.equals(AntigravityProtocol.ToolMarkers.THINKING_TOOL_NAME, ignoreCase = true)) &&
                 step.execution.status == ToolStatus.RUNNING
@@ -161,14 +162,14 @@ class ToolCallEventHandler(
         }
         return messages.toMutableList().apply { this[idx] = msg.copy(toolExecutions = updatedTools, steps = updatedSteps) }
     }
-    
+
     private fun hasSyntheticThinkingTool(message: UiMessage): Boolean {
         return message.toolExecutions.any {
             it.metadata[AntigravityProtocol.ToolMarkers.THINKING_TOOL_META_KEY] == "true" ||
                 it.name.equals(AntigravityProtocol.ToolMarkers.THINKING_TOOL_NAME, ignoreCase = true)
         }
     }
-    
+
     private fun ensureAssistantMessage(messages: List<UiMessage>, force: Boolean): List<UiMessage> {
         val lastMsg = messages.lastOrNull()
 
@@ -184,19 +185,19 @@ class ToolCallEventHandler(
 
         return messages + UiMessage(role = MessageRole.ASSISTANT, content = "")
     }
-    
+
     private fun updateLastAssistantMessage(
         messages: List<UiMessage>,
         update: (UiMessage) -> UiMessage
     ): List<UiMessage> {
         val idx = messages.indexOfLast { it.role == MessageRole.ASSISTANT }
         if (idx == -1) return messages
-        
+
         val updated = messages.toMutableList()
         updated[idx] = update(updated[idx])
         return updated
     }
-    
+
     private fun updateToolInMessages(
         messages: List<UiMessage>,
         toolCallId: String,
@@ -282,13 +283,13 @@ class ToolCallEventHandler(
             val merged = if (existing.isBlank()) sanitizedChunk else (existing + sanitizedChunk)
             val updatedTool = tools[toolIdx].copy(result = merged)
             tools[toolIdx] = updatedTool
-            
+
             val updatedSteps = msg.steps.map { step ->
                 if (step is MessageStep.ToolCall && step.execution.toolCallId == updatedTool.toolCallId) {
                     step.copy(execution = updatedTool)
                 } else step
             }
-            
+
             val updatedMsg = msg.copy(toolExecutions = tools, steps = updatedSteps)
             return messages.toMutableList().apply { this[i] = updatedMsg }
         }

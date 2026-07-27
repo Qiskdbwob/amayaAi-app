@@ -3,6 +3,7 @@ package com.amaya.intelligence.impl.ide.antigravity.services.event
 import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.domain.models.*
 import com.amaya.intelligence.impl.ide.antigravity.client.*
+import com.amaya.intelligence.impl.ide.antigravity.event.*
 import com.amaya.intelligence.impl.ide.antigravity.services.mapper.AntigravityMessageMapper
 import com.amaya.intelligence.impl.ide.antigravity.services.streaming.StreamingStateManager
 
@@ -20,7 +21,7 @@ class MessageEventHandler(
         }
         return true
     }
-    
+
     fun handleUserMessage(event: RemoteEvent.UserMessage, currentConversationId: String?): Boolean {
         if (!isForActiveConversation(event.conversationId, currentConversationId)) return false
         onUiStateUpdate { state ->
@@ -40,7 +41,7 @@ class MessageEventHandler(
                     lastMsg.steps.isEmpty()
 
                 val userMsg = UiMessage(
-                    role = MessageRole.USER, 
+                    role = MessageRole.USER,
                     content = event.content,
                     attachments = event.attachments
                 )
@@ -55,13 +56,13 @@ class MessageEventHandler(
         }
         return true
     }
-    
+
     private fun isForActiveConversation(eventConversationId: String?, currentConversationId: String?): Boolean {
         if (eventConversationId.isNullOrBlank()) return true
         if (currentConversationId.isNullOrBlank()) return true
         return eventConversationId == currentConversationId
     }
-    
+
     private fun startNewAssistantMessage(messages: List<UiMessage>): List<UiMessage> {
         val lastMsg = messages.lastOrNull()
         val hasAssistantPlaceholder = lastMsg?.role == MessageRole.ASSISTANT &&

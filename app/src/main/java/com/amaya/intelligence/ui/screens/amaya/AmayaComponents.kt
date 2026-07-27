@@ -94,8 +94,8 @@ fun AmayaScaffold(
     Scaffold(
         containerColor = Color.Transparent,
         snackbarHost = { SnackbarHost(snackbarHostState) }
-    ) { _ ->
-        Box(Modifier.fillMaxSize().background(colors.groupedBackground)) {
+    ) { paddingValues ->
+        Box(Modifier.padding(paddingValues).fillMaxSize().background(colors.groupedBackground)) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
