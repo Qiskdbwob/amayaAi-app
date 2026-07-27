@@ -48,7 +48,11 @@ impl/local/
 - `browser/AndroidBrowserController.kt`: GeckoView interaction, navigation, DOM-backed browser actions, and content-process kill/crash reporting.
 - `browser/GeckoBrowserRuntime.kt`: process-wide Gecko runtime plus built-in WebExtension JavaScript bridge. Bridge attach is bounded (single delegate registration, one reload-and-wait recovery) and a killed content process is reported as unrecoverable instead of being waited out; a stale port that no longer answers is detected by a liveness probe because Gecko delivers no disconnect for a reclaimed process.
 - `browser/BrowserSessionManager.kt`: synchronized conversation-session registry, visible-session projection, LRU trimming, wake-lock boundary, and operator view ownership.
-- `browser/BrowserConversationSession.kt`: per-conversation browser state, GeckoSession ownership, workspace file transfer, action dispatch, and resumable approval checkpoints before workspace files are selected for a web form.
+- `browser/BrowserConversationSession.kt`: per-conversation browser state, GeckoSession ownership, and resumable approval checkpoints before workspace files are selected for a web form.
+- `browser/BrowserAssistantStream.kt`: browser assistant-stream projection callbacks.
+- `browser/BrowserTaskExecutor.kt`: parent browser-task parsing, progress snapshots, and normalized subtool execution.
+- `browser/BrowserToolDispatcher.kt`: canonical browser action dispatch.
+- `browser/BrowserFileTransfer.kt`: workspace upload transfer and file-accept validation.
 - `browser/BrowserSessionPersistence.kt`: concrete SharedPreferences codec/store for browser tabs, history, active tab, and active URL; no Gecko or UI side effects.
 - `browser/BrowserRuntimeLimits.kt`: browser-owned timeout, output, viewport, and buffer limits; callers must use these constants instead of repeating policy literals. CAPTCHA/challenge pages receive no special detection or pause behavior. The active tab keeps its offscreen display and high priority between tool calls and while the host is backgrounded, because Android reclaims an inactive Gecko content process within seconds; a reclaimed tab is rebuilt and reloaded from persisted tab state on the next action. Offscreen surface slots stay capped: a busy session evicts an idle holder and otherwise runs without one.
 - `browser/DomInspector.kt`: typed DOM script builders for escaped dynamic values.
