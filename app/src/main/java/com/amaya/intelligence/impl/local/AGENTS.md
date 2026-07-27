@@ -44,7 +44,10 @@ impl/local/
 - `providers/`: local provider adapters and implementation-specific helpers.
 
 ## Key Source Code
-- `LocalIntelligenceService.kt`: local conversation flow, stable conversation-id persistence before model turns, repository integration, concurrent per-conversation turns, target-switch-safe UI projection, rendered-history/context clearing, Hermes-style model-summary injection into the next main-session prompt, cancellation, and composer progress state.
+- `LocalIntelligenceService.kt`: local conversation facade, state ownership, lifecycle API, and collaborator wiring.
+- `LocalConversationEntry.kt` and `LocalDelegatedTurn.kt`: persisted direct/delegated conversation entry paths.
+- `LocalTurnStart.kt`, `LocalTurnNotifications.kt`, and `LocalTurnProjection.kt`: turn launch, notification projection, and streamed event projection.
+- `LocalTurnPersistence.kt`, `LocalStreamProjection.kt`, and `LocalConversationCodecWriter.kt`: atomic turn persistence, stream/tool approval projection, and conversation JSON writes.
 - `browser/AndroidBrowserController.kt`: GeckoView interaction, navigation, DOM-backed browser actions, and content-process kill/crash reporting.
 - `browser/GeckoBrowserRuntime.kt`: process-wide Gecko runtime plus built-in WebExtension JavaScript bridge. Bridge attach is bounded (single delegate registration, one reload-and-wait recovery) and a killed content process is reported as unrecoverable instead of being waited out; a stale port that no longer answers is detected by a liveness probe because Gecko delivers no disconnect for a reclaimed process.
 - `browser/BrowserSessionManager.kt`: synchronized conversation-session registry, visible-session projection, LRU trimming, wake-lock boundary, and operator view ownership.

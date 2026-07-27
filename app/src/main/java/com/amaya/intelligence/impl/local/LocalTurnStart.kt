@@ -1,0 +1,212 @@
+package com.amaya.intelligence.impl.local
+
+import com.amaya.intelligence.domain.ai.IntelligenceService
+import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
+import com.amaya.intelligence.data.remote.api.AiSettingsManager
+
+import com.amaya.intelligence.data.remote.api.ChatMessage
+import com.amaya.intelligence.data.remote.api.MessageRole
+
+import com.amaya.intelligence.data.local.dao.ConversationDao
+import com.amaya.intelligence.data.local.dao.AgentDao
+import com.amaya.intelligence.data.local.dao.ProjectDao
+import com.amaya.intelligence.data.local.entity.ConversationEntity
+import com.amaya.intelligence.data.repository.AiRepository
+import com.amaya.intelligence.data.repository.AgentEvent
+import com.amaya.intelligence.data.repository.SessionMemoryRepository
+
+import com.amaya.intelligence.domain.models.*
+import com.amaya.intelligence.impl.common.mappers.ModelUiMapper
+import com.amaya.intelligence.impl.local.browser.BrowserSessionManager
+import com.amaya.intelligence.impl.local.tools.LocalToolMapper
+import com.amaya.intelligence.di.ApplicationScope
+import com.amaya.intelligence.util.LocalStreamPerfLog
+import com.amaya.intelligence.tools.ConfirmationRequest
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import com.amaya.intelligence.tools.SubagentResult
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
+import javax.inject.Inject
+import javax.inject.Singleton
+import dagger.hilt.android.qualifiers.ApplicationContext
+import android.content.Context
+
+
+internal suspend fun LocalIntelligenceService.startTurn(
+        content: String,
+        images: List<com.amaya.intelligence.data.remote.api.ChatImage>,
+        initialState: ChatUiState,
+        projectVisible: Boolean,
+        preexistingUserMessage: Boolean = false
+    ): Boolean {
+        val trimmedContent = content.trim()
+        if (trimmedContent.isBlank() && images.isEmpty()) return false
+        val selectedEpoch = targetEpoch.get()
+        val activeConversation = initialState.conversationId?.toLongOrNull()
+        val turnId = nextTurnId.incrementAndGet()
+        if (activeConversation != null) {
+            activeTurns[activeConversation]?.let { running ->
+                if (projectVisible) {
+                    running.pendingMessage = LocalIntelligenceService.PendingMessage(content, images)
+                    stoppingConversations.add(activeConversation)
+                    pendingToolConfirmations.cancel(running.turnId)
+                    running.job?.cancel()
+                    _uiState.update { it.copy(error = null) }
+                }
+                return false
+            }
+            if (startingConversations.putIfAbsent(activeConversation, turnId) != null) {
+                if (projectVisible) _uiState.update { it.copy(error = "This session is already streaming") }
+                return false
+            }
+        } else if (!startingNewTurnId.compareAndSet(0L, turnId)) {
+            if (projectVisible) _uiState.update { it.copy(error = "This session is already streaming") }
+            return false
+        }
+        val userMsg = UiMessage(
+            role = MessageRole.USER,
+            content = trimmedContent,
+            attachments = images.map { MessageAttachment(it.mediaType, it.base64, it.fileName) }
+        )
+        val turnState = initialState.copy(
+            messages = if (preexistingUserMessage) initialState.messages else initialState.messages + userMsg,
+            contextMessages = if (preexistingUserMessage) initialState.contextMessages else initialState.contextMessages + userMsg,
+            isLoading = true,
+            isStreaming = true,
+            error = null
+        )
+        if (projectVisible) _uiState.value = turnState
+        val isNewConversation = activeConversation == null
+        val conversationId = try {
+            conversationStartMutex.withLock {
+                // A submitted prompt owns its captured target even if the user navigates before Room returns.
+                persistConversationStart(turnState, activeConversation)
+            }
+        } catch (error: Exception) {
+            if (projectVisible && targetEpoch.get() == selectedEpoch) {
+                _uiState.update { it.copy(error = "Could not save this conversation: ${error.message.orEmpty()}", isLoading = false, isStreaming = false) }
+            }
+            null
+        }
+        val ownsStart = activeConversation?.let { startingConversations[it] == turnId }
+            ?: (startingNewTurnId.get() == turnId)
+        if (conversationId == null || !ownsStart) {
+            activeConversation?.let { startingConversations.remove(it, turnId) }
+                ?: startingNewTurnId.compareAndSet(turnId, 0L)
+            return false
+        }
+        val runtimeState = turnState.copy(conversationId = conversationId.toString())
+        if (projectVisible && targetEpoch.get() == selectedEpoch) {
+            currentConversationId = conversationId
+            if (runtimeState.assistantMode == AssistantMode.AGENT && runtimeState.agentId != null) {
+                browserSessionManager.selectConversation("conversation:$conversationId", runtimeState.agentId)
+                browserSessionManager.onAssistantStreamingChanged(true)
+            }
+            _uiState.value = runtimeState
+        }
+        val notificationIdentity = notificationIdentity(runtimeState)
+        val turn = LocalIntelligenceService.LocalTurn(
+            turnId,
+            conversationId,
+            trimmedContent,
+            isNewConversation,
+            runtimeState,
+            notificationIdentity.title,
+            notificationIdentity.sender,
+            notificationIdentity.threadKey
+        )
+        LocalStreamPerfLog.startTurn(
+            messageChars = trimmedContent.length,
+            historyMessages = runtimeState.contextMessages.size,
+            model = runtimeState.selectedModel
+        )
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+                var completed = false
+                var failed = false
+                try {
+                    aiRepository.chat(
+                        message = trimmedContent,
+                        userImages = images,
+                        conversationHistory = runtimeState.contextMessages.dropLast(1).flatMap { it.toChatMessages() },
+                        workspacePath = runtimeState.workspacePath,
+                        assistantMode = runtimeState.assistantMode,
+                        ownerId = runtimeState.ownerId,
+                        agentId = runtimeState.agentId,
+                        connectionId = runtimeState.activeModelKey.takeIf { it.startsWith("model|") }?.split('|', limit = 3)?.getOrNull(1),
+                        conversationId = conversationId,
+                        selectedModel = runtimeState.selectedModel,
+                        effort = runtimeState.effort,
+                        onConfirmation = { request -> awaitInlineToolConfirmation(request, turnId) }
+                    ).collect { event ->
+                        completed = completed || event is AgentEvent.Done
+                        failed = failed || event is AgentEvent.Error || event is AgentEvent.Incomplete
+                        handleTurnEvent(turn, event)
+                    }
+                    if (isNewConversation && completed) launchTitleGeneration(trimmedContent, conversationId)
+                    if (!completed && !failed) {
+                        failed = true
+                        handleTurnEvent(turn, AgentEvent.Incomplete("Provider stream ended unexpectedly", retryable = true))
+                    }
+                } catch (cancelled: CancellationException) {
+                    handleTurnEvent(turn, AgentEvent.Incomplete("Stopped", retryable = true))
+                    // Stop is an intentional terminal state, not a retryable provider failure.
+                    throw cancelled
+                } catch (error: Exception) {
+                    failed = true
+                    handleTurnEvent(turn, AgentEvent.Error(error.message.orEmpty().ifBlank { "AI session failed" }, retryable = true))
+                } finally {
+                    withContext(NonCancellable) {
+                        turn.state = turn.state.copy(isLoading = false, isStreaming = false, isAutoCompacting = false)
+                        try {
+                            persistTurn(turn)
+                        } finally {
+                            activeTurns.remove(conversationId, turn)
+                            turnsById.remove(turn.turnId, turn)
+                            removeRunningSession(conversationId)
+                            val pendingMessage = if (stoppingConversations.remove(conversationId)) turn.pendingMessage else null
+                            val isVisible = currentConversationId == conversationId
+                            if (isVisible) {
+                                browserSessionManager.onAssistantStreamingChanged(false)
+                                // Carry the trimmed model context back into the UI state: the next
+                                // turn seeds itself from here, and without this it would write the
+                                // untrimmed list straight back over what persistTurn just stored.
+                                _uiState.update {
+                                    it.copy(
+                                        contextMessages = turn.state.contextMessages,
+                                        isLoading = false,
+                                        isStreaming = false,
+                                        isAutoCompacting = false
+                                    )
+                                }
+                            }
+                            pendingMessage?.let { pending ->
+                                scope.launch {
+                                    startTurn(
+                                        content = pending.content,
+                                        images = pending.images,
+                                        initialState = turn.state,
+                                        projectVisible = isVisible
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        turn.job = job
+        activeTurns[conversationId] = turn
+        activeConversation?.let { startingConversations.remove(it, turnId) }
+            ?: startingNewTurnId.compareAndSet(turnId, 0L)
+        turnsById[turnId] = turn
+        com.amaya.intelligence.service.AiSessionNotificationService.start(appContext)
+        publishTurn(turn, "Streaming", "Waiting for response")
+        job.start()
+        return true
+    }
+
