@@ -54,6 +54,7 @@ impl/local/
 - `browser/BrowserToolDispatcher.kt`: canonical browser action dispatch.
 - `browser/BrowserFileTransfer.kt`: workspace upload transfer and file-accept validation.
 - `browser/BrowserDomActions.kt`: DOM-backed browser actions and result formatting.
+- `browser/BrowserConversationState.kt`: browser session lifecycle, uploads, downloads, tabs, and persisted state extensions.
 - `browser/BrowserSessionPersistence.kt`: concrete SharedPreferences codec/store for browser tabs, history, active tab, and active URL; no Gecko or UI side effects.
 - `browser/BrowserRuntimeLimits.kt`: browser-owned timeout, output, viewport, and buffer limits; callers must use these constants instead of repeating policy literals. CAPTCHA/challenge pages receive no special detection or pause behavior. The active tab keeps its offscreen display and high priority between tool calls and while the host is backgrounded, because Android reclaims an inactive Gecko content process within seconds; a reclaimed tab is rebuilt and reloaded from persisted tab state on the next action. Offscreen surface slots stay capped: a busy session evicts an idle holder and otherwise runs without one.
 - `browser/DomInspector.kt`: typed DOM script builders for escaped dynamic values.

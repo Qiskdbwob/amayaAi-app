@@ -40,8 +40,8 @@ import com.amaya.intelligence.tools.ToolExecutionContext
 @Singleton
 internal class BrowserConversationSession(
     internal val context: Context,
-    private val headlessSurfaceSlots: Semaphore,
-    private val requestHeadlessSlot: (BrowserConversationSession) -> Unit,
+    internal val headlessSurfaceSlots: Semaphore,
+    internal val requestHeadlessSlot: (BrowserConversationSession) -> Unit,
 ) {
     internal var sessionId = newSessionId()
     private val initialTab = BrowserPageTab()
@@ -51,7 +51,7 @@ internal class BrowserConversationSession(
         tabs = listOf(initialTab)
     ))
     val uiState: StateFlow<BrowserUiState> = _uiState.asStateFlow()
-    private class PageRuntime(
+    internal class PageRuntime(
         val tabId: String,
         val view: GeckoView,
         val session: GeckoSession,
@@ -61,7 +61,7 @@ internal class BrowserConversationSession(
         var processGone: Boolean = false
     )
     @Volatile internal var controller: AndroidBrowserController? = null
-    private val pageRuntimes = mutableMapOf<String, PageRuntime>()
+    internal val pageRuntimes = mutableMapOf<String, PageRuntime>()
     internal val assistantStreamBuffer = StringBuilder()
     internal var lastAssistantStreamUiEmitAt = 0L
     internal val browserId = "browser_local_001"
@@ -75,267 +75,27 @@ internal class BrowserConversationSession(
     internal var visibleConversationKey: String? = null
     internal var visibleAgentId: Long? = null
     internal var pendingRestoreUrl: String? = null
-    private val persistence = BrowserSessionPersistence(context.getSharedPreferences("browser_sessions", Context.MODE_PRIVATE))
+    internal val persistence = BrowserSessionPersistence(context.getSharedPreferences("browser_sessions", Context.MODE_PRIVATE))
     internal val executionMutex = Mutex()
-    @Volatile private var fileChooserCallback: ((Array<Uri>?) -> Unit)? = null
+    @Volatile internal var fileChooserCallback: ((Array<Uri>?) -> Unit)? = null
     @Volatile internal var queuedUploadDecision = false
     @Volatile internal var queuedUploadUris: Array<Uri>? = null
-    @Volatile private var pendingUploadAcceptTypes: Array<String> = emptyArray()
-    @Volatile private var pendingUploadMultiple: Boolean = false
+    @Volatile internal var pendingUploadAcceptTypes: Array<String> = emptyArray()
+    @Volatile internal var pendingUploadMultiple: Boolean = false
     internal var workspacePath: String? = null
-    private var lastDownloadUri: String? = null
-    private var lastDownloadAtMs = 0L
-    private val resumeScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
+    internal var lastDownloadUri: String? = null
+    internal var lastDownloadAtMs = 0L
+    internal val resumeScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
     @Volatile internal var visibleHost = false
-    private var headlessSurfaceHeld = false
-    private val clients = AtomicInteger()
-    fun setWorkspace(path: String?) { workspacePath = path?.takeIf(String::isNotBlank) }
-    fun retain() { clients.incrementAndGet() }
-    fun release() { clients.decrementAndGet() }
-    fun isExecuting(): Boolean = clients.get() > 0 || executionMutex.isLocked
-    fun close() {
-        detachHeadlessSurface()
-        pageRuntimes.values.forEach { runtime ->
-            runtime.controller.resetToBlank()
-            GeckoBrowserRuntime.detach(runtime.session)
-            runtime.session.close()
-        }
-        pageRuntimes.clear()
-        controller = null
-        resumeScope.cancel()
-    }
-    fun canOpenOperator(): Boolean = _uiState.value.agentId != null && conversationKey != null
-    fun markAuthHandoffCompleted() { _uiState.update { it.copy(currentAction = "External verification completed") } }
-    fun releaseInactiveRuntimes() {
-        val active = _uiState.value.activeTabId
-        pageRuntimes.keys.filter { it != active }.forEach { id ->
-            pageRuntimes.remove(id)?.let { runtime ->
-                runtime.controller.resetToBlank()
-                runtime.session.setActive(false)
-                GeckoBrowserRuntime.detach(runtime.session)
-                runtime.session.close()
-            }
-        }
-    }
-    fun selectConversation(key: String, agentId: Long? = null) {
-        visibleConversationKey = key
-        visibleAgentId = agentId
-        resetForConversation(key, agentId)
-    }
-    fun resetForConversation(key: String, agentId: Long? = null) {
-        if (conversationKey == key && _uiState.value.agentId == agentId) return
-        conversationKey = key
-        sessionId = stableSessionId(key, agentId)
-        pageRuntimes.values.forEach { runtime ->
-            runtime.controller.resetToBlank()
-            GeckoBrowserRuntime.detach(runtime.session)
-            runtime.session.close()
-        }
-        pageRuntimes.clear()
-        controller = null
-        pendingRestoreUrl = restoreState(sessionId)
-        parentTaskId = "browser_task_${UUID.randomUUID().toString().take(8)}"
-        parentStartedAt = BrowserResponseFormatter.nowIso()
-        parentSummary = "Browser task"
-        parentSubToolcalls.clear()
-        val restoredTabs = restoreTabs(sessionId)
-        val restoredHistory = restoreHistory(sessionId)
-        val tab = restoredTabs.firstOrNull() ?: BrowserPageTab()
-        _uiState.value = BrowserUiState(
-            sessionId = sessionId,
-            browserId = browserId,
-            conversationKey = conversationKey,
-            agentId = agentId,
-            activeTabId = persistence.activeTabId(sessionId)
-                ?.takeIf { id -> restoredTabs.any { it.id == id } }
-                ?: tab.id,
-            tabs = restoredTabs.ifEmpty { listOf(tab) },
-            sessionHistory = restoredHistory
-        )
-    }
-    fun resetEphemeral() {
-        conversationKey = null
-        visibleConversationKey = null
-        visibleAgentId = null
-        sessionId = newSessionId()
-        pageRuntimes.values.forEach { runtime ->
-            runtime.controller.resetToBlank()
-            GeckoBrowserRuntime.detach(runtime.session)
-            runtime.session.close()
-        }
-        pageRuntimes.clear()
-        controller = null
-        parentSubToolcalls.clear()
-        val tab = BrowserPageTab()
-        _uiState.value = BrowserUiState(
-            sessionId = sessionId,
-            browserId = browserId,
-            activeTabId = tab.id,
-            tabs = listOf(tab)
-        )
-    }
-    fun sessionId(): String = sessionId
-    fun takeLastScreenshotAttachment(): String? = _uiState.value.screenshotBase64.also {
-        if (it != null) _uiState.update { state -> state.copy(screenshotBase64 = null) }
-    }
-    suspend fun captureScreenshotToWorkspace(): BrowserToolResponse {
-        val root = workspacePath?.let(::File)?.let { File(it, ".amaya/browser/screenshots") }
-            ?: return BrowserToolResponse.Failure("Screenshot blocked: select a workspace first")
-        val result = execute("get_screenshot", emptyMap())
-        val success = result as? BrowserToolResponse.Success ?: return result
-        val image = success.metadata["image_base64"] as? String ?: return BrowserToolResponse.Failure("Screenshot image was empty")
-        return runCatching {
-            withContext(Dispatchers.IO) {
-                root.mkdirs()
-                val file = uniqueFile(root, "${System.currentTimeMillis()}.jpg")
-                file.writeBytes(android.util.Base64.decode(image, android.util.Base64.DEFAULT))
-                success.copy(output = "Screenshot saved", metadata = success.metadata + ("relative_path" to ".amaya/browser/screenshots/${file.name}"))
-            }
-        }.getOrElse { BrowserToolResponse.Failure("Screenshot failed: ${it.message ?: "unknown error"}") }
-    }
-    fun clearActiveSiteData() {
-        val parsed = Uri.parse(_uiState.value.activeUrl)
-        val origin = parsed.takeIf { it.scheme == "http" || it.scheme == "https" }?.let { "${it.scheme}://${it.authority}" } ?: return
-        GeckoBrowserRuntime.clearHostData(context, parsed.host ?: return)
-        _uiState.update { it.copy(currentAction = "Cleared site data for $origin") }
-    }
-    fun provideUploadUris(uris: Array<Uri>?) {
-        val callback = fileChooserCallback
-        if (callback == null) {
-            // Gecko can deliver the file prompt one main-loop turn after the click.
-            // Keep the user's selection instead of dropping it during that race.
-            queuedUploadDecision = true
-            queuedUploadUris = uris
-            return
-        }
-        fileChooserCallback = null
-        queuedUploadDecision = false
-        queuedUploadUris = null
-        if (uris.isNullOrEmpty()) _uiState.update { it.copy(uploadPending = false, uploadAcceptTypes = emptyList()) }
-        if (uris.isNullOrEmpty()) {
-            callback(null)
-            return
-        }
-        val selected = if (pendingUploadMultiple) uris.toList() else uris.take(1)
-        val acceptTypes = pendingUploadAcceptTypes.filter(String::isNotBlank)
-        resumeScope.launch(Dispatchers.IO) {
-            val staged = runCatching {
-                val root = workspacePath?.let(::File)?.let { File(it, ".amaya/browser/uploads") }
-                    ?: error("Upload blocked: select a workspace first")
-                root.mkdirs()
-                selected.mapNotNull { uri ->
-                    val type = context.contentResolver.getType(uri).orEmpty()
-                    if (acceptTypes.isNotEmpty() && acceptTypes.none { matchesMime(it, type) }) {
-                        error("File does not match the web input format: ${queryDisplayName(uri) ?: uri}")
-                    }
-                    val name = sanitizeFileName(queryDisplayName(uri) ?: "upload")
-                    val target = uniqueFile(root, name)
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        FileOutputStream(target).use { output ->
-                            val buffer = ByteArray(8192)
-                            while (true) {
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                output.write(buffer, 0, count)
-                            }
-                        }
-                    } ?: error("Cannot read selected file")
-                    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", target).also {
-                        context.grantUriPermission(context.packageName, it, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                }.toTypedArray()
-            }
-            withContext(Dispatchers.Main.immediate) {
-                staged.onSuccess { values ->
-                    if (values.isEmpty()) callback(null) else callback(values)
-                    _uiState.update { it.copy(uploadPending = false, uploadAcceptTypes = emptyList()) }
-                }.onFailure {
-                    callback(null)
-                    _uiState.update { it.copy(uploadPending = false, uploadAcceptTypes = emptyList()) }
-                    onBrowserError(it.message ?: "Upload failed")
-                }
-            }
-        }
-    }
-    fun cancelPendingUpload() {
-        val callback = fileChooserCallback
-        fileChooserCallback = null
-        queuedUploadDecision = false
-        queuedUploadUris = null
-        pendingUploadAcceptTypes = emptyArray()
-        pendingUploadMultiple = false
-        _uiState.update { it.copy(uploadPending = false, uploadAcceptTypes = emptyList()) }
-        callback?.invoke(null)
-    }
-    private fun matchesMime(pattern: String, actual: String): Boolean = pattern == "*/*" || pattern == actual || (pattern.endsWith("/*") && actual.startsWith(pattern.removeSuffix("*")))
-    private fun queryDisplayName(uri: Uri): String? = context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-        if (cursor.moveToFirst()) cursor.getString(0) else null
-    }
-    private fun sanitizeFileName(value: String): String = value.replace(Regex("[^A-Za-z0-9._-]"), "_").take(180).ifBlank { "upload" }
-    fun openDownload(download: BrowserDownload): Uri? = workspacePath?.let(::File)?.let { root ->
-        val file = File(root, download.relativePath.removePrefix(".amaya/browser/downloads/")).takeIf(File::isFile) ?: return@let null
-        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-    }
-    fun deleteDownload(download: BrowserDownload) {
-        workspacePath?.let(::File)?.let { root -> File(root, download.relativePath.removePrefix(".amaya/browser/downloads/")).delete() }
-        _uiState.update { it.copy(downloads = it.downloads.filterNot { item -> item.relativePath == download.relativePath }) }
-    }
-    fun clearSessionState() {
-        if (conversationKey == null) return
-        persistence.clear(sessionId)
-        resetEphemeral()
-    }
-    private fun uniqueFile(root: File, name: String): File {
-        val base = name.substringBeforeLast('.', name)
-        val extension = name.substringAfterLast('.', "").takeIf { it != name }
-        var index = 0
-        var candidate = File(root, name)
-        while (candidate.exists()) {
-            index++
-            candidate = File(root, "$base ($index)${extension?.let { ".${it}" }.orEmpty()}")
-        }
-        return candidate
-    }
-    @Synchronized
-    private fun handleGeckoDownload(response: WebResponse) {
-        val now = System.currentTimeMillis()
-        if (response.uri == lastDownloadUri && now - lastDownloadAtMs < 1_000) {
-            response.body?.close()
-            android.util.Log.i("AmayaBrowser", "download duplicate ignored uri=${response.uri}")
-            return
-        }
-        lastDownloadUri = response.uri
-        lastDownloadAtMs = now
-        val root = workspacePath?.let(::File)?.let { File(it, ".amaya/browser/downloads") } ?: run { onBrowserError("Download blocked: select a workspace first"); response.body?.close(); return }
-        android.util.Log.i("AmayaBrowser", "download callback uri=${response.uri} status=${response.statusCode} hasBody=${response.body != null}")
-        resumeScope.launch(Dispatchers.IO) {
-            runCatching {
-                root.mkdirs()
-                val url = response.uri
-                val mimeType = response.headers["content-type"] ?: "application/octet-stream"
-                val name = URLUtil.guessFileName(url, response.headers["content-disposition"], mimeType).replace(Regex("[^A-Za-z0-9._-]"), "_").take(180).ifBlank { "download" }
-                val target = uniqueFile(root, name)
-                var total = 0L
-                (response.body ?: error("Download body unavailable")).use { input -> FileOutputStream(target).use { output ->
-                    val buffer = ByteArray(8192)
-                    while (true) { val count = input.read(buffer); if (count < 0) break; total += count; output.write(buffer, 0, count) }
-                } }
-                val relative = ".amaya/browser/downloads/${target.name}"
-                android.util.Log.i("AmayaBrowser", "download saved path=$relative bytes=$total")
-                withContext(Dispatchers.Main.immediate) { _uiState.update { it.copy(downloads = (it.downloads + BrowserDownload(target.name, relative, mimeType, target.length())).takeLast(50)) } }
-            }.onFailure { error ->
-                android.util.Log.e("AmayaBrowser", "download failed", error)
-                withContext(Dispatchers.Main.immediate) { onBrowserError("Download failed: ${error.message ?: "unknown error"}") }
-            }
-        }
-    }
+    internal var headlessSurfaceHeld = false
+    internal val clients = AtomicInteger()
     suspend fun switchToTab(pageId: String): BrowserToolResponse = execute("switch_tab", mapOf("page_id" to pageId))
-    private fun newSessionId(): String = "sess_android_${UUID.randomUUID().toString().take(8)}"
-    private fun stableSessionId(key: String, agentId: Long?): String = "sess_android_${UUID.nameUUIDFromBytes("$key|agent:$agentId".toByteArray()).toString().take(8)}"
-    private fun restoreState(id: String): String? = persistence.activeUrl(id)
-    private fun restoreTabs(id: String): List<BrowserPageTab> = persistence.tabs(id)
-    private fun restoreHistory(id: String): List<BrowserHistoryEntry> = persistence.history(id)
-    private fun persistState(state: BrowserUiState) = persistence.save(state)
+    internal fun newSessionId(): String = "sess_android_${UUID.randomUUID().toString().take(8)}"
+    internal fun stableSessionId(key: String, agentId: Long?): String = "sess_android_${UUID.nameUUIDFromBytes("$key|agent:$agentId".toByteArray()).toString().take(8)}"
+    internal fun restoreState(id: String): String? = persistence.activeUrl(id)
+    internal fun restoreTabs(id: String): List<BrowserPageTab> = persistence.tabs(id)
+    internal fun restoreHistory(id: String): List<BrowserHistoryEntry> = persistence.history(id)
+    internal fun persistState(state: BrowserUiState) = persistence.save(state)
     fun acquireSharedBrowserView(): GeckoView {
         if (headlessSurfaceHeld) detachHeadlessSurface()
         visibleHost = true
