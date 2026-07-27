@@ -60,7 +60,7 @@ class AndroidBrowserController(
     fun setVisibleFileChooserHost(visible: Boolean) { visibleFileChooserHost = visible }
 
     internal fun handleContentProcessGone(session: GeckoSession, reason: String) {
-        Log.w("AmayaBrowser", "content process $reason session=$session url=$currentUrlValue")
+        Log.w("AmayaBrowser", "content process $reason session=${session.hashCode()} urlHost=${Uri.parse(currentUrlValue).host.orEmpty()}")
         pageFinished = true
         pageLoadSucceeded = false
         GeckoBrowserRuntime.markProcessGone(session)
@@ -484,7 +484,7 @@ class AndroidBrowserController(
 
     internal suspend fun viewportSnapshot(): String = evaluateString("JSON.stringify({innerWidth:innerWidth,innerHeight:innerHeight,outerWidth:outerWidth,outerHeight:outerHeight,devicePixelRatio:devicePixelRatio,scrollX:scrollX,scrollY:scrollY,visualViewport:visualViewport?{width:visualViewport.width,height:visualViewport.height,scale:visualViewport.scale,offsetTop:visualViewport.offsetTop,offsetLeft:visualViewport.offsetLeft}:null,documentWidth:document.documentElement?document.documentElement.clientWidth:0,documentHeight:document.documentElement?document.documentElement.clientHeight:0,bodyHeight:document.body?document.body.scrollHeight:0})")
 
-    internal fun logViewport(stage: String) { Log.d("AmayaBrowser", "$stage url=$currentUrlValue view=${geckoView.width}x${geckoView.height}") }
+    internal fun logViewport(stage: String) { Log.d("AmayaBrowser", "$stage urlHost=${Uri.parse(currentUrlValue).host.orEmpty()} view=${geckoView.width}x${geckoView.height}") }
 
     internal suspend fun waitForScrollSettled(timeoutMs: Long) {
         val started = SystemClock.uptimeMillis()

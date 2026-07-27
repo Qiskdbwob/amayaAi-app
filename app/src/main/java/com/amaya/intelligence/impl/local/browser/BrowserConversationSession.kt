@@ -432,7 +432,7 @@ internal class BrowserConversationSession(
         val tabId = _uiState.value.activeTabId
         val restoreUrl = _uiState.value.tabs.firstOrNull { it.id == tabId }?.url
             ?.takeIf { it.isNotBlank() && it != "about:blank" }
-        android.util.Log.w("AmayaBrowser", "rebuilding reclaimed browser session tab=$tabId url=$restoreUrl")
+        android.util.Log.w("AmayaBrowser", "rebuilding reclaimed browser session tab=$tabId urlHost=${Uri.parse(restoreUrl).host.orEmpty()}")
         val rebuilt = withContext(Dispatchers.Main.immediate) {
             tabId?.let(::discardRuntimeOnMain)
             ensureSharedControllerOnMain().also { attachHeadlessSurfaceOnMain() }.second

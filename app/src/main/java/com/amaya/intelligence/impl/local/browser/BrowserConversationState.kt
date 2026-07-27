@@ -269,7 +269,7 @@ internal fun BrowserConversationSession.uniqueFile(root: File, name: String): Fi
                     while (true) { val count = input.read(buffer); if (count < 0) break; total += count; output.write(buffer, 0, count) }
                 } }
                 val relative = ".amaya/browser/downloads/${target.name}"
-                android.util.Log.i("AmayaBrowser", "download saved path=$relative bytes=$total")
+                android.util.Log.i("AmayaBrowser", "download saved file=${target.name} bytes=$total")
                 withContext(Dispatchers.Main.immediate) { _uiState.update { it.copy(downloads = (it.downloads + BrowserDownload(target.name, relative, mimeType, target.length())).takeLast(50)) } }
             }.onFailure { error ->
                 android.util.Log.e("AmayaBrowser", "download failed", error)
