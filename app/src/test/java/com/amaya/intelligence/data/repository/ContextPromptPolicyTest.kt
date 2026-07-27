@@ -69,7 +69,6 @@ class ContextPromptPolicyTest {
             MemorySnapshotProvider(memory),
             SkillIndexProvider(skills),
             SessionSummaryProvider(sessions),
-            ConversationCompressor(PromptBudgetManager()),
             PromptBudgetManager(),
             ContextRanker()
         )

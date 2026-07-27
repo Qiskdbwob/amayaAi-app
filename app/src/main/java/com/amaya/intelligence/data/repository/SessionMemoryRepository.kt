@@ -92,6 +92,9 @@ class FileSessionMemoryRepository @Inject constructor(
     private val memoryClassifier: com.amaya.intelligence.domain.memory.MemoryClassifier
 ) : SessionMemoryRepository {
     private val fileMutex = Mutex()
+
+    /** Appends are frequent; the size check is not worth running on every one. */
+    private var recordsSinceCheck = 0
     override suspend fun saveMessage(message: SessionMessage) = withContext(Dispatchers.IO) {
         fileMutex.withLock {
             val content = sanitizeStoredText(message.content)
@@ -156,7 +159,11 @@ class FileSessionMemoryRepository @Inject constructor(
             if (terms.isEmpty()) return@withLock emptyList()
             val summaries = readSummaries()
             val records = readRecords().groupBy { it.optString("sessionId") }
-            val allSessionIds = (records.keys + summaries.keys).filter { it.isNotBlank() }.toSet()
+            // Machine-written compaction ledgers live under their own key and are working state for
+            // the active turn, not recallable session history.
+            val allSessionIds = (records.keys + summaries.keys)
+                .filter { it.isNotBlank() && !it.endsWith(AUTO_COMPACTION_SUMMARY_SUFFIX) }
+                .toSet()
             val canonicalWorkspace = workspacePath?.let(::canonicalWorkspacePath)
             val targetWorkspaceId = canonicalWorkspace?.let { workspaceStore.resolve(it, create = false)?.id ?: return@withLock emptyList() }
             allSessionIds.mapNotNull { sessionId ->
@@ -197,7 +204,10 @@ class FileSessionMemoryRepository @Inject constructor(
             val records = readRecords().filterNot { it.optString("sessionId") == sessionId }
             store.sessionsFile.parentFile?.mkdirs()
             store.sessionsFile.writeText(records.joinToString("\n", postfix = if (records.isEmpty()) "" else "\n") { it.toString() })
-            writeSummaries(readSummaries().filterKeys { it != sessionId }.values.toList())
+            // Drop the machine-written compaction ledger alongside the session it describes,
+            // otherwise it outlives the conversation forever under its own key.
+            val obsolete = setOf(sessionId, "$sessionId$AUTO_COMPACTION_SUMMARY_SUFFIX")
+            writeSummaries(readSummaries().filterKeys { it !in obsolete }.values.toList())
         }
     }
 
@@ -330,7 +340,7 @@ class FileSessionMemoryRepository @Inject constructor(
         return SessionSearchResult(
             sessionId = sessionId,
             timestamp = latest,
-            summary = summary?.summary ?: buildDeterministicSummary(sessionId).summary,
+            summary = summary?.summary ?: buildDeterministicSummary(sessionId, records).summary,
             matchedText = matches.distinct().joinToString("\n").take(900),
             score = score,
             tags = tags.toList()
@@ -345,6 +355,32 @@ class FileSessionMemoryRepository @Inject constructor(
     private fun appendRecord(json: JSONObject) {
         store.rootDir.mkdirs()
         store.sessionsFile.appendText(json.toString() + "\n")
+        pruneRecordsIfOversized()
+    }
+
+    /**
+     * Keep the session log bounded.
+     *
+     * It is append-only — one line per user message, assistant message and tool call — and every
+     * session search reads and JSON-parses the whole file. Left alone it grows without limit and
+     * makes recall slower the longer the app is used. Oldest records are dropped first; summaries
+     * are untouched, so a pruned session is still recallable through its summary.
+     */
+    private fun pruneRecordsIfOversized() {
+        recordsSinceCheck += 1
+        if (recordsSinceCheck < PRUNE_CHECK_INTERVAL) return
+        recordsSinceCheck = 0
+        // Either ceiling alone is enough to prune: a log of many small records trips the count, a
+        // log of a few huge tool payloads trips the byte size. Requiring both made whichever limit
+        // the workload did not hit into dead code.
+        val oversizedOnDisk = store.sessionsFile.length() >= MAX_SESSION_FILE_BYTES
+        val records = readRecords()
+        if (!oversizedOnDisk && records.size <= MAX_SESSION_RECORDS) return
+        if (records.size <= MIN_RETAINED_RECORDS) return
+        val retained = records
+            .sortedBy { it.optLong("timestamp") }
+            .takeLast(if (oversizedOnDisk) MIN_RETAINED_RECORDS else MAX_SESSION_RECORDS)
+        store.sessionsFile.writeText(retained.joinToString("\n", postfix = "\n") { it.toString() })
     }
 
     private fun sessionGroupsByRecency(): List<Map.Entry<String, List<JSONObject>>> = readRecords()
@@ -364,8 +400,14 @@ class FileSessionMemoryRepository @Inject constructor(
         else -> json.toString()
     }
 
-    private fun buildDeterministicSummary(sessionId: String): SessionSummary {
-        val records = readRecords().filter { it.optString("sessionId") == sessionId }
+    private fun buildDeterministicSummary(sessionId: String): SessionSummary =
+        buildDeterministicSummary(sessionId, readRecords().filter { it.optString("sessionId") == sessionId })
+
+    /**
+     * Callers that already hold this session's records must pass them in. Re-reading the whole
+     * `sessions.jsonl` per scored session turned one search into an O(sessions) file scan.
+     */
+    private fun buildDeterministicSummary(sessionId: String, records: List<JSONObject>): SessionSummary {
         if (records.isEmpty()) return SessionSummary(sessionId, "No session records found.", emptyList(), 0L, 0L)
         val user = records.filter { it.optString("kind") == "message" && it.optString("role") == "user" }.takeLast(3).joinToString("; ") { it.optString("content").take(140) }
         val tools = records.filter { it.optString("kind") == "tool_call" }.map { it.optString("toolName") }.distinct()
@@ -465,6 +507,10 @@ class FileSessionMemoryRepository @Inject constructor(
 
         private const val MAX_CONTENT_CHARS = 8_000
         private const val MIN_RECALL_SCORE = 2.5
+        private const val MAX_SESSION_RECORDS = 20_000
+        private const val MIN_RETAINED_RECORDS = 5_000
+        private const val MAX_SESSION_FILE_BYTES = 16L * 1024L * 1024L
+        private const val PRUNE_CHECK_INTERVAL = 200
         private const val RECALL_HALF_LIFE_DAYS = 90.0
         private const val DAY_MS = 24L * 60L * 60L * 1000L
     }

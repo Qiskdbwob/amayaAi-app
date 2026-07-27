@@ -48,6 +48,7 @@ class LocalIntelligenceService @Inject constructor(
     private val agentDao: AgentDao,
     private val projectDao: ProjectDao,
     private val sessionMemoryRepository: SessionMemoryRepository,
+    private val ledgerStore: com.amaya.intelligence.data.repository.ActiveContextLedgerStore,
     private val settingsManager: AiSettingsManager,
     private val browserSessionManager: BrowserSessionManager,
     @ApplicationContext private val appContext: Context,
@@ -118,8 +119,22 @@ class LocalIntelligenceService @Inject constructor(
         var delegateTotal: Int = 0,
         var delegateCompleted: Int = 0,
         var activeDelegateName: String? = null,
-        var pendingMessage: PendingMessage? = null
+        var pendingMessage: PendingMessage? = null,
+        /**
+         * Streamed assistant text not yet folded into canonicalHistory. Buffered so the hot path
+         * costs an append instead of re-parsing and re-serializing the whole accumulated response
+         * on every delta, on the main thread.
+         */
+        val pendingCanonicalText: StringBuilder = StringBuilder()
     )
+
+    /** Take the buffered assistant text, if any, so it can be committed before the next entry. */
+    private fun LocalTurn.drainCanonicalText(): String? {
+        if (pendingCanonicalText.isEmpty()) return null
+        val text = pendingCanonicalText.toString()
+        pendingCanonicalText.setLength(0)
+        return text
+    }
 
     init {
         scope.launch { recoverInterruptedTurns() }
@@ -345,6 +360,11 @@ class LocalIntelligenceService @Inject constructor(
             notificationIdentity.sender,
             notificationIdentity.threadKey
         )
+        LocalStreamPerfLog.startTurn(
+            messageChars = trimmedContent.length,
+            historyMessages = runtimeState.contextMessages.size,
+            model = runtimeState.selectedModel
+        )
         val job = scope.launch(start = CoroutineStart.LAZY) {
                 var completed = false
                 var failed = false
@@ -381,7 +401,7 @@ class LocalIntelligenceService @Inject constructor(
                     handleTurnEvent(turn, AgentEvent.Error(error.message.orEmpty().ifBlank { "AI session failed" }, retryable = true))
                 } finally {
                     withContext(NonCancellable) {
-                        turn.state = turn.state.copy(isLoading = false, isStreaming = false)
+                        turn.state = turn.state.copy(isLoading = false, isStreaming = false, isAutoCompacting = false)
                         try {
                             persistTurn(turn)
                         } finally {
@@ -392,7 +412,17 @@ class LocalIntelligenceService @Inject constructor(
                             val isVisible = currentConversationId == conversationId
                             if (isVisible) {
                                 browserSessionManager.onAssistantStreamingChanged(false)
-                                _uiState.update { it.copy(isLoading = false, isStreaming = false) }
+                                // Carry the trimmed model context back into the UI state: the next
+                                // turn seeds itself from here, and without this it would write the
+                                // untrimmed list straight back over what persistTurn just stored.
+                                _uiState.update {
+                                    it.copy(
+                                        contextMessages = turn.state.contextMessages,
+                                        isLoading = false,
+                                        isStreaming = false,
+                                        isAutoCompacting = false
+                                    )
+                                }
                             }
                             pendingMessage?.let { pending ->
                                 scope.launch {
@@ -471,35 +501,14 @@ class LocalIntelligenceService @Inject constructor(
         conversationDao.getAllConversations().first().forEach { summary ->
             val entity = conversationDao.getConversationById(summary.id) ?: return@forEach
             val messages = parseMessagesFromJson(entity.messagesJson).getOrNull() ?: return@forEach
-            val index = messages.indexOfLast { message ->
-                message.role == MessageRole.ASSISTANT &&
-                    message.metadata["turnStatus"].isNullOrBlank() &&
-                    (message.isThinking || message.toolExecutions.any { it.status == ToolStatus.RUNNING || it.status == ToolStatus.PENDING })
-            }
-            if (index < 0) return@forEach
-            val interrupted = messages[index].let { message ->
-                fun stop(tool: ToolExecution) = if (tool.status == ToolStatus.RUNNING || tool.status == ToolStatus.PENDING) {
-                    tool.copy(
-                        status = ToolStatus.ERROR,
-                        result = tool.result ?: "Interrupted when the app process stopped",
-                        metadata = tool.metadata + mapOf("approvalRequired" to "false", "approvalState" to "cancelled")
-                    )
-                } else tool
-                message.copy(
-                    isThinking = false,
-                    toolExecutions = message.toolExecutions.map(::stop),
-                    steps = message.steps.map { if (it is MessageStep.ToolCall) it.copy(execution = stop(it.execution)) else it },
-                    metadata = message.metadata + mapOf(
-                        "turnStatus" to "interrupted",
-                        "completedAt" to System.currentTimeMillis().toString(),
-                        "retryable" to "true"
-                    )
-                )
-            }
-            val recovered = messages.toMutableList().also { it[index] = interrupted }
+            val recovered = markInterruptedTurn(messages) ?: return@forEach
+            // The two columns are recovered independently. Rebuilding the model context from the
+            // visible transcript used to silently undo manual compaction and a cleared history.
+            val storedContext = parseMessagesFromJson(entity.contextMessagesJson).getOrNull()
+            val recoveredContext = storedContext?.let { markInterruptedTurn(it) ?: it } ?: recovered
             conversationDao.updateConversation(entity.copy(
                 messagesJson = serializeMessagesToJson(recovered),
-                contextMessagesJson = serializeMessagesToJson(recovered),
+                contextMessagesJson = serializeMessagesToJson(recoveredContext),
                 updatedAt = System.currentTimeMillis()
             ))
         }
@@ -507,6 +516,7 @@ class LocalIntelligenceService @Inject constructor(
 
     private fun sessionPhase(status: String, delegating: Boolean): SessionPhase = when {
         status == "Approval required" -> SessionPhase.WAITING_APPROVAL
+        status == "Compacting" -> SessionPhase.COMPACTING
         status == "Completed" -> SessionPhase.COMPLETED
         status in setOf("Failed", "Incomplete") -> SessionPhase.FAILED
         status == "Stopped" -> SessionPhase.STOPPED
@@ -575,10 +585,10 @@ class LocalIntelligenceService @Inject constructor(
         turn.state = turn.state.copy(messages = visible, contextMessages = context)
     }
 
-    private fun markActiveTurnToolsStopped(turn: LocalTurn) {
+    private fun markActiveTurnToolsStopped(turn: LocalTurn, reason: String = "Stopped by user") {
         updateTurnMessage(turn) { message ->
             fun stop(tool: ToolExecution) = if (tool.status == ToolStatus.RUNNING || tool.status == ToolStatus.PENDING) {
-                tool.copy(status = ToolStatus.ERROR, result = tool.result ?: "Stopped by user")
+                tool.copy(status = ToolStatus.ERROR, result = tool.result ?: reason)
             } else tool
             message.copy(
                 toolExecutions = message.toolExecutions.map(::stop),
@@ -589,9 +599,18 @@ class LocalIntelligenceService @Inject constructor(
 
     private fun finalizeTurnThinking(turn: LocalTurn, status: String) {
         val now = System.currentTimeMillis()
+        // Commit any assistant prose still buffered, so the persisted model context ends with the
+        // text the user actually saw.
+        val pendingText = turn.drainCanonicalText()
+        LocalStreamPerfLog.endTurn(
+            reason = status,
+            totalMessages = turn.state.messages.size,
+            assistantChars = turn.state.messages.lastOrNull()?.content?.length ?: 0
+        )
         updateTurnMessage(turn) { message ->
             val steps = message.steps.finishThinking(now)
             message.copy(
+                canonicalHistory = message.canonicalHistory.appendCanonicalText(pendingText),
                 isThinking = false,
                 thinkingDurationMs = message.thinkingDurationMs
                     ?: (steps.lastOrNull { it is MessageStep.Thinking } as? MessageStep.Thinking)?.durationMs,
@@ -604,9 +623,11 @@ class LocalIntelligenceService @Inject constructor(
     private fun handleTurnEvent(turn: LocalTurn, event: AgentEvent) {
         when (event) {
             is AgentEvent.TextDelta -> {
+                LocalStreamPerfLog.onFirstToken()
                 if (currentConversationId == turn.conversationId && turn.state.assistantMode == AssistantMode.AGENT) {
                     browserSessionManager.onAssistantTextDelta(event.text)
                 }
+                turn.pendingCanonicalText.append(event.text)
                 updateTurnMessage(turn) { message ->
                     val steps = message.steps.finishThinking().appendText(event.text)
                     message.copy(
@@ -625,11 +646,22 @@ class LocalIntelligenceService @Inject constructor(
                 val displayName = LocalToolMapper.mapDisplayToolName(event.name, event.arguments)
                 if (displayName == "delegate_agent") turn.delegationActive = true
                 val execution = ToolExecution(event.toolCallId, displayName, LocalToolMapper.mapToolArgs(event.name, event.arguments), status = ToolStatus.RUNNING, metadata = event.metadata + ("source" to "local"), uiMetadata = LocalToolMapper.getUiMetadata(event.name, event.arguments))
+                // Record the provider's own tool name and arguments, not the display-mapped ones:
+                // this list is replayed as model context on later turns.
+                val canonicalCall = JSONObject()
+                    .put("kind", "assistant_tool_call")
+                    .put("id", event.toolCallId)
+                    .put("name", event.name)
+                    .put("arguments", JSONObject(event.arguments))
+                    .put("metadata", JSONObject(event.metadata))
+                    .toString()
+                val pendingText = turn.drainCanonicalText()
                 updateTurnMessage(turn) { message ->
                     val steps = message.steps.finishThinking()
                     message.finishThinking().copy(
                         toolExecutions = message.toolExecutions + execution,
-                        steps = steps + MessageStep.ToolCall(execution = execution)
+                        steps = steps + MessageStep.ToolCall(execution = execution),
+                        canonicalHistory = message.canonicalHistory.appendCanonicalText(pendingText) + canonicalCall
                     )
                 }
                 publishTurn(turn, "Tools: ${LocalToolMapper.displayLabel(event.name, event.arguments)}", toolEventDetail(event.name, event.arguments), urgent = true)
@@ -637,29 +669,56 @@ class LocalIntelligenceService @Inject constructor(
             is AgentEvent.ToolCallResult -> {
                 if (LocalToolMapper.mapToolName(event.toolName) == "delegate_agent") turn.delegationActive = false
                 fun complete(tool: ToolExecution) = if (tool.toolCallId == event.toolCallId) tool.copy(result = event.result, status = if (event.isError) ToolStatus.ERROR else ToolStatus.SUCCESS) else tool
+                val canonicalResult = JSONObject()
+                    .put("kind", "tool_result")
+                    .put("id", event.toolCallId)
+                    .put("name", event.toolName)
+                    .put("result", event.result)
+                    .put("isError", event.isError)
+                    .toString()
+                val pendingText = turn.drainCanonicalText()
                 updateTurnMessage(turn) { message -> message.finishThinking().copy(
                     toolExecutions = message.toolExecutions.map(::complete),
-                    steps = message.steps.finishThinking().map { if (it is MessageStep.ToolCall) it.copy(execution = complete(it.execution)) else it }
+                    steps = message.steps.finishThinking().map { if (it is MessageStep.ToolCall) it.copy(execution = complete(it.execution)) else it },
+                    canonicalHistory = message.canonicalHistory.appendCanonicalText(pendingText) + canonicalResult
                 ) }
                 publishTurn(turn, if (event.isError) "Tool failed" else "Tool completed", event.result.takeLast(120), urgent = true)
             }
-            is AgentEvent.ResponseItem -> updateTurnMessage(turn) { if (event.json in it.responseItems) it else it.copy(responseItems = it.responseItems + event.json) }
+            is AgentEvent.ResponseItem -> {
+                val pendingText = turn.drainCanonicalText()
+                updateTurnMessage(turn) {
+                    // The buffered prose is committed even when the response item is a duplicate —
+                    // draining it and then returning the message unchanged would lose that run.
+                    if (event.json in it.responseItems) {
+                        it.copy(canonicalHistory = it.canonicalHistory.appendCanonicalText(pendingText))
+                    } else it.copy(
+                        responseItems = it.responseItems + event.json,
+                        canonicalHistory = it.canonicalHistory.appendCanonicalText(pendingText) + JSONObject()
+                            .put("kind", "response_item")
+                            .put("item", JSONObject(event.json))
+                            .toString()
+                    )
+                }
+            }
             is AgentEvent.Usage -> turn.state = turn.state.copy(totalInputTokens = turn.state.totalInputTokens + event.inputTokens, totalOutputTokens = turn.state.totalOutputTokens + event.outputTokens)
             is AgentEvent.Incomplete -> {
                 val stopped = event.reason == "Stopped"
-                if (stopped) markActiveTurnToolsStopped(turn)
+                // Repaired on every terminal path, not just an explicit stop: a tool left RUNNING
+                // replays as a tool_call with no result and makes the next request invalid.
+                markActiveTurnToolsStopped(turn, if (stopped) "Stopped by user" else "Interrupted: ${event.reason}")
                 finalizeTurnThinking(turn, if (stopped) "cancelled" else "incomplete")
-                turn.state = turn.state.copy(error = if (stopped) null else event.reason, isLoading = false, isStreaming = false)
+                turn.state = turn.state.copy(error = if (stopped) null else event.reason, isLoading = false, isStreaming = false, isAutoCompacting = false)
                 publishTurn(turn, if (stopped) "Stopped" else "Incomplete", event.reason, urgent = true)
             }
             is AgentEvent.Error -> {
+                markActiveTurnToolsStopped(turn, "Interrupted: ${event.message}")
                 finalizeTurnThinking(turn, "failed")
-                turn.state = turn.state.copy(error = event.message, isLoading = false, isStreaming = false)
+                turn.state = turn.state.copy(error = event.message, isLoading = false, isStreaming = false, isAutoCompacting = false)
                 publishTurn(turn, "Failed", event.message, urgent = true)
             }
             is AgentEvent.Done -> {
                 finalizeTurnThinking(turn, "completed")
-                turn.state = turn.state.copy(isLoading = false, isStreaming = false)
+                turn.state = turn.state.copy(isLoading = false, isStreaming = false, isAutoCompacting = false)
                 publishTurn(turn, "Completed", turn.state.messages.lastOrNull()?.content.orEmpty().takeLast(120), urgent = true)
             }
             is AgentEvent.SubagentUpdate -> {
@@ -675,6 +734,38 @@ class LocalIntelligenceService @Inject constructor(
                 publishTurn(turn, "Delegating", "${turn.delegateCompleted}/${turn.delegateTotal} · ${event.taskName}", urgent = true)
             }
             is AgentEvent.NewIteration -> publishTurn(turn, "Continuing", "Processing tool results")
+            is AgentEvent.Compacting -> {
+                LocalStreamPerfLog.onCompactionStart(event.evictedMessages, event.evictedTokens)
+                turn.state = turn.state.copy(isAutoCompacting = true)
+                publishTurn(turn, "Compacting", "Compressing ${event.evictedMessages} older messages", urgent = true)
+            }
+            is AgentEvent.Compacted -> {
+                LocalStreamPerfLog.onCompactionEnd(event.usedFallback, event.reclaimedTokens)
+                // Fold the ledger into the model context so the next turn inherits it instead of
+                // re-deriving it. Only the previous automatic record is replaced — a summary the
+                // user asked for with /compact survives. The visible transcript is left untouched.
+                // Match on the content prefix as well as the tag, so conversations stored before the
+                // two sources were told apart cannot accumulate one ledger per turn.
+                // The legacy content match is restricted to actual compaction records. Matching on
+                // content alone would delete any real message whose text happens to start with the
+                // marker — including a user request quoting one.
+                val retained = turn.state.contextMessages.filterNot {
+                    it.metadata["compactionSource"] == "auto" ||
+                        (it.role == MessageRole.SYSTEM &&
+                            it.metadata["compressed"] == "true" &&
+                            it.content.startsWith(AUTO_COMPACTED_CONTEXT_PREFIX))
+                }
+                turn.state = turn.state.copy(
+                    isAutoCompacting = false,
+                    contextMessages = compressedSessionContext(event.ledger, auto = true) + retained
+                )
+                publishTurn(
+                    turn,
+                    "Streaming",
+                    if (event.usedFallback) "Context compacted locally" else "Context compacted",
+                    urgent = true
+                )
+            }
         }
     }
 
@@ -711,185 +802,17 @@ class LocalIntelligenceService @Inject constructor(
 
     private suspend fun persistTurn(turn: LocalTurn) = conversationSaveMutex.withLock {
         val existing = conversationDao.getConversationById(turn.conversationId) ?: return@withLock
+        // The transcript keeps everything; the model-context column sheds tool payload it will never
+        // replay, so a long tool-heavy conversation stops growing without bound on disk.
+        val storedContext = digestOldToolPayloads(turn.state.contextMessages)
+        turn.state = turn.state.copy(contextMessages = storedContext)
         conversationDao.updateConversation(existing.copy(
             messagesJson = serializeMessagesToJson(turn.state.messages),
-            contextMessagesJson = serializeMessagesToJson(turn.state.contextMessages),
+            contextMessagesJson = serializeMessagesToJson(storedContext),
             updatedAt = System.currentTimeMillis()
         ))
     }
 
-    private fun handleAgentEvent(event: AgentEvent) {
-        when (event) {
-            is AgentEvent.TextDelta -> {
-                currentConversationId?.let { updateRunningSession(it, "Streaming", event.text.takeLast(120)) }
-                flushAssistantThinkingBuffer()
-                finalizeThinkingIfActive()
-                browserSessionManager.onAssistantTextDelta(event.text)
-                bufferAssistantTextDelta(event.text)
-            }
-            is AgentEvent.ThinkingDelta -> {
-                currentConversationId?.let { updateRunningSession(it, "Thinking", event.text.takeLast(120)) }
-                bufferAssistantThinkingDelta(event.text)
-            }
-            is AgentEvent.ToolCallStart -> {
-                currentConversationId?.let { updateRunningSession(it, "Using ${LocalToolMapper.mapDisplayToolName(event.name, event.arguments)}", toolEventDetail(event.name, event.arguments)) }
-                flushAssistantThinkingBuffer()
-                finalizeThinkingIfActive()
-                flushAssistantTextBuffer()
-                val normalizedName = LocalToolMapper.mapDisplayToolName(event.name, event.arguments)
-                val normalizedArgs = LocalToolMapper.mapToolArgs(event.name, event.arguments)
-                val pendingApproval = pendingConfirmationUi[event.toolCallId]
-                val approvalId = pendingApprovalIds[event.toolCallId]
-                val canonicalCall = JSONObject()
-                    .put("kind", "assistant_tool_call")
-                    .put("id", event.toolCallId)
-                    .put("name", event.name)
-                    .put("arguments", JSONObject(event.arguments))
-                    .put("metadata", JSONObject(event.metadata))
-                    .toString()
-                val toolExec = ToolExecution(
-                    toolCallId = event.toolCallId,
-                    name = normalizedName,
-                    arguments = normalizedArgs,
-                    status = if (pendingApproval == null) ToolStatus.RUNNING else ToolStatus.PENDING,
-                    metadata = buildMap {
-                        put("source", "local")
-                        put("animateOnMount", "true")
-                        putAll(event.metadata)
-                        pendingApproval?.let { putAll(approvalMetadata(it, approvalId.orEmpty())) }
-                    },
-                    uiMetadata = LocalToolMapper.getUiMetadata(event.name, event.arguments)
-                )
-                ensureAssistantMessage()
-                updateCurrentAssistantMessage { msg ->
-                    val steps = msg.steps.finishThinking()
-                    msg.finishThinking().copy(
-                        toolExecutions = msg.toolExecutions + toolExec,
-                        steps = steps + MessageStep.ToolCall(execution = toolExec),
-                        canonicalHistory = msg.canonicalHistory + canonicalCall
-                    )
-                }
-            }
-            is AgentEvent.ToolCallResult -> {
-                flushAssistantThinkingBuffer()
-                finalizeThinkingIfActive()
-                flushAssistantTextBuffer()
-                val canonicalResult = JSONObject()
-                    .put("kind", "tool_result")
-                    .put("id", event.toolCallId)
-                    .put("name", event.toolName)
-                    .put("result", event.result)
-                    .put("isError", event.isError)
-                    .toString()
-                updateCurrentAssistantMessage { msg ->
-                    val updatedTools = msg.toolExecutions.map {
-                        if (it.toolCallId == event.toolCallId) {
-                            it.copy(
-                                result = event.result,
-                                status = if (event.isError) ToolStatus.ERROR else ToolStatus.SUCCESS
-                            )
-                        } else it
-                    }
-                    val updatedSteps = msg.steps.finishThinking().map { step ->
-                        if (step is MessageStep.ToolCall && step.execution.toolCallId == event.toolCallId) {
-                            step.copy(
-                                execution = step.execution.copy(
-                                    result = event.result,
-                                    status = if (event.isError) ToolStatus.ERROR else ToolStatus.SUCCESS
-                                )
-                            )
-                        } else step
-                    }
-                    msg.copy(
-                        toolExecutions = updatedTools,
-                        steps = updatedSteps,
-                        canonicalHistory = msg.canonicalHistory + canonicalResult
-                    )
-                }
-            }
-            is AgentEvent.ResponseItem -> {
-                flushAssistantThinkingBuffer()
-                finalizeThinkingIfActive()
-                ensureAssistantMessage()
-                updateCurrentAssistantMessage { message ->
-                    if (event.json in message.responseItems) message
-                    else message.copy(
-                        responseItems = message.responseItems + event.json,
-                        canonicalHistory = message.canonicalHistory + JSONObject()
-                            .put("kind", "response_item")
-                            .put("item", JSONObject(event.json))
-                            .toString()
-                    )
-                }
-            }
-            is AgentEvent.Usage -> {
-                _uiState.update {
-                    it.copy(
-                        totalInputTokens = it.totalInputTokens + event.inputTokens,
-                        totalOutputTokens = it.totalOutputTokens + event.outputTokens
-                    )
-                }
-            }
-            is AgentEvent.Incomplete -> {
-                chatJob = null
-                flushAssistantThinkingBuffer()
-                flushAssistantTextBuffer()
-                markActiveToolsStopped()
-                markCurrentAssistantTerminal("incomplete")
-                browserSessionManager.onAssistantStreamingChanged(false)
-                _uiState.update { it.copy(error = event.reason, isLoading = false, isStreaming = false) }
-                LocalStreamPerfLog.endTurn("incomplete:${event.reason.take(80)}", _uiState.value.messages.size, currentAssistantTextLength())
-                saveCurrentConversation()
-            }
-            is AgentEvent.Error -> {
-                chatJob = null
-                flushAssistantThinkingBuffer()
-                flushAssistantTextBuffer()
-                markActiveToolsStopped()
-                markCurrentAssistantTerminal("failed")
-                browserSessionManager.onAssistantStreamingChanged(false)
-                _uiState.update { it.copy(error = event.message, isLoading = false, isStreaming = false) }
-                LocalStreamPerfLog.endTurn("error:${event.message.take(80)}", _uiState.value.messages.size, currentAssistantTextLength())
-                saveCurrentConversation()
-            }
-            is AgentEvent.Done -> {
-                chatJob = null
-                flushAssistantThinkingBuffer()
-                flushAssistantTextBuffer()
-                markCurrentAssistantCompleted()
-                browserSessionManager.onAssistantStreamingChanged(false)
-                _uiState.update { it.copy(isLoading = false, isStreaming = false) }
-                LocalStreamPerfLog.endTurn("done", _uiState.value.messages.size, currentAssistantTextLength())
-                saveCurrentConversation()
-            }
-            is AgentEvent.SubagentUpdate -> {
-                updateCurrentAssistantMessage { msg ->
-                    fun updateExecution(tool: ToolExecution): ToolExecution {
-                        if (tool.toolCallId != event.parentToolCallId) return tool
-                        val child = SubagentExecution(
-                            index = event.index,
-                            taskName = event.taskName,
-                            prompt = event.prompt,
-                            result = event.result,
-                            status = when {
-                                !event.isComplete -> ToolStatus.RUNNING
-                                event.isError -> ToolStatus.ERROR
-                                else -> ToolStatus.SUCCESS
-                            }
-                        )
-                        return tool.copy(children = (tool.children.filterNot { it.index == event.index } + child).sortedBy { it.index })
-                    }
-                    msg.copy(
-                        toolExecutions = msg.toolExecutions.map(::updateExecution),
-                        steps = msg.steps.map { step ->
-                            if (step is MessageStep.ToolCall) step.copy(execution = updateExecution(step.execution)) else step
-                        }
-                    )
-                }
-            }
-            is AgentEvent.NewIteration -> Unit
-        }
-    }
 
     private suspend fun awaitInlineToolConfirmation(request: ConfirmationRequest, turnId: Long): Boolean {
         val toolCallId = request.toolCallId ?: return false
@@ -1193,7 +1116,7 @@ class LocalIntelligenceService @Inject constructor(
         markCurrentAssistantTerminal("cancelled")
         browserSessionManager.cancelFromUser()
         browserSessionManager.onAssistantStreamingChanged(false)
-        _uiState.update { it.copy(isLoading = false, isStreaming = false) }
+        _uiState.update { it.copy(isLoading = false, isStreaming = false, isAutoCompacting = false) }
         saveCurrentConversation()
     }
 
@@ -1222,6 +1145,7 @@ class LocalIntelligenceService @Inject constructor(
             isLoading = false,
             isLoadingHistory = false,
             isStreaming = false,
+            isAutoCompacting = false,
             isCompressing = false,
             totalInputTokens = 0,
             totalOutputTokens = 0
@@ -1247,6 +1171,7 @@ class LocalIntelligenceService @Inject constructor(
                 isLoading = false,
                 isLoadingHistory = true,
                 isStreaming = false,
+                isAutoCompacting = false,
                 error = null,
                 totalInputTokens = 0,
                 totalOutputTokens = 0
@@ -1293,7 +1218,8 @@ class LocalIntelligenceService @Inject constructor(
                     error = null,
                     isLoading = false,
                     isLoadingHistory = false,
-                    isStreaming = false
+                    isStreaming = false,
+                    isAutoCompacting = false
                 )}
             } ?: _uiState.update { it.copy(isLoading = false, isLoadingHistory = false, isStreaming = false, error = "Conversation not found") }
         }
@@ -1303,7 +1229,12 @@ class LocalIntelligenceService @Inject constructor(
         val longId = id.toLongOrNull() ?: return
         titleJobs.remove(longId)?.cancel()
         if (currentConversationId == longId) clearConversation()
-        scope.launch { conversationDao.deleteConversationById(longId) }
+        // The compaction ledger describes a conversation that is about to stop existing.
+        ledgerStore.invalidate(id)
+        scope.launch {
+            conversationDao.deleteConversationById(longId)
+            runCatching { sessionMemoryRepository.deleteSession(id) }
+        }
     }
 
     override fun clearVisibleHistory(deleteContext: Boolean) {
@@ -1313,6 +1244,8 @@ class LocalIntelligenceService @Inject constructor(
             return
         }
         val updatedContext = contextAfterHistoryClear(_uiState.value.contextMessages, deleteContext)
+        // A cached ledger describes context that no longer exists.
+        if (deleteContext) ledgerStore.invalidate(conversationId.toString())
         _uiState.update { it.copy(messages = emptyList(), contextMessages = updatedContext) }
         scope.launch {
             try {
@@ -1350,6 +1283,8 @@ class LocalIntelligenceService @Inject constructor(
                     focus = focus
                 ).getOrThrow()
                 val context = compressedSessionContext(summary)
+                // The manual summary supersedes whatever the automatic ledger had accumulated.
+                ledgerStore.invalidate(conversationId.toString())
                 conversationSaveMutex.withLock {
                     conversationDao.updateConversationContext(
                         id = conversationId,
@@ -1941,15 +1876,132 @@ class LocalIntelligenceService @Inject constructor(
 }
 
 private const val COMPRESSED_SESSION_CONTEXT_PREFIX = "[COMPRESSED SESSION CONTEXT]"
+private const val AUTO_COMPACTED_CONTEXT_PREFIX = "[AUTO-COMPACTED ACTIVE CONTEXT]"
+
+/**
+ * Close out a turn that was still running when the process died.
+ *
+ * Returns null when the list holds no stalled turn, so callers can tell "nothing to do" apart from
+ * "recovered" and leave the stored column untouched.
+ */
+internal fun markInterruptedTurn(messages: List<UiMessage>): List<UiMessage>? {
+    val index = messages.indexOfLast { message ->
+        message.role == MessageRole.ASSISTANT &&
+            message.metadata["turnStatus"].isNullOrBlank() &&
+            (message.isThinking || message.toolExecutions.any { it.status == ToolStatus.RUNNING || it.status == ToolStatus.PENDING })
+    }
+    if (index < 0) return null
+    fun stop(tool: ToolExecution) = if (tool.status == ToolStatus.RUNNING || tool.status == ToolStatus.PENDING) {
+        tool.copy(
+            status = ToolStatus.ERROR,
+            result = tool.result ?: "Interrupted when the app process stopped",
+            metadata = tool.metadata + mapOf("approvalRequired" to "false", "approvalState" to "cancelled")
+        )
+    } else tool
+    val interrupted = messages[index].let { message ->
+        message.copy(
+            isThinking = false,
+            toolExecutions = message.toolExecutions.map(::stop),
+            steps = message.steps.map { if (it is MessageStep.ToolCall) it.copy(execution = stop(it.execution)) else it },
+            metadata = message.metadata + mapOf(
+                "turnStatus" to "interrupted",
+                "completedAt" to System.currentTimeMillis().toString(),
+                "retryable" to "true"
+            )
+        )
+    }
+    return messages.toMutableList().also { it[index] = interrupted }
+}
+
+/** Above this, the stored model context is carrying more tool payload than it can ever replay. */
+private const val MAX_STORED_TOOL_PAYLOAD_CHARS = 2_000_000
+private const val KEEP_VERBATIM_TAIL_MESSAGES = 12
+private const val STORED_TOOL_RESULT_MAX_CHARS = 4_000
+
+/**
+ * Bound the stored model context by shrinking old tool payloads, never by removing messages.
+ *
+ * The term that actually grows without limit is tool-result bytes — a DOM dump or a file read can be
+ * hundreds of kilobytes and is kept verbatim forever. Removing whole messages would be the obvious
+ * fix and is the wrong one: `ledgerCoverage` is an index into this list, so deleting entries
+ * silently closes the compaction gate, and anything removed past the ledger's boundary would have no
+ * record anywhere. Rewriting bodies in place keeps every index, every tool_call/tool_result pairing
+ * and every message; only text the model has long stopped receiving is replaced, and it is replaced
+ * with a line that says so. The visible transcript is a separate column and keeps the full text.
+ */
+internal fun digestOldToolPayloads(
+    context: List<UiMessage>,
+    maxTotalChars: Int = MAX_STORED_TOOL_PAYLOAD_CHARS,
+    keepNewest: Int = KEEP_VERBATIM_TAIL_MESSAGES
+): List<UiMessage> {
+    // Every tool result is stored three times — toolExecutions, steps, and canonicalHistory — and
+    // all three are serialized. Counting and trimming only one would leave the ceiling unenforced.
+    fun trim(execution: ToolExecution): ToolExecution {
+        val result = execution.result
+        return if (result == null || !needsTrimming(result)) execution
+        else execution.copy(result = storedToolDigest(execution.name, result))
+    }
+
+    val totalPayload = context.sumOf { message ->
+        message.toolExecutions.sumOf { it.result?.length ?: 0 } +
+            message.steps.filterIsInstance<MessageStep.ToolCall>().sumOf { it.execution.result?.length ?: 0 } +
+            message.canonicalHistory.sumOf { it.length }
+    }
+    if (totalPayload <= maxTotalChars) return context
+
+    val cutoff = (context.size - keepNewest).coerceAtLeast(0)
+    return context.mapIndexed { index, message ->
+        if (index >= cutoff) return@mapIndexed message
+        val executions = message.toolExecutions.map(::trim)
+        val steps = message.steps.map { if (it is MessageStep.ToolCall) it.copy(execution = trim(it.execution)) else it }
+        val canonical = message.canonicalHistory.map(::digestCanonicalToolResult)
+        if (executions == message.toolExecutions && steps == message.steps && canonical == message.canonicalHistory) {
+            message
+        } else {
+            message.copy(toolExecutions = executions, steps = steps, canonicalHistory = canonical)
+        }
+    }
+}
+
+private const val STORED_TRIM_MARKER = "result trimmed in stored context after"
+private const val STORED_TRIM_SUFFIX = "chars; full text remains in the transcript]"
+
+/**
+ * Idempotent: an already-trimmed body must not be re-cut, which would shred its own marker.
+ *
+ * Anchored to the end of the string rather than searched for anywhere in it — a `read_file` or
+ * `browser` result can legitimately quote this marker, and a substring test would exempt that
+ * payload from the ceiling forever.
+ */
+private fun needsTrimming(result: String): Boolean =
+    result.length > STORED_TOOL_RESULT_MAX_CHARS && !result.trimEnd().endsWith(STORED_TRIM_SUFFIX)
+
+private fun storedToolDigest(toolName: String, result: String): String =
+    result.take(STORED_TOOL_RESULT_MAX_CHARS).trimEnd() +
+        "\n… [$toolName $STORED_TRIM_MARKER ${result.length} $STORED_TRIM_SUFFIX"
+
+private fun digestCanonicalToolResult(entry: String): String {
+    val json = runCatching { JSONObject(entry) }.getOrNull() ?: return entry
+    if (json.optString("kind") != "tool_result") return entry
+    val result = json.optString("result")
+    if (!needsTrimming(result)) return entry
+    return json.put("result", storedToolDigest(json.optString("name").ifBlank { "tool" }, result)).toString()
+}
 
 internal fun contextAfterHistoryClear(context: List<UiMessage>, deleteContext: Boolean): List<UiMessage> =
     if (deleteContext) emptyList() else context
 
-internal fun compressedSessionContext(summary: String): List<UiMessage> = listOf(
+/**
+ * The compaction record carried in the model context.
+ *
+ * The two sources are tagged apart on purpose: automatic compaction replaces only its own record,
+ * so a summary the user asked for with `/compact` is never overwritten by the host.
+ */
+internal fun compressedSessionContext(summary: String, auto: Boolean = false): List<UiMessage> = listOf(
     UiMessage(
         role = MessageRole.SYSTEM,
-        content = "$COMPRESSED_SESSION_CONTEXT_PREFIX\n${summary.trim()}",
-        metadata = mapOf("compressed" to "true")
+        content = "${if (auto) AUTO_COMPACTED_CONTEXT_PREFIX else COMPRESSED_SESSION_CONTEXT_PREFIX}\n${summary.trim()}",
+        metadata = mapOf("compressed" to "true", "compactionSource" to if (auto) "auto" else "manual")
     )
 )
 
@@ -1968,31 +2020,57 @@ internal fun UiMessage.toChatMessages(): List<ChatMessage> {
     }
     val message = ChatMessage(
         role = role,
-        content = content,
+        // Blank must become null: an empty string is rendered as an empty text content block, which
+        // Anthropic rejects outright. An assistant turn that was pure tool calls, or that was
+        // stopped before any prose, legitimately has no text.
+        content = content.takeIf { it.isNotBlank() },
         images = attachments.filter { it.mimeType.startsWith("image/") }.map {
             com.amaya.intelligence.data.remote.api.ChatImage(it.dataBase64, it.mimeType, it.fileName)
         },
         toolCalls = calls.takeIf { it.isNotEmpty() },
         responseItems = responseItems
     )
+    // An assistant turn that produced nothing at all — a turn that failed before the first delta —
+    // must not be replayed. It has no text, no tool call and no image, so every provider sees an
+    // empty content block and rejects the request; dropping it here also heals conversations
+    // already stored in that state.
+    if (role == MessageRole.ASSISTANT && message.content == null && calls.isEmpty() &&
+        message.images.isEmpty() && responseItems.isEmpty()
+    ) return emptyList()
     if (role != MessageRole.ASSISTANT || calls.isEmpty()) return listOf(message)
     return buildList {
         add(message)
         toolExecutions.forEach { execution ->
-            execution.result?.let { result ->
-                add(ChatMessage(
-                    role = MessageRole.TOOL,
-                    toolResult = com.amaya.intelligence.data.remote.api.ToolResultMessage(
-                        toolCallId = execution.toolCallId,
-                        content = result,
-                        isError = execution.status == ToolStatus.ERROR,
-                        metadata = execution.metadata.filterKeys { it == "thoughtSignature" } +
-                            ("toolName" to execution.name)
-                    )
-                ))
-            }
+            // Every advertised tool call needs a matching result. A turn that died between
+            // ToolCallStart and ToolCallResult leaves the execution pending, and replaying that as
+            // a bare tool_call orphans the id — which every provider rejects on the next request.
+            add(ChatMessage(
+                role = MessageRole.TOOL,
+                toolResult = com.amaya.intelligence.data.remote.api.ToolResultMessage(
+                    toolCallId = execution.toolCallId,
+                    content = execution.result ?: UNFINISHED_TOOL_RESULT,
+                    isError = execution.status == ToolStatus.ERROR || execution.result == null,
+                    metadata = execution.metadata.filterKeys { it == "thoughtSignature" } +
+                        ("toolName" to execution.name)
+                )
+            ))
         }
     }
+}
+
+internal const val UNFINISHED_TOOL_RESULT =
+    "[no result: the turn ended before this tool returned]"
+
+/**
+ * Commit a run of streamed assistant text to the canonical model history as one entry.
+ *
+ * Text is buffered on the turn and flushed here whenever a tool call, tool result, response item, or
+ * the end of the turn establishes an ordering boundary — so the canonical list holds one entry per
+ * run of prose rather than one per stream delta.
+ */
+internal fun List<String>.appendCanonicalText(chunk: String?): List<String> {
+    if (chunk.isNullOrEmpty()) return this
+    return this + JSONObject().put("kind", "assistant_text").put("text", chunk).toString()
 }
 
 internal fun canonicalHistoryToChatMessages(history: List<String>): List<ChatMessage> {
@@ -2042,7 +2120,34 @@ internal fun canonicalHistoryToChatMessages(history: List<String>): List<ChatMes
         }
     }
     flushAssistant()
-    return messages
+    return messages.withSyntheticToolResults()
+}
+
+/**
+ * Guarantee every advertised tool call has a matching result.
+ *
+ * A turn that died between the call and its result — a provider error, a dropped stream, a killed
+ * process — persists a `tool_call` with nothing answering it, and every provider rejects the next
+ * request in that conversation. Repairing it here also heals conversations that were already stored
+ * in that state.
+ */
+internal fun List<ChatMessage>.withSyntheticToolResults(): List<ChatMessage> {
+    val answered = mapNotNull { it.toolResult?.toolCallId }.toSet()
+    if (none { message -> message.toolCalls.orEmpty().any { it.id !in answered } }) return this
+    return flatMap { message ->
+        val unanswered = message.toolCalls.orEmpty().filter { it.id !in answered }
+        if (unanswered.isEmpty()) listOf(message) else listOf(message) + unanswered.map { call ->
+            ChatMessage(
+                role = MessageRole.TOOL,
+                toolResult = com.amaya.intelligence.data.remote.api.ToolResultMessage(
+                    toolCallId = call.id,
+                    content = UNFINISHED_TOOL_RESULT,
+                    isError = true,
+                    metadata = mapOf("toolName" to call.name)
+                )
+            )
+        }
+    }
 }
 
 private fun JSONObject.toAnyMap(): Map<String, Any?> = buildMap {

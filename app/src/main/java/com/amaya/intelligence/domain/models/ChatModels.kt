@@ -11,7 +11,7 @@ import java.util.UUID
 
 // ── UI State ─────────────────────────────────────────────────────────────────
 
-enum class SessionPhase { STARTING, THINKING, STREAMING, TOOL, DELEGATING, WAITING_APPROVAL, COMPLETED, FAILED, STOPPED }
+enum class SessionPhase { STARTING, THINKING, STREAMING, TOOL, COMPACTING, DELEGATING, WAITING_APPROVAL, COMPLETED, FAILED, STOPPED }
 
 data class RunningSession(
     val conversationId: Long,
@@ -44,6 +44,12 @@ data class ChatUiState(
     val isLoadingHistory: Boolean         = false,
     val isStreaming:      Boolean         = false,
     val isCompressing:    Boolean         = false,
+    /**
+     * Host-driven context compaction during a turn. Kept separate from [isCompressing] because the
+     * send button doubles as "cancel compression" for the user-initiated path, and there is no
+     * cancellable job behind an automatic compaction.
+     */
+    val isAutoCompacting: Boolean         = false,
     val error:            String?         = null,
     val selectedModel:    String          = "",
     val activeProjectId:  Long?           = null,

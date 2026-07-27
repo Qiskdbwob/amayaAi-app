@@ -7,6 +7,8 @@ import com.amaya.intelligence.domain.memory.MemoryType
 import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.domain.skills.SkillMetadata
 import com.amaya.intelligence.domain.skills.SkillStatus
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,7 +34,15 @@ data class ContextBuildRequest(
 )
 
 data class ContextBuildResult(
+    /** Fully composed prompt, including any carried compaction blocks. */
     val systemPrompt: String,
+    /**
+     * The prompt without any compaction block. The agent loop composes the blocks itself so the
+     * ledger it produces mid-turn replaces the carried copy instead of being appended beside it.
+     */
+    val baseSystemPrompt: String,
+    val manualSummary: String?,
+    val autoSummary: String?,
     val messages: List<ChatMessage>,
     val estimatedPromptTokens: Int,
     val droppedItems: List<ContextItem>
@@ -87,23 +97,31 @@ data class ContextIntent(
     val likelyMultiStep: Boolean
 )
 
-data class ConversationCompression(
-    val messages: List<ChatMessage>,
-    val summary: String,
-    val compressedMessageCount: Int,
-    val estimatedSavedTokens: Int
-)
+/** User-requested compaction, produced by `/compact`. Never overwritten by the host. */
+internal const val COMPRESSED_SESSION_CONTEXT_PREFIX = "[COMPRESSED SESSION CONTEXT]"
 
-private const val COMPRESSED_SESSION_CONTEXT_PREFIX = "[COMPRESSED SESSION CONTEXT]"
+/** Host-produced task ledger. Replaced wholesale on every automatic compaction. */
+internal const val AUTO_COMPACTED_CONTEXT_PREFIX = "[AUTO-COMPACTED ACTIVE CONTEXT]"
 
 private fun ChatMessage.isCompressedSessionContext(): Boolean =
-    role == MessageRole.SYSTEM && content.orEmpty().startsWith(COMPRESSED_SESSION_CONTEXT_PREFIX)
+    role == MessageRole.SYSTEM && content.orEmpty().let {
+        it.startsWith(COMPRESSED_SESSION_CONTEXT_PREFIX) || it.startsWith(AUTO_COMPACTED_CONTEXT_PREFIX)
+    }
 
-internal fun List<ChatMessage>.compressedSessionSummary(): String? =
-    firstOrNull(ChatMessage::isCompressedSessionContext)?.content
-        ?.removePrefix(COMPRESSED_SESSION_CONTEXT_PREFIX)
+private fun List<ChatMessage>.summaryWithPrefix(prefix: String): String? =
+    firstOrNull { it.role == MessageRole.SYSTEM && it.content.orEmpty().startsWith(prefix) }
+        ?.content
+        ?.removePrefix(prefix)
         ?.trim()
         ?.takeIf(String::isNotBlank)
+
+/** The user's own `/compact` summary. */
+internal fun List<ChatMessage>.compressedSessionSummary(): String? =
+    summaryWithPrefix(COMPRESSED_SESSION_CONTEXT_PREFIX)
+
+/** The most recent automatic task ledger carried over from an earlier turn. */
+internal fun List<ChatMessage>.autoCompactedSummary(): String? =
+    summaryWithPrefix(AUTO_COMPACTED_CONTEXT_PREFIX)
 
 internal fun String.withCompressedSessionContext(summary: String?): String = buildString {
     append(this@withCompressedSessionContext)
@@ -119,34 +137,45 @@ class ContextManager @Inject constructor(
     private val memorySnapshotProvider: MemorySnapshotProvider,
     private val skillIndexProvider: SkillIndexProvider,
     private val sessionSummaryProvider: SessionSummaryProvider,
-    private val conversationCompressor: ConversationCompressor,
     private val promptBudgetManager: PromptBudgetManager,
     private val contextRanker: ContextRanker
 ) {
     suspend fun buildContext(request: ContextBuildRequest): ContextBuildResult {
         val settings = brainSettingsRepository.getBrainSettings()
         val intent = inferIntent(request.userMessage)
-        val activeSessionSummary = request.conversationHistory.compressedSessionSummary()
-        val compression = conversationCompressor.compress(
-            request.conversationHistory.filterNot { it.isCompressedSessionContext() },
-            promptBudgetManager.historyBudgetFor(request.contextWindowTokens, request.maxOutputTokens, request.toolSchemaTokens)
-        )
+        val manualSummary = request.conversationHistory.compressedSessionSummary()
+        val autoSummary = request.conversationHistory.autoCompactedSummary()
+        // History is deliberately passed through whole. AiRepository owns the single, reversible
+        // trimming pass; trimming here as well used to cut the history twice with two different
+        // formulas, and this one ran first and could not be undone.
+        val history = request.conversationHistory.filterNot { it.isCompressedSessionContext() }
         val clock = currentClockText()
 
         val sections = defaultSections()
+        // Memory, skills, and session recall are independent IO subsystems. Awaiting them one at a
+        // time put all three latencies on the critical path to the first token.
+        val (memoryItems, skillItem, sessionItem) = coroutineScope {
+            val memory = async { memorySnapshotProvider.snapshot(request.userMessage, settings, intent, request.workspacePath) }
+            val skills = async { skillIndexProvider.skillIndex(request.userMessage, settings, intent) }
+            val session = async {
+                sessionSummaryProvider.sessionSummary(
+                    request.userMessage, settings, intent, request.workspacePath, request.assistantMode, request.ownerId
+                )
+            }
+            Triple(memory.await(), skills.await(), session.await())
+        }
         val items = buildList {
             add(ContextItem("operating_rules", "operating_rules", ContextSource.OPERATING_RULES, "System", baseOperatingRules(request.assistantMode), 1000, mode = ContextInclusionMode.ALWAYS, alwaysInclude = true))
             request.ownerContext?.takeIf(String::isNotBlank)?.let {
-                add(ContextItem("owner_context", "owner_context", ContextSource.WORKSPACE, "Mode Instructions", it, 940, mode = ContextInclusionMode.ALWAYS, alwaysInclude = true, maxTokens = 900))
+                // OPERATING_RULES, not WORKSPACE: these are instructions, and the WORKSPACE source
+                // carries a +2.0 relevance boost that outranked the base operating rules themselves.
+                add(ContextItem("owner_context", "owner_context", ContextSource.OPERATING_RULES, "Mode Instructions", it, 990, mode = ContextInclusionMode.ALWAYS, alwaysInclude = true, maxTokens = 900))
             }
-            addAll(memorySnapshotProvider.snapshot(request.userMessage, settings, intent, request.workspacePath))
-            add(skillIndexProvider.skillIndex(request.userMessage, settings, intent))
-            add(sessionSummaryProvider.sessionSummary(request.userMessage, settings, intent, request.workspacePath, request.assistantMode, request.ownerId))
+            addAll(memoryItems)
+            add(skillItem)
+            add(sessionItem)
             workspaceItem(request.workspacePath, settings, intent)?.let { add(it) }
-            if (activeSessionSummary == null && compression.summary.isNotBlank()) {
-                add(compressedConversationItem(compression.summary))
-            }
-            add(ContextItem("time", "time", ContextSource.TIME, "Current Time", clock, 800, mode = ContextInclusionMode.ALWAYS, alwaysInclude = true, maxTokens = 80))
+            add(ContextItem("time", "time", ContextSource.TIME, "Current Time", clock, 100, mode = ContextInclusionMode.ALWAYS, alwaysInclude = true, maxTokens = 80))
         }
 
         val promptBudget = promptBudgetManager.promptBudgetFor(
@@ -156,44 +185,38 @@ class ContextManager @Inject constructor(
         )
         val ranked = contextRanker.rank(items, intent)
         val budgeted = promptBudgetManager.buildPrompt(sections, ranked, promptBudget)
-        val systemPrompt = budgeted.prompt.withCompressedSessionContext(activeSessionSummary)
+        val systemPrompt = budgeted.prompt
+            .withCompressedSessionContext(manualSummary)
+            .withCompressedSessionContext(autoSummary)
         return ContextBuildResult(
             systemPrompt = systemPrompt,
-            messages = compression.messages + ChatMessage(role = MessageRole.USER, content = request.userMessage, images = request.userImages),
-            estimatedPromptTokens = promptBudgetManager.estimateTokens(systemPrompt) + compression.messages.sumOf { promptBudgetManager.estimateTokens(it.content.orEmpty()) },
+            baseSystemPrompt = budgeted.prompt,
+            manualSummary = manualSummary,
+            autoSummary = autoSummary,
+            messages = history + ChatMessage(role = MessageRole.USER, content = request.userMessage, images = request.userImages),
+            estimatedPromptTokens = TokenEstimator.text(systemPrompt) + TokenEstimator.messages(history),
             droppedItems = budgeted.droppedItems
         )
     }
 
     fun buildWindowsBridgeContext(request: ContextBuildRequest): ContextBuildResult {
-        val activeSessionSummary = request.conversationHistory.compressedSessionSummary()
-        val compression = conversationCompressor.compress(
-            request.conversationHistory.filterNot { it.isCompressedSessionContext() },
-            promptBudgetManager.historyBudgetFor(request.contextWindowTokens, request.maxOutputTokens, request.toolSchemaTokens)
-        )
-        val clock = currentClockText()
-        val systemPrompt = windowsBridgeSystemPrompt(clock).withCompressedSessionContext(activeSessionSummary)
-        val estimated = promptBudgetManager.estimateTokens(systemPrompt) +
-            compression.messages.sumOf { promptBudgetManager.estimateTokens(it.content.orEmpty()) }
+        val manualSummary = request.conversationHistory.compressedSessionSummary()
+        val autoSummary = request.conversationHistory.autoCompactedSummary()
+        val history = request.conversationHistory.filterNot { it.isCompressedSessionContext() }
+        val base = windowsBridgeSystemPrompt()
+        val systemPrompt = base
+            .withCompressedSessionContext(manualSummary)
+            .withCompressedSessionContext(autoSummary)
         return ContextBuildResult(
             systemPrompt = systemPrompt,
-            messages = compression.messages + ChatMessage(role = MessageRole.USER, content = request.userMessage, images = request.userImages),
-            estimatedPromptTokens = estimated,
+            baseSystemPrompt = base,
+            manualSummary = manualSummary,
+            autoSummary = autoSummary,
+            messages = history + ChatMessage(role = MessageRole.USER, content = request.userMessage, images = request.userImages),
+            estimatedPromptTokens = TokenEstimator.text(systemPrompt) + TokenEstimator.messages(history),
             droppedItems = emptyList()
         )
     }
-
-    private fun compressedConversationItem(summary: String) = ContextItem(
-        id = "conversation_summary",
-        sectionId = "conversation_summary",
-        source = ContextSource.SESSION_SUMMARY,
-        title = "Compressed Conversation",
-        content = summary,
-        priority = 740,
-        score = 1.0,
-        mode = ContextInclusionMode.SUMMARY,
-        maxTokens = 900
-    )
 
     private fun inferIntent(message: String): ContextIntent {
         val lower = message.lowercase()
@@ -210,16 +233,23 @@ class ContextManager @Inject constructor(
         return ContextIntent(needsMemory, needsWorkspace, needsSession, needsSkill, likelyMultiStep)
     }
 
+    /**
+     * Section priority doubles as cache-stability rank: the prompt is emitted in this order, so
+     * everything that cannot change between two requests of the same conversation must come first.
+     * The live clock used to sit mid-prompt at priority 800, which invalidated every section after
+     * it — and the whole message array — once a minute, including mid-agentic-loop.
+     */
     private fun defaultSections(): List<PromptSection> = listOf(
+        // Stable prefix: identical for every request in this (mode, workspace, owner).
         PromptSection("operating_rules", "SYSTEM", 1000, ContextInclusionMode.ALWAYS, true),
-        PromptSection("owner_context", "MODE INSTRUCTIONS", 940, ContextInclusionMode.ALWAYS, true),
-        PromptSection("user_memory", "USER MEMORY", 860, ContextInclusionMode.FULL),
-        PromptSection("project_context", "PROJECT CONTEXT", 840, ContextInclusionMode.ALWAYS),
-        PromptSection("project_memory", "PROJECT MEMORY", 830, ContextInclusionMode.FULL),
-        PromptSection("conversation_summary", "COMPRESSED CONVERSATION", 740, ContextInclusionMode.SUMMARY),
-        PromptSection("past_sessions", "RELEVANT PAST SESSIONS", 620, ContextInclusionMode.SEARCH_FIRST),
+        PromptSection("owner_context", "MODE INSTRUCTIONS", 990, ContextInclusionMode.ALWAYS, true),
+        PromptSection("project_context", "PROJECT CONTEXT", 980, ContextInclusionMode.ALWAYS, true),
+        // Volatile tail: re-ranked per turn against the current message.
         PromptSection("skill_index", "SKILL INDEX", 700, ContextInclusionMode.INDEX_ONLY),
-        PromptSection("time", "CURRENT TIME", 800, ContextInclusionMode.ALWAYS, true)
+        PromptSection("user_memory", "USER MEMORY", 690, ContextInclusionMode.FULL),
+        PromptSection("project_memory", "PROJECT MEMORY", 680, ContextInclusionMode.FULL),
+        PromptSection("past_sessions", "RELEVANT PAST SESSIONS", 670, ContextInclusionMode.SEARCH_FIRST),
+        PromptSection("time", "CURRENT TIME", 100, ContextInclusionMode.ALWAYS, true)
     )
 
     private fun workspaceItem(workspacePath: String?, settings: BrainSettings, intent: ContextIntent): ContextItem? {
@@ -246,7 +276,11 @@ class ContextManager @Inject constructor(
         )
     }
 
-    private fun windowsBridgeSystemPrompt(clock: String): String = """
+    // The clock is appended after the literal, never interpolated into it: interpolating a value
+    // that changes every minute makes the whole 70-line prompt a fresh prompt-cache entry.
+    private fun windowsBridgeSystemPrompt(): String = windowsBridgeOperatingRules() + "\n\n" + currentClockText()
+
+    private fun windowsBridgeOperatingRules(): String = """
         Amaya is a versatile AI assistant running on Android and controlling a paired Windows computer through Windows Bridge.
 
         You are operating in WINDOWS BRIDGE mode.
@@ -312,8 +346,6 @@ class ContextManager @Inject constructor(
         - Do not describe the internal automation loop steps (e.g. "I will call screen.capture then mouse.click") in chat responses. Describe what you are doing in plain human terms instead (e.g. "Opening the app", "Clicking the button", "Typing the text").
         - Do not mention tool result fields (status, hitWindow, foregroundWindow, cursor position, etc.) in chat responses unless they directly explain a failure the user needs to act on.
         - These rules apply to all chat messages including progress updates, confirmations, and error explanations. Keep all technical internals strictly between you and the bridge.
-
-        $clock
     """.trimIndent()
 
     private fun baseOperatingRules(mode: AssistantMode): String = """
@@ -525,58 +557,6 @@ class SessionSummaryProvider @Inject constructor(
 }
 
 @Singleton
-class ConversationCompressor @Inject constructor(
-    private val promptBudgetManager: PromptBudgetManager
-) {
-    fun compress(history: List<ChatMessage>, budget: Int): ConversationCompression {
-        if (history.isEmpty()) return ConversationCompression(emptyList(), "", 0, 0)
-        val total = history.sumOf { promptBudgetManager.estimateTokens(it.content.orEmpty()) }
-        if (total <= budget) return ConversationCompression(history, "", 0, 0)
-
-        var cutIndex = history.size
-        var used = 0
-        while (cutIndex > 0) {
-            val spanStart = if (history[cutIndex - 1].role == MessageRole.TOOL) {
-                (cutIndex - 2 downTo 0).firstOrNull { history[it].role == MessageRole.ASSISTANT } ?: cutIndex - 1
-            } else cutIndex - 1
-            val tokens = history.subList(spanStart, cutIndex).sumOf {
-                promptBudgetManager.estimateTokens(it.content.orEmpty()) +
-                    promptBudgetManager.estimateTokens(it.toolResult?.content.orEmpty())
-            }
-            if (used + tokens > budget && (history.size - cutIndex >= MIN_RECENT_MESSAGES || cutIndex < history.size)) break
-            used += tokens
-            cutIndex = spanStart
-        }
-        val recent = history.drop(cutIndex)
-        val compressedCount = cutIndex
-        val older = history.take(cutIndex)
-        val summary = summarizeOlderMessages(older, compressedCount)
-        return ConversationCompression(
-            messages = recent,
-            summary = summary,
-            compressedMessageCount = compressedCount,
-            estimatedSavedTokens = (total - used - promptBudgetManager.estimateTokens(summary)).coerceAtLeast(0)
-        )
-    }
-
-    private fun summarizeOlderMessages(messages: List<ChatMessage>, compressedCount: Int): String {
-        if (messages.isEmpty()) return ""
-        val userTopics = messages.filter { it.role == MessageRole.USER }.takeLast(6).mapNotNull { it.content?.take(180) }
-        val assistantTopics = messages.filter { it.role == MessageRole.ASSISTANT }.takeLast(6).mapNotNull { it.content?.take(180) }
-        return buildString {
-            appendLine("$compressedCount older messages were compressed to preserve prompt budget.")
-            if (userTopics.isNotEmpty()) appendLine("Recent older user requests: ${userTopics.joinToString(" | ")}")
-            if (assistantTopics.isNotEmpty()) appendLine("Recent older assistant outcomes: ${assistantTopics.joinToString(" | ")}")
-            appendLine("Treat this as a lossy index. Ask or use session_search if exact old details matter.")
-        }.trim()
-    }
-
-    companion object {
-        private const val MIN_RECENT_MESSAGES = 8
-    }
-}
-
-@Singleton
 class ContextRanker @Inject constructor() {
     fun rank(items: List<ContextItem>, intent: ContextIntent): List<ContextItem> {
         return items
@@ -615,13 +595,10 @@ class PromptBudgetManager @Inject constructor() {
     fun promptBudgetFor(contextWindowTokens: Int, maxOutputTokens: Int, toolSchemaTokens: Int): PromptBudget {
         val inputBudget = (contextWindowTokens - maxOutputTokens - toolSchemaTokens - SAFETY_RESERVE_TOKENS)
             .coerceAtLeast(256)
-        val systemBudget = (inputBudget * 45 / 100).coerceIn(128, 20_000)
+        // Scales with the window instead of stopping at a flat 20k, so a large-context model can
+        // actually use the instructions it was given room for.
+        val systemBudget = (inputBudget * 45 / 100).coerceIn(128, 64_000)
         return PromptBudget(maxSystemTokens = systemBudget, maxItemTokens = minOf(1_200, systemBudget / 3))
-    }
-
-    fun historyBudgetFor(contextWindowTokens: Int, maxOutputTokens: Int, toolSchemaTokens: Int): Int {
-        val inputBudget = contextWindowTokens - maxOutputTokens - toolSchemaTokens - SAFETY_RESERVE_TOKENS
-        return (inputBudget * 55 / 100).coerceIn(128, 24_000)
     }
 
     fun buildPrompt(sections: List<PromptSection>, rankedItems: List<ContextItem>, budget: PromptBudget): BudgetedPrompt {
@@ -631,12 +608,23 @@ class PromptBudgetManager @Inject constructor() {
         val dropped = mutableListOf<ContextItem>()
         var used = 0
 
-        rankedItems.forEach { item ->
-            val section = sectionById[item.sectionId] ?: PromptSection(item.sectionId, item.sectionId.uppercase(), item.priority, item.mode)
+        fun isRequired(item: ContextItem): Boolean {
+            val section = sectionById[item.sectionId]
+            return item.alwaysInclude || section?.alwaysInclude == true || item.mode == ContextInclusionMode.ALWAYS
+        }
+
+        // Required items are charged first so optional content can never starve them. Previously
+        // `required` was computed and then ignored — both branches dropped the item — so operating
+        // rules or the workspace root could be silently evicted by whatever ranked ahead of them.
+        // Within the required group, charge by declared section priority rather than per-turn
+        // relevance: relevance scoring must not decide whether the operating rules survive.
+        val (required, optional) = rankedItems.partition(::isRequired)
+        val requiredByPriority = required.sortedByDescending { sectionById[it.sectionId]?.priority ?: it.priority }
+
+        (requiredByPriority + optional).forEach { item ->
             val rawContent = formatItem(item)
             val remaining = (budget.maxSystemTokens - used - 8).coerceAtLeast(0)
             val allowed = minOf(item.maxTokens ?: budget.maxItemTokens, remaining)
-            val required = item.alwaysInclude || section.alwaysInclude || item.mode == ContextInclusionMode.ALWAYS
             if (allowed <= 0) {
                 dropped.add(item)
             } else {
@@ -645,8 +633,6 @@ class PromptBudgetManager @Inject constructor() {
                 if (used + cost <= budget.maxSystemTokens) {
                     chosen.getOrPut(item.sectionId) { mutableListOf() }.add(content)
                     used += cost
-                } else if (!required) {
-                    dropped.add(item)
                 } else {
                     dropped.add(item)
                 }
@@ -672,11 +658,7 @@ class PromptBudgetManager @Inject constructor() {
         return BudgetedPrompt(prompt = prompt, estimatedTokens = estimateTokens(prompt), droppedItems = dropped)
     }
 
-    fun estimateTokens(text: String): Int {
-        if (text.isBlank()) return 0
-        val wordish = text.split(Regex("\\s+")).size
-        return maxOf((text.length / 4.0).toInt(), (wordish * 1.3).toInt(), 1)
-    }
+    fun estimateTokens(text: String): Int = TokenEstimator.text(text)
 
     private fun formatItem(item: ContextItem): String {
         val prefix = when (item.mode) {
@@ -688,11 +670,11 @@ class PromptBudgetManager @Inject constructor() {
         return prefix + item.content.trim()
     }
 
-    private fun truncateToTokens(text: String, maxTokens: Int): String {
-        if (estimateTokens(text) <= maxTokens) return text
-        val maxChars = (maxTokens * 4).coerceAtLeast(160)
-        return text.take(maxChars).trimEnd() + "\n… [truncated by prompt budget]"
-    }
+    // Measures the result against the same estimator that scores it. The old version took
+    // `maxTokens * 4` chars and then appended a ~31-char marker, so the item came back over its own
+    // allowance and was dropped a few lines later.
+    private fun truncateToTokens(text: String, maxTokens: Int): String =
+        TokenEstimator.truncateToTokens(text, maxTokens, marker = "\n… [truncated by prompt budget]")
 
     private companion object {
         const val SAFETY_RESERVE_TOKENS = 1_024

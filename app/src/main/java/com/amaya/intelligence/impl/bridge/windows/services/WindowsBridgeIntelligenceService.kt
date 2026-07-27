@@ -9,6 +9,7 @@ import com.amaya.intelligence.data.remote.api.ChatMessage
 import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.data.repository.AgentEvent
 import com.amaya.intelligence.data.repository.AgentRuntimeTarget
+import com.amaya.intelligence.data.repository.AUTO_COMPACTED_CONTEXT_PREFIX
 import com.amaya.intelligence.data.repository.AiRepository
 
 import com.amaya.intelligence.di.ApplicationScope
@@ -21,6 +22,7 @@ import com.amaya.intelligence.domain.models.MessageStep
 import com.amaya.intelligence.domain.models.ToolExecution
 import com.amaya.intelligence.domain.models.ToolStatus
 import com.amaya.intelligence.domain.models.UiMessage
+import com.amaya.intelligence.impl.local.toChatMessages
 import com.amaya.intelligence.impl.bridge.windows.WindowsBridgeConnectionState
 import com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeController
 
@@ -66,6 +68,14 @@ class WindowsBridgeIntelligenceService @Inject constructor(
     private var currentConversationId: Long? = null
     private var currentAssistantMessageId: String? = null
     private val assistantTextBuffer = StringBuilder()
+
+    /**
+     * Compaction ledger for the active bridge conversation.
+     *
+     * The bridge has no separate model-context column, so without holding it here the ledger the
+     * host just paid for would be discarded and re-derived on the next turn.
+     */
+    private var compactionLedger: String? = null
     private val conversationSaveMutex = Mutex()
 
     init {
@@ -119,7 +129,12 @@ class WindowsBridgeIntelligenceService @Inject constructor(
         chatJob = scope.launch {
             try {
                 val conversationIdForTurn = persistCurrentConversation()
-                val history = _uiState.value.messages.map { it.toChatMessage() }
+                // Expand tool calls and results instead of keeping role+content only: dropping them
+                // left the model with no record of what it had already done on the paired PC.
+                val ledgerContext = compactionLedger?.let {
+                    listOf(ChatMessage(MessageRole.SYSTEM, AUTO_COMPACTED_CONTEXT_PREFIX + "\n" + it))
+                }.orEmpty()
+                val history = ledgerContext + _uiState.value.messages.flatMap { it.toChatMessages() }
                 aiRepository.chat(
                     message = content,
                     conversationHistory = history.dropLast(1),
@@ -135,7 +150,7 @@ class WindowsBridgeIntelligenceService @Inject constructor(
                 ).collect { handleAgentEvent(it) }
             } catch (e: Exception) {
                 flushAssistantTextBuffer()
-                _uiState.update { it.copy(error = e.message, isLoading = false, isStreaming = false) }
+                _uiState.update { it.copy(error = e.message, isLoading = false, isStreaming = false, isAutoCompacting = false) }
             }
         }
     }
@@ -170,6 +185,7 @@ class WindowsBridgeIntelligenceService @Inject constructor(
     override fun clearConversation() {
         chatJob?.cancel()
         currentConversationId = null
+        compactionLedger = null
         currentAssistantMessageId = null
         assistantTextBuffer.clear()
         _uiState.update {
@@ -194,6 +210,7 @@ class WindowsBridgeIntelligenceService @Inject constructor(
                 ?: return@launch
             currentConversationId = entity.id
             currentAssistantMessageId = null
+            compactionLedger = null
             assistantTextBuffer.clear()
             _uiState.update {
                 it.copy(
@@ -289,19 +306,24 @@ class WindowsBridgeIntelligenceService @Inject constructor(
             }
             is AgentEvent.Incomplete -> {
                 flushAssistantTextBuffer()
-                _uiState.update { it.copy(error = event.reason, isLoading = false, isStreaming = false) }
+                _uiState.update { it.copy(error = event.reason, isLoading = false, isStreaming = false, isAutoCompacting = false) }
             }
             is AgentEvent.Error -> {
                 flushAssistantTextBuffer()
-                _uiState.update { it.copy(error = event.message, isLoading = false, isStreaming = false) }
+                _uiState.update { it.copy(error = event.message, isLoading = false, isStreaming = false, isAutoCompacting = false) }
             }
             AgentEvent.Done -> {
                 flushAssistantTextBuffer()
                 markCurrentAssistantCompleted()
-                _uiState.update { it.copy(isLoading = false, isStreaming = false) }
+                _uiState.update { it.copy(isLoading = false, isStreaming = false, isAutoCompacting = false) }
                 persistCurrentConversationAsync()
             }
             AgentEvent.NewIteration -> Unit
+            is AgentEvent.Compacting -> _uiState.update { it.copy(isAutoCompacting = true) }
+            is AgentEvent.Compacted -> {
+                compactionLedger = event.ledger.takeIf(String::isNotBlank)
+                _uiState.update { it.copy(isAutoCompacting = false) }
+            }
             is AgentEvent.SubagentUpdate -> Unit
         }
     }
@@ -528,11 +550,6 @@ class WindowsBridgeIntelligenceService @Inject constructor(
             uiMetadata = ToolUiMapper.getToolUiMetadata(name, args, metadata)
         )
     }
-
-    private fun UiMessage.toChatMessage(): ChatMessage = ChatMessage(
-        role = role,
-        content = content.takeIf { it.isNotBlank() }
-    )
 
     private fun JSONObject.toStringMap(): Map<String, String> = buildMap {
         keys().forEach { key -> put(key, optString(key, "")) }

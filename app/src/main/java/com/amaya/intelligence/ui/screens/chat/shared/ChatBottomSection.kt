@@ -162,6 +162,7 @@ fun ChatBottomSection(
                 resetKey = uiState.conversationId,
                 isStreaming = uiState.isStreaming,
                 isCompressing = uiState.isCompressing,
+                isAutoCompacting = uiState.isAutoCompacting,
                 attachedFilePath = attachedPath,
                 attachedImageBase64 = currentImageBase64,
                 attachedImageName = currentImageName,

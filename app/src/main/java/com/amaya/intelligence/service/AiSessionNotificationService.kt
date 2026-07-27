@@ -343,6 +343,7 @@ class AiSessionNotificationService : Service() {
         SessionPhase.THINKING -> "Thinking"
         SessionPhase.STREAMING -> "Writing response"
         SessionPhase.TOOL -> toolActivityLabel(session)
+        SessionPhase.COMPACTING -> "Compacting context"
         SessionPhase.DELEGATING -> session.activeDelegateName?.let { "Delegating to $it" } ?: "Delegating"
         SessionPhase.WAITING_APPROVAL -> "Waiting for approval"
         SessionPhase.COMPLETED -> "Completed"

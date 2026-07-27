@@ -29,6 +29,8 @@ object LocalStreamPerfLog {
     private var markdownParses = 0
     private var markdownParseMs = 0L
     private var slowMarkdownParses = 0
+    private var firstTokenLogged = false
+    private var compactionStartedAt = 0L
 
     fun startTurn(messageChars: Int, historyMessages: Int, model: String?) {
         if (!ENABLED) return
@@ -45,7 +47,29 @@ object LocalStreamPerfLog {
         markdownParses = 0
         markdownParseMs = 0L
         slowMarkdownParses = 0
+        firstTokenLogged = false
+        compactionStartedAt = 0L
         Log.i(TAG, "turn#$turnId START messageChars=$messageChars historyMessages=$historyMessages model=${model.orEmpty()}")
+    }
+
+    /** First token reached the UI. This is the number the user actually feels. */
+    fun onFirstToken() {
+        if (!ENABLED || firstTokenLogged) return
+        firstTokenLogged = true
+        Log.i(TAG, "turn#$turnId FIRST_TOKEN elapsedMs=${elapsed()}")
+    }
+
+    fun onCompactionStart(evictedMessages: Int, evictedTokens: Int) {
+        if (!ENABLED) return
+        compactionStartedAt = SystemClock.elapsedRealtime()
+        Log.i(TAG, "turn#$turnId COMPACT_START elapsedMs=${elapsed()} evictedMessages=$evictedMessages evictedTokens=$evictedTokens")
+    }
+
+    fun onCompactionEnd(usedFallback: Boolean, reclaimedTokens: Int) {
+        if (!ENABLED) return
+        val took = if (compactionStartedAt == 0L) -1L else SystemClock.elapsedRealtime() - compactionStartedAt
+        compactionStartedAt = 0L
+        Log.i(TAG, "turn#$turnId COMPACT_END elapsedMs=${elapsed()} compactionMs=$took fallback=$usedFallback reclaimedTokens=$reclaimedTokens")
     }
 
     fun onInboundDelta(chars: Int, bufferChars: Int) {

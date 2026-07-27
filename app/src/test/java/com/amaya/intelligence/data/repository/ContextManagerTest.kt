@@ -27,7 +27,6 @@ class ContextManagerTest {
     }
 
     private val budgets = PromptBudgetManager()
-    private val compressor = ConversationCompressor(budgets)
 
     @Test
     fun `provider request requires a user query`() {
@@ -38,42 +37,8 @@ class ContextManagerTest {
     }
 
     @Test
-    fun `compression keeps contiguous recent suffix`() {
-        val history = listOf(
-            ChatMessage(MessageRole.USER, "old-a ".repeat(400)),
-            ChatMessage(MessageRole.ASSISTANT, "small-old"),
-            ChatMessage(MessageRole.USER, "old-b ".repeat(400)),
-            ChatMessage(MessageRole.ASSISTANT, "r1"),
-            ChatMessage(MessageRole.USER, "r2"),
-            ChatMessage(MessageRole.ASSISTANT, "r3"),
-            ChatMessage(MessageRole.USER, "r4"),
-            ChatMessage(MessageRole.ASSISTANT, "r5"),
-            ChatMessage(MessageRole.USER, "r6"),
-            ChatMessage(MessageRole.ASSISTANT, "r7"),
-            ChatMessage(MessageRole.USER, "r8")
-        )
-
-        val result = compressor.compress(history, 100)
-        assertEquals(history.takeLast(result.messages.size), result.messages)
-        assertTrue(result.compressedMessageCount > 0)
-        assertTrue(result.summary.contains("older messages"))
-    }
-
-    @Test
-    fun `compression preserves assistant tool span`() {
-        val history = buildList {
-            repeat(8) { index -> add(ChatMessage(MessageRole.USER, "old-$index ".repeat(40))) }
-            add(ChatMessage(MessageRole.ASSISTANT, "tool request"))
-            add(ChatMessage(MessageRole.TOOL, toolResult = ToolResultMessage("call", "result ".repeat(40))))
-        }
-        val result = compressor.compress(history, 80)
-        assertEquals(MessageRole.ASSISTANT, result.messages.first().role)
-        assertEquals(MessageRole.TOOL, result.messages.last().role)
-    }
-
-    @Test
-    fun `auto compaction transcript retains tool call and result`() {
-        val transcript = autoCompactionTranscript(
+    fun `eviction transcript retains tool call and result`() {
+        val transcript = evictionTranscript(
             listOf(
                 ChatMessage(MessageRole.USER, "inspect page"),
                 ChatMessage(MessageRole.ASSISTANT, toolCalls = listOf(com.amaya.intelligence.data.remote.api.ToolCallMessage("call", "browser", mapOf("action" to "get_dom")))),
@@ -86,15 +51,37 @@ class ContextManagerTest {
         assertTrue(transcript.contains("tool_result call: page data"))
     }
 
+    /**
+     * The old transcript builder concatenated oldest-first and then took the head, so an
+     * overflowing eviction discarded the newest activity — the opposite of what a
+     * "where did execution stop" summary needs.
+     */
     @Test
-    fun `auto compaction retains full active user turn`() {
+    fun `eviction transcript keeps the newest activity when it overflows`() {
+        val evicted = (1..40).map { ChatMessage(MessageRole.ASSISTANT, "step-$it ".repeat(40)) }
+
+        val transcript = evictionTranscript(evicted, maxChars = 1_200)
+
+        assertTrue("newest step must survive", transcript.contains("step-40"))
+        assertFalse("oldest step must be the one elided", transcript.contains("step-1 "))
+        assertTrue(transcript.contains("older evicted activity elided"))
+    }
+
+    /**
+     * The active turn used to be the only thing that survived: everything before the latest user
+     * message was dropped regardless of budget. Full coverage lives in ContextPlanTest.
+     */
+    @Test
+    fun `planning retains the earlier turns that still fit`() {
         val user = ChatMessage(MessageRole.USER, "latest")
         val toolCall = ChatMessage(MessageRole.ASSISTANT, toolCalls = listOf(com.amaya.intelligence.data.remote.api.ToolCallMessage("call", "browser", emptyMap())))
         val toolResult = ChatMessage(MessageRole.TOOL, toolResult = ToolResultMessage("call", "result"))
         val messages = listOf(ChatMessage(MessageRole.USER, "old"), ChatMessage(MessageRole.ASSISTANT, "old response"), user, toolCall, toolResult)
-        val fitted = listOf(user, toolCall, toolResult)
 
-        assertEquals(listOf(messages[0], messages[1]), messagesOmittedByContextFit(messages, fitted))
+        val plan = planContextWindow(messages, maxTokens = 100_000)
+
+        assertEquals(messages, plan.messages)
+        assertTrue(plan.evicted.isEmpty())
     }
 
     @Test
@@ -112,9 +99,44 @@ class ContextManagerTest {
     }
 
     @Test
-    fun `budget reserves output tools and safety`() {
-        val withTools = budgets.historyBudgetFor(32_768, 8_192, 4_000)
-        val withoutTools = budgets.historyBudgetFor(32_768, 8_192, 0)
-        assertTrue(withTools < withoutTools)
+    fun `prompt budget reserves output tools and safety`() {
+        val withTools = budgets.promptBudgetFor(32_768, 8_192, 4_000)
+        val withoutTools = budgets.promptBudgetFor(32_768, 8_192, 0)
+        assertTrue(withTools.maxSystemTokens < withoutTools.maxSystemTokens)
+    }
+
+    /**
+     * Required sections are charged before optional ones. Previously `required` was computed and
+     * then ignored, so operating rules could be evicted by whatever ranked ahead of them.
+     */
+    @Test
+    fun `required sections survive a prompt budget that optional content would exhaust`() {
+        val sections = listOf(
+            PromptSection("operating_rules", "SYSTEM", 1000, ContextInclusionMode.ALWAYS, alwaysInclude = true),
+            PromptSection("user_memory", "USER MEMORY", 690, ContextInclusionMode.FULL)
+        )
+        val items = listOf(
+            ContextItem("bulk_memory", "user_memory", ContextSource.MEMORY, "Memory", "filler ".repeat(4_000), 690, mode = ContextInclusionMode.FULL, maxTokens = 900),
+            ContextItem("rules", "operating_rules", ContextSource.OPERATING_RULES, "System", "Always follow the operating rules.", 1000, mode = ContextInclusionMode.ALWAYS, alwaysInclude = true)
+        )
+
+        val built = budgets.buildPrompt(sections, items, PromptBudget(maxSystemTokens = 300, maxItemTokens = 900))
+
+        assertTrue(built.prompt.contains("Always follow the operating rules."))
+        assertTrue(built.droppedItems.none { it.id == "rules" })
+    }
+
+    @Test
+    fun `prompt items are truncated to a size the same estimator accepts`() {
+        val sections = listOf(PromptSection("user_memory", "USER MEMORY", 690, ContextInclusionMode.FULL))
+        val items = listOf(
+            ContextItem("bulk", "user_memory", ContextSource.MEMORY, "Memory", "catatan panjang ".repeat(2_000), 690, mode = ContextInclusionMode.FULL, maxTokens = 120)
+        )
+
+        val built = budgets.buildPrompt(sections, items, PromptBudget(maxSystemTokens = 4_000, maxItemTokens = 900))
+
+        assertTrue("item must not be dropped after truncation", built.droppedItems.isEmpty())
+        assertTrue(built.prompt.contains("truncated by prompt budget"))
+        assertTrue(budgets.estimateTokens(built.prompt) <= 4_000)
     }
 }

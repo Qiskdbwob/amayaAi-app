@@ -489,8 +489,10 @@ class OpenAiProvider @Inject constructor(
     }.flowOn(Dispatchers.IO)
 
     private fun buildResponsesRequest(request: ChatRequest): JSONObject {
-        val body = buildCodexResponsesRequest(request, promptCacheKey = "").apply {
-            remove("prompt_cache_key")
+        // The cache key is the conversation id, stable for the whole session. Dropping it forfeited
+        // prompt caching on every plain-Responses request.
+        val body = buildCodexResponsesRequest(request, promptCacheKey = request.sessionId).apply {
+            if (request.sessionId.isBlank()) remove("prompt_cache_key")
             remove("text")
         }
         val base = OpenAiRequestCodec.responsesBase(

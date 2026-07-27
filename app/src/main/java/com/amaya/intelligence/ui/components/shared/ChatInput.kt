@@ -67,6 +67,8 @@ fun ChatInput(
     resetKey: Any? = null,
     isStreaming: Boolean,
     isCompressing: Boolean = false,
+    /** Host-driven compaction mid-turn. Shows the pill but never arms the cancel affordance. */
+    isAutoCompacting: Boolean = false,
     attachedFilePath: String? = null,
     attachedImageBase64: String? = null,
     attachedImageName: String? = null,
@@ -164,18 +166,19 @@ fun ChatInput(
         isSearchingFiles = false
     }
 
+    val anyCompacting = isCompressing || isAutoCompacting
     var showCompactingDone by remember(resetKey) { mutableStateOf(false) }
-    var previousIsCompressing by remember { mutableStateOf(isCompressing) }
+    var previousIsCompressing by remember { mutableStateOf(anyCompacting) }
     var isCanceled by remember(resetKey) { mutableStateOf(false) }
-    
-    LaunchedEffect(isCompressing) {
-        if (previousIsCompressing && !isCompressing) {
+
+    LaunchedEffect(anyCompacting) {
+        if (previousIsCompressing && !anyCompacting) {
             showCompactingDone = true
             kotlinx.coroutines.delay(1200)
             showCompactingDone = false
             isCanceled = false
         }
-        previousIsCompressing = isCompressing
+        previousIsCompressing = anyCompacting
     }
 
     val pillColor = remember(isDark) {
@@ -336,7 +339,7 @@ fun ChatInput(
                 }
             }
 
-            val pillVisible = commandMode != null || isCompressing || showCompactingDone
+            val pillVisible = commandMode != null || anyCompacting || showCompactingDone
 
             // Hoisted out of AnimatedVisibility so the content below can tell whether an enter or
             // exit is currently in flight.
@@ -352,7 +355,7 @@ fun ChatInput(
                     agents = mentionAgents,
                     files = fileResults,
                     isSearching = isSearchingFiles,
-                    showCompact = isCompressing || showCompactingDone,
+                    showCompact = anyCompacting || showCompactingDone,
                     compactDone = showCompactingDone,
                     compactCanceled = isCanceled
                 )
