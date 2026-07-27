@@ -3,6 +3,10 @@
 ## Scope
 - This file applies to `app/src/main/java/com/amaya/intelligence/impl/local/` and its children.
 
+## Current Focus
+
+Local/core behavior is the active audit and repair focus. Remote-session, Antigravity, Opencode, and Windows Bridge behavior remain incomplete/deferred; see `docs/local/audits/VISION-HOLD.md`.
+
 ## Local Runtime Rules
 - Keep device-local execution, persistence, browser automation, and runtime services in this subtree.
 - This is the correct place for local tool orchestration, background services, browser control, and non-remote behaviors.
@@ -22,13 +26,18 @@ impl/local/
 ├─ AGENTS.md
 ├─ LocalIntelligenceService.kt
 ├─ browser/
+├─ chat/                         # extracted local chat projections/collaborators
 ├─ tools/
 └─ providers/
 ```
 
 ## File Functions
 - `AGENTS.md`: rules for local runtime and services.
-- `LocalIntelligenceService.kt`: local AI orchestration and persistence-backed chat flow.
+- `LocalIntelligenceService.kt`: local AI orchestration and persistence-backed chat facade.
+- `LocalConversationContext.kt`: pure interruption repair, bounded stored-tool payloads, compaction context, canonical-history replay, and UI-to-provider context mapping.
+- `chat/LocalTurnCoordinator.kt`: concurrent turn registry, lifecycle IDs, pending-message state, and turn model.
+- `chat/LocalSessionProjection.kt`: pure running-session phase/detail projection extracted from the service.
+- `chat/LocalAgentEventReducer.kt`: pure local `AgentEvent` projection for text, thinking, tool lifecycle, canonical history, subagents, and terminal repair; service-owned browser, notification, persistence, and compaction side effects remain outside.
 - `ToolConfirmationRegistry.kt`: turn-bound, idempotent inline tool approval state.
 - `browser/`: GeckoView controller, WebExtension JavaScript bridge, session manager, DOM inspection, and browser safety handling.
 - `tools/`: local tool mapping, browser tool wrapping, and execution helpers.
@@ -38,8 +47,12 @@ impl/local/
 - `LocalIntelligenceService.kt`: local conversation flow, stable conversation-id persistence before model turns, repository integration, concurrent per-conversation turns, target-switch-safe UI projection, rendered-history/context clearing, Hermes-style model-summary injection into the next main-session prompt, cancellation, and composer progress state.
 - `browser/AndroidBrowserController.kt`: GeckoView interaction, navigation, DOM-backed browser actions, and content-process kill/crash reporting.
 - `browser/GeckoBrowserRuntime.kt`: process-wide Gecko runtime plus built-in WebExtension JavaScript bridge. Bridge attach is bounded (single delegate registration, one reload-and-wait recovery) and a killed content process is reported as unrecoverable instead of being waited out; a stale port that no longer answers is detected by a liveness probe because Gecko delivers no disconnect for a reclaimed process.
-- `browser/BrowserSessionManager.kt`: parent browser task state, cancel flow, GeckoSession ownership, workspace file-input assignment, and resumable approval checkpoints before workspace files are selected for a web form. CAPTCHA/challenge pages receive no special detection or pause behavior. The active tab keeps its offscreen display and high priority between tool calls and while the host is backgrounded, because Android reclaims an inactive Gecko content process within seconds; a reclaimed tab is rebuilt and reloaded from persisted tab state on the next action. Offscreen surface slots stay capped: a busy session evicts an idle holder and otherwise runs without one.
-- `browser/DomInspector.kt`: safe DOM summaries, selector mapping, and interaction helpers.
+- `browser/BrowserSessionManager.kt`: synchronized conversation-session registry, visible-session projection, LRU trimming, wake-lock boundary, and operator view ownership.
+- `browser/BrowserConversationSession.kt`: per-conversation browser state, GeckoSession ownership, workspace file transfer, action dispatch, and resumable approval checkpoints before workspace files are selected for a web form.
+- `browser/BrowserSessionPersistence.kt`: concrete SharedPreferences codec/store for browser tabs, history, active tab, and active URL; no Gecko or UI side effects.
+- `browser/BrowserRuntimeLimits.kt`: browser-owned timeout, output, viewport, and buffer limits; callers must use these constants instead of repeating policy literals. CAPTCHA/challenge pages receive no special detection or pause behavior. The active tab keeps its offscreen display and high priority between tool calls and while the host is backgrounded, because Android reclaims an inactive Gecko content process within seconds; a reclaimed tab is rebuilt and reloaded from persisted tab state on the next action. Offscreen surface slots stay capped: a busy session evicts an idle holder and otherwise runs without one.
+- `browser/DomInspector.kt`: typed DOM script builders for escaped dynamic values.
+- `browser/BrowserScriptAssets.kt` and `assets/browser-bridge/dom-inspector.js`: cached static DOM-inspector JavaScript template.
 - `browser/BrowserResponseFormatter.kt`: compact browser JSON formatting for parent and sub-tool responses.
 - `browser/BrowserActionCatalog.kt`: canonical model-exposed browser action inventory shared by tool schema and debug coverage.
 - `browser/SafetyGuard.kt`: documents unrestricted local browser input policy; no credential/OTP gating.

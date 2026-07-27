@@ -8,6 +8,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import android.util.Log
+import com.amaya.intelligence.util.debugLog
 import org.json.JSONObject
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
@@ -128,7 +129,7 @@ object GeckoBrowserRuntime {
      * stale port behind without any disconnect callback, so readiness state alone lies.
      * Sessions that were never attached return false: the normal attach path covers them.
      */
-    suspend fun isBridgeStale(session: GeckoSession, timeoutMs: Long = 2_000): Boolean {
+    suspend fun isBridgeStale(session: GeckoSession, timeoutMs: Long = BrowserRuntimeLimits.DEFAULT_BRIDGE_STALE_TIMEOUT_MS): Boolean {
         if (isProcessGone(session)) return true
         if (!session.isOpen) return true
         if (synchronized(this) { session !in delegated } || !isReady(session)) return false
@@ -179,19 +180,19 @@ object GeckoBrowserRuntime {
             withContext(Dispatchers.Main.immediate) {
                 session.webExtensionController.setMessageDelegate(webExtension, object : WebExtension.MessageDelegate {
                     override fun onConnect(port: WebExtension.Port) {
-                        Log.d("AmayaBrowser", "bridge connected session=$session")
+                        debugLog("AmayaBrowser") { "bridge connected" }
                         addPort(session, port)
                         port.setDelegate(object : WebExtension.PortDelegate {
                             override fun onPortMessage(message: Any, source: WebExtension.Port) {
                                 val json = message as? JSONObject ?: return
                                 if (json.optString("type") == "ready") {
-                                    Log.d("AmayaBrowser", "bridge ready session=$session")
+                                    debugLog("AmayaBrowser") { "bridge ready" }
                                     markReady(session, source)
                                 } else completePending(json.optString("id"), json)
                             }
 
                             override fun onDisconnect(source: WebExtension.Port) {
-                                Log.w("AmayaBrowser", "bridge disconnected session=$session")
+                                Log.w("AmayaBrowser", "bridge disconnected")
                                 removePort(session, source)
                             }
                         })
@@ -222,8 +223,8 @@ object GeckoBrowserRuntime {
         true
     } == true
 
-    suspend fun evaluate(session: GeckoSession, script: String, timeoutMs: Long = 10_000): String {
-        Log.d("AmayaBrowser", "evaluate start session=$session timeoutMs=$timeoutMs")
+    suspend fun evaluate(session: GeckoSession, script: String, timeoutMs: Long = BrowserRuntimeLimits.DEFAULT_EVALUATION_TIMEOUT_MS): String {
+        debugLog("AmayaBrowser") { "evaluate start timeoutMs=$timeoutMs" }
         if (isProcessGone(session)) throw BridgeUnrecoverable(PROCESS_GONE_MESSAGE)
         val id = UUID.randomUUID().toString()
         val deferred = CompletableDeferred<JSONObject>()
@@ -241,12 +242,12 @@ object GeckoBrowserRuntime {
                 port.postMessage(JSONObject().put("id", id).put("script", script))
             }
             val reply = withTimeout(timeoutMs) { deferred.await() }
-            Log.d("AmayaBrowser", "evaluate reply session=$session id=$id")
+            debugLog("AmayaBrowser") { "evaluate reply" }
             if (!reply.optBoolean("ok")) error(reply.optString("error", "JavaScript evaluation failed"))
             val value = reply.opt("value")
             return if (value == null || value == JSONObject.NULL) "" else if (value is String) value else value.toString()
         } catch (error: Throwable) {
-            Log.e("AmayaBrowser", "evaluate failed session=$session id=$id", error)
+            Log.e("AmayaBrowser", "evaluate failed", error)
             throw error
         } finally {
             removePending(id)
