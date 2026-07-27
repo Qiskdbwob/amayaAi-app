@@ -3,10 +3,8 @@ package com.amaya.intelligence.ui.components.shared
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 
 import androidx.compose.material.icons.filled.Search
@@ -19,10 +17,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.domain.models.ModelOption
 import com.amaya.intelligence.ui.screens.models.rememberModelSettingsColors
-import com.amaya.intelligence.ui.theme.LocalAmayaGradients
-import kotlinx.coroutines.launch
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
 
 @OptIn(ExperimentalMaterial3Api::class)

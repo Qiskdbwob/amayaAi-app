@@ -14,7 +14,6 @@ import com.amaya.intelligence.data.repository.ProposalApplyResult
 import com.amaya.intelligence.data.repository.SkillBehaviorSettings
 import com.amaya.intelligence.data.repository.SkillRepository
 import com.amaya.intelligence.domain.memory.MemoryAction
-import com.amaya.intelligence.domain.memory.MemoryProposal
 import com.amaya.intelligence.domain.memory.MemoryScope
 import com.amaya.intelligence.domain.memory.MemoryType
 import com.amaya.intelligence.domain.memory.PendingProposal

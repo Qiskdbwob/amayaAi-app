@@ -1,42 +1,16 @@
 package com.amaya.intelligence.impl.local.browser
-import android.content.Context
 import android.net.Uri
-import android.view.View
-import android.graphics.PixelFormat
-import android.media.ImageReader
-import android.os.PowerManager
-import org.mozilla.geckoview.GeckoDisplay
-import org.mozilla.geckoview.GeckoSession
-import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.WebResponse
 import androidx.core.content.FileProvider
 import android.webkit.URLUtil
 import java.io.File
 import java.io.FileOutputStream
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withLock
-import org.json.JSONArray
-import org.json.JSONObject
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicInteger
-import javax.inject.Inject
-import javax.inject.Singleton
-import com.amaya.intelligence.tools.ToolExecutionContext
 internal fun BrowserConversationSession.setWorkspace(path: String?) { workspacePath = path?.takeIf(String::isNotBlank) }
 internal fun BrowserConversationSession.retain() { clients.incrementAndGet() }
 internal fun BrowserConversationSession.release() { clients.decrementAndGet() }

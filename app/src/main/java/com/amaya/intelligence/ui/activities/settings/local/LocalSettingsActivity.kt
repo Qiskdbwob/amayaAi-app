@@ -20,7 +20,6 @@ import com.amaya.intelligence.data.local.entity.ProjectEntity
 import com.amaya.intelligence.data.local.entity.AgentGroupEntity
 import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.ui.activities.agent.local.LocalAgentDetailActivity
-import com.amaya.intelligence.ui.activities.agent.local.LocalAgentListActivity
 import com.amaya.intelligence.ui.activities.amaya.local.LocalMemoryAreaActivity
 import com.amaya.intelligence.ui.activities.amaya.local.LocalSkillsActivity
 import com.amaya.intelligence.ui.activities.mcp.local.LocalMcpActivity

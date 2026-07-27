@@ -3,12 +3,7 @@ package com.amaya.intelligence.ui.screens.cronjob.shared
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.*
@@ -17,21 +12,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.local.entity.CronJobEntity
 import com.amaya.intelligence.data.local.entity.CronRecurringType
 import com.amaya.intelligence.data.local.entity.CronSessionMode
-import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 
 
-import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import com.amaya.intelligence.ui.res.UiStrings
-import kotlinx.coroutines.launch
 import java.util.*
 
 @OptIn(ExperimentalMaterial3Api::class)

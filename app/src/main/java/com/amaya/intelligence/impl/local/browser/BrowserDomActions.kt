@@ -1,27 +1,14 @@
 package com.amaya.intelligence.impl.local.browser
 
-import android.content.Context
 import android.graphics.Bitmap
 import android.os.SystemClock
 import android.util.Base64
-import android.util.Log
-import android.view.inputmethod.InputMethodManager
-import android.net.Uri
 import android.view.KeyEvent
-import android.view.InputDevice
-import android.view.MotionEvent
-import android.view.ViewConfiguration
-import org.mozilla.geckoview.GeckoResult
-import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoView
-import org.mozilla.geckoview.WebResponse
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 

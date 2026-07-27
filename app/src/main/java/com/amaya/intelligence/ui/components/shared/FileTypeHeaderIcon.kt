@@ -11,7 +11,6 @@ import coil.decode.SvgDecoder
 import coil.imageLoader
 import coil.request.CachePolicy
 import coil.request.ImageRequest
-import com.amaya.intelligence.domain.models.ToolCategory
 import com.amaya.intelligence.domain.models.ToolExecution
 import java.util.LinkedHashMap
 

@@ -25,7 +25,6 @@ import com.amaya.intelligence.ui.screens.project.shared.FileListItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.file.Files
-import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.stream.Collectors
 import kotlin.io.path.isDirectory

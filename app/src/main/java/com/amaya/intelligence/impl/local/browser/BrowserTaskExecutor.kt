@@ -2,11 +2,9 @@ package com.amaya.intelligence.impl.local.browser
 
 import com.amaya.intelligence.tools.ToolExecutionContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 

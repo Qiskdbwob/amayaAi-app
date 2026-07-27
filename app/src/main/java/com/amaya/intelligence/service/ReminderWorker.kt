@@ -26,7 +26,6 @@ import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.ui.MainActivity
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
-import kotlinx.coroutines.flow.toList
 
 @HiltWorker
 class ReminderWorker @AssistedInject constructor(

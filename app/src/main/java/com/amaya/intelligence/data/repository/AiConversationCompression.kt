@@ -1,31 +1,8 @@
 package com.amaya.intelligence.data.repository
 
-import com.amaya.intelligence.data.local.dao.AgentDao
-import com.amaya.intelligence.data.local.dao.ProjectDao
-import com.amaya.intelligence.data.local.files.FileWorkspaceMemoryStore
 import com.amaya.intelligence.data.remote.api.*
-import com.amaya.intelligence.data.remote.mcp.McpClientManager
-import com.amaya.intelligence.domain.models.AssistantMode
-import com.amaya.intelligence.tools.ConfirmationRequest
-import com.amaya.intelligence.tools.ToolExecutor
-import com.amaya.intelligence.tools.ToolResult
-import com.amaya.intelligence.tools.toAiToolDefinition
-import com.amaya.intelligence.util.debugLog
-import com.amaya.intelligence.util.errorLog
 
-import com.amaya.intelligence.di.ApplicationScope
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.util.UUID
-import javax.inject.Inject
-import javax.inject.Singleton
 
 internal suspend fun AiRepository.compressConversationImpl(
         conversationHistory: List<ChatMessage>,

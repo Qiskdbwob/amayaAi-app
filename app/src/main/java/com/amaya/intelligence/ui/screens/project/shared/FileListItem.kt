@@ -22,7 +22,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.amaya.intelligence.domain.models.ProjectFileEntry
 import com.amaya.intelligence.ui.components.shared.getFileIcon
-import com.amaya.intelligence.ui.theme.SectionShape
 
 private data class IosProjectColors(
     val groupSurface: Color,

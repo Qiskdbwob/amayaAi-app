@@ -1,7 +1,5 @@
 package com.amaya.intelligence.ui.screens.project.local
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
@@ -23,7 +21,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.local.entity.ProjectEntity
 import com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet
 import com.amaya.intelligence.ui.screens.amaya.AmayaDivider

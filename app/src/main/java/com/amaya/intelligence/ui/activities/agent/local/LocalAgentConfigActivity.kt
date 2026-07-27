@@ -21,8 +21,6 @@ import com.amaya.intelligence.data.repository.AgentMemoryRepository
 import com.amaya.intelligence.data.repository.ReferenceDocumentRepository
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.impl.common.mappers.ModelUiMapper
-import com.amaya.intelligence.domain.models.AgentCapabilityProfile
-import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.ui.activities.cronjob.local.LocalCronJobActivity
 import com.amaya.intelligence.ui.activities.shared.LocalReferenceListActivity
 import com.amaya.intelligence.ui.screens.agent.local.LocalAgentConfigScreen

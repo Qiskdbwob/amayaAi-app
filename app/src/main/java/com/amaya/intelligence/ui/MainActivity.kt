@@ -32,7 +32,6 @@ import com.amaya.intelligence.ui.viewmodels.ChatViewModel
 import com.amaya.intelligence.ui.viewmodels.AppViewModel
 import com.amaya.intelligence.ui.activities.settings.local.LocalSettingsActivity
 import com.amaya.intelligence.ui.activities.agent.local.LocalAgentListActivity
-import com.amaya.intelligence.ui.activities.project.local.LocalProjectActivity
 import com.amaya.intelligence.ui.activities.project.local.LocalProjectListActivity
 import com.amaya.intelligence.ui.theme.AmayaTheme
 import dagger.hilt.android.AndroidEntryPoint

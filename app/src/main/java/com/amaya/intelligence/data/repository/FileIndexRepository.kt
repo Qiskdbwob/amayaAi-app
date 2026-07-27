@@ -4,14 +4,12 @@ import com.amaya.intelligence.data.local.dao.FileDao
 import com.amaya.intelligence.data.local.dao.FileMetadataDao
 import com.amaya.intelligence.data.local.dao.ProjectDao
 import com.amaya.intelligence.data.local.entity.FileEntity
-import com.amaya.intelligence.data.local.entity.FileMetadataEntity
 import com.amaya.intelligence.data.local.entity.ProjectEntity
 import com.amaya.intelligence.tools.formatFileSize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths

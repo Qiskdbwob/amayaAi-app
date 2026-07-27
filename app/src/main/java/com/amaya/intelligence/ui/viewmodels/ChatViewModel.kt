@@ -2,7 +2,6 @@ package com.amaya.intelligence.ui.viewmodels
 
 // Remote imports removed - now using domain and implementation mappers
 
-import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.amaya.intelligence.domain.ai.IntelligenceService

@@ -3,7 +3,6 @@ package com.amaya.intelligence.data.repository
 import com.amaya.intelligence.BuildConfig
 import com.amaya.intelligence.data.remote.api.GitHubUpdateService
 import com.amaya.intelligence.domain.models.UpdateInfo
-import com.amaya.intelligence.util.debugLog
 import com.amaya.intelligence.util.errorLog
 import javax.inject.Inject
 import javax.inject.Singleton

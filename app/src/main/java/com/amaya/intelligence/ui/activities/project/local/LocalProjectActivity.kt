@@ -17,7 +17,6 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.amaya.intelligence.data.local.dao.ProjectDao
-import com.amaya.intelligence.data.local.entity.ProjectEntity
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import javax.inject.Inject

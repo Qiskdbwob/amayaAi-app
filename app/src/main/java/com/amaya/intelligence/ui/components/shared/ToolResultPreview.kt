@@ -1,7 +1,5 @@
 package com.amaya.intelligence.ui.components.shared
 
-import android.content.Intent
-import android.net.Uri
 import com.amaya.intelligence.domain.models.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -10,16 +8,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import com.amaya.intelligence.ui.components.shared.MarkdownText
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import org.json.JSONObject
 
 /**
  * Renders a per-tool-type expanded result preview inside an expanded ToolCallCard.
