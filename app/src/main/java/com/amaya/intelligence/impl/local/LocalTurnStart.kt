@@ -10,6 +10,7 @@ import com.amaya.intelligence.util.LocalStreamPerfLog
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.withLock
+import com.amaya.intelligence.util.StreamDebugLog
 
 
 internal suspend fun LocalIntelligenceService.startTurn(
@@ -85,6 +86,7 @@ internal suspend fun LocalIntelligenceService.startTurn(
             _uiState.value = runtimeState
         }
         val notificationIdentity = notificationIdentity(runtimeState)
+        StreamDebugLog.event(conversationId, turnId, "TURN_START", "mode=${runtimeState.assistantMode} agent=${runtimeState.agentId ?: ""} promptChars=${trimmedContent.length}")
         val turn = LocalIntelligenceService.LocalTurn(
             turnId,
             conversationId,
@@ -120,6 +122,7 @@ internal suspend fun LocalIntelligenceService.startTurn(
                     ).collect { event ->
                         completed = completed || event is AgentEvent.Done
                         failed = failed || event is AgentEvent.Error || event is AgentEvent.Incomplete
+                        StreamDebugLog.event(conversationId, turnId, "EVENT", event::class.simpleName.orEmpty())
                         handleTurnEvent(turn, event)
                     }
                     if (isNewConversation && completed) launchTitleGeneration(trimmedContent, conversationId)
@@ -139,7 +142,9 @@ internal suspend fun LocalIntelligenceService.startTurn(
                         turn.state = turn.state.copy(isLoading = false, isStreaming = false, isAutoCompacting = false)
                         try {
                             persistTurn(turn)
+                            StreamDebugLog.event(conversationId, turnId, "PERSISTED", "messages=${turn.state.messages.size} context=${turn.state.contextMessages.size}")
                         } finally {
+                            StreamDebugLog.event(conversationId, turnId, "TURN_FINALLY", "completed=$completed failed=$failed")
                             activeTurns.remove(conversationId, turn)
                             turnsById.remove(turn.turnId, turn)
                             removeRunningSession(conversationId)

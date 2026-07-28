@@ -57,6 +57,7 @@ class AgentConversationRepositoryTest {
         assertEquals("file body", message.getJSONArray("toolExecutions").getJSONObject(0).getString("result"))
         assertEquals("file body", message.getJSONArray("steps").getJSONObject(0).getJSONObject("execution").getString("result"))
         assertEquals("20", message.getJSONObject("metadata").getString("completedAt"))
+        assertEquals("completed", message.getJSONObject("metadata").getString("turnStatus"))
     }
 
     @Test

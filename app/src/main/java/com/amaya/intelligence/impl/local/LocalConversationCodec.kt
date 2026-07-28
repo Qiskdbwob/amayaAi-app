@@ -7,7 +7,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
-internal fun parseMessagesFromJson(json: String): Result<List<UiMessage>> {
+internal fun parseMessagesFromJson(json: String, includeModelState: Boolean = true): Result<List<UiMessage>> {
         if (json.isBlank()) return Result.success(emptyList())
         return try {
             val messages = mutableListOf<UiMessage>()
@@ -90,12 +90,12 @@ internal fun parseMessagesFromJson(json: String): Result<List<UiMessage>> {
                     }
                 }
 
-                val responseItems = obj.optJSONArray("responseItems")?.let { array ->
+                val responseItems = if (includeModelState) obj.optJSONArray("responseItems")?.let { array ->
                     (0 until array.length()).mapNotNull { index -> array.optString(index).takeIf { it.isNotBlank() } }
-                }.orEmpty()
-                val canonicalHistory = obj.optJSONArray("canonicalHistory")?.let { array ->
+                }.orEmpty() else emptyList()
+                val canonicalHistory = if (includeModelState) obj.optJSONArray("canonicalHistory")?.let { array ->
                     (0 until array.length()).mapNotNull { index -> array.optString(index).takeIf { it.isNotBlank() } }
-                }.orEmpty()
+                }.orEmpty() else emptyList()
                 val attachments = obj.optJSONArray("attachments")?.let { array ->
                     (0 until array.length()).mapNotNull { index ->
                         val attachment = array.optJSONObject(index) ?: return@mapNotNull null

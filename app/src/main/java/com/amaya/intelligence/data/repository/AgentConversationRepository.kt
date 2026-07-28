@@ -193,7 +193,7 @@ internal fun appendDelegationTurn(
         put("timestamp", result.startedAt)
         put("toolExecutions", executions)
         put("steps", steps)
-        put("metadata", JSONObject(metadata + ("completedAt" to result.completedAt.toString())))
+        put("metadata", JSONObject(metadata + ("turnStatus" to "completed") + ("completedAt" to result.completedAt.toString())))
     })
     return array.toString()
 }

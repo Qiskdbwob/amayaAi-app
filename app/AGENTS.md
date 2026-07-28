@@ -70,7 +70,8 @@ app/
 - `src/main/java/com/amaya/intelligence/ui/screens/chat/bridge/`: bridge chat screen wiring and chat-specific bridge UI entry points.
 - `src/main/java/com/amaya/intelligence/ui/screens/browser/`: browser operator screen, control dock, and shared pure presentation mappings in `BrowserPresentation.kt`.
 - `src/main/java/com/amaya/intelligence/ui/components/shared/`: reusable shared UI components, including browser tool cards and `ModelIcon.kt` model/provider leading icons.
-- `src/main/java/com/amaya/intelligence/util/`: consolidated debug/error logging, network helpers, and debug-only local stream profiling.
+- `src/main/java/com/amaya/intelligence/util/`: consolidated debug/error logging, network helpers, debug-only local stream profiling, and redacted tool/stream lifecycle traces.
+- `src/debug/java/com/amaya/intelligence/ui/activities/debug/DebugActivity.kt`: debug-only ADB/UI harness for streaming, all-tool lifecycle, delegation, conversation integrity, background survival, and stress reports.
 - `../scripts/audit-android-code.py`: reusable source-tree inventory; JSON/text output goes under `app/build/reports/`.
 - `../scripts/map-android-filetree.py`: maps every Android text source/config/resource file to `docs/local/audits/ANDROID-FILETREE-LINE-MAP.md` with current line counts.
 

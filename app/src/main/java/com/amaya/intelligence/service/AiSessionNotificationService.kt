@@ -52,8 +52,8 @@ class AiSessionNotificationService : Service() {
     override fun onCreate() {
         super.onCreate()
         ensureChannels()
+        promote(activitySummary(intelligenceService.runningSessions.value))
         removeLegacyConversationShortcuts()
-        promote(activitySummary(emptyList()))
         completionCollector = serviceScope.launch { intelligenceService.completedSessions.collect(::postTerminalNotification) }
         collector = serviceScope.launch {
             intelligenceService.runningSessions.collect { sessions ->
@@ -69,7 +69,12 @@ class AiSessionNotificationService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_NOT_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        idleStopJob?.cancel()
+        idleStopJob = null
+        promote(activitySummary(intelligenceService.runningSessions.value))
+        return START_NOT_STICKY
+    }
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {

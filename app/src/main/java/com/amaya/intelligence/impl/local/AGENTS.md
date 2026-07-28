@@ -66,6 +66,7 @@ impl/local/
 - `browser/BrowserActionCatalog.kt`: canonical model-exposed browser action inventory shared by tool schema and debug coverage.
 - `browser/SafetyGuard.kt`: documents unrestricted local browser input policy; no credential/OTP gating.
 - `src/debug/.../BrowserDebugActivity.kt`: debug-only ADB-launchable browser action harness using the production parent-tool path and an in-process test page.
+- `src/debug/.../DebugActivity.kt`: debug-only ADB/UI harness for local streaming, tool routing/lifecycle, delegation, persisted-conversation integrity, background survival, and stress reports.
 - `tools/LocalToolMapper.kt`: local tool normalization, capability display-name mapping, and UI metadata mapping.
 - `tools/BrowserUseToolset.kt`: parent browser tool wrapper and legacy alias compatibility.
 - `providers/`: local provider implementations and compatibility adapters.

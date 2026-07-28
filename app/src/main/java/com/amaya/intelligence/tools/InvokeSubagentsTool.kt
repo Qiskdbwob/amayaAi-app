@@ -14,6 +14,7 @@ import com.amaya.intelligence.data.remote.api.OpenAiProvider
 
 import com.amaya.intelligence.data.remote.api.ToolCallMessage
 import com.amaya.intelligence.data.remote.api.ToolResultMessage
+import com.amaya.intelligence.data.repository.responseItemOutputText
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -307,15 +308,20 @@ class SubagentRunner @Inject constructor(
                     is ChatResponse.TextDelta -> textBuffer.append(response.text)
                     is ChatResponse.ThinkingDelta -> { /* reasoning — not surfaced in subagent result */ }
                     is ChatResponse.ToolCall  -> {
-                        hasToolCall = true
-                        toolCalls.add(
-                            ToolCallMessage(
-                                id        = response.id,
-                                name      = response.name,
-                                arguments = response.arguments,
-                                metadata  = response.metadata
+                        if (response.id.isBlank() || tools.none { it.name == response.name } || toolCalls.any { it.id == response.id }) {
+                            finalResponse = "[ERROR] Invalid, duplicate, or unadvertised tool call: ${response.name}"
+                            continueLoop = false
+                        } else {
+                            hasToolCall = true
+                            toolCalls.add(
+                                ToolCallMessage(
+                                    id        = response.id,
+                                    name      = response.name,
+                                    arguments = response.arguments,
+                                    metadata  = response.metadata
+                                )
                             )
-                        )
+                        }
                     }
                     is ChatResponse.ResponseItem -> responseItems.add(response.json)
                     is ChatResponse.Done  -> { /* no-op */ }
@@ -339,8 +345,12 @@ class SubagentRunner @Inject constructor(
             }
 
             if (!continueLoop) break
+            if (!hasToolCall && textBuffer.isBlank() && responseItemOutputText(responseItems).isNullOrBlank()) {
+                finalResponse = "[INCOMPLETE] Provider completed without a final response"
+                continueLoop = false
+            }
             if (!hasToolCall) {
-                finalResponse = textBuffer.toString()
+                finalResponse = textBuffer.toString().ifBlank { responseItemOutputText(responseItems).orEmpty() }
                 continueLoop = false
             } else {
                 messages.add(

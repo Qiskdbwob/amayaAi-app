@@ -298,7 +298,7 @@ class LocalIntelligenceService @Inject constructor(
                 return@launch
             }
             entity?.let { conv ->
-                val parsed = parseMessagesFromJson(conv.messagesJson)
+                val parsed = parseMessagesFromJson(conv.messagesJson, includeModelState = false)
                 val messages = parsed.getOrElse {
                     _uiState.update { state -> state.copy(error = "Conversation data is corrupted and could not be loaded") }
                     return@launch

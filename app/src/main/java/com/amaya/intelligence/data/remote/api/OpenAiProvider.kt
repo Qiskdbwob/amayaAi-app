@@ -2,6 +2,7 @@ package com.amaya.intelligence.data.remote.api
 
 import com.amaya.intelligence.data.remote.provider.openai.*
 import com.squareup.moshi.Moshi
+import com.amaya.intelligence.data.remote.api.isRetryableHttpStatus
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -134,7 +135,7 @@ class OpenAiProvider @Inject constructor(
                             sendResponse(ChatResponse.Error(
                                 message = friendlyCodexError(response.code, errorBody, request.model, response.message),
                                 code = response.code.toString(),
-                                retryable = response.code == 429 || response.code >= 500
+                                retryable = isRetryableHttpStatus(response.code)
                             ))
                             close()
                             return@use
@@ -200,7 +201,7 @@ class OpenAiProvider @Inject constructor(
                     if (!response.isSuccessful) {
                         val body = response.body?.readUtf8Limited(MAX_ERROR_BODY_BYTES)
                         android.util.Log.e("OpenAiProvider", "Codex endpoint failed code=${response.code}")
-                        sendResponse(ChatResponse.Error(friendlyCodexError(response.code, body, request.model, response.message), retryable = response.code != 401))
+                        sendResponse(ChatResponse.Error(friendlyCodexError(response.code, body, request.model, response.message), code = response.code.toString(), retryable = isRetryableHttpStatus(response.code)))
                         close()
                         return@launch
                     }
@@ -428,7 +429,7 @@ class OpenAiProvider @Inject constructor(
                 )
 
                 if (!response.isSuccessful) {
-                    sendResponse(ChatResponse.Error("API error: ${response.code} - $body"))
+                    sendResponse(ChatResponse.Error("API error: ${response.code} - $body", code = response.code.toString(), retryable = isRetryableHttpStatus(response.code)))
                     close()
                     return@callbackFlow
                 }

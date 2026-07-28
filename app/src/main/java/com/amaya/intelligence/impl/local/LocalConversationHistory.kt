@@ -15,11 +15,13 @@ internal const val AUTO_COMPACTED_CONTEXT_PREFIX = "[AUTO-COMPACTED ACTIVE CONTE
  * "recovered" and leave the stored column untouched.
  */
 internal fun markInterruptedTurn(messages: List<UiMessage>): List<UiMessage>? {
-    val index = messages.indexOfLast { message ->
+    var index = messages.indexOfLast { message ->
         message.role == MessageRole.ASSISTANT &&
             message.metadata["turnStatus"].isNullOrBlank() &&
             (message.isThinking || message.toolExecutions.any { it.status == ToolStatus.RUNNING || it.status == ToolStatus.PENDING })
     }
+    val appendInterruptedAssistant = index < 0 && messages.lastOrNull()?.role == MessageRole.USER
+    if (appendInterruptedAssistant) index = messages.size
     if (index < 0) return null
     fun stop(tool: ToolExecution) = if (tool.status == ToolStatus.RUNNING || tool.status == ToolStatus.PENDING) {
         tool.copy(
@@ -28,19 +30,22 @@ internal fun markInterruptedTurn(messages: List<UiMessage>): List<UiMessage>? {
             metadata = tool.metadata + mapOf("approvalRequired" to "false", "approvalState" to "cancelled")
         )
     } else tool
-    val interrupted = messages[index].let { message ->
+    val terminalMetadata = mapOf(
+        "turnStatus" to "interrupted",
+        "completedAt" to System.currentTimeMillis().toString(),
+        "retryable" to "true"
+    )
+    val interrupted = if (appendInterruptedAssistant) {
+        UiMessage(role = MessageRole.ASSISTANT, content = "", metadata = terminalMetadata)
+    } else messages[index].let { message ->
         message.copy(
             isThinking = false,
             toolExecutions = message.toolExecutions.map(::stop),
             steps = message.steps.map { if (it is MessageStep.ToolCall) it.copy(execution = stop(it.execution)) else it },
-            metadata = message.metadata + mapOf(
-                "turnStatus" to "interrupted",
-                "completedAt" to System.currentTimeMillis().toString(),
-                "retryable" to "true"
-            )
+            metadata = message.metadata + terminalMetadata
         )
     }
-    return messages.toMutableList().also { it[index] = interrupted }
+    return messages.toMutableList().also { if (appendInterruptedAssistant) it += interrupted else it[index] = interrupted }
 }
 
 /** Above this, the stored model context is carrying more tool payload than it can ever replay. */
@@ -64,8 +69,7 @@ internal fun digestOldToolPayloads(
     maxTotalChars: Int = MAX_STORED_TOOL_PAYLOAD_CHARS,
     keepNewest: Int = KEEP_VERBATIM_TAIL_MESSAGES
 ): List<UiMessage> {
-    // Every tool result is stored three times — toolExecutions, steps, and canonicalHistory — and
-    // all three are serialized. Counting and trimming only one would leave the ceiling unenforced.
+    // Tool results and Responses API items can each dominate the stored model context.
     fun trim(execution: ToolExecution): ToolExecution {
         val result = execution.result
         return if (result == null || !needsTrimming(result)) execution
@@ -75,7 +79,8 @@ internal fun digestOldToolPayloads(
     val totalPayload = context.sumOf { message ->
         message.toolExecutions.sumOf { it.result?.length ?: 0 } +
             message.steps.filterIsInstance<MessageStep.ToolCall>().sumOf { it.execution.result?.length ?: 0 } +
-            message.canonicalHistory.sumOf { it.length }
+            message.canonicalHistory.sumOf { it.length } +
+            message.responseItems.sumOf { it.length }
     }
     if (totalPayload <= maxTotalChars) return context
 
@@ -85,10 +90,11 @@ internal fun digestOldToolPayloads(
         val executions = message.toolExecutions.map(::trim)
         val steps = message.steps.map { if (it is MessageStep.ToolCall) it.copy(execution = trim(it.execution)) else it }
         val canonical = message.canonicalHistory.map(::digestCanonicalToolResult)
-        if (executions == message.toolExecutions && steps == message.steps && canonical == message.canonicalHistory) {
+        val responseItems = message.responseItems.map(::digestResponseItem)
+        if (executions == message.toolExecutions && steps == message.steps && canonical == message.canonicalHistory && responseItems == message.responseItems) {
             message
         } else {
-            message.copy(toolExecutions = executions, steps = steps, canonicalHistory = canonical)
+            message.copy(toolExecutions = executions, steps = steps, responseItems = responseItems, canonicalHistory = canonical)
         }
     }
 }
@@ -118,6 +124,19 @@ private fun digestCanonicalToolResult(entry: String): String {
     return json.put("result", storedToolDigest(json.optString("name").ifBlank { "tool" }, result)).toString()
 }
 
+private fun digestResponseItem(entry: String): String {
+    val json = runCatching { JSONObject(entry) }.getOrNull() ?: return entry
+    val text = when (json.optString("type")) {
+        "message" -> json.optJSONArray("content")?.let { content ->
+            (0 until content.length()).mapNotNull { content.optJSONObject(it)?.optString("text") }.joinToString("\n")
+        }.orEmpty()
+        "output_text" -> json.optString("text")
+        else -> ""
+    }
+    if (!needsTrimming(text)) return entry
+    return JSONObject().put("type", "output_text").put("text", storedToolDigest("response_item", text)).toString()
+}
+
 internal fun contextAfterHistoryClear(context: List<UiMessage>, deleteContext: Boolean): List<UiMessage> =
     if (deleteContext) emptyList() else context
 
@@ -137,6 +156,9 @@ internal fun compressedSessionContext(summary: String, auto: Boolean = false): L
 
 // Extension to map domain to repository model
 internal fun UiMessage.toChatMessages(): List<ChatMessage> {
+    if (role == MessageRole.SYSTEM && metadata["compressed"] == "true") {
+        return listOf(ChatMessage(role = role, content = content.takeIf(String::isNotBlank)))
+    }
     if (role == MessageRole.ASSISTANT && canonicalHistory.isNotEmpty()) {
         canonicalHistoryToChatMessages(canonicalHistory).takeIf { it.isNotEmpty() }?.let { return it }
     }

@@ -38,6 +38,13 @@ class BrowserSessionManager @Inject constructor(
     private var visibleStateJob: Job? = null
     private var workspacePath: String? = null
 
+    init {
+        val template = context.assets.open("browser-bridge/dom-inspector.js")
+            .bufferedReader()
+            .use { it.readText() }
+        DomInspector.installBaseInspectorTemplate(template)
+    }
+
     @Synchronized
     private fun sessionFor(key: SessionKey): BrowserConversationSession {
         sessions[key]?.let { return it }

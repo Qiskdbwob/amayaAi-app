@@ -23,5 +23,24 @@ class CanonicalHistoryTest {
         assertEquals("done", messages[2].content)
     }
 
+    @Test
+    fun `rendered transcript load omits opaque model state`() {
+        val json = org.json.JSONArray().put(JSONObject()
+            .put("role", "ASSISTANT")
+            .put("content", "visible")
+            .put("responseItems", org.json.JSONArray().put(JSONObject().put("type", "output_text").put("text", "opaque").toString()))
+            .put("canonicalHistory", org.json.JSONArray().put(item("assistant_text").put("text", "canonical").toString())))
+            .toString()
+
+        val visible = parseMessagesFromJson(json, includeModelState = false).getOrThrow().single()
+        val context = parseMessagesFromJson(json).getOrThrow().single()
+
+        assertEquals("visible", visible.content)
+        assertEquals(emptyList<String>(), visible.responseItems)
+        assertEquals(emptyList<String>(), visible.canonicalHistory)
+        assertEquals(1, context.responseItems.size)
+        assertEquals(1, context.canonicalHistory.size)
+    }
+
     private fun item(kind: String) = JSONObject().put("kind", kind)
 }

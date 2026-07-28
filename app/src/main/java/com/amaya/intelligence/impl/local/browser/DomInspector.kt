@@ -407,6 +407,21 @@ object DomInspector {
     }
 
     private fun baseInspector(body: String): String =
-        checkNotNull(baseInspectorTemplate) { "DOM inspector asset is not installed" }
+        (baseInspectorTemplate ?: FALLBACK_INSPECTOR_TEMPLATE)
             .replace(BODY_MARKER, body)
+
+    private const val FALLBACK_INSPECTOR_TEMPLATE = """
+        (function() {
+          function textForElement(el) { return (el && (el.innerText || el.textContent || '')).trim(); }
+          function visible(el) { return !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length); }
+          function enabledState(el) { return !!el && !el.disabled && el.getAttribute('aria-disabled') !== 'true'; }
+          function isEditable(el) { return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)); }
+          function selectorFor(el) { return el && el.id ? '#' + CSS.escape(el.id) : el && el.tagName ? el.tagName.toLowerCase() : ''; }
+          function summarize(el) { return {tag:el.tagName, text:textForElement(el).slice(0,400), selector:selectorFor(el)}; }
+          function resolveElement(selector) { try { return document.querySelector(selector); } catch (_) { return null; } }
+          function findElement(query) { var q=String(query||'').toLowerCase(); return Array.prototype.find.call(document.querySelectorAll('button,a,input,textarea,select,[role="button"]'), function(el) { return textForElement(el).toLowerCase().indexOf(q) >= 0; }); }
+          function collectDom() { return {title:document.title, url:location.href, text:textForElement(document.body).slice(0,50000)}; }
+          /*__AMAYA_BODY__*/
+        })();
+    """
 }

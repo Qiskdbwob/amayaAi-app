@@ -4,6 +4,7 @@ import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 import com.squareup.moshi.Moshi
 import kotlinx.coroutines.Dispatchers
+import com.amaya.intelligence.data.remote.api.isRetryableHttpStatus
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
@@ -79,7 +80,7 @@ class GeminiProvider @Inject constructor(
 
                 if (!response.isSuccessful) {
                     val body = response.body?.readUtf8Limited(MAX_ERROR_BODY_BYTES)
-                    sendResponse(ChatResponse.Error("API error: ${response.code} - $body"))
+                    sendResponse(ChatResponse.Error("API error: ${response.code} - $body", code = response.code.toString(), retryable = isRetryableHttpStatus(response.code)))
                     close()
                     return@callbackFlow
                 }
@@ -152,7 +153,7 @@ class GeminiProvider @Inject constructor(
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
-                sendResponse(ChatResponse.Error("Stream error: ${e.message}"))
+                sendResponse(ChatResponse.Error("Stream error: ${e.message}", retryable = true))
             }
 
             close()
@@ -165,7 +166,7 @@ class GeminiProvider @Inject constructor(
                 )
 
                 if (!response.isSuccessful) {
-                    sendResponse(ChatResponse.Error("API error: ${response.code} - $body"))
+                    sendResponse(ChatResponse.Error("API error: ${response.code} - $body", code = response.code.toString(), retryable = isRetryableHttpStatus(response.code)))
                     close()
                     return@callbackFlow
                 }
@@ -204,7 +205,7 @@ class GeminiProvider @Inject constructor(
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
-                sendResponse(ChatResponse.Error("Request failed: ${e.message}"))
+                sendResponse(ChatResponse.Error("Request failed: ${e.message}", retryable = true))
             }
 
             close()

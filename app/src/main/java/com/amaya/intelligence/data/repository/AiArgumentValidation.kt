@@ -4,6 +4,13 @@ import com.amaya.intelligence.data.remote.api.*
 
 import org.json.JSONObject
 
+internal fun isValidToolCall(
+    id: String,
+    name: String,
+    allowedNames: Set<String>,
+    currentBatchIds: Set<String>
+): Boolean = id.isNotBlank() && name in allowedNames && id !in currentBatchIds
+
 internal fun AiRepository.validateToolArguments(
         name: String,
         arguments: Map<String, Any?>,

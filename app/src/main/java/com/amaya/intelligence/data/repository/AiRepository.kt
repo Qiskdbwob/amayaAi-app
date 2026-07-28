@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -37,7 +38,7 @@ internal val TITLE_TRAILING_PUNCTUATION = Regex("[.!?:;]+$")
 internal val TITLE_WHITESPACE = Regex("\\s+")
 internal val THINK_BLOCK = Regex("(?is)<think>.*?</think>")
 internal val INTEGER_TEXT = Regex("[+-]?\\d+")
-internal const val MAX_STREAM_CONTINUATIONS = 5
+internal const val MAX_STREAM_CONTINUATIONS = 3
 internal const val MAX_STREAM_BACKOFF_MS = 4_000L
 internal const val STREAM_CONTINUATION_PROMPT = "Continue the previous response exactly where it stopped. Do not repeat any text. Use tools if needed to complete the request."
 internal const val TOOL_RESULT_TRUNCATION_MARKER = "\n… [tool result truncated by context budget]"
@@ -50,6 +51,24 @@ internal fun truncateToolResultForContext(content: String, maxChars: Int): Strin
     maxChars <= TOOL_RESULT_TRUNCATION_MARKER.length -> TOOL_RESULT_TRUNCATION_MARKER.take(maxChars)
     else -> content.take(maxChars - TOOL_RESULT_TRUNCATION_MARKER.length).trimEnd() + TOOL_RESULT_TRUNCATION_MARKER
 }
+
+internal fun responseItemOutputText(items: List<String>): String? = items.asSequence()
+    .mapNotNull { raw ->
+        runCatching { JSONObject(raw) }.getOrNull()?.let { item ->
+            when (item.optString("type")) {
+                "message" -> item.optJSONArray("content")?.let { content ->
+                    (0 until content.length()).mapNotNull { index ->
+                        content.optJSONObject(index)?.takeIf { it.optString("type") in setOf("output_text", "text") }
+                            ?.optString("text")?.takeIf(String::isNotBlank)
+                    }.joinToString("\n")
+                }
+                "output_text" -> item.optString("text")
+                else -> null
+            }
+        }?.takeIf(String::isNotBlank)
+    }
+    .joinToString("\n")
+    .takeIf(String::isNotBlank)
 
 internal fun canContinueStream(response: ChatResponse, hasToolCalls: Boolean): Boolean =
     !hasToolCalls && when (response) {

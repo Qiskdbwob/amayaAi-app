@@ -6,13 +6,16 @@ import kotlinx.coroutines.flow.Flow
 
 private const val CONVERSATION_CHUNK_CHARS = 256_000
 
+internal fun conversationChunkNextOffset(offset: Int, chunk: String): Int =
+    offset + chunk.codePointCount(0, chunk.length)
+
 private suspend fun readConversationColumn(readChunk: suspend (Int) -> String?): String = buildString {
     var offset = 1
     while (true) {
         val chunk = readChunk(offset).orEmpty()
         append(chunk)
         if (chunk.length < CONVERSATION_CHUNK_CHARS) return@buildString
-        offset += chunk.length
+        offset = conversationChunkNextOffset(offset, chunk)
     }
 }
 

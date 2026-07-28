@@ -1,5 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
+        <activity
+            android:name="com.amaya.intelligence.ui.activities.debug.DebugActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.Amaya" />
         <!-- Debug-only ADB harness. Export stays intentional so `am start` can launch it;
              release and benchmark manifests contain no matching activity. -->
         <activity

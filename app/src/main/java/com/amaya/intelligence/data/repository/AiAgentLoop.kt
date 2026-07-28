@@ -6,6 +6,7 @@ import com.amaya.intelligence.tools.ConfirmationRequest
 import com.amaya.intelligence.tools.ToolResult
 import com.amaya.intelligence.util.debugLog
 import com.amaya.intelligence.util.errorLog
+import com.amaya.intelligence.util.StreamDebugLog
 
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -220,11 +221,11 @@ internal fun AiRepository.chatImpl(
         var repeatedBrowserErrors = 0
         var terminalError = false
         var streamContinuations = 0
-        val seenToolCallIds = mutableSetOf<String>()
         val invalidToolArgumentErrors = mutableMapOf<String, Throwable>()
 
         while (continueLoop) {
             iterations++
+            StreamDebugLog.event(conversationId, null, "ITERATION_START", "iteration=$iterations history=${messages.size}")
 
             if (iterations > 1) send(AgentEvent.NewIteration)
 
@@ -359,6 +360,7 @@ internal fun AiRepository.chatImpl(
                 when (response) {
                     is ChatResponse.TextDelta -> {
                         textBuffer.append(response.text)
+                        StreamDebugLog.event(conversationId, null, "TEXT_DELTA", "chars=${response.text.length} total=${textBuffer.length}")
                         send(AgentEvent.TextDelta(response.text))
                     }
 
@@ -367,7 +369,8 @@ internal fun AiRepository.chatImpl(
                     }
 
                     is ChatResponse.ToolCall -> {
-                        if (response.id.isBlank() || response.name !in allowedToolNames || !seenToolCallIds.add(response.id)) {
+                        StreamDebugLog.event(conversationId, null, "TOOL_CALL", "id=${response.id} name=${response.name}")
+                        if (!isValidToolCall(response.id, response.name, allowedToolNames, toolCalls.map { it.id }.toSet())) {
                             send(AgentEvent.Error("Invalid, duplicate, or unadvertised tool call: ${response.name}", retryable = false))
                             terminalError = true
                             providerTerminal = true
@@ -396,6 +399,7 @@ internal fun AiRepository.chatImpl(
                     }
 
                     is ChatResponse.Done -> {
+                        StreamDebugLog.event(conversationId, null, "PROVIDER_DONE", "toolCalls=${toolCalls.size} textChars=${textBuffer.length}")
                         providerTerminal = true
                         response.usage?.let { usage ->
                             send(AgentEvent.Usage(usage.inputTokens, usage.outputTokens))
@@ -403,6 +407,7 @@ internal fun AiRepository.chatImpl(
                     }
 
                     is ChatResponse.Incomplete -> {
+                        StreamDebugLog.event(conversationId, null, "PROVIDER_INCOMPLETE", response.reason)
                         providerTerminal = true
                         retryableFailure = response.reason.takeIf { canContinueStream(response, hasToolCalls) }
                         if (retryableFailure == null && !shouldExecuteReceivedToolCalls(response, hasToolCalls)) {
@@ -413,6 +418,7 @@ internal fun AiRepository.chatImpl(
                     }
 
                     is ChatResponse.Error -> {
+                        StreamDebugLog.event(conversationId, null, "PROVIDER_ERROR", response.message)
                         providerTerminal = true
                         retryableFailure = response.message.takeIf { canContinueStream(response, hasToolCalls) }
                         if (retryableFailure == null && !shouldExecuteReceivedToolCalls(response, hasToolCalls)) {
@@ -426,6 +432,9 @@ internal fun AiRepository.chatImpl(
 
             if (terminalError) break
             if (!providerTerminal && !hasToolCalls) retryableFailure = "Provider stream ended without a terminal event"
+            if (providerTerminal && !hasToolCalls && textBuffer.isBlank() && responseItemOutputText(responseItems).isNullOrBlank()) {
+                retryableFailure = "Provider completed without a final response"
+            }
 
             if (retryableFailure != null) {
                 if (streamContinuations == MAX_STREAM_CONTINUATIONS) {
@@ -457,6 +466,11 @@ internal fun AiRepository.chatImpl(
             }
 
             if (!hasToolCalls) {
+                if (textBuffer.isBlank()) {
+                    responseItemOutputText(responseItems)?.let { itemText ->
+                        send(AgentEvent.TextDelta(itemText))
+                    }
+                }
                 continueLoop = false
             } else {
                 messages = messages + ChatMessage(
@@ -479,6 +493,7 @@ internal fun AiRepository.chatImpl(
                     }
 
                     completedToolCalls.add("${toolCall.name}: ${toolCall.arguments}")
+                    StreamDebugLog.event(conversationId, null, "TOOL_EXECUTE", "id=${toolCall.id} name=${toolCall.name}")
                     val result = invalidToolArgumentErrors.remove(toolCall.id)?.let { error ->
                         ToolResult.Error(
                             message = "Invalid arguments for ${toolCall.name}: ${error.message.orEmpty()}",
@@ -554,6 +569,7 @@ internal fun AiRepository.chatImpl(
                         }
                     }
 
+                    StreamDebugLog.event(conversationId, null, "TOOL_RESULT", "id=${toolCall.id} name=${toolCall.name} error=${result !is ToolResult.Success} chars=${resultContent.length}")
                     send(AgentEvent.ToolCallResult(
                         toolCallId = toolCall.id,
                         toolName = toolCall.name,
@@ -647,6 +663,7 @@ internal fun AiRepository.chatImpl(
         }
         if (terminalError) return@channelFlow
 
+        StreamDebugLog.event(conversationId, null, "TURN_DONE", "iterations=$iterations")
         send(AgentEvent.Done)
     }
 

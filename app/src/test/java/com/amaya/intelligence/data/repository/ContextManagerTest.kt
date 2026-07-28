@@ -6,6 +6,7 @@ import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.data.remote.api.ToolResultMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,6 +20,31 @@ class ContextManagerTest {
         assertTrue(shouldExecuteReceivedToolCalls(ChatResponse.Incomplete("EOF"), hasToolCalls = true))
         assertTrue(shouldExecuteReceivedToolCalls(ChatResponse.Error("Timeout", retryable = true), hasToolCalls = true))
         assertFalse(shouldExecuteReceivedToolCalls(ChatResponse.Error("Invalid chunk"), hasToolCalls = true))
+    }
+
+    @Test
+    fun `response item message text is recovered when provider emits no text delta`() {
+        val item = """{"type":"message","content":[{"type":"output_text","text":"final answer"}]}"""
+
+        assertEquals("final answer", responseItemOutputText(listOf(item)))
+    }
+
+    @Test
+    fun `response item extractor ignores reasoning and tool items`() {
+        val reasoning = """{"type":"reasoning","summary":[]}"""
+        val tool = """{"type":"function_call","name":"browser"}"""
+
+        assertNull(responseItemOutputText(listOf(reasoning, tool)))
+    }
+
+    @Test
+    fun `provider retry policy is three retries and transient HTTP only`() {
+        assertEquals(3, MAX_STREAM_CONTINUATIONS)
+        assertTrue(com.amaya.intelligence.data.remote.api.isRetryableHttpStatus(408))
+        assertTrue(com.amaya.intelligence.data.remote.api.isRetryableHttpStatus(429))
+        assertTrue(com.amaya.intelligence.data.remote.api.isRetryableHttpStatus(503))
+        assertFalse(com.amaya.intelligence.data.remote.api.isRetryableHttpStatus(400))
+        assertFalse(com.amaya.intelligence.data.remote.api.isRetryableHttpStatus(401))
     }
 
     @Test

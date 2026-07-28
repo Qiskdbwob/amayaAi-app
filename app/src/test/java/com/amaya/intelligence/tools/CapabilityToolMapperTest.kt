@@ -61,6 +61,37 @@ class CapabilityToolMapperTest {
     }
 
     @Test
+    fun `agent memory schema advertises only supported operations`() {
+        val memory = ToolDefinition(
+            name = "memory",
+            description = "memory",
+            parameters = listOf(
+                ToolParameter(
+                    name = "operation",
+                    type = "string",
+                    description = "save, list, search, update, or recall_sessions",
+                    enum = listOf("save", "list", "search", "update", "recall_sessions")
+                )
+            )
+        )
+
+        val exposed = exposeToolDefinition(memory, AssistantMode.AGENT)
+
+        assertEquals("agent_memory", exposed.name)
+        assertEquals(listOf("save", "list", "search", "update"), exposed.parameters.single().enum)
+    }
+
+    @Test
+    fun `direct registered tools remain exposable after capability wrappers`() {
+        val directTools = listOf(
+            "list_files", "write_file", "create_directory", "delete_file", "edit_file", "find_files",
+            "update_memory", "memory_manage", "skill_view", "skill_manage", "session_search"
+        )
+
+        assertTrue(directTools.all { assistantModeAllowsCapability(it, AssistantMode.PROJECT) })
+    }
+
+    @Test
     fun `agent capability profile round trips all configurable tools`() {
         val profile = AgentCapabilityProfile(false, true, false, true, false, true, false, true)
         assertEquals(profile, AgentCapabilityProfile.decode(profile.encode()))

@@ -5,6 +5,7 @@ import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.domain.security.CommandValidator
 import com.amaya.intelligence.domain.security.RiskLevel
 import com.amaya.intelligence.domain.security.ValidationResult
+import com.amaya.intelligence.util.ToolDebugLog
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -96,39 +97,44 @@ class ToolExecutor @Inject constructor(
         assistantMode: AssistantMode = AssistantMode.PROJECT,
         agentCapabilityProfile: com.amaya.intelligence.domain.models.AgentCapabilityProfile? = null
     ): ToolResult {
+        val startedAtNs = System.nanoTime()
+        ToolDebugLog.start(toolCallId, toolName, arguments, conversationId, ownerId, agentId, assistantMode)
+        suspend fun finish(result: ToolResult): ToolResult = result.also {
+            ToolDebugLog.finish(toolCallId, toolName, it, startedAtNs)
+        }
         if (!assistantModeAllowsCapability(toolName, assistantMode, agentCapabilityProfile)) {
-            return ToolResult.Error("Tool '$toolName' is unavailable in ${assistantMode.name.lowercase()} mode.", ErrorType.PERMISSION_ERROR)
+            return finish(ToolResult.Error("Tool '$toolName' is unavailable in ${assistantMode.name.lowercase()} mode.", ErrorType.PERMISSION_ERROR))
         }
         val normalizedArguments = normalizeIntegerArguments(toolName, arguments)
         val capabilityCall = CapabilityToolMapper.map(toolName, normalizedArguments)
         val handlerName = if (toolName == "agent_memory") agentMemoryTool.name else capabilityCall?.handlerName ?: toolName
         val handlerArguments = if (toolName == "agent_memory") normalizedArguments else capabilityCall?.arguments ?: normalizedArguments
         val tool = tools[handlerName]
-            ?: return ToolResult.Error(
+            ?: return finish(ToolResult.Error(
                 "Unknown tool: $toolName. Available: ${getModelCallableTools().map { it.name }.joinToString()}",
                 ErrorType.VALIDATION_ERROR
-            )
+            ))
         if (tool.visibility != ToolVisibility.MODEL) {
-            return ToolResult.Error(
+            return finish(ToolResult.Error(
                 "Tool '$toolName' is ${tool.visibility.name.lowercase()} and is not callable from the normal model tool loop.",
                 ErrorType.PERMISSION_ERROR
-            )
+            ))
         }
 
         val safeArguments = sanitizeModelArguments(handlerArguments).getOrElse { error ->
-            return ToolResult.Error(error.message.orEmpty(), ErrorType.VALIDATION_ERROR)
+            return finish(ToolResult.Error(error.message.orEmpty(), ErrorType.VALIDATION_ERROR))
         }
         val resolvedArguments = WorkspacePathResolver.resolve(handlerName, safeArguments, workspacePath).getOrElse { error ->
-            return ToolResult.Error(error.message.orEmpty(), ErrorType.SECURITY_VIOLATION, recoverable = true)
+            return finish(ToolResult.Error(error.message.orEmpty(), ErrorType.SECURITY_VIOLATION, recoverable = true))
         }
         val modelArguments = applyHostExecutionContext(handlerName, resolvedArguments, workspacePath)
         if (readOnly && !isAllowedInReadOnlyMode(handlerName)) {
-            return ToolResult.Error("Tool '$toolName' is unavailable to read-only subagents.", ErrorType.PERMISSION_ERROR)
+            return finish(ToolResult.Error("Tool '$toolName' is unavailable to read-only subagents.", ErrorType.PERMISSION_ERROR))
         }
-        val callIdentity = toolCallId ?: return ToolResult.Error(
+        val callIdentity = toolCallId ?: return finish(ToolResult.Error(
             "Tool call '$toolName' is missing a call ID; approval cannot be bound safely.",
             ErrorType.VALIDATION_ERROR
-        )
+        ))
         val executionContext = ToolExecutionContext(
             toolCallId = callIdentity,
             workspacePath = workspacePath,
@@ -153,10 +159,10 @@ class ToolExecutor @Inject constructor(
 
         when (validation) {
             is ValidationResult.Denied -> {
-                return ToolResult.Error(
+                return finish(ToolResult.Error(
                     validation.reason,
                     ErrorType.SECURITY_VIOLATION
-                )
+                ))
             }
 
             is ValidationResult.RequiresConfirmation -> {
@@ -171,10 +177,10 @@ class ToolExecutor @Inject constructor(
                 )
 
                 if (!confirmed) {
-                    return ToolResult.Error(
+                    return finish(ToolResult.Error(
                         "User declined: ${validation.reason}",
                         ErrorType.PERMISSION_ERROR
-                    )
+                    ))
                 }
             }
 
@@ -188,7 +194,15 @@ class ToolExecutor @Inject constructor(
         val approvedContext = executionContext.copy(
             confirmed = validation is ValidationResult.RequiresConfirmation
         )
-        val result = run(approvedContext)
+        val result = try {
+            run(approvedContext)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            ToolDebugLog.cancel(toolCallId, toolName, startedAtNs)
+            throw cancelled
+        } catch (error: Throwable) {
+            ToolDebugLog.crash(toolCallId, toolName, error, startedAtNs)
+            throw error
+        }
 
         // Handle nested confirmation requests from tools.
         if (result is ToolResult.RequiresConfirmation) {
@@ -203,16 +217,16 @@ class ToolExecutor @Inject constructor(
             )
 
             if (!confirmed) {
-                return ToolResult.Error(
+                return finish(ToolResult.Error(
                     "User declined: ${result.reason}",
                     ErrorType.PERMISSION_ERROR
-                )
+                ))
             }
 
-            return run(approvedContext.copy(confirmed = true))
+            return finish(run(approvedContext.copy(confirmed = true)))
         }
 
-        return result
+        return finish(result)
     }
 
     private fun normalizeIntegerArguments(toolName: String, arguments: Map<String, Any?>): Map<String, Any?> {
@@ -544,22 +558,28 @@ class ToolExecutor @Inject constructor(
                 )
             )
         ) + browserUseToolset.getToolDefinitions()
-        val advertisedToolNames = setOf(
-            "workspace_search", "workspace_change", "read_file", "run_shell", "web_search", "browser",
-            "memory", "skill", "reminder", "update_todo", "invoke_subagents", "delegate_agent"
-        )
+        // Every definition below has a registered handler. Filtering this list to the old
+        // capability wrappers made direct calls such as read_file, edit_file, and session_search
+        // fail as "unadvertised" after the architecture split.
         return definitions.mapNotNull { definition ->
-            val exposed = if (mode == AssistantMode.AGENT && definition.name == "memory") {
-                definition.copy(
-                    name = "agent_memory",
-                    description = "Manage memory private to the active agent. Update requires the version returned by list/search."
-                )
-            } else definition
-            exposed.takeIf {
-                definition.name in advertisedToolNames && assistantModeAllowsCapability(exposed.name, mode, agentCapabilityProfile)
-            }
+            val exposed = exposeToolDefinition(definition, mode)
+            exposed.takeIf { assistantModeAllowsCapability(exposed.name, mode, agentCapabilityProfile) }
         }
     }
+}
+
+internal fun exposeToolDefinition(definition: ToolDefinition, mode: AssistantMode): ToolDefinition {
+    if (mode != AssistantMode.AGENT || definition.name != "memory") return definition
+    return definition.copy(
+        name = "agent_memory",
+        description = "Manage memory private to the active agent. Update requires the version returned by list/search.",
+        parameters = definition.parameters.map { parameter ->
+            if (parameter.name == "operation") parameter.copy(
+                description = "save, list, search, or update",
+                enum = listOf("save", "list", "search", "update")
+            ) else parameter
+        }
+    )
 }
 
 private val CHAT_CAPABILITIES = setOf("web_search", "memory", "skill")

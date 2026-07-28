@@ -33,6 +33,57 @@ class LocalContextRecoveryTest {
     }
 
     @Test
+    fun `cancelled assistant remains in provider context for retry`() {
+        val cancelled = UiMessage(
+            role = MessageRole.ASSISTANT,
+            content = "partial answer",
+            metadata = mapOf("turnStatus" to "cancelled", "retryable" to "true")
+        )
+        val context = listOf(UiMessage(role = MessageRole.USER, content = "start"), cancelled)
+
+        val replayed = context.flatMap { it.toChatMessages() }
+
+        assertEquals(listOf(MessageRole.USER, MessageRole.ASSISTANT), replayed.map { it.role })
+        assertEquals("partial answer", replayed.last().content)
+    }
+
+    @Test
+    fun `cancelled tool turn remains paired in provider context for retry`() {
+        val cancelled = runningAssistant().copy(metadata = mapOf("turnStatus" to "cancelled"))
+
+        val replayed = cancelled.toChatMessages()
+
+        val callIds = replayed.flatMap { it.toolCalls.orEmpty() }.map { it.id }.toSet()
+        val resultIds = replayed.mapNotNull { it.toolResult }.map { it.toolCallId }.toSet()
+        assertEquals(callIds, resultIds)
+        assertTrue(replayed.last().toolResult!!.isError)
+    }
+
+    @Test
+    fun `process death after persisted user appends retryable interrupted assistant`() {
+        val recovered = markInterruptedTurn(listOf(UiMessage(role = MessageRole.USER, content = "go")))!!
+
+        assertEquals(2, recovered.size)
+        assertEquals(MessageRole.ASSISTANT, recovered.last().role)
+        assertEquals("interrupted", recovered.last().metadata["turnStatus"])
+        assertEquals("true", recovered.last().metadata["retryable"])
+    }
+
+    @Test
+    fun `stored context trims oversized response items without touching visible transcript`() {
+        val text = "x".repeat(8_000)
+        val item = org.json.JSONObject().put("type", "output_text").put("text", text).toString()
+        val assistant = UiMessage(role = MessageRole.ASSISTANT, content = text, responseItems = listOf(item))
+        val context = listOf(UiMessage(role = MessageRole.USER, content = "go"), assistant, assistant)
+
+        val stored = digestOldToolPayloads(context, maxTotalChars = 1, keepNewest = 1)
+
+        assertEquals(text, context[1].content)
+        assertTrue(stored[1].responseItems.single().length < item.length)
+        assertEquals(item, stored.last().responseItems.single())
+    }
+
+    @Test
     fun `nothing to recover is reported as null so the stored column is left alone`() {
         val settled = listOf(
             UiMessage(role = MessageRole.USER, content = "go"),

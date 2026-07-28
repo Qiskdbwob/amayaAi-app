@@ -27,6 +27,15 @@ class AiToolArgumentValidatorTest {
     }
 
     @Test
+    fun `tool call ids may repeat in later iterations but not the current batch`() {
+        val allowed = setOf("read_file")
+
+        assertTrue(isValidToolCall("call_1", "read_file", allowed, emptySet()))
+        assertTrue(!isValidToolCall("call_1", "read_file", allowed, setOf("call_1")))
+        assertTrue(!isValidToolCall("call_2", "missing", allowed, emptySet()))
+    }
+
+    @Test
     fun `rejects unadvertised and unknown arguments`() {
         val tool = AiToolDefinition(
             name = "read",

@@ -3,6 +3,7 @@
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 import kotlinx.coroutines.Dispatchers
+import com.amaya.intelligence.data.remote.api.isRetryableHttpStatus
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOn
 import okhttp3.MediaType.Companion.toMediaType
@@ -213,7 +214,7 @@ class AnthropicProvider @Inject constructor(
                 )
 
                 if (!response.isSuccessful) {
-                    sendResponse(ChatResponse.Error("API error: ${response.code} - $body"))
+                    sendResponse(ChatResponse.Error("API error: ${response.code} - $body", code = response.code.toString(), retryable = isRetryableHttpStatus(response.code)))
                     close()
                     return@callbackFlow
                 }
@@ -260,7 +261,7 @@ class AnthropicProvider @Inject constructor(
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (e: Exception) {
-                sendResponse(ChatResponse.Error("Request failed: ${e.message}"))
+                sendResponse(ChatResponse.Error("Request failed: ${e.message}", retryable = true))
             }
 
             close()

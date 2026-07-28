@@ -9,6 +9,8 @@ import org.json.JSONObject
  * All AI providers (Anthropic, OpenAI, Gemini) implement this interface
  * to allow seamless switching between providers.
  */
+internal fun isRetryableHttpStatus(code: Int): Boolean = code in setOf(408, 425, 429) || code >= 500
+
 interface AiProvider {
 
     /**
