@@ -73,6 +73,9 @@ fun LocalSettingsScreen(
     onNavigateToTerminal: () -> Unit,
     onNavigateToAboutYou: () -> Unit,
     onNavigateToSkills: () -> Unit,
+    updateStatus: String?,
+    onCheckForUpdate: () -> Unit,
+    onInstallUpdate: () -> Unit,
     onOpenProject: (ProjectEntity) -> Unit,
     onCreateProject: (String, String, String) -> Unit,
     onSelectProjectWorkspace: () -> Unit,
@@ -121,6 +124,9 @@ fun LocalSettingsScreen(
                             onMcp = onNavigateToMcp,
                             onSkills = onNavigateToSkills,
                             onTerminal = onNavigateToTerminal,
+                            updateStatus = updateStatus,
+                            onCheckForUpdate = onCheckForUpdate,
+                            onInstallUpdate = onInstallUpdate,
                             onSelectTheme = { theme -> scope.launch { aiSettingsManager.setTheme(theme) } },
                             onSnackbar = { text -> scope.launch { snackbar.showSnackbar(text) } }
                         )
@@ -379,6 +385,9 @@ private fun GlobalSettings(
     onMcp: () -> Unit,
     onSkills: () -> Unit,
     onTerminal: () -> Unit,
+    updateStatus: String?,
+    onCheckForUpdate: () -> Unit,
+    onInstallUpdate: () -> Unit,
     onSelectTheme: (String) -> Unit,
     onSnackbar: (String) -> Unit
 ) {
@@ -415,8 +424,18 @@ private fun GlobalSettings(
     }
     com.amaya.intelligence.ui.screens.amaya.AmayaSection("Appearance") { IosThemeRow(settings.theme, onSelectTheme) }
     com.amaya.intelligence.ui.screens.amaya.AmayaSection("About") {
-        IosSettingsRow(Icons.Default.Info, UiStrings.Settings.VERSION, UiStrings.Settings.VERSION_NUMBER, true, false) {
-            onSnackbar("Amaya Intelligence v${UiStrings.Settings.VERSION_NUMBER}")
+        IosSettingsRow(Icons.Default.Info, UiStrings.Settings.VERSION, com.amaya.intelligence.BuildConfig.VERSION_NAME, true, false) {
+            onSnackbar("Amaya Intelligence v${com.amaya.intelligence.BuildConfig.VERSION_NAME}")
+        }
+        IosSettingsDivider()
+        IosSettingsRow(
+            Icons.Default.SystemUpdate,
+            if (updateStatus?.startsWith("Version ") == true) "Install update" else UiStrings.Settings.CHECK_FOR_UPDATE,
+            updateStatus ?: "Check GitHub Releases for a signed APK",
+            false,
+            false
+        ) {
+            if (updateStatus?.startsWith("Version ") == true) onInstallUpdate() else onCheckForUpdate()
         }
         IosSettingsDivider()
         val context = androidx.compose.ui.platform.LocalContext.current

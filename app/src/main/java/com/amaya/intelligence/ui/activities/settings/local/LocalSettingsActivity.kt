@@ -2,7 +2,9 @@ package com.amaya.intelligence.ui.activities.settings.local
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
@@ -15,6 +17,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.amaya.intelligence.data.local.dao.AgentDao
 import com.amaya.intelligence.data.local.dao.ProjectDao
+import com.amaya.intelligence.data.repository.AppUpdateInstaller
+import com.amaya.intelligence.data.repository.UpdateRepository
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.data.local.entity.ProjectEntity
 import com.amaya.intelligence.data.local.entity.AgentGroupEntity
@@ -38,6 +42,10 @@ class LocalSettingsActivity : AppCompatActivity() {
     @Inject lateinit var aiSettingsManager: AiSettingsManager
     @Inject lateinit var projectDao: ProjectDao
     @Inject lateinit var agentDao: AgentDao
+    @Inject lateinit var updateRepository: UpdateRepository
+    @Inject lateinit var appUpdateInstaller: AppUpdateInstaller
+    private var updateStatus by mutableStateOf<String?>(null)
+    private var updateUrl by mutableStateOf<String?>(null)
     private var pendingWorkspaceTarget by mutableStateOf<SettingsScope?>(null)
     private var projectWorkspace by mutableStateOf<String?>(null)
     private var agentWorkspace by mutableStateOf<String?>(null)
@@ -75,6 +83,9 @@ class LocalSettingsActivity : AppCompatActivity() {
                     onNavigateToTerminal = { LocalTerminalSettingsActivity.start(this) },
                     onNavigateToAboutYou = { LocalMemoryAreaActivity.start(this, MemoryArea.USER) },
                     onNavigateToSkills = { LocalSkillsActivity.start(this) },
+                    updateStatus = updateStatus,
+                    onCheckForUpdate = ::checkForUpdate,
+                    onInstallUpdate = ::installUpdate,
                     onOpenProject = { LocalProjectDetailActivity.startForResult(this, it.id) },
                     onCreateProject = { name, instructions, workspace ->
                         lifecycleScope.launch {
@@ -99,6 +110,37 @@ class LocalSettingsActivity : AppCompatActivity() {
                     },
                     selectedAgentWorkspace = agentWorkspace
                 )
+            }
+        }
+    }
+
+    private fun checkForUpdate() {
+        updateStatus = "Checking for updates..."
+        updateUrl = null
+        lifecycleScope.launch {
+            val update = updateRepository.getLatestUpdate()
+            updateUrl = update?.takeIf { it.isNewer }?.downloadUrl
+            updateStatus = when {
+                update == null -> "Could not check for updates"
+                update.isNewer -> "Version ${update.versionName} is available"
+                else -> "App is up to date"
+            }
+        }
+    }
+
+    private fun installUpdate() {
+        val url = updateUrl ?: return
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            return
+        }
+        updateStatus = "Downloading update..."
+        lifecycleScope.launch {
+            appUpdateInstaller.download(url).onSuccess {
+                updateStatus = "Opening Android installer..."
+                appUpdateInstaller.install(it)
+            }.onFailure {
+                updateStatus = it.message ?: "Could not download update"
             }
         }
     }

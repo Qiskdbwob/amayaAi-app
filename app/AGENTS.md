@@ -38,7 +38,7 @@ app/
 		├─ java/
 		│	├─ com/amaya/intelligence/data/local/{dao,db,entity,files}/
 		│	├─ com/amaya/intelligence/data/remote/{api,auth,mcp,provider,settings}/
-		│	├─ com/amaya/intelligence/data/repository/{chat,context,memory,session,skills}/
+		│	├─ com/amaya/intelligence/data/repository/{chat,context,memory,session,skills}/ # includes signed GitHub APK update verification/install
 		│	├─ com/amaya/intelligence/domain/{ai,bridge,memory,models,security,skills}/
 		│	├─ com/amaya/intelligence/impl/common/{conversation,mappers}/
 		│	├─ com/amaya/intelligence/impl/bridge/windows/{pairing,service,services,tools,transport}/
@@ -80,7 +80,7 @@ app/
 - `src/main/java/com/amaya/intelligence/domain/bridge/`: bridge envelope, tool, approval, risk, audit, and session-state contract types.
 - `src/main/java/com/amaya/intelligence/data/remote/api/`: provider clients such as Gemini, OpenAI, Anthropic, and settings managers. Includes `ReasoningContract.kt` — the universal thinking-effort contract (`ThinkingEffort`, `ReasoningCatalog`, `ReasoningRequestBuilder`, `ReasoningStreamParser`, `InlineThinkStripper`) shared by all providers; vendor additions are data-only via `RequestShape` + catalog.
 - `src/main/java/com/amaya/intelligence/data/remote/mcp/`: MCP client and tool executor integration.
-- `src/main/java/com/amaya/intelligence/data/repository/`: repository layer that orchestrates AI, files, Chat/Project/Agent-group-owned conversations, persistent target-agent delegation turns, bounded owner-scoped recall, imported reference documents, active/superseded user/workspace memory, evidence-backed skills, pending proposals, terminal wildcard policy, and maintenance. Persona, user-memory proposals, and self-improvement auto-save modes are absent. Daily logs, global catch-all memory, model-owned importance, and memory archive/delete/restore are intentionally absent.
+- `src/main/java/com/amaya/intelligence/data/repository/`: repository layer that orchestrates AI, files, signed GitHub APK updates, Chat/Project/Agent-group-owned conversations, persistent target-agent delegation turns, bounded owner-scoped recall, imported reference documents, active/superseded user/workspace memory, evidence-backed skills, pending proposals, terminal wildcard policy, and maintenance. Persona, user-memory proposals, and self-improvement auto-save modes are absent. Daily logs, global catch-all memory, model-owned importance, and memory archive/delete/restore are intentionally absent.
 - `src/main/java/com/amaya/intelligence/data/local/db/`: Room database, entities, and DAOs. Conversation list queries must not select history/context JSON; fetch payloads by ID only.
 - `src/main/java/com/amaya/intelligence/data/local/files/`: file-backed stores for local session recall and reusable skill documents.
 - `src/main/java/com/amaya/intelligence/impl/common/`: shared implementation utilities, including provider/model-to-UI mapping, model-key parsing, `ConversationJsonCodec`, and concrete `ConversationPersistence` DAO mechanics.
