@@ -52,7 +52,7 @@ amaya/
 ## File Functions
 - `AGENTS.md`: repo-wide coordination and routing rules.
 - `amaya-remote-extension/AGENTS.md`: extension-specific rules for TypeScript, controllers, IDE abstraction, and tests.
-- `docs/`: browser toolcall references plus the current provider/model settings contract in `models.md`.
+- `docs/`: browser toolcall references, the current provider/model settings contract in `models.md`, and README assets in `docs/assets/`.
 - `docs/local/audits/VISION-HOLD.md`: marks Antigravity, Opencode, Windows Bridge, remote-session, and coupled remote UI logic as incomplete and deferred while product direction changes.
 - `app/AGENTS.md`: Android-wide rules for Compose, Gradle, Hilt, persistence, runtime services, browser UI/runtime work, and staged target-package seams from the local deep audit.
 - `app/src/main/java/com/amaya/intelligence/data/remote/AGENTS.md`: Android remote API, settings, and model mapping guidance.

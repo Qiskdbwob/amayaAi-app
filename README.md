@@ -1,4 +1,6 @@
-# Amaya
+<p align="center">
+  <img src="docs/assets/amaya-logo.png" alt="Amaya" width="500">
+</p>
 
 <p align="center">
   <strong>Android AI chatbot and personal assistant.</strong><br>
@@ -11,7 +13,9 @@
   <a href="app/"><img src="https://img.shields.io/badge/Language-Kotlin-7F52FF" alt="Kotlin"></a>
 </p>
 
-Amaya runs on your Android phone. Choose an AI provider and model, then give the assistant the context and tools needed for the task.
+<p align="center">
+  Amaya runs on your Android phone. Choose an AI provider and model, then give the assistant the context and tools needed for the task.
+</p>
 
 ## Features
 
