@@ -18,6 +18,12 @@ class OpenAiRequestCodecTest {
     }
 
     @Test
+    fun responsesIncludeUsesOnlySupportedReasoningFields() {
+        val include = OpenAiRequestCodec.responsesInclude()
+        assertEquals(listOf("reasoning.encrypted_content"), (0 until include.length()).map(include::getString))
+    }
+
+    @Test
     fun responsesToolRequiredIsJsonArray() {
         val tool = AiToolDefinition(
             name = "update_todo",

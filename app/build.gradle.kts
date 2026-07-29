@@ -130,6 +130,7 @@ dependencies {
     implementation(libs.retrofit.core)
     implementation(libs.retrofit.converter.moshi)
     implementation(libs.okhttp.core)
+    implementation(libs.okhttp.dnsoverhttps)
     implementation(libs.okhttp.logging)
     implementation(libs.okhttp.sse)
 

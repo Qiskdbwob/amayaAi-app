@@ -1,5 +1,8 @@
 package com.amaya.intelligence.ui.screens.models
 
+import android.widget.Toast
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -12,15 +15,21 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
 import com.amaya.intelligence.data.remote.api.ConfiguredModel
+import com.amaya.intelligence.ui.components.shared.AmayaTopBarButton
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens
+import com.amaya.intelligence.ui.screens.amaya.amayaFloatingActionButtonBottomPadding
 import com.amaya.intelligence.ui.viewmodels.models.ManageModelsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -34,33 +43,35 @@ fun ProviderDetailScreen(
     val operation by viewModel.operation.collectAsState()
     val connection = settings.connections.firstOrNull { it.id == connectionId }
     val colors = com.amaya.intelligence.ui.screens.amaya.iosAmayaColors()
+    val context = LocalContext.current
 
     // UI State
     var availableModels by remember(connectionId) { mutableStateOf<List<ConfiguredModel>>(emptyList()) }
     var selectedIds by remember(connectionId) { mutableStateOf<Set<String>>(emptySet()) }
-    var initialSelectedIds by remember(connectionId) { mutableStateOf<Set<String>>(emptySet()) }
     var hasCredential by remember(connectionId) { mutableStateOf(false) }
-    var subscriptionAuthenticated by remember(connectionId) { mutableStateOf(false) }
     var editingModel by remember(connectionId) { mutableStateOf<ConfiguredModel?>(null) }
+    var editingProviderName by remember(connectionId) { mutableStateOf(false) }
+    var editingApiKey by remember(connectionId) { mutableStateOf(false) }
+    var editingBaseUrl by remember(connectionId) { mutableStateOf(false) }
+    var addingCustomModel by remember(connectionId) { mutableStateOf(false) }
+    var confirmDeleteProvider by remember(connectionId) { mutableStateOf(false) }
+    var refreshTurns by remember(connectionId) { mutableIntStateOf(0) }
+    var refreshingModels by remember(connectionId) { mutableStateOf(false) }
+    val refreshRotation by animateFloatAsState(
+        targetValue = refreshTurns * 360f,
+        animationSpec = tween(durationMillis = 700),
+        label = "provider_models_refresh"
+    )
 
     // Init connection data
     LaunchedEffect(connection) {
         if (connection != null) {
             hasCredential = viewModel.hasCredential(connection.id)
-            val isSubscription = AmayaProviderRegistry.find(connection.providerId)?.isSubscription == true
-            subscriptionAuthenticated = hasCredential || !isSubscription
             selectedIds = connection.visibleModels.filter { it.enabled }.map { it.id }.toSet()
-            initialSelectedIds = selectedIds
             availableModels = connection.visibleModels.sortedBy { it.displayName.lowercase() }
-            if (!isSubscription) {
-                viewModel.refresh(connection) { refreshed ->
-                    availableModels = mergeConfiguredModels(connection.visibleModels, refreshed)
-                }
-            }
         }
     }
 
-    val hasUnsavedChanges = selectedIds != initialSelectedIds
     var query by remember { mutableStateOf("") }
 
     val filteredModels = remember(availableModels, query) {
@@ -82,6 +93,7 @@ fun ProviderDetailScreen(
     }
 
     val isSubscription = AmayaProviderRegistry.find(connection.providerId)?.isSubscription == true
+    val isCustomProvider = AmayaProviderRegistry.require(connection.providerId).isCustom
 
     Scaffold(
         containerColor = Color.Transparent,
@@ -92,7 +104,7 @@ fun ProviderDetailScreen(
                 contentPadding = PaddingValues(
                     start = AmayaGroupedSettingsTokens.contentHorizontalPadding,
                     end = AmayaGroupedSettingsTokens.contentHorizontalPadding,
-                    bottom = AmayaGroupedSettingsTokens.screenContentBottomSpacer
+                    bottom = AmayaGroupedSettingsTokens.floatingActionButtonContentClearance
                 ),
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(AmayaGroupedSettingsTokens.sectionSpacing)
@@ -106,34 +118,32 @@ fun ProviderDetailScreen(
                 }
 
                 item {
-                    com.amaya.intelligence.ui.screens.amaya.AmayaSection("Connection") {
+                    com.amaya.intelligence.ui.screens.amaya.AmayaSection("Configuration") {
                         ModelSettingsRow(
-                            icon = if (!isSubscription || subscriptionAuthenticated) Icons.Default.CheckCircle else Icons.Default.Error,
-                            title = if (isSubscription && !subscriptionAuthenticated) "Sign In Required" else "Configured",
-                            subtitle = AmayaProviderRegistry.displayName(connection.providerId),
+                            icon = Icons.Default.Edit,
+                            title = "Provider Name",
+                            subtitle = connection.name,
                             colors = colors,
-                            onClick = null
+                            onClick = { editingProviderName = true }
                         )
                         if (!isSubscription) {
                             ModelDivider(colors)
+                            if (isCustomProvider) {
+                                ModelSettingsRow(
+                                    Icons.Default.Link,
+                                    "Base URL",
+                                    connection.baseUrl,
+                                    colors,
+                                    onClick = { editingBaseUrl = true }
+                                )
+                                ModelDivider(colors)
+                            }
                             ModelSettingsRow(
                                 Icons.Default.Key,
-                                "Credential",
-                                if (hasCredential) "API key saved" else "No API key",
+                                "Change API Key",
+                                if (hasCredential) "API key saved" else "Add API key",
                                 colors,
-                                onClick = null
-                            )
-                            ModelDivider(colors)
-                            ModelSettingsRow(
-                                Icons.Default.Refresh,
-                                "Refresh Models",
-                                if (operation.loading) "Loading…" else "Load from provider",
-                                colors,
-                                onClick = {
-                                    viewModel.refresh(connection) { refreshed ->
-                                        availableModels = mergeConfiguredModels(availableModels, refreshed)
-                                    }
-                                }
+                                onClick = { editingApiKey = true }
                             )
                         }
                     }
@@ -191,11 +201,16 @@ fun ProviderDetailScreen(
                                     checked = model.id in selectedIds,
                                     colors = colors,
                                     onToggle = {
-                                        selectedIds = if (model.id in selectedIds) {
+                                        val updatedIds = if (model.id in selectedIds) {
                                             selectedIds - model.id
                                         } else {
                                             selectedIds + model.id
                                         }
+                                        selectedIds = updatedIds
+                                        viewModel.saveVisibleModels(
+                                            connection.id,
+                                            availableModels.filter { it.id in updatedIds }
+                                        ) {}
                                     },
                                     onConfigure = { editingModel = model }
                                 )
@@ -212,9 +227,7 @@ fun ProviderDetailScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    viewModel.deleteConnection(connection.id) {
-                                        onNavigateBack()
-                                    }
+                                    confirmDeleteProvider = true
                                 }
                                 .padding(horizontal = 16.dp, vertical = 16.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -240,27 +253,45 @@ fun ProviderDetailScreen(
                 },
                 navigationIcon = { SettingsBackButton(onNavigateBack) },
                 actions = {
-                    TextButton(
+                    if (!isSubscription) AmayaTopBarButton(
+                        icon = Icons.Default.Refresh,
                         onClick = {
-                            val savedModels = availableModels.filter { it.id in selectedIds }
-                            viewModel.saveVisibleModels(connection.id, savedModels) {
-                                initialSelectedIds = selectedIds
+                            if (!refreshingModels) {
+                                refreshingModels = true
+                                refreshTurns += 1
+                                Toast.makeText(context, "Refreshing models…", Toast.LENGTH_SHORT).show()
+                                viewModel.refresh(
+                                    connection = connection,
+                                    onSuccess = { refreshed ->
+                                        availableModels = mergeConfiguredModels(availableModels, refreshed)
+                                        refreshingModels = false
+                                    },
+                                    onFailure = { refreshingModels = false }
+                                )
                             }
                         },
-                        enabled = hasUnsavedChanges && !operation.loading
-                    ) {
-                        if (operation.loading) {
-                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                        } else {
-                            Text("Save", fontWeight = FontWeight.Bold, color = if (hasUnsavedChanges) MaterialTheme.colorScheme.primary else colors.secondaryText)
-                        }
-                    }
+                        modifier = Modifier.padding(end = 8.dp),
+                        iconModifier = Modifier.rotate(refreshRotation),
+                        contentDescription = "Refresh models"
+                    )
                 },
                 modifier = Modifier
                     .statusBarsPadding()
                     .padding(horizontal = AmayaGroupedSettingsTokens.topBarHorizontalPadding),
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent, scrolledContainerColor = Color.Transparent),
                 windowInsets = WindowInsets(0.dp)
+            )
+            ExtendedFloatingActionButton(
+                onClick = { addingCustomModel = true },
+                icon = { Icon(Icons.Default.Add, "Add custom model") },
+                text = { Text("Custom Model") },
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                elevation = FloatingActionButtonDefaults.elevation(4.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = AmayaGroupedSettingsTokens.floatingActionButtonInset)
+                    .amayaFloatingActionButtonBottomPadding()
             )
         }
     }
@@ -278,6 +309,260 @@ fun ProviderDetailScreen(
             }
         )
     }
+
+    if (editingProviderName) {
+        ProviderNameSheet(
+            currentName = connection.name,
+            operation = operation,
+            onDismiss = { editingProviderName = false },
+            onSave = { name ->
+                viewModel.renameConnection(connection, name) {
+                    editingProviderName = false
+                }
+            }
+        )
+    }
+
+    if (editingApiKey) {
+        ApiKeySheet(
+            providerName = connection.name,
+            credentialRequired = AmayaProviderRegistry.require(connection.providerId).credentialRequired,
+            operation = operation,
+            onDismiss = { editingApiKey = false },
+            onSave = { apiKey ->
+                viewModel.replaceCredential(connection, apiKey) { refreshed ->
+                    hasCredential = true
+                    availableModels = mergeConfiguredModels(availableModels, refreshed)
+                    editingApiKey = false
+                }
+            }
+        )
+    }
+
+    if (editingBaseUrl) {
+        BaseUrlSheet(
+            currentBaseUrl = connection.baseUrl,
+            operation = operation,
+            onDismiss = { editingBaseUrl = false },
+            onSave = { baseUrl ->
+                viewModel.updateBaseUrl(connection, baseUrl) {
+                    editingBaseUrl = false
+                }
+            }
+        )
+    }
+
+    if (addingCustomModel) {
+        AddCustomModelSheet(
+            existingModelIds = availableModels.map { it.id }.toSet(),
+            operation = operation,
+            onDismiss = { addingCustomModel = false },
+            onSave = { model ->
+                viewModel.addModel(connection.id, model) {
+                    availableModels = (availableModels + model).sortedBy { it.displayName.lowercase() }
+                    selectedIds = selectedIds + model.id
+                    addingCustomModel = false
+                }
+            }
+        )
+    }
+
+    if (confirmDeleteProvider) {
+        com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
+            onDismissRequest = { confirmDeleteProvider = false },
+            title = "Delete Provider"
+        ) {
+            Text(
+                "This removes the provider, its configured models, and any saved credentials.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(
+                onClick = {
+                    viewModel.deleteConnection(connection.id) {
+                        onNavigateBack()
+                    }
+                },
+                enabled = !operation.loading,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                ),
+                modifier = Modifier.fillMaxWidth().height(52.dp)
+            ) {
+                if (operation.loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                else Text("Delete Provider")
+            }
+            OutlinedButton(
+                onClick = { confirmDeleteProvider = false },
+                enabled = !operation.loading,
+                modifier = Modifier.fillMaxWidth().height(52.dp)
+            ) {
+                Text("Cancel")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddCustomModelSheet(
+    existingModelIds: Set<String>,
+    operation: ManageModelsViewModel.OperationState,
+    onDismiss: () -> Unit,
+    onSave: (ConfiguredModel) -> Unit
+) {
+    var modelId by remember { mutableStateOf("") }
+    var displayName by remember { mutableStateOf("") }
+    val normalizedId = modelId.trim()
+    val duplicate = normalizedId in existingModelIds
+
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
+        onDismissRequest = onDismiss,
+        title = "Add Custom Model"
+    ) {
+        OutlinedTextField(
+            value = modelId,
+            onValueChange = { modelId = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Model ID") },
+            supportingText = { Text("Use the ID accepted by this provider.") },
+            singleLine = true
+        )
+        OutlinedTextField(
+            value = displayName,
+            onValueChange = { displayName = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Display name (optional)") },
+            singleLine = true
+        )
+        if (duplicate) InlineError("A model with this ID already exists.")
+        Button(
+            onClick = {
+                onSave(
+                    ConfiguredModel(
+                        id = normalizedId,
+                        displayName = displayName.trim().ifBlank { normalizedId }
+                    )
+                )
+            },
+            enabled = normalizedId.isNotBlank() && !duplicate && !operation.loading,
+            modifier = Modifier.fillMaxWidth().height(52.dp)
+        ) {
+            if (operation.loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text("Add Model")
+        }
+    }
+}
+
+@Composable
+private fun BaseUrlSheet(
+    currentBaseUrl: String,
+    operation: ManageModelsViewModel.OperationState,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var baseUrl by remember(currentBaseUrl) { mutableStateOf(currentBaseUrl) }
+
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
+        onDismissRequest = onDismiss,
+        title = "Base URL"
+    ) {
+        OutlinedTextField(
+            value = baseUrl,
+            onValueChange = { baseUrl = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Base URL") },
+            placeholder = { Text("https://example.com/v1") },
+            supportingText = { Text("Use the API root, without /models or a query.") },
+            singleLine = true
+        )
+        Button(
+            onClick = { onSave(baseUrl.trim()) },
+            enabled = baseUrl.isNotBlank() && !operation.loading,
+            modifier = Modifier.fillMaxWidth().height(52.dp)
+        ) {
+            if (operation.loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text("Save Base URL")
+        }
+    }
+}
+
+@Composable
+private fun ProviderNameSheet(
+    currentName: String,
+    operation: ManageModelsViewModel.OperationState,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var name by remember(currentName) { mutableStateOf(currentName) }
+
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
+        onDismissRequest = onDismiss,
+        title = "Provider Name"
+    ) {
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Provider name") },
+            singleLine = true
+        )
+        Button(
+            onClick = { onSave(name.trim()) },
+            enabled = name.isNotBlank() && !operation.loading,
+            modifier = Modifier.fillMaxWidth().height(52.dp)
+        ) {
+            if (operation.loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text("Save Name")
+        }
+    }
+}
+
+@Composable
+private fun ApiKeySheet(
+    providerName: String,
+    credentialRequired: Boolean,
+    operation: ManageModelsViewModel.OperationState,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var apiKey by remember { mutableStateOf("") }
+    var showKey by remember { mutableStateOf(false) }
+
+    com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
+        onDismissRequest = onDismiss,
+        title = "Change API Key"
+    ) {
+        Text(
+            "Update the API key for $providerName.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedTextField(
+            value = apiKey,
+            onValueChange = { apiKey = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text(if (credentialRequired) "New API key" else "New API key (optional)") },
+            singleLine = true,
+            visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+            trailingIcon = {
+                IconButton(onClick = { showKey = !showKey }) {
+                    Icon(
+                        if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        if (showKey) "Hide API key" else "Show API key"
+                    )
+                }
+            }
+        )
+        Button(
+            onClick = { onSave(apiKey) },
+            enabled = apiKey.isNotBlank() && !operation.loading,
+            modifier = Modifier.fillMaxWidth().height(52.dp)
+        ) {
+            if (operation.loading) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text("Update API Key")
+        }
+    }
 }
 
 @Composable
@@ -287,31 +572,35 @@ private fun ModelConfigurationSheet(
     onDismiss: () -> Unit,
     onSave: (ConfiguredModel) -> Unit
 ) {
+    var displayName by remember(model.id, model.displayName) {
+        mutableStateOf(model.displayName.ifBlank { model.id })
+    }
     var contextWindow by remember(model.id, model.contextWindowTokens) { mutableStateOf(model.contextWindowTokens?.toString().orEmpty()) }
     var maxInput by remember(model.id, model.maxInputTokens) { mutableStateOf(model.maxInputTokens?.toString().orEmpty()) }
     var maxOutput by remember(model.id, model.maxOutputTokens) { mutableStateOf(model.maxOutputTokens?.toString().orEmpty()) }
-    var supportsTools by remember(model.id) { mutableStateOf(model.supportsTools) }
-    var supportsImages by remember(model.id) { mutableStateOf(model.supportsImages) }
     val candidate = runCatching {
         model.copy(
+            displayName = displayName.trim().ifBlank { model.id },
             contextWindowTokens = contextWindow.toPositiveTokenCount(),
             maxInputTokens = maxInput.toPositiveTokenCount(),
-            maxOutputTokens = maxOutput.toPositiveTokenCount(),
-            supportsTools = supportsTools,
-            supportsImages = supportsImages
+            maxOutputTokens = maxOutput.toPositiveTokenCount()
         ).also { com.amaya.intelligence.data.remote.api.normalizeConfiguredModel(it) }
     }
 
     com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
         onDismissRequest = onDismiss,
-        title = model.displayName
+        title = "Configure Model"
     ) {
-        Text(model.id, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        OutlinedTextField(
+            value = displayName,
+            onValueChange = { displayName = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Display name") },
+            singleLine = true
+        )
         TokenField("Context window", contextWindow) { contextWindow = it }
         TokenField("Max input", maxInput) { maxInput = it }
         TokenField("Max output", maxOutput) { maxOutput = it }
-        ModelCapabilityRow("Tool use", supportsTools) { supportsTools = it }
-        ModelCapabilityRow("Image input", supportsImages) { supportsImages = it }
         candidate.exceptionOrNull()?.message?.let { message -> InlineError(message) }
         Button(
             onClick = { candidate.getOrNull()?.let(onSave) },
@@ -331,19 +620,10 @@ private fun TokenField(label: String, value: String, onValueChange: (String) -> 
         onValueChange = { input -> if (input.all(Char::isDigit)) onValueChange(input) },
         label = { Text(label) },
         placeholder = { Text("Auto") },
-        supportingText = { Text("Leave blank for provider default") },
         modifier = Modifier.fillMaxWidth(),
         singleLine = true,
         keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Number)
     )
-}
-
-@Composable
-private fun ModelCapabilityRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
-        com.amaya.intelligence.ui.screens.amaya.AmayaSwitch(checked = checked, onCheckedChange = onCheckedChange)
-    }
 }
 
 private fun String.toPositiveTokenCount(): Int? = trim().takeIf(String::isNotBlank)?.toIntOrNull()

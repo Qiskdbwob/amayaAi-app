@@ -23,6 +23,7 @@ fun AmayaTopBarButton(
     icon: ImageVector,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    iconModifier: Modifier = Modifier,
     contentDescription: String? = null
 ) {
     val isDark = isSystemInDarkTheme()
@@ -43,7 +44,7 @@ fun AmayaTopBarButton(
                 icon,
                 contentDescription = contentDescription,
                 tint = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.size(20.dp)
+                modifier = iconModifier.size(20.dp)
             )
         }
     }

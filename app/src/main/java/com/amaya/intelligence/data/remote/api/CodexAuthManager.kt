@@ -17,17 +17,23 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import okhttp3.Dns
 import okhttp3.FormBody
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.dnsoverhttps.DnsOverHttps
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
+import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.URI
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.net.URLDecoder
 import java.security.MessageDigest
 import java.security.SecureRandom
@@ -55,6 +61,7 @@ class CodexAuthManager @Inject constructor(
         const val CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
         private const val AUTH_URL = "https://auth.openai.com/oauth/authorize"
         private const val TOKEN_URL = "https://auth.openai.com/oauth/token"
+        private const val DNS_OVER_HTTPS_URL = "https://cloudflare-dns.com/dns-query"
         private const val SCOPE = "openid profile email offline_access"
 
         // Local callback server ports (same as Codex CLI)
@@ -69,6 +76,37 @@ class CodexAuthManager @Inject constructor(
         private const val KEY_ACCOUNT_EMAIL = "codex_account_email"
 
         private fun intOf(vararg values: Int) = values.toList()
+
+        internal fun parseManualCallbackUrl(
+            rawUrl: String,
+            expectedRedirectUri: String,
+            expectedState: String
+        ): ManualCallback? = try {
+            val callback = URI(rawUrl.trim())
+            val expected = URI(expectedRedirectUri)
+            if (
+                callback.scheme != expected.scheme ||
+                callback.host != expected.host ||
+                callback.port != expected.port ||
+                callback.path != expected.path
+            ) {
+                null
+            } else {
+                val params = callback.rawQuery.orEmpty()
+                    .split("&")
+                    .mapNotNull {
+                        val parts = it.split("=", limit = 2)
+                        if (parts.size == 2) parts[0] to URLDecoder.decode(parts[1], "UTF-8") else null
+                    }
+                    .toMap()
+                if (params["state"] != expectedState) null else ManualCallback(
+                    code = params["code"],
+                    error = params["error"]
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     // ── State ────────────────────────────────────────────────────────
@@ -77,8 +115,22 @@ class CodexAuthManager @Inject constructor(
     val authState: StateFlow<CodexAuthState> = _authState.asStateFlow()
 
     private val authScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val tokenHttpClient: OkHttpClient by lazy {
+        val dnsOverHttps = DnsOverHttps.Builder()
+            .client(httpClient)
+            .url(DNS_OVER_HTTPS_URL.toHttpUrl())
+            .bootstrapDnsHosts(
+                InetAddress.getByName("1.1.1.1"),
+                InetAddress.getByName("1.0.0.1")
+            )
+            .build()
+        httpClient.newBuilder()
+            .dns(FallbackDns(Dns.SYSTEM, dnsOverHttps))
+            .build()
+    }
     private var callbackServer: ServerSocket? = null
     private var loginJob: Job? = null
+    private var pendingManualLogin: PendingLogin? = null
 
     // ── Local Server PKCE Flow ──────────────────────────────────────
 
@@ -86,9 +138,9 @@ class CodexAuthManager @Inject constructor(
         _authState.value = CodexAuthState.Starting
 
         loginJob?.cancel()
+        pendingManualLogin = null
         loginJob = authScope.launch {
             val verifier = generateCodeVerifier()
-            val challenge = generateCodeChallenge(verifier)
             val state = generateSecureRandom(32)
 
             // Try to bind a local server
@@ -98,21 +150,7 @@ class CodexAuthManager @Inject constructor(
             }
             callbackServer = server
             val redirectUri = "http://$CALLBACK_HOST:$port/auth/callback"
-
-            // Build auth URL
-            val authUri = Uri.parse(AUTH_URL).buildUpon()
-                .appendQueryParameter("response_type", "code")
-                .appendQueryParameter("client_id", CLIENT_ID)
-                .appendQueryParameter("redirect_uri", redirectUri)
-                .appendQueryParameter("scope", SCOPE)
-                .appendQueryParameter("code_challenge", challenge)
-                .appendQueryParameter("code_challenge_method", "S256")
-                .appendQueryParameter("state", state)
-                .appendQueryParameter("id_token_add_organizations", "true")
-                .appendQueryParameter("codex_cli_simplified_flow", "true")
-                .appendQueryParameter("originator", "amaya")
-                .appendQueryParameter("prompt", "consent")
-                .build()
+            val authUri = buildAuthUri(PendingLogin(verifier, state, redirectUri))
 
             // Open Custom Tabs
             withContext(Dispatchers.Main) {
@@ -201,6 +239,54 @@ class CodexAuthManager @Inject constructor(
         }
     }
 
+    fun startManualCallbackLogin(activityContext: Context) {
+        _authState.value = CodexAuthState.Starting
+
+        loginJob?.cancel()
+        callbackServer?.close()
+        callbackServer = null
+        loginJob = authScope.launch {
+            val verifier = generateCodeVerifier()
+            val state = generateSecureRandom(32)
+            val redirectUri = "http://$CALLBACK_HOST:${CALLBACK_PORTS.first()}/auth/callback"
+            val pendingLogin = PendingLogin(verifier, state, redirectUri)
+            pendingManualLogin = pendingLogin
+            val authUri = buildAuthUri(pendingLogin)
+
+            withContext(Dispatchers.Main) {
+                _authState.value = CodexAuthState.WaitingForManualCallback
+                try {
+                    CustomTabsIntent.Builder()
+                        .setShowTitle(true)
+                        .build()
+                        .launchUrl(activityContext, authUri)
+                } catch (e: Exception) {
+                    pendingManualLogin = null
+                    _authState.value = CodexAuthState.Error("Could not open browser: ${e.message}")
+                }
+            }
+        }
+    }
+
+    fun submitManualCallbackUrl(callbackUrl: String) {
+        val pendingLogin = pendingManualLogin ?: run {
+            _authState.value = CodexAuthState.Error("Start sign in again before pasting a callback URL.")
+            return
+        }
+        val callback = parseManualCallbackUrl(callbackUrl, pendingLogin.redirectUri, pendingLogin.state)
+        when {
+            callback == null -> _authState.value = CodexAuthState.Error("Paste the localhost callback URL from this sign-in attempt.")
+            !callback.error.isNullOrBlank() -> _authState.value = CodexAuthState.Error("Authorization failed: ${callback.error}")
+            callback.code.isNullOrBlank() -> _authState.value = CodexAuthState.Error("The callback URL did not contain an authorization code.")
+            else -> {
+                _authState.value = CodexAuthState.ExchangingToken
+                loginJob = authScope.launch {
+                    exchangeCodeForToken(callback.code, pendingLogin.verifier, pendingLogin.redirectUri)
+                }
+            }
+        }
+    }
+
     // ── Token Exchange (PKCE) ───────────────────────────────────────
 
     private suspend fun exchangeCodeForToken(code: String, verifier: String, redirectUri: String) {
@@ -217,7 +303,7 @@ class CodexAuthManager @Inject constructor(
                 .post(formBody)
                 .build()
 
-            val response = httpClient.newCall(request).execute()
+            val response = tokenHttpClient.newCall(request).execute()
             val body = response.body?.readUtf8Limited(MAX_ERROR_BODY_BYTES) ?: throw Exception("Empty token response")
 
             if (!response.isSuccessful) {
@@ -227,6 +313,7 @@ class CodexAuthManager @Inject constructor(
 
             val json = JSONObject(body)
             saveTokens(json)
+            pendingManualLogin = null
             _authState.value = CodexAuthState.Authenticated(
                 email = json.optString("id_token").let { parseEmailFromIdToken(it) }
             )
@@ -263,7 +350,7 @@ class CodexAuthManager @Inject constructor(
                 .post(formBody)
                 .build()
 
-            val response = httpClient.newCall(request).execute()
+            val response = tokenHttpClient.newCall(request).execute()
             val body = response.body?.readUtf8Limited(MAX_ERROR_BODY_BYTES) ?: return@withContext accessToken
 
             if (response.isSuccessful) {
@@ -305,6 +392,7 @@ class CodexAuthManager @Inject constructor(
         loginJob = null
         callbackServer?.close()
         callbackServer = null
+        pendingManualLogin = null
         _authState.value = CodexAuthState.Idle
     }
 
@@ -336,14 +424,33 @@ class CodexAuthManager @Inject constructor(
         }.toMap()
     }
 
+    private fun buildAuthUri(pendingLogin: PendingLogin): Uri =
+        Uri.parse(AUTH_URL).buildUpon()
+            .appendQueryParameter("response_type", "code")
+            .appendQueryParameter("client_id", CLIENT_ID)
+            .appendQueryParameter("redirect_uri", pendingLogin.redirectUri)
+            .appendQueryParameter("scope", SCOPE)
+            .appendQueryParameter("code_challenge", generateCodeChallenge(pendingLogin.verifier))
+            .appendQueryParameter("code_challenge_method", "S256")
+            .appendQueryParameter("state", pendingLogin.state)
+            .appendQueryParameter("id_token_add_organizations", "true")
+            .appendQueryParameter("codex_cli_simplified_flow", "true")
+            .appendQueryParameter("originator", "amaya")
+            .appendQueryParameter("prompt", "consent")
+            .build()
+
     private fun writeHtmlResponse(socket: Socket, html: String, status: String = "200 OK") {
-        val bytes = html.toByteArray(Charsets.UTF_8)
-        val writer = PrintWriter(socket.getOutputStream(), true)
-        writer.print("HTTP/1.1 $status\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store, no-cache, must-revalidate\r\nPragma: no-cache\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n")
-        writer.flush()
-        socket.getOutputStream().write(bytes)
-        socket.getOutputStream().flush()
-        socket.close()
+        runCatching {
+            val bytes = html.toByteArray(Charsets.UTF_8)
+            val output = socket.getOutputStream()
+            val writer = PrintWriter(output, true)
+            writer.print("HTTP/1.1 $status\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store, no-cache, must-revalidate\r\nPragma: no-cache\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n")
+            writer.flush()
+            output.write(bytes)
+            output.flush()
+        }.also {
+            runCatching { socket.close() }
+        }
     }
 
     private fun codexCallbackSuccessHtml(): String = """
@@ -621,6 +728,30 @@ class CodexAuthManager @Inject constructor(
         SecureRandom().nextBytes(bytes)
         return bytes.joinToString("") { "%02x".format(it) }
     }
+
+    private data class PendingLogin(
+        val verifier: String,
+        val state: String,
+        val redirectUri: String
+    )
+}
+
+internal data class ManualCallback(val code: String?, val error: String?)
+
+internal class FallbackDns(
+    private val primary: Dns,
+    private val fallback: Dns
+) : Dns {
+    override fun lookup(hostname: String): List<InetAddress> = try {
+        primary.lookup(hostname)
+    } catch (primaryFailure: UnknownHostException) {
+        try {
+            fallback.lookup(hostname)
+        } catch (fallbackFailure: UnknownHostException) {
+            fallbackFailure.addSuppressed(primaryFailure)
+            throw fallbackFailure
+        }
+    }
 }
 
 /**
@@ -635,6 +766,9 @@ sealed class CodexAuthState {
 
     /** Local server started, waiting for browser redirect. */
     data object WaitingForBrowser : CodexAuthState()
+
+    /** Browser redirect must be pasted back into the app. */
+    data object WaitingForManualCallback : CodexAuthState()
 
     /** Exchanging authorization code for tokens. */
     data object ExchangingToken : CodexAuthState()

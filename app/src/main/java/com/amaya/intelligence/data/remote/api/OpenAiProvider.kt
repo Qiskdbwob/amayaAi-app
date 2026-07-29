@@ -503,9 +503,7 @@ class OpenAiProvider @Inject constructor(
         base.put("input", body.getJSONArray("input"))
         if (body.has("tools")) base.put("tools", body.getJSONArray("tools"))
         base.put("tool_choice", "auto")
-        base.put("include", JSONArray()
-            .put("reasoning.encrypted_content")
-            .put("reasoning.summary_text"))
+        base.put("include", OpenAiRequestCodec.responsesInclude())
         resolveReasoningAttachment(request)?.let { att ->
             when (val v = att.value) {
                 is JSONObject -> base.put(att.key, v)
@@ -576,9 +574,7 @@ class OpenAiProvider @Inject constructor(
             .put("instructions", request.systemPrompt.orEmpty())
             .put("input", JSONArray())
             .put("text", JSONObject().put("verbosity", "low"))
-            .put("include", JSONArray()
-                .put("reasoning.encrypted_content")
-                .put("reasoning.summary_text"))
+            .put("include", OpenAiRequestCodec.responsesInclude())
             .put("prompt_cache_key", promptCacheKey)
             .put("tool_choice", "auto")
             .put("parallel_tool_calls", false)

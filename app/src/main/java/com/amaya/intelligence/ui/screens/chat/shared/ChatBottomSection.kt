@@ -26,6 +26,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+internal data class ChatErrorPresentation(
+    val title: String,
+    val message: String
+)
+
+internal fun presentChatError(raw: String): ChatErrorPresentation =
+    ChatErrorPresentation(title = raw.substringBefore(":"), message = raw)
+
 @Composable
 fun ChatBottomSection(
     modifier: Modifier = Modifier,
@@ -113,6 +121,7 @@ fun ChatBottomSection(
                 }
             }
             AnimatedVisibility(visible = uiState.error != null) {
+                val error = presentChatError(uiState.error.orEmpty())
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
@@ -121,8 +130,18 @@ fun ChatBottomSection(
                     Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Error, null, modifier = Modifier.size(24.dp), tint = MaterialTheme.colorScheme.error)
                         Spacer(Modifier.width(12.dp))
-                        Text(uiState.error ?: "", color = MaterialTheme.colorScheme.onErrorContainer,
-                            style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                text = error.title,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                text = error.message,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
                         IconButton(onClick = onClearError, modifier = Modifier.size(24.dp)) {
                             Icon(Icons.Default.Close, null, modifier = Modifier.size(18.dp),
                                 tint = MaterialTheme.colorScheme.onErrorContainer)

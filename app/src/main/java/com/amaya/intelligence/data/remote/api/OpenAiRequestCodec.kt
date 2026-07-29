@@ -48,6 +48,9 @@ internal object OpenAiRequestCodec {
         .put("parameters", functionSchema(tool))
         .put("strict", tool.strict)
 
+    fun responsesInclude(): JSONArray = JSONArray()
+        .put("reasoning.encrypted_content")
+
     fun compatibleChatBase(
         model: String,
         maxCompletionTokens: Int,

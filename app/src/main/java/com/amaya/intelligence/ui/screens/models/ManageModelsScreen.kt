@@ -120,6 +120,8 @@ fun ManageModelsScreen(
                 codexAccount = codexAuthManager.getAccountEmail(),
                 codexState = codexState,
                 onSignIn = { codexAuthManager.startLocalServerLogin(context) },
+                onStartManualCallbackSignIn = { codexAuthManager.startManualCallbackLogin(context) },
+                onSubmitManualCallbackUrl = codexAuthManager::submitManualCallbackUrl,
                 onCancelSignIn = codexAuthManager::cancel,
                 onConnect = { name, baseUrl, apiKey ->
                     viewModel.connect(provider, name, baseUrl, apiKey) { saved, _ ->
@@ -268,6 +270,8 @@ private fun ProviderSetupSheet(
     codexAccount: String?,
     codexState: CodexAuthState,
     onSignIn: () -> Unit,
+    onStartManualCallbackSignIn: () -> Unit,
+    onSubmitManualCallbackUrl: (String) -> Unit,
     onCancelSignIn: () -> Unit,
     onConnect: (String, String, String) -> Unit,
     onSaveWithoutModelList: (String, String, String) -> Unit,
@@ -279,6 +283,7 @@ private fun ProviderSetupSheet(
     var baseUrl by remember(provider.id) { mutableStateOf("") }
     var apiKey by remember(provider.id) { mutableStateOf("") }
     var showKey by remember(provider.id) { mutableStateOf(false) }
+    var callbackUrl by remember(provider.id) { mutableStateOf("") }
 
     com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -305,10 +310,37 @@ private fun ProviderSetupSheet(
             operation.error?.let { InlineError(it) }
             when {
                 codexAuthenticated -> Button(onClick = onSaveSubscription, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Continue") }
+                codexState is CodexAuthState.WaitingForManualCallback -> {
+                    Text(
+                        "After OpenAI redirects to localhost, copy the complete URL from the browser address bar and paste it here.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = callbackUrl,
+                        onValueChange = { callbackUrl = it },
+                        label = { Text("Localhost callback URL") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3
+                    )
+                    Button(
+                        onClick = { onSubmitManualCallbackUrl(callbackUrl) },
+                        modifier = Modifier.fillMaxWidth().height(54.dp),
+                        enabled = callbackUrl.isNotBlank()
+                    ) { Text("Finish Sign In") }
+                    OutlinedButton(onClick = onCancelSignIn, modifier = Modifier.fillMaxWidth().height(54.dp)) {
+                        Text("Cancel Sign In")
+                    }
+                }
                 codexState is CodexAuthState.Starting || codexState is CodexAuthState.WaitingForBrowser || codexState is CodexAuthState.ExchangingToken -> {
                     Button(onClick = onCancelSignIn, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Cancel Sign In") }
                 }
-                else -> Button(onClick = onSignIn, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Sign In With OpenAI") }
+                else -> {
+                    Button(onClick = onSignIn, modifier = Modifier.fillMaxWidth().height(54.dp)) { Text("Sign In With OpenAI") }
+                    OutlinedButton(onClick = onStartManualCallbackSignIn, modifier = Modifier.fillMaxWidth().height(54.dp)) {
+                        Text("Use Pasted Callback URL")
+                    }
+                }
             }
         } else {
             OutlinedTextField(name, { name = it }, label = { Text("Connection Name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -480,6 +512,7 @@ private fun providerCategoryLabel(category: ProviderCategory): String = when (ca
 private fun subscriptionStateLabel(state: CodexAuthState): String = when (state) {
     is CodexAuthState.Starting -> "Opening browser…"
     is CodexAuthState.WaitingForBrowser -> "Waiting for browser…"
+    is CodexAuthState.WaitingForManualCallback -> "Paste the browser callback URL"
     is CodexAuthState.ExchangingToken -> "Finishing sign in…"
     is CodexAuthState.Error -> state.message
     else -> "Sign in to continue"

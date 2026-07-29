@@ -305,6 +305,25 @@ class AiSettingsManager @Inject constructor(
         }
     }
 
+    suspend fun addConfiguredModel(connectionId: String, model: ConfiguredModel) {
+        val normalizedModel = normalizeConfiguredModel(model)
+        context.dataStore.edit { prefs ->
+            val connections = parseConnections(
+                prefs[KEY_CONNECTIONS] ?: prefs[LEGACY_AGENT_CONFIGS].orEmpty()
+            ).toMutableList()
+            val index = connections.indexOfFirst { it.id == connectionId }
+            require(index >= 0) { "Provider connection not found" }
+            require(connections[index].visibleModels.none { it.id == normalizedModel.id }) {
+                "A model with this ID already exists"
+            }
+            connections[index] = connections[index].copy(
+                visibleModels = connections[index].visibleModels + normalizedModel
+            )
+            prefs[KEY_CONNECTIONS] = serializeConnections(connections)
+            prefs.remove(LEGACY_AGENT_CONFIGS)
+        }
+    }
+
     suspend fun setVisibleModels(connectionId: String, models: List<ConfiguredModel>) {
         val normalizedModels = models
             .map(::normalizeConfiguredModel)

@@ -94,6 +94,7 @@ class ManageModelsViewModel @Inject constructor(
 
     fun refresh(
         connection: ProviderConnection,
+        onFailure: () -> Unit = {},
         onSuccess: (List<ConfiguredModel>) -> Unit = {}
     ) {
         viewModelScope.launch {
@@ -109,6 +110,7 @@ class ManageModelsViewModel @Inject constructor(
                 onSuccess(models)
             }.onFailure { failure ->
                 _operation.value = OperationState(error = failure.message ?: "Could not refresh models")
+                onFailure()
             }
         }
     }
@@ -170,6 +172,45 @@ class ManageModelsViewModel @Inject constructor(
         }
     }
 
+    fun renameConnection(
+        connection: ProviderConnection,
+        name: String,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            _operation.update { it.copy(loading = true, error = null) }
+            runCatching {
+                settingsManager.saveConnection(connection.copy(name = name))
+            }.onSuccess {
+                _operation.value = OperationState()
+                onSuccess()
+            }.onFailure { failure ->
+                _operation.update { it.copy(loading = false, error = failure.message ?: "Could not rename provider") }
+            }
+        }
+    }
+
+    fun updateBaseUrl(
+        connection: ProviderConnection,
+        baseUrl: String,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            _operation.update { it.copy(loading = true, error = null) }
+            runCatching {
+                val normalizedUrl = providerModelService
+                    .validateConnectionUrl(connection.providerId, baseUrl)
+                    .getOrThrow()
+                settingsManager.saveConnection(connection.copy(baseUrl = normalizedUrl))
+            }.onSuccess {
+                _operation.value = OperationState()
+                onSuccess()
+            }.onFailure { failure ->
+                _operation.update { it.copy(loading = false, error = failure.message ?: "Could not update base URL") }
+            }
+        }
+    }
+
     fun saveVisibleModels(
         connectionId: String,
         models: List<ConfiguredModel>,
@@ -201,6 +242,20 @@ class ManageModelsViewModel @Inject constructor(
                 onSuccess()
             }.onFailure { failure ->
                 _operation.update { it.copy(loading = false, error = failure.message ?: "Could not save model") }
+            }
+        }
+    }
+
+    fun addModel(connectionId: String, model: ConfiguredModel, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            _operation.update { it.copy(loading = true, error = null) }
+            runCatching {
+                settingsManager.addConfiguredModel(connectionId, model)
+            }.onSuccess {
+                _operation.value = OperationState()
+                onSuccess()
+            }.onFailure { failure ->
+                _operation.update { it.copy(loading = false, error = failure.message ?: "Could not add model") }
             }
         }
     }
