@@ -59,9 +59,9 @@ Use Chat for a simple conversation. Move to a Project when the assistant needs a
 | Connection | Providers | Status |
 | --- | --- | --- |
 | **Subscription** | OpenAI through Codex authentication | Tested |
-| **Direct API** | OpenAI API | Validation in progress |
+| **Direct API** | OpenAI API | Non-Tested |
 | **Direct API** | Anthropic API, Google Gemini API | Experimental |
-| **Compatible gateway** | GitHub Models, OpenRouter, Groq, DeepSeek, Moonshot Kimi, MiniMax, xAI, Z.ai GLM, Vercel AI Gateway | Validation in progress |
+| **Compatible gateway** | GitHub Models, OpenRouter, Groq, DeepSeek, Moonshot Kimi, MiniMax, xAI, Z.ai GLM, Vercel AI Gateway | Non-Tested |
 | **Custom endpoint** | Any OpenAI-compatible endpoint | Tested |
 
 The model list comes from the connection you configure. Compatibility depends on the selected model supporting streaming and tool calling.
@@ -78,6 +78,7 @@ The model list comes from the connection you configure. Compatibility depends on
 | Agent-to-agent delegation | No | No | Yes (Configurable) |
 | Browser automation | No | No | Yes (Configurable) |
 | Reminders and task lists | No | No | Yes (Configurable) |
+| Skills | Yes | Yes | Yes (Configurable) |
 
 ## Privacy and safety
 
