@@ -3,6 +3,11 @@ package com.amaya.intelligence.ui.screens.amaya
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import com.amaya.intelligence.domain.skills.SkillStatus
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 
 @Composable
 fun SkillsScreen(
@@ -40,9 +45,12 @@ fun SkillsScreen(
                 }
             }
         } else {
-            AmayaSection("Saved Skills") {
-                AmayaStatusRow("No saved skills", "0", "Create a reusable workflow from chat when needed")
-            }
+            com.amaya.intelligence.ui.components.shared.SettingsEmptyState(
+                title = "No saved skills",
+                subtitle = "Create a reusable workflow from chat when needed",
+                icon = androidx.compose.material.icons.Icons.Default.Psychology,
+                modifier = androidx.compose.ui.Modifier.padding(top = AmayaGroupedSettingsTokens.emptyStateScreenTopSpacing)
+            )
         }
     }
 }

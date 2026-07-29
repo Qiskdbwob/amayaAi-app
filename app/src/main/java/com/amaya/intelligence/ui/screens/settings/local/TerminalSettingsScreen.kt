@@ -45,12 +45,13 @@ fun TerminalSettingsScreen(
     AmayaScaffold("Terminal", snackbar, onNavigateBack) {
         AmayaSection("Command Policy") {
             Column(
-                Modifier.fillMaxWidth().padding(16.dp),
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
                     "One wildcard pattern per line. Trusted commands run automatically. Declined commands are blocked. Other commands require review.",
-                    style = MaterialTheme.typography.bodyMedium
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 OutlinedTextField(
                     value = trusted,
@@ -59,7 +60,13 @@ fun TerminalSettingsScreen(
                     label = { Text("Trusted Commands") },
                     supportingText = { Text("Examples: npm * or npm run *") },
                     minLines = 6,
-                    enabled = loaded
+                    enabled = loaded,
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                        focusedBorderColor = MaterialTheme.colorScheme.primary
+                    )
                 )
                 OutlinedTextField(
                     value = declined,
@@ -68,7 +75,13 @@ fun TerminalSettingsScreen(
                     label = { Text("Declined Commands") },
                     supportingText = { Text("Matched commands are rejected without review") },
                     minLines = 4,
-                    enabled = loaded
+                    enabled = loaded,
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant,
+                        focusedBorderColor = MaterialTheme.colorScheme.primary
+                    )
                 )
                 Button(
                     onClick = {

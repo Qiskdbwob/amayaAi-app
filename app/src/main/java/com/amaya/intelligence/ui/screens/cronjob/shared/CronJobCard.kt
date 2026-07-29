@@ -44,41 +44,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private data class IosCronJobCardColors(
-    val groupSurface: Color,
-    val border: Color,
-    val iconBackground: Color,
-    val iconTint: Color,
-    val primaryText: Color,
-    val secondaryText: Color,
-    val tagBackground: Color
-)
-
-@Composable
-private fun iosCronJobCardColors(): IosCronJobCardColors {
-    val isDark = isSystemInDarkTheme()
-    return if (isDark) {
-        IosCronJobCardColors(
-            groupSurface = Color(0xFF1C1C1E),
-            border = Color.White.copy(alpha = 0.10f),
-            iconBackground = Color(0xFF2C2C2E),
-            iconTint = Color(0xFFC7C7CC),
-            primaryText = Color(0xFFF2F2F7),
-            secondaryText = Color(0xFFEBEBF5).copy(alpha = 0.60f),
-            tagBackground = Color(0xFF2C2C2E)
-        )
-    } else {
-        IosCronJobCardColors(
-            groupSurface = Color.White,
-            border = Color.Black.copy(alpha = 0.08f),
-            iconBackground = Color(0xFFE9E9EE),
-            iconTint = Color(0xFF5F6368),
-            primaryText = Color(0xFF1C1C1E),
-            secondaryText = Color(0xFF3C3C43).copy(alpha = 0.62f),
-            tagBackground = Color(0xFFF2F2F7)
-        )
-    }
-}
+import com.amaya.intelligence.ui.screens.amaya.iosAmayaColors
+import com.amaya.intelligence.ui.screens.amaya.AmayaSwitch
 
 @Composable
 fun CronJobCard(
@@ -87,7 +54,7 @@ fun CronJobCard(
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val colors = iosCronJobCardColors()
+    val colors = iosAmayaColors()
     val fmt = remember { SimpleDateFormat("EEE, dd MMM yyyy · HH:mm", Locale.getDefault()) }
     val timeStr = fmt.format(Date(job.triggerTimeMillis))
     val isPast = job.triggerTimeMillis < System.currentTimeMillis() && job.recurringType == CronRecurringType.ONCE
@@ -138,7 +105,7 @@ fun CronJobCard(
                         color = colors.secondaryText
                     )
                 }
-                Switch(
+                AmayaSwitch(
                     checked = isActive,
                     onCheckedChange = { if (!isPast) onToggle(it) },
                     enabled = !isPast

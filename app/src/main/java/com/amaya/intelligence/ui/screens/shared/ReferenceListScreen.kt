@@ -29,6 +29,8 @@ import com.amaya.intelligence.ui.screens.amaya.AmayaDivider
 import com.amaya.intelligence.ui.screens.amaya.AmayaNavigationRow
 import com.amaya.intelligence.ui.screens.amaya.AmayaScaffold
 import com.amaya.intelligence.ui.screens.amaya.AmayaSection
+import com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens
+import com.amaya.intelligence.ui.screens.amaya.amayaFloatingActionButtonBottomPadding
 import java.io.File
 
 @Composable
@@ -47,13 +49,17 @@ fun ReferenceListScreen(
     var content by remember { mutableStateOf("") }
     Box(Modifier.fillMaxSize()) {
         AmayaScaffold(title, snackbarHostState, onNavigateBack) {
-            AmayaSection("References") {
-                if (paths.isEmpty()) {
-                    Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("No references", style = MaterialTheme.typography.titleSmall)
-                        Text("Add a text document for this context.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                } else paths.forEachIndexed { index, path ->
+            if (paths.isEmpty()) {
+                com.amaya.intelligence.ui.components.shared.SettingsEmptyState(
+                    title = "No references",
+                    subtitle = "Add a text document for this context.",
+                    icon = Icons.Default.Description,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = AmayaGroupedSettingsTokens.emptyStateScreenTopSpacing)
+                )
+            } else AmayaSection("References") {
+                paths.forEachIndexed { index, path ->
                     if (index > 0) AmayaDivider()
                     AmayaNavigationRow(Icons.Default.Description, File(path).name.substringAfter('_'), "Tap to remove", onClick = { deleting = path })
                 }
@@ -63,13 +69,25 @@ fun ReferenceListScreen(
             onClick = onAdd,
             icon = { Icon(Icons.Default.Add, "Add reference") },
             text = { Text("Import") },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp)
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            elevation = androidx.compose.material3.FloatingActionButtonDefaults.elevation(4.dp),
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = AmayaGroupedSettingsTokens.floatingActionButtonInset)
+                .amayaFloatingActionButtonBottomPadding()
         )
         ExtendedFloatingActionButton(
             onClick = { manual = true },
             icon = { Icon(Icons.Default.Add, "Add note") },
             text = { Text("Note") },
-            modifier = Modifier.align(Alignment.BottomStart).padding(20.dp)
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            elevation = androidx.compose.material3.FloatingActionButtonDefaults.elevation(4.dp),
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = AmayaGroupedSettingsTokens.floatingActionButtonInset)
+                .amayaFloatingActionButtonBottomPadding()
         )
     }
     if (manual) AlertDialog(

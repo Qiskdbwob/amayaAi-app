@@ -71,43 +71,53 @@ fun CronJobEditSheet(
         onDismissRequest = onDismiss,
         title = "New Reminder Plan"
     ) {
-        OutlinedTextField(
-            value = title,
-            onValueChange = { title = it },
-            label = { Text(UiStrings.Labels.TITLE) },
-            placeholder = { Text(UiStrings.Placeholders.TITLE_EXAMPLE) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            leadingIcon = { Icon(Icons.AutoMirrored.Filled.Label, null, modifier = Modifier.size(18.dp)) }
-        )
-
-        OutlinedTextField(
-            value = prompt,
-            onValueChange = { prompt = it },
-            label = { Text(UiStrings.CronJob.MESSAGE_REMINDER) },
-            placeholder = { Text(UiStrings.Placeholders.REMINDER_MESSAGE_EXAMPLE) },
-            modifier = Modifier.fillMaxWidth(),
-            maxLines = 3,
-            shape = RoundedCornerShape(12.dp),
-            leadingIcon = { Icon(Icons.Default.ChatBubbleOutline, null, modifier = Modifier.size(18.dp)) }
-        )
-
-        OutlinedCard(
-            onClick = { pickDateTime() },
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.Schedule, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    fmtDisplay.format(selectedCalendar.time),
-                    style = MaterialTheme.typography.bodyMedium
+        com.amaya.intelligence.ui.screens.amaya.AmayaSection("Reminder Details") {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text(UiStrings.Labels.TITLE) },
+                    placeholder = { Text(UiStrings.Placeholders.TITLE_EXAMPLE) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.Label, null, modifier = Modifier.size(18.dp)) }
                 )
+
+                OutlinedTextField(
+                    value = prompt,
+                    onValueChange = { prompt = it },
+                    label = { Text(UiStrings.CronJob.MESSAGE_REMINDER) },
+                    placeholder = { Text(UiStrings.Placeholders.REMINDER_MESSAGE_EXAMPLE) },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 3,
+                    shape = RoundedCornerShape(12.dp),
+                    leadingIcon = { Icon(Icons.Default.ChatBubbleOutline, null, modifier = Modifier.size(18.dp)) }
+                )
+
+                OutlinedCard(
+                    onClick = { pickDateTime() },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Schedule, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            fmtDisplay.format(selectedCalendar.time),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            "Edit",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
             }
         }
 

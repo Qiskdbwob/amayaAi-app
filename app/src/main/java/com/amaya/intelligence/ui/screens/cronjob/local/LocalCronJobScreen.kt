@@ -16,6 +16,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddAlarm
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -26,33 +27,10 @@ import com.amaya.intelligence.data.repository.CronJobRepository
 import com.amaya.intelligence.ui.components.shared.PermissionRequirementSheet
 import com.amaya.intelligence.ui.components.shared.PermissionType
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
+import com.amaya.intelligence.ui.screens.amaya.iosAmayaColors
 import com.amaya.intelligence.ui.screens.cronjob.shared.CronJobEditSheet
 import com.amaya.intelligence.ui.screens.cronjob.shared.CronJobList
 import kotlinx.coroutines.launch
-
-private data class IosCronJobScreenColors(
-    val groupedBackground: Color,
-    val iconBackground: Color,
-    val iconTint: Color
-)
-
-@Composable
-private fun iosCronJobScreenColors(): IosCronJobScreenColors {
-    val isDark = isSystemInDarkTheme()
-    return if (isDark) {
-        IosCronJobScreenColors(
-            groupedBackground = Color(0xFF0B0B0F),
-            iconBackground = Color(0xFF2C2C2E),
-            iconTint = Color(0xFFC7C7CC)
-        )
-    } else {
-        IosCronJobScreenColors(
-            groupedBackground = Color(0xFFF2F2F7),
-            iconBackground = Color(0xFFE9E9EE),
-            iconTint = Color(0xFF5F6368)
-        )
-    }
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,7 +40,7 @@ fun LocalCronJobScreen(
     onNavigateBack: () -> Unit,
     cronJobRepository: CronJobRepository
 ) {
-    val colors = iosCronJobScreenColors()
+    val colors = iosAmayaColors()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -114,6 +92,10 @@ fun LocalCronJobScreen(
                     }
                 },
                 topPadding = topPadding
+            )
+
+            com.amaya.intelligence.ui.screens.amaya.AmayaTopScrim(
+                Modifier.align(Alignment.TopCenter)
             )
 
             TopAppBar(

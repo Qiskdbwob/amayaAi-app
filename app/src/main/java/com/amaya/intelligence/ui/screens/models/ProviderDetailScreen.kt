@@ -20,7 +20,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
 import com.amaya.intelligence.data.remote.api.ConfiguredModel
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
-import com.amaya.intelligence.ui.theme.LocalAmayaGradients
+import com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens
 import com.amaya.intelligence.ui.viewmodels.models.ManageModelsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -33,7 +33,7 @@ fun ProviderDetailScreen(
     val settings by viewModel.settings.collectAsState()
     val operation by viewModel.operation.collectAsState()
     val connection = settings.connections.firstOrNull { it.id == connectionId }
-    val colors = rememberModelSettingsColors()
+    val colors = com.amaya.intelligence.ui.screens.amaya.iosAmayaColors()
 
     // UI State
     var availableModels by remember(connectionId) { mutableStateOf<List<ConfiguredModel>>(emptyList()) }
@@ -51,10 +51,10 @@ fun ProviderDetailScreen(
             subscriptionAuthenticated = hasCredential || !isSubscription
             selectedIds = connection.visibleModels.filter { it.enabled }.map { it.id }.toSet()
             initialSelectedIds = selectedIds
-            availableModels = connection.visibleModels
+            availableModels = connection.visibleModels.sortedBy { it.displayName.lowercase() }
             if (!isSubscription) {
                 viewModel.refresh(connection) { refreshed ->
-                    availableModels = (connection.visibleModels + refreshed).distinctBy { it.id }
+                    availableModels = mergeConfiguredModels(connection.visibleModels, refreshed)
                 }
             }
         }
@@ -84,135 +84,99 @@ fun ProviderDetailScreen(
     val isSubscription = AmayaProviderRegistry.find(connection.providerId)?.isSubscription == true
 
     Scaffold(
-        containerColor = colors.groupedBackground,
-        contentWindowInsets = WindowInsets(0.dp),
-        topBar = {
-            Box {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(170.dp)
-                        .align(Alignment.TopCenter)
-                        .background(LocalAmayaGradients.current.topScrim)
-                )
-                TopAppBar(
-                    title = {
-                        Text(
-                            connection.name,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            color = colors.primaryText,
-                            modifier = Modifier.padding(start = 12.dp)
-                        )
-                    },
-                    navigationIcon = { SettingsBackButton(onNavigateBack) },
-                    actions = {
-                        TextButton(
-                            onClick = {
-                                val savedModels = availableModels.filter { it.id in selectedIds }
-                                viewModel.saveVisibleModels(connection.id, savedModels) {
-                                    initialSelectedIds = selectedIds
-                                }
-                            },
-                            enabled = hasUnsavedChanges && !operation.loading
-                        ) {
-                            if (operation.loading) {
-                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                            } else {
-                                Text("Save", fontWeight = FontWeight.Bold, color = if (hasUnsavedChanges) MaterialTheme.colorScheme.primary else colors.secondaryText)
-                            }
-                        }
-                    },
-                    modifier = Modifier.statusBarsPadding().padding(horizontal = 12.dp),
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
-                    windowInsets = WindowInsets(0.dp)
-                )
-            }
-        }
+        containerColor = Color.Transparent,
+        contentWindowInsets = WindowInsets(0.dp)
     ) { paddingValues ->
-        LazyColumn(
-            contentPadding = PaddingValues(top = paddingValues.calculateTopPadding(), start = 20.dp, end = 20.dp, bottom = 80.dp),
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(22.dp)
-        ) {
-            item {
-                Spacer(Modifier.statusBarsPadding().height(52.dp))
-            }
-            item {
-                ModelSection("Connection", colors) {
-                    ModelSettingsRow(
-                        icon = if (!isSubscription || subscriptionAuthenticated) Icons.Default.CheckCircle else Icons.Default.Error,
-                        title = if (isSubscription && !subscriptionAuthenticated) "Sign In Required" else "Configured",
-                        subtitle = AmayaProviderRegistry.displayName(connection.providerId),
-                        colors = colors,
-                        onClick = null
+        Box(Modifier.padding(paddingValues).fillMaxSize().background(colors.groupedBackground)) {
+            LazyColumn(
+                contentPadding = PaddingValues(
+                    start = AmayaGroupedSettingsTokens.contentHorizontalPadding,
+                    end = AmayaGroupedSettingsTokens.contentHorizontalPadding,
+                    bottom = AmayaGroupedSettingsTokens.screenContentBottomSpacer
+                ),
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(AmayaGroupedSettingsTokens.sectionSpacing)
+            ) {
+                item {
+                    Spacer(
+                        Modifier
+                            .statusBarsPadding()
+                            .height(AmayaGroupedSettingsTokens.screenContentTopSpacer)
                     )
-                    if (!isSubscription) {
-                        ModelDivider(colors)
+                }
+
+                item {
+                    com.amaya.intelligence.ui.screens.amaya.AmayaSection("Connection") {
                         ModelSettingsRow(
-                            Icons.Default.Key,
-                            "Credential",
-                            if (hasCredential) "API key saved" else "No API key",
-                            colors,
+                            icon = if (!isSubscription || subscriptionAuthenticated) Icons.Default.CheckCircle else Icons.Default.Error,
+                            title = if (isSubscription && !subscriptionAuthenticated) "Sign In Required" else "Configured",
+                            subtitle = AmayaProviderRegistry.displayName(connection.providerId),
+                            colors = colors,
                             onClick = null
                         )
-                        ModelDivider(colors)
-                        ModelSettingsRow(
-                            Icons.Default.Refresh,
-                            "Refresh Models",
-                            if (operation.loading) "Loading…" else "Load from provider",
-                            colors,
-                            onClick = {
-                                viewModel.refresh(connection) { refreshed ->
-                                    availableModels = (availableModels + refreshed).distinctBy { it.id }
+                        if (!isSubscription) {
+                            ModelDivider(colors)
+                            ModelSettingsRow(
+                                Icons.Default.Key,
+                                "Credential",
+                                if (hasCredential) "API key saved" else "No API key",
+                                colors,
+                                onClick = null
+                            )
+                            ModelDivider(colors)
+                            ModelSettingsRow(
+                                Icons.Default.Refresh,
+                                "Refresh Models",
+                                if (operation.loading) "Loading…" else "Load from provider",
+                                colors,
+                                onClick = {
+                                    viewModel.refresh(connection) { refreshed ->
+                                        availableModels = mergeConfiguredModels(availableModels, refreshed)
+                                    }
                                 }
-                            }
-                        )
+                            )
+                        }
                     }
                 }
-            }
 
-            operation.error?.let { error ->
-                item { InlineError(error) }
-            }
+                operation.error?.let { error ->
+                    item { InlineError(error) }
+                }
 
-            item {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    leadingIcon = { Icon(Icons.Default.Search, null, tint = colors.secondaryText) },
-                    trailingIcon = {
-                        if (query.isNotBlank()) IconButton(onClick = { query = "" }) {
-                            Icon(Icons.Default.Close, "Clear search", tint = colors.secondaryText)
-                        }
-                    },
-                    placeholder = { Text("Search models…", color = colors.secondaryText) },
-                    shape = RoundedCornerShape(16.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor = colors.groupSurface,
-                        unfocusedContainerColor = colors.groupSurface,
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = Color.Transparent,
-                        focusedTextColor = colors.primaryText,
-                        unfocusedTextColor = colors.primaryText
+                item {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        leadingIcon = { Icon(Icons.Default.Search, null, tint = colors.secondaryText) },
+                        trailingIcon = {
+                            if (query.isNotBlank()) IconButton(onClick = { query = "" }) {
+                                Icon(Icons.Default.Close, "Clear search", tint = colors.secondaryText)
+                            }
+                        },
+                        placeholder = { Text("Search models…", color = colors.secondaryText) },
+                        shape = RoundedCornerShape(16.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = colors.groupSurface,
+                            unfocusedContainerColor = colors.groupSurface,
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedBorderColor = Color.Transparent,
+                            focusedTextColor = colors.primaryText,
+                            unfocusedTextColor = colors.primaryText
+                        )
                     )
-                )
-            }
+                }
 
-            item {
-                Text("Models", style = MaterialTheme.typography.labelMedium, color = colors.headerText, modifier = Modifier.padding(start = 16.dp))
-                Spacer(Modifier.height(7.dp))
-
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = colors.groupSurface,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column {
+                item {
+                    com.amaya.intelligence.ui.screens.amaya.AmayaSection("Models") {
                         if (filteredModels.isEmpty()) {
-                            Box(Modifier.fillMaxWidth().padding(40.dp), contentAlignment = Alignment.Center) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(AmayaGroupedSettingsTokens.emptyStateContentPadding),
+                                contentAlignment = Alignment.Center
+                            ) {
                                 if (operation.loading) {
                                     CircularProgressIndicator(Modifier.size(28.dp))
                                 } else {
@@ -240,32 +204,64 @@ fun ProviderDetailScreen(
                         }
                     }
                 }
-            }
 
-            item {
-                Spacer(Modifier.height(24.dp))
-                Text("Danger Zone", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(start = 16.dp))
-                Spacer(Modifier.height(7.dp))
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = colors.groupSurface,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                viewModel.deleteConnection(connection.id) {
-                                    onNavigateBack()
+                item {
+                    Spacer(Modifier.height(AmayaGroupedSettingsTokens.inlineTextSpacing))
+                    com.amaya.intelligence.ui.screens.amaya.AmayaSection("Danger Zone") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    viewModel.deleteConnection(connection.id) {
+                                        onNavigateBack()
+                                    }
                                 }
-                            }
-                            .padding(horizontal = 20.dp, vertical = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Delete Provider", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                                .padding(horizontal = 16.dp, vertical = 16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Delete Provider", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                        }
                     }
                 }
             }
+
+            com.amaya.intelligence.ui.screens.amaya.AmayaTopScrim(
+                Modifier.align(Alignment.TopCenter)
+            )
+            TopAppBar(
+                title = {
+                    Text(
+                        connection.name,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.primaryText,
+                        modifier = Modifier.padding(start = AmayaGroupedSettingsTokens.topBarTitleStartPadding)
+                    )
+                },
+                navigationIcon = { SettingsBackButton(onNavigateBack) },
+                actions = {
+                    TextButton(
+                        onClick = {
+                            val savedModels = availableModels.filter { it.id in selectedIds }
+                            viewModel.saveVisibleModels(connection.id, savedModels) {
+                                initialSelectedIds = selectedIds
+                            }
+                        },
+                        enabled = hasUnsavedChanges && !operation.loading
+                    ) {
+                        if (operation.loading) {
+                            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text("Save", fontWeight = FontWeight.Bold, color = if (hasUnsavedChanges) MaterialTheme.colorScheme.primary else colors.secondaryText)
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .statusBarsPadding()
+                    .padding(horizontal = AmayaGroupedSettingsTokens.topBarHorizontalPadding),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent, scrolledContainerColor = Color.Transparent),
+                windowInsets = WindowInsets(0.dp)
+            )
         }
     }
 
@@ -346,7 +342,7 @@ private fun TokenField(label: String, value: String, onValueChange: (String) -> 
 private fun ModelCapabilityRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(label, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        com.amaya.intelligence.ui.screens.amaya.AmayaSwitch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 
@@ -357,7 +353,7 @@ fun ModernModelToggleRow(
     model: ConfiguredModel,
     providerId: String,
     checked: Boolean,
-    colors: ModelSettingsColors,
+    colors: com.amaya.intelligence.ui.screens.amaya.IosAmayaColors,
     onToggle: () -> Unit,
     onConfigure: () -> Unit
 ) {
@@ -365,12 +361,15 @@ fun ModernModelToggleRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onConfigure)
-            .padding(horizontal = 20.dp, vertical = 14.dp),
+            .padding(
+                horizontal = AmayaGroupedSettingsTokens.rowHorizontalPadding,
+                vertical = AmayaGroupedSettingsTokens.rowVerticalPadding
+            ),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(32.dp)
+                .size(AmayaGroupedSettingsTokens.rowIconSize)
                 .clip(androidx.compose.foundation.shape.CircleShape)
                 .background(colors.iconBackground),
             contentAlignment = Alignment.Center
@@ -378,28 +377,50 @@ fun ModernModelToggleRow(
             com.amaya.intelligence.ui.components.shared.ModelLeadingIcon(
                 modelId = model.id,
                 providerId = providerId,
-                modifier = Modifier.size(17.dp),
-                tint = if (checked) MaterialTheme.colorScheme.primary else colors.iconTint
+                modifier = Modifier.size(AmayaGroupedSettingsTokens.rowIconGlyphSize),
+                tint = colors.iconTint
             )
         }
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(AmayaGroupedSettingsTokens.rowIconTextGap))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 model.displayName,
-                color = colors.primaryText,
-                fontWeight = FontWeight.Medium,
-                fontSize = 16.sp
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 15.sp,
+                    lineHeight = 19.sp
+                ),
+                color = colors.primaryText
             )
             if (model.displayName != model.id) {
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(AmayaGroupedSettingsTokens.inlineTextSpacing))
                 Text(
                     model.id,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = 12.5.sp,
+                        lineHeight = 16.sp
+                    ),
                     color = colors.secondaryText,
-                    fontSize = 13.sp
+                    maxLines = 1
                 )
             }
         }
-        Icon(Icons.Default.ChevronRight, "Configure ${model.displayName}", tint = colors.secondaryText)
-        Switch(checked = checked, onCheckedChange = { onToggle() })
+        Icon(
+            Icons.Default.ChevronRight,
+            "Configure ${model.displayName}",
+            tint = colors.secondaryText,
+            modifier = Modifier.size(AmayaGroupedSettingsTokens.rowChevronSize)
+        )
+        Spacer(Modifier.width(AmayaGroupedSettingsTokens.rowHorizontalPadding))
+        com.amaya.intelligence.ui.screens.amaya.AmayaSwitch(checked = checked, onCheckedChange = { onToggle() })
     }
 }
+
+internal fun mergeConfiguredModels(
+    savedModels: List<ConfiguredModel>,
+    refreshedModels: List<ConfiguredModel>
+): List<ConfiguredModel> =
+    (refreshedModels + savedModels)
+        .associateBy { it.id }
+        .values
+        .sortedBy { it.displayName.lowercase() }

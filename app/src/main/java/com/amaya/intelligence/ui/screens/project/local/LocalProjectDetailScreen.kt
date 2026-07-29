@@ -15,6 +15,10 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -70,29 +74,37 @@ fun LocalProjectDetailScreen(
             onDismissRequest = { editSheet = null },
             title = "Project name"
         ) {
-            OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Project name") }, singleLine = true)
-            Button(
-                onClick = { onSaveName(name.trim()); editSheet = null; dismiss() },
-                enabled = name.isNotBlank(),
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Save Name") }
+            com.amaya.intelligence.ui.screens.amaya.AmayaSection("Settings") {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Project name") }, singleLine = true)
+                    Button(
+                        onClick = { onSaveName(name.trim()); editSheet = null },
+                        enabled = name.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Save Name") }
+                }
+            }
         }
         ProjectEditSheet.INSTRUCTIONS -> StandardModalBottomSheet(
             onDismissRequest = { editSheet = null },
             title = "Project instructions"
         ) {
-            OutlinedTextField(
-                instructions,
-                { instructions = it },
-                Modifier.fillMaxWidth(),
-                label = { Text("Instructions") },
-                supportingText = { Text("Applied to every conversation in this project") },
-                minLines = 5
-            )
-            Button(
-                onClick = { onSaveInstructions(instructions.trim()); editSheet = null; dismiss() },
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Save Instructions") }
+            com.amaya.intelligence.ui.screens.amaya.AmayaSection("Settings") {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    OutlinedTextField(
+                        instructions,
+                        { instructions = it },
+                        Modifier.fillMaxWidth(),
+                        label = { Text("Instructions") },
+                        supportingText = { Text("Applied to every conversation in this project") },
+                        minLines = 5
+                    )
+                    Button(
+                        onClick = { onSaveInstructions(instructions.trim()); editSheet = null },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Save Instructions") }
+                }
+            }
         }
         null -> Unit
     }

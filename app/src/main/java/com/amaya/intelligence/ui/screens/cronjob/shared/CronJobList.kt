@@ -15,34 +15,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.local.entity.CronJobEntity
+import com.amaya.intelligence.ui.components.shared.SettingsEmptyState
+import com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens
 import com.amaya.intelligence.ui.screens.settings.shared.SettingsSectionCard
 
-private data class IosCronJobListColors(
-    val iconBackground: Color,
-    val iconTint: Color,
-    val secondaryText: Color,
-    val separator: Color
-)
-
-@Composable
-private fun iosCronJobListColors(): IosCronJobListColors {
-    val isDark = isSystemInDarkTheme()
-    return if (isDark) {
-        IosCronJobListColors(
-            iconBackground = Color(0xFF2C2C2E),
-            iconTint = Color(0xFFC7C7CC),
-            secondaryText = Color(0xFFEBEBF5).copy(alpha = 0.60f),
-            separator = Color.White.copy(alpha = 0.10f)
-        )
-    } else {
-        IosCronJobListColors(
-            iconBackground = Color(0xFFE9E9EE),
-            iconTint = Color(0xFF5F6368),
-            secondaryText = Color(0xFF3C3C43).copy(alpha = 0.62f),
-            separator = Color(0xFF3C3C43).copy(alpha = 0.13f)
-        )
-    }
-}
+import com.amaya.intelligence.ui.screens.amaya.iosAmayaColors
 
 @Composable
 fun CronJobList(
@@ -52,54 +29,28 @@ fun CronJobList(
     topPadding: androidx.compose.ui.unit.Dp = 72.dp,
     modifier: Modifier = Modifier
 ) {
-    val colors = iosCronJobListColors()
+    val colors = iosAmayaColors()
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(20.dp),
+        verticalArrangement = Arrangement.spacedBy(AmayaGroupedSettingsTokens.sectionSpacing),
         contentPadding = PaddingValues(
-            start = 20.dp,
-            end = 20.dp,
+            start = AmayaGroupedSettingsTokens.contentHorizontalPadding,
+            end = AmayaGroupedSettingsTokens.contentHorizontalPadding,
             top = topPadding,
-            bottom = 100.dp
+            bottom = AmayaGroupedSettingsTokens.screenContentBottomSpacer
         )
     ) {
         if (jobs.isEmpty()) {
             item {
-                Box(
+                SettingsEmptyState(
+                    title = "No reminders yet",
+                    subtitle = "Tap + to schedule a reminder",
+                    icon = Icons.Default.Alarm,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 100.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(
-                            modifier = Modifier
-                                .size(80.dp)
-                                .clip(CircleShape)
-                                .background(colors.iconBackground),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Default.Alarm,
-                                contentDescription = null,
-                                modifier = Modifier.size(40.dp),
-                                tint = colors.iconTint.copy(alpha = 0.5f)
-                            )
-                        }
-                        Spacer(Modifier.height(16.dp))
-                        Text(
-                            "No reminders yet",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = colors.secondaryText
-                        )
-                        Text(
-                            "Tap + to schedule a reminder",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = colors.secondaryText.copy(alpha = 0.7f)
-                        )
-                    }
-                }
+                        .padding(top = AmayaGroupedSettingsTokens.emptyStateListTopSpacing)
+                )
             }
         }
 

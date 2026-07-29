@@ -29,8 +29,8 @@ import com.amaya.intelligence.data.remote.api.*
 import com.amaya.intelligence.domain.models.ModelOption
 import com.amaya.intelligence.ui.components.shared.ModelLeadingIcon
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
-
-import com.amaya.intelligence.ui.theme.LocalAmayaGradients
+import com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens
+import com.amaya.intelligence.ui.screens.amaya.amayaFloatingActionButtonBottomPadding
 import com.amaya.intelligence.ui.viewmodels.models.ManageModelsViewModel
 
 private enum class ModelsSheet { PROVIDERS, SETUP, SELECT_MODEL }
@@ -47,7 +47,7 @@ fun ManageModelsScreen(
     val operation by viewModel.operation.collectAsState()
     val codexState by codexAuthManager.authState.collectAsState()
     val context = LocalContext.current
-    val colors = rememberModelSettingsColors()
+    val colors = com.amaya.intelligence.ui.screens.amaya.iosAmayaColors()
 
     var sheet by remember { mutableStateOf<ModelsSheet?>(null) }
     var setupProvider by remember { mutableStateOf<ProviderConfig?>(null) }
@@ -63,12 +63,8 @@ fun ManageModelsScreen(
                 onAddProvider = { sheet = ModelsSheet.PROVIDERS }
             )
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(170.dp)
-                    .align(Alignment.TopCenter)
-                    .background(LocalAmayaGradients.current.topScrim)
+            com.amaya.intelligence.ui.screens.amaya.AmayaTopScrim(
+                Modifier.align(Alignment.TopCenter)
             )
 
             TopAppBar(
@@ -84,20 +80,25 @@ fun ManageModelsScreen(
                 navigationIcon = {
                     SettingsBackButton(onClick = onNavigateBack)
                 },
-                actions = {
-                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
-                        icon = Icons.Default.Add,
-                        onClick = { sheet = ModelsSheet.PROVIDERS },
-                        contentDescription = "Add provider",
-                        modifier = Modifier.padding(end = 12.dp)
-                    )
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent,
                     scrolledContainerColor = Color.Transparent
                 ),
                 modifier = Modifier.statusBarsPadding().padding(horizontal = 12.dp),
                 windowInsets = WindowInsets(0.dp)
+            )
+
+            ExtendedFloatingActionButton(
+                onClick = { sheet = ModelsSheet.PROVIDERS },
+                icon = { Icon(Icons.Default.Add, "Add provider") },
+                text = { Text("Provider") },
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                elevation = FloatingActionButtonDefaults.elevation(4.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = AmayaGroupedSettingsTokens.floatingActionButtonInset)
+                    .amayaFloatingActionButtonBottomPadding()
             )
         }
     }
@@ -156,7 +157,7 @@ fun ManageModelsScreen(
 @Composable
 private fun ConnectionsOverview(
     settings: AiSettings,
-    colors: ModelSettingsColors,
+    colors: com.amaya.intelligence.ui.screens.amaya.IosAmayaColors,
     onConnection: (ProviderConnection) -> Unit,
     onSelectModel: () -> Unit,
     onAddProvider: () -> Unit
@@ -167,40 +168,33 @@ private fun ConnectionsOverview(
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 80.dp),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 100.dp),
         verticalArrangement = Arrangement.spacedBy(22.dp)
     ) {
         item {
-            Spacer(Modifier.statusBarsPadding().height(52.dp))
+                Spacer(
+                    Modifier
+                        .statusBarsPadding()
+                        .height(AmayaGroupedSettingsTokens.screenContentTopSpacer)
+                )
         }
         if (settings.connections.isEmpty()) {
             item {
-                Column(
-                    modifier = Modifier.fillParentMaxHeight(0.75f).fillMaxWidth(),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        Icons.Default.SmartToy,
-                        null,
-                        modifier = Modifier.size(56.dp),
-                        tint = colors.secondaryText.copy(alpha = 0.45f)
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    Text("No Models Configured", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = colors.primaryText)
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "Add an API or subscription provider to start using AI models.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = colors.secondaryText
-                    )
-                    Spacer(Modifier.height(20.dp))
-                    Button(onClick = onAddProvider) { Text("Add Provider") }
-                }
+                com.amaya.intelligence.ui.components.shared.SettingsEmptyState(
+                    title = "No Models Configured",
+                    subtitle = "Add an API or subscription provider to start using AI models.",
+                    icon = Icons.Default.SmartToy,
+                    buttonText = "Add Provider",
+                    onButtonClick = onAddProvider,
+                    titleColor = colors.primaryText,
+                    subtitleColor = colors.secondaryText,
+                    iconTint = colors.secondaryText.copy(alpha = 0.45f),
+                    modifier = Modifier.fillParentMaxHeight(0.75f)
+                )
             }
         } else {
             item {
-                ModelSection("Active Model", colors) {
+                com.amaya.intelligence.ui.screens.amaya.AmayaSection("Active Model") {
                     ModelSettingsRow(
                         icon = Icons.Default.Psychology,
                         title = active?.second?.displayName ?: "Select Model",
@@ -213,7 +207,7 @@ private fun ConnectionsOverview(
                 }
             }
             item {
-                ModelSection("Providers", colors) {
+                com.amaya.intelligence.ui.screens.amaya.AmayaSection("Providers") {
                     settings.connections.forEachIndexed { index, connection ->
                         ModelSettingsRow(
                             icon = if (AmayaProviderRegistry.find(connection.providerId)?.isSubscription == true) Icons.Default.AccountCircle else Icons.Default.Api,
@@ -365,7 +359,7 @@ private fun ProviderSetupSheet(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SelectModelSheet(settings: AiSettings, onSelect: (ModelOption) -> Unit, onDismiss: () -> Unit) {
-    val colors = rememberModelSettingsColors()
+    val colors = com.amaya.intelligence.ui.screens.amaya.iosAmayaColors()
     var showSearch by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     val allOptions = remember(settings.connections) {
@@ -423,11 +417,8 @@ private fun SelectModelSheet(settings: AiSettings, onSelect: (ModelOption) -> Un
                 settings.connections.forEach { connection ->
                     val connectionModels = options.filter { it.connectionId == connection.id }
                     if (connectionModels.isNotEmpty()) {
-                        item(key = "header_${connection.id}") {
-                            Text(connection.name.uppercase(), style = MaterialTheme.typography.labelMedium, color = colors.headerText, modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 6.dp))
-                        }
                         item(key = "group_${connection.id}") {
-                            Surface(shape = RoundedCornerShape(16.dp), color = colors.groupSurface, border = BorderStroke(0.7.dp, colors.border), modifier = Modifier.fillMaxWidth()) {
+                            com.amaya.intelligence.ui.screens.amaya.AmayaSection(connection.name) {
                                 Column {
                                     connectionModels.forEachIndexed { index, option ->
                                         val isActive = option.id == settings.activeSelection?.key

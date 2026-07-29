@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
@@ -24,38 +25,14 @@ import com.amaya.intelligence.ui.screens.mcp.shared.McpServerList
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-private data class IosMcpScreenColors(
-    val groupedBackground: Color,
-    val iconBackground: Color,
-    val iconTint: Color
-)
-
-@Composable
-private fun iosMcpScreenColors(): IosMcpScreenColors {
-    val isDark = isSystemInDarkTheme()
-    return if (isDark) {
-        IosMcpScreenColors(
-            groupedBackground = Color(0xFF0B0B0F),
-            iconBackground = Color(0xFF2C2C2E),
-            iconTint = Color(0xFFC7C7CC)
-        )
-    } else {
-        IosMcpScreenColors(
-            groupedBackground = Color(0xFFF2F2F7),
-            iconBackground = Color(0xFFE9E9EE),
-            iconTint = Color(0xFF5F6368)
-        )
-    }
-}
-
+import com.amaya.intelligence.ui.screens.amaya.iosAmayaColors
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LocalMcpScreen(
     onNavigateBack: () -> Unit,
     aiSettingsManager: AiSettingsManager
 ) {
-    val colors = iosMcpScreenColors()
+    val colors = iosAmayaColors()
     val scope = rememberCoroutineScope()
     val maxSheetHeight = (0.98f * LocalConfiguration.current.screenHeightDp).dp
     val context = LocalContext.current
@@ -119,6 +96,10 @@ fun LocalMcpScreen(
                     }
                 },
                 topPadding = topPadding
+            )
+
+            com.amaya.intelligence.ui.screens.amaya.AmayaTopScrim(
+                Modifier.align(Alignment.TopCenter)
             )
 
             TopAppBar(

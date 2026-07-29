@@ -35,6 +35,9 @@ import com.amaya.intelligence.data.local.entity.AgentEntity
 import com.amaya.intelligence.data.local.entity.AgentGroupEntity
 import com.amaya.intelligence.ui.screens.amaya.AmayaScaffold
 import com.amaya.intelligence.ui.screens.amaya.AmayaSection
+import com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens
+import com.amaya.intelligence.ui.screens.amaya.amayaFloatingActionButtonBottomPadding
+import com.amaya.intelligence.ui.components.shared.SettingsEmptyState
 
 @Composable
 fun LocalAgentListScreen(
@@ -54,12 +57,12 @@ fun LocalAgentListScreen(
     Box(Modifier.fillMaxSize()) {
         AmayaScaffold("AI Agents", snackbarHostState, onNavigateBack) {
             if (groups.isEmpty()) {
-                AmayaSection("Agent Groups") {
-                    Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("No agent groups yet", style = MaterialTheme.typography.titleMedium)
-                        Text("Create a group, then add specialized agents.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
+                SettingsEmptyState(
+                    title = "No agent groups yet",
+                    subtitle = "Create a group, then add specialized agents.",
+                    icon = Icons.Default.Groups,
+                    modifier = Modifier.padding(top = AmayaGroupedSettingsTokens.emptyStateScreenTopSpacing)
+                )
             } else AmayaSection("Agent Groups") {
                 groups.forEach { group ->
                     val count = agents.count { it.groupId == group.id }
@@ -86,7 +89,10 @@ fun LocalAgentListScreen(
             containerColor = MaterialTheme.colorScheme.primaryContainer,
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             elevation = FloatingActionButtonDefaults.elevation(4.dp),
-            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp)
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = AmayaGroupedSettingsTokens.floatingActionButtonInset)
+                .amayaFloatingActionButtonBottomPadding()
         )
     }
 

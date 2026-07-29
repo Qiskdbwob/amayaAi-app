@@ -34,41 +34,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.amaya.intelligence.data.remote.api.McpServerConfig
 
-private data class IosMcpCardColors(
-    val groupSurface: Color,
-    val border: Color,
-    val iconBackground: Color,
-    val iconTint: Color,
-    val primaryText: Color,
-    val secondaryText: Color,
-    val tagBackground: Color
-)
-
-@Composable
-private fun iosMcpCardColors(): IosMcpCardColors {
-    val isDark = isSystemInDarkTheme()
-    return if (isDark) {
-        IosMcpCardColors(
-            groupSurface = Color(0xFF1C1C1E),
-            border = Color.White.copy(alpha = 0.10f),
-            iconBackground = Color(0xFF2C2C2E),
-            iconTint = Color(0xFFC7C7CC),
-            primaryText = Color(0xFFF2F2F7),
-            secondaryText = Color(0xFFEBEBF5).copy(alpha = 0.60f),
-            tagBackground = Color(0xFF2C2C2E)
-        )
-    } else {
-        IosMcpCardColors(
-            groupSurface = Color.White,
-            border = Color.Black.copy(alpha = 0.08f),
-            iconBackground = Color(0xFFE9E9EE),
-            iconTint = Color(0xFF5F6368),
-            primaryText = Color(0xFF1C1C1E),
-            secondaryText = Color(0xFF3C3C43).copy(alpha = 0.62f),
-            tagBackground = Color(0xFFF2F2F7)
-        )
-    }
-}
+import com.amaya.intelligence.ui.screens.amaya.iosAmayaColors
+import com.amaya.intelligence.ui.screens.amaya.AmayaSwitch
 
 @Composable
 fun McpServerCard(
@@ -78,7 +45,7 @@ fun McpServerCard(
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val colors = iosMcpCardColors()
+    val colors = iosAmayaColors()
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = colors.groupSurface,
@@ -138,7 +105,7 @@ fun McpServerCard(
                 }
             }
             Spacer(Modifier.width(8.dp))
-            Switch(
+            AmayaSwitch(
                 checked = server.enabled,
                 onCheckedChange = onToggle,
                 modifier = Modifier.padding(start = 4.dp)

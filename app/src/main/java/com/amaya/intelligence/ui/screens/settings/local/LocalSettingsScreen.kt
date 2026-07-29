@@ -41,7 +41,8 @@ import com.amaya.intelligence.data.remote.api.McpConfig
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet
 import com.amaya.intelligence.ui.res.UiStrings
-import com.amaya.intelligence.ui.theme.LocalAmayaGradients
+import com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens
+import com.amaya.intelligence.ui.screens.amaya.amayaFloatingActionButtonAboveTabBarPadding
 import kotlinx.coroutines.launch
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInParent
@@ -89,8 +90,7 @@ fun LocalSettingsScreen(
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     val settings by aiSettingsManager.settingsFlow.collectAsState(initial = AiSettings())
-    val colors = iosSettingsColors()
-    val gradients = LocalAmayaGradients.current
+    val colors = com.amaya.intelligence.ui.screens.amaya.iosAmayaColors()
     var addSheet by remember { mutableStateOf<SettingsScope?>(null) }
 
     Scaffold(containerColor = Color.Transparent, contentWindowInsets = WindowInsets(0.dp), snackbarHost = { SnackbarHost(snackbar) }) { paddingValues ->
@@ -101,10 +101,17 @@ fun LocalSettingsScreen(
             ) { page ->
                 val pageScope = SettingsScope.entries[page]
                 Column(
-                    Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(22.dp)
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = AmayaGroupedSettingsTokens.contentHorizontalPadding),
+                    verticalArrangement = Arrangement.spacedBy(AmayaGroupedSettingsTokens.sectionSpacing)
                 ) {
-                    Spacer(Modifier.statusBarsPadding().height(52.dp))
+                    Spacer(
+                        Modifier
+                            .statusBarsPadding()
+                            .height(AmayaGroupedSettingsTokens.screenContentTopSpacer)
+                    )
 
                     when (pageScope) {
                         SettingsScope.GLOBAL -> GlobalSettings(
@@ -121,11 +128,17 @@ fun LocalSettingsScreen(
                         SettingsScope.AGENT -> AgentListSettings(agentGroups, agents, onOpenAgentGroup)
                     }
 
-                    Spacer(Modifier.navigationBarsPadding().height(110.dp))
+                    Spacer(
+                        Modifier
+                            .navigationBarsPadding()
+                            .height(AmayaGroupedSettingsTokens.bottomTabBarContentClearance)
+                    )
                 }
             }
 
-            Box(Modifier.fillMaxWidth().height(170.dp).align(Alignment.TopCenter).background(gradients.topScrim))
+            com.amaya.intelligence.ui.screens.amaya.AmayaTopScrim(
+                Modifier.align(Alignment.TopCenter)
+            )
 
             Box(Modifier.align(Alignment.BottomCenter)) {
                 FloatingPillTabBar(
@@ -138,7 +151,13 @@ fun LocalSettingsScreen(
                     onClick = { addSheet = selectedScope },
                     icon = { Icon(Icons.Default.Add, if (selectedScope == SettingsScope.PROJECT) "Add project" else "Add agent group") },
                     text = { Text(if (selectedScope == SettingsScope.PROJECT) "Project" else "Agent") },
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(bottom = 120.dp, end = 20.dp) // Lift FAB above the enlarged floating tab bar
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    elevation = FloatingActionButtonDefaults.elevation(4.dp),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = AmayaGroupedSettingsTokens.floatingActionButtonInset)
+                        .amayaFloatingActionButtonAboveTabBarPadding()
                 )
             }
             TopAppBar(
@@ -179,7 +198,7 @@ private fun FloatingPillTabBar(
     pagerState: PagerState
 ) {
     val coroutineScope = rememberCoroutineScope()
-    val colors = iosSettingsColors()
+    val colors = com.amaya.intelligence.ui.screens.amaya.iosAmayaColors()
     var tabLayouts by remember { mutableStateOf(List(SettingsScope.entries.size) { Rect.Zero }) }
     val density = LocalDensity.current
 
@@ -363,7 +382,7 @@ private fun GlobalSettings(
     onSelectTheme: (String) -> Unit,
     onSnackbar: (String) -> Unit
 ) {
-    IosSettingsSection("AI") {
+    com.amaya.intelligence.ui.screens.amaya.AmayaSection("AI") {
         val modelCount = settings.connections.sumOf { it.visibleModels.size }
         IosSettingsRow(
             Icons.Default.SmartToy,
@@ -374,15 +393,15 @@ private fun GlobalSettings(
             onModels
         )
     }
-    IosSettingsSection("Knowledge") {
+    com.amaya.intelligence.ui.screens.amaya.AmayaSection("Knowledge") {
         IosSettingsRow(Icons.Default.Person, "About You", "Global saved profile and preferences", true, false, onAboutYou)
         IosSettingsDivider()
         IosSettingsRow(Icons.Default.Psychology, "Skills", "Universal reusable workflows", false, true, onSkills)
     }
-    IosSettingsSection("Execution") {
+    com.amaya.intelligence.ui.screens.amaya.AmayaSection("Execution") {
         IosSettingsRow(Icons.Default.Terminal, "Terminal Policy", "Global trusted and declined commands", true, true, onTerminal)
     }
-    IosSettingsSection("Integrations") {
+    com.amaya.intelligence.ui.screens.amaya.AmayaSection("Integrations") {
         val mcp = remember(settings.mcpConfigJson) { McpConfig.fromJson(settings.mcpConfigJson) }
         val active = mcp.servers.count { it.enabled }
         IosSettingsRow(
@@ -394,8 +413,8 @@ private fun GlobalSettings(
             onMcp
         )
     }
-    IosSettingsSection("Appearance") { IosThemeRow(settings.theme, onSelectTheme) }
-    IosSettingsSection("About") {
+    com.amaya.intelligence.ui.screens.amaya.AmayaSection("Appearance") { IosThemeRow(settings.theme, onSelectTheme) }
+    com.amaya.intelligence.ui.screens.amaya.AmayaSection("About") {
         IosSettingsRow(Icons.Default.Info, UiStrings.Settings.VERSION, UiStrings.Settings.VERSION_NUMBER, true, false) {
             onSnackbar("Amaya Intelligence v${UiStrings.Settings.VERSION_NUMBER}")
         }
@@ -412,10 +431,15 @@ private fun ProjectListSettings(
     projects: List<ProjectEntity>,
     onOpenProject: (ProjectEntity) -> Unit
 ) {
-    IosSettingsSection("Projects") {
-        if (projects.isEmpty()) {
-            IosStatusRow("No projects yet", "Use + Project to create the first project")
-        } else {
+    if (projects.isEmpty()) {
+        com.amaya.intelligence.ui.components.shared.SettingsEmptyState(
+            title = "No projects yet",
+            subtitle = "Create a project to organize workspace instructions",
+            icon = Icons.Default.FolderOpen,
+            modifier = Modifier.padding(top = AmayaGroupedSettingsTokens.emptyStateTabTopSpacing)
+        )
+    } else {
+        com.amaya.intelligence.ui.screens.amaya.AmayaSection("Projects") {
             projects.forEachIndexed { index, project ->
                 IosSettingsRow(Icons.Default.FolderOpen, project.name, project.rootPath, index == 0, false) { onOpenProject(project) }
                 IosSettingsDivider()
@@ -430,10 +454,15 @@ private fun AgentListSettings(
     agents: List<AgentEntity>,
     onOpenGroup: (AgentGroupEntity) -> Unit
 ) {
-    IosSettingsSection("Agent Groups") {
-        if (groups.isEmpty()) {
-            IosStatusRow("No agent groups yet", "Use + Agent to create the first group")
-        } else {
+    if (groups.isEmpty()) {
+        com.amaya.intelligence.ui.components.shared.SettingsEmptyState(
+            title = "No agent groups yet",
+            subtitle = "Create a group, then add specialized agents",
+            icon = Icons.Default.Groups,
+            modifier = Modifier.padding(top = AmayaGroupedSettingsTokens.emptyStateTabTopSpacing)
+        )
+    } else {
+        com.amaya.intelligence.ui.screens.amaya.AmayaSection("Agent Groups") {
             groups.forEachIndexed { index, group ->
                 val count = agents.count { it.groupId == group.id }
                 IosSettingsRow(
@@ -451,37 +480,22 @@ private fun AgentListSettings(
 
 @Composable
 private fun IosStatusRow(title: String, subtitle: String) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-        Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-        Spacer(Modifier.height(2.dp))
-        Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
+    val colors = com.amaya.intelligence.ui.screens.amaya.iosAmayaColors()
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(title, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium, fontSize = 15.sp), color = colors.primaryText)
+        Spacer(Modifier.height(4.dp))
+        Text(subtitle, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 12.5.sp), color = colors.secondaryText, maxLines = 3, overflow = TextOverflow.Ellipsis, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
     }
 }
 
-private data class IosSettingsColors(
-    val groupedBackground: Color, val groupSurface: Color, val border: Color, val separator: Color,
-    val iconBackground: Color, val iconTint: Color, val primaryText: Color, val secondaryText: Color, val headerText: Color
-)
 
-@Composable
-private fun iosSettingsColors(): IosSettingsColors = if (isSystemInDarkTheme()) {
-    IosSettingsColors(Color(0xFF0B0B0F), Color(0xFF1C1C1E), Color.White.copy(alpha = .10f), Color.White.copy(alpha = .10f), Color(0xFF2C2C2E), Color(0xFFC7C7CC), Color(0xFFF2F2F7), Color(0xFFEBEBF5).copy(alpha = .60f), Color(0xFFEBEBF5).copy(alpha = .48f))
-} else {
-    IosSettingsColors(Color(0xFFF2F2F7), Color.White, Color.Black.copy(alpha = .08f), Color(0xFF3C3C43).copy(alpha = .13f), Color(0xFFE9E9EE), Color(0xFF5F6368), Color(0xFF1C1C1E), Color(0xFF3C3C43).copy(alpha = .62f), Color(0xFF3C3C43).copy(alpha = .52f))
-}
-
-@Composable
-private fun IosSettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
-    val colors = iosSettingsColors()
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        Text(title.uppercase(), style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium), color = colors.headerText, modifier = Modifier.padding(start = 16.dp))
-        Surface(shape = RoundedCornerShape(16.dp), color = colors.groupSurface, border = BorderStroke(.7.dp, colors.border), modifier = Modifier.fillMaxWidth()) { Column(content = content) }
-    }
-}
 
 @Composable
 private fun IosSettingsRow(icon: ImageVector, title: String, subtitle: String, isFirst: Boolean, isLast: Boolean, onClick: () -> Unit) {
-    val colors = iosSettingsColors()
+    val colors = com.amaya.intelligence.ui.screens.amaya.iosAmayaColors()
     val shape = when { isFirst && isLast -> RoundedCornerShape(16.dp); isFirst -> RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp); isLast -> RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp); else -> RoundedCornerShape(0.dp) }
     Surface(onClick = onClick, shape = shape, color = Color.Transparent, modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp)) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -500,13 +514,13 @@ private fun IosSettingsRow(icon: ImageVector, title: String, subtitle: String, i
 
 @Composable
 private fun IosSettingsDivider() {
-    val colors = iosSettingsColors()
+    val colors = com.amaya.intelligence.ui.screens.amaya.iosAmayaColors()
     HorizontalDivider(Modifier.padding(start = 58.dp), thickness = .7.dp, color = colors.separator)
 }
 
 @Composable
 private fun IosThemeRow(selectedTheme: String, onSelectTheme: (String) -> Unit) {
-    val colors = iosSettingsColors()
+    val colors = com.amaya.intelligence.ui.screens.amaya.iosAmayaColors()
     Column(Modifier.fillMaxWidth().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Palette, null, tint = colors.iconTint)

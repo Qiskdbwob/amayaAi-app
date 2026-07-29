@@ -21,24 +21,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.amaya.intelligence.ui.components.shared.ModelLeadingIcon
 
-data class ModelSettingsColors(
-    val groupedBackground: Color,
-    val groupSurface: Color,
-    val border: Color,
-    val separator: Color,
-    val iconBackground: Color,
-    val iconTint: Color,
-    val primaryText: Color,
-    val secondaryText: Color,
-    val headerText: Color
-)
-
-@Composable
-fun rememberModelSettingsColors(): ModelSettingsColors = if (isSystemInDarkTheme()) {
-    ModelSettingsColors(Color(0xFF0B0B0F), Color(0xFF1C1C1E), Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.10f), Color(0xFF2C2C2E), Color(0xFFC7C7CC), Color(0xFFF2F2F7), Color(0xFFEBEBF5).copy(alpha = 0.60f), Color(0xFFEBEBF5).copy(alpha = 0.48f))
-} else {
-    ModelSettingsColors(Color(0xFFF2F2F7), Color.White, Color.Black.copy(alpha = 0.08f), Color(0xFF3C3C43).copy(alpha = 0.13f), Color(0xFFE9E9EE), Color(0xFF5F6368), Color(0xFF1C1C1E), Color(0xFF3C3C43).copy(alpha = 0.62f), Color(0xFF3C3C43).copy(alpha = 0.52f))
-}
+import com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens
+import com.amaya.intelligence.ui.screens.amaya.IosAmayaColors
 
 @Composable
 fun InlineError(message: String) {
@@ -50,22 +34,14 @@ fun InlineError(message: String) {
     }
 }
 
-@Composable
-fun ModelSection(title: String, colors: ModelSettingsColors, content: @Composable ColumnScope.() -> Unit) {
-    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-        Text(title.uppercase(), style = MaterialTheme.typography.labelMedium, color = colors.headerText, modifier = Modifier.padding(start = 16.dp))
-        Surface(shape = RoundedCornerShape(16.dp), color = colors.groupSurface, border = BorderStroke(0.7.dp, colors.border), modifier = Modifier.fillMaxWidth()) {
-            Column(content = content)
-        }
-    }
-}
+
 
 @Composable
 fun ModelSettingsRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
-    subtitle: String,
-    colors: ModelSettingsColors,
+    subtitle: String?,
+    colors: IosAmayaColors,
     onClick: (() -> Unit)?,
     modelId: String? = null,
     providerId: String? = null
@@ -74,20 +50,36 @@ fun ModelSettingsRow(
         color = Color.Transparent,
         modifier = Modifier.fillMaxWidth().then(if (onClick == null) Modifier else Modifier.clickable(onClick = onClick))
     ) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(32.dp).clip(CircleShape).background(colors.iconBackground), contentAlignment = Alignment.Center) {
+        Row(
+            Modifier.fillMaxWidth().padding(
+                horizontal = AmayaGroupedSettingsTokens.rowHorizontalPadding,
+                vertical = AmayaGroupedSettingsTokens.rowVerticalPadding
+            ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier.size(AmayaGroupedSettingsTokens.rowIconSize)
+                    .clip(CircleShape)
+                    .background(colors.iconBackground),
+                contentAlignment = Alignment.Center
+            ) {
                 if (modelId != null) {
                     ModelLeadingIcon(
                         modelId = modelId,
                         providerId = providerId,
-                        modifier = Modifier.size(17.dp),
+                        modifier = Modifier.size(AmayaGroupedSettingsTokens.rowIconGlyphSize),
                         tint = colors.iconTint
                     )
                 } else {
-                    Icon(icon, null, tint = colors.iconTint, modifier = Modifier.size(17.dp))
+                    Icon(
+                        icon,
+                        null,
+                        tint = colors.iconTint,
+                        modifier = Modifier.size(AmayaGroupedSettingsTokens.rowIconGlyphSize)
+                    )
                 }
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(AmayaGroupedSettingsTokens.rowIconTextGap))
             Column(Modifier.weight(1f)) {
                 Text(
                     text = title,
@@ -100,24 +92,37 @@ fun ModelSettingsRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontSize = 12.5.sp,
-                        lineHeight = 16.sp
-                    ),
-                    color = colors.secondaryText,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                if (subtitle != null) {
+                    Spacer(Modifier.height(AmayaGroupedSettingsTokens.inlineTextSpacing))
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontSize = 12.5.sp,
+                            lineHeight = 16.sp
+                        ),
+                        color = colors.secondaryText,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            if (onClick != null) {
+                Icon(
+                    Icons.Default.ChevronRight,
+                    null,
+                    tint = colors.secondaryText,
+                    modifier = Modifier.size(AmayaGroupedSettingsTokens.rowChevronSize)
                 )
             }
-            if (onClick != null) Icon(Icons.Default.ChevronRight, null, tint = colors.secondaryText, modifier = Modifier.size(18.dp))
         }
     }
 }
 
 @Composable
-fun ModelDivider(colors: ModelSettingsColors) {
-    HorizontalDivider(Modifier.padding(start = 58.dp), color = colors.separator, thickness = 0.7.dp)
+fun ModelDivider(colors: IosAmayaColors) {
+    HorizontalDivider(
+        Modifier.padding(start = AmayaGroupedSettingsTokens.rowDividerStartPadding),
+        color = colors.separator,
+        thickness = AmayaGroupedSettingsTokens.sectionBorderWidth
+    )
 }

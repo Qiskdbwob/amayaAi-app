@@ -16,7 +16,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.domain.models.ModelOption
-import com.amaya.intelligence.ui.screens.models.rememberModelSettingsColors
+import com.amaya.intelligence.ui.screens.amaya.iosAmayaColors
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.clip
 
@@ -28,7 +28,7 @@ fun ModelSelectorSheet(
     onSelect: (ModelOption) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val colors = rememberModelSettingsColors()
+    val colors = iosAmayaColors()
     var showSearch by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     val filtered = remember(modelOptions, query) {

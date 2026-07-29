@@ -45,7 +45,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.amaya.intelligence.ui.components.remote.WindowsBridgeChatPanelViewModel
 import com.amaya.intelligence.ui.components.remote.WindowsBridgeConnectionSetupSheet
 import androidx.compose.ui.graphics.Brush
-import com.amaya.intelligence.ui.theme.LocalAmayaGradients
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.res.UiStrings
 import com.amaya.intelligence.ui.res.UiDefaults
@@ -73,7 +72,6 @@ fun RemoteSessionScreen(
     val errorMessage by client.errorMessage.collectAsState()
     val serverInfo by client.serverInfo.collectAsState()
     val bridgeState by bridgeViewModel.state.collectAsState()
-    val gradients = LocalAmayaGradients.current
     val isDark = isSystemInDarkTheme()
     val scope = rememberCoroutineScope()
     val sessionColors = remoteSessionColors()
@@ -119,7 +117,11 @@ fun RemoteSessionScreen(
                 verticalArrangement = Arrangement.spacedBy(22.dp)
             ) {
                 // Standard spacing for the transparent header
-                Spacer(Modifier.statusBarsPadding().height(52.dp))
+                Spacer(
+                    Modifier
+                        .statusBarsPadding()
+                        .height(com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens.screenContentTopSpacer)
+                )
 
                 // ── Connected state ──────────────────────────────────
                 if (isConnected) {
@@ -260,12 +262,8 @@ fun RemoteSessionScreen(
             }
 
             // Scrims
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(170.dp)
-                    .align(Alignment.TopCenter)
-                    .background(gradients.topScrim)
+            com.amaya.intelligence.ui.screens.amaya.AmayaTopScrim(
+                Modifier.align(Alignment.TopCenter)
             )
 
             // Header Overlay

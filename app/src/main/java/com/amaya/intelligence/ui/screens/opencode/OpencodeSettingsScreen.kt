@@ -81,7 +81,11 @@ fun OpencodeSettingsScreen(
                     .padding(horizontal = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(22.dp)
             ) {
-                Spacer(Modifier.statusBarsPadding().height(52.dp))
+                Spacer(
+                    Modifier
+                        .statusBarsPadding()
+                        .height(com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens.screenContentTopSpacer)
+                )
 
                 Section(title = "Runtime") {
                     SettingsRow(

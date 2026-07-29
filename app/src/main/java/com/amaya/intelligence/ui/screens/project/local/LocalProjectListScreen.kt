@@ -26,6 +26,9 @@ import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.local.entity.ProjectEntity
 import com.amaya.intelligence.ui.screens.amaya.AmayaScaffold
 import com.amaya.intelligence.ui.screens.amaya.AmayaSection
+import com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens
+import com.amaya.intelligence.ui.screens.amaya.amayaFloatingActionButtonBottomPadding
+import com.amaya.intelligence.ui.components.shared.SettingsEmptyState
 
 @Composable
 fun LocalProjectListScreen(
@@ -38,15 +41,12 @@ fun LocalProjectListScreen(
     Box(Modifier.fillMaxSize()) {
         AmayaScaffold("Projects", snackbarHostState, onNavigateBack) {
             if (projects.isEmpty()) {
-                AmayaSection("Projects") {
-                    Column(
-                        Modifier.fillMaxWidth().padding(24.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text("No projects yet", style = MaterialTheme.typography.titleMedium)
-                        Text("Add a workspace, then give it a custom project name.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
+                SettingsEmptyState(
+                    title = "No projects yet",
+                    subtitle = "Add a workspace, then give it a custom project name.",
+                    icon = Icons.Default.FolderOpen,
+                    modifier = Modifier.padding(top = AmayaGroupedSettingsTokens.emptyStateScreenTopSpacing)
+                )
             } else {
                 AmayaSection("Projects") {
                     projects.forEach { project ->
@@ -77,7 +77,10 @@ fun LocalProjectListScreen(
             containerColor = MaterialTheme.colorScheme.primaryContainer,
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             elevation = FloatingActionButtonDefaults.elevation(4.dp),
-            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp)
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = AmayaGroupedSettingsTokens.floatingActionButtonInset)
+                .amayaFloatingActionButtonBottomPadding()
         )
     }
 }

@@ -20,6 +20,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.domain.models.ProjectFileEntry
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
+import com.amaya.intelligence.ui.components.shared.SettingsEmptyState
+import com.amaya.intelligence.ui.screens.amaya.amayaFloatingActionButtonBottomPadding
 import com.amaya.intelligence.ui.screens.project.shared.BreadcrumbBar
 import com.amaya.intelligence.ui.screens.project.shared.FileListItem
 import kotlinx.coroutines.Dispatchers
@@ -107,7 +109,8 @@ fun LocalProjectBrowserScreen(
                 containerColor = MaterialTheme.colorScheme.primaryContainer,
                 contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                 shape = MaterialTheme.shapes.large,
-                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 4.dp)
+                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 4.dp),
+                modifier = Modifier.amayaFloatingActionButtonBottomPadding()
             )
         }
     ) { padding ->
@@ -115,9 +118,13 @@ fun LocalProjectBrowserScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 20.dp)
+                    .padding(horizontal = 16.dp)
             ) {
-                Spacer(Modifier.statusBarsPadding().height(52.dp))
+                Spacer(
+                    Modifier
+                        .statusBarsPadding()
+                        .height(com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens.screenContentTopSpacer)
+                )
                 Spacer(Modifier.height(20.dp))
 
                 OutlinedTextField(
@@ -172,31 +179,12 @@ fun LocalProjectBrowserScreen(
                             modifier = Modifier.align(Alignment.Center),
                             color = MaterialTheme.colorScheme.primary
                         )
-                        filteredFiles.isEmpty() -> Column(
-                            modifier = Modifier.align(Alignment.Center),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(80.dp)
-                                    .clip(CircleShape)
-                                    .background(colors.iconBackground),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Default.FolderOpen,
-                                    null,
-                                    modifier = Modifier.size(40.dp),
-                                    tint = colors.iconTint.copy(alpha = 0.5f)
-                                )
-                            }
-                            Spacer(Modifier.height(24.dp))
-                            Text(
-                                if (searchQuery.isNotEmpty()) "No files match your search" else "This folder is empty",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = colors.secondaryText
-                            )
-                        }
+                        filteredFiles.isEmpty() -> com.amaya.intelligence.ui.components.shared.SettingsEmptyState(
+                            title = if (searchQuery.isNotEmpty()) "No files match your search" else "This folder is empty",
+                            subtitle = "",
+                            icon = Icons.Default.FolderOpen,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
                         else -> LazyColumn(
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(bottom = 100.dp),
@@ -247,6 +235,9 @@ fun LocalProjectBrowserScreen(
                 }
             }
 
+            com.amaya.intelligence.ui.screens.amaya.AmayaTopScrim(
+                Modifier.align(Alignment.TopCenter)
+            )
             TopAppBar(
                 title = {
                     Text(

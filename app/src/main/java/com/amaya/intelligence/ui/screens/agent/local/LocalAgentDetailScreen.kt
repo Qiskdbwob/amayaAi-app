@@ -39,6 +39,9 @@ import com.amaya.intelligence.ui.screens.amaya.AmayaNavigationRow
 import com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet
 import com.amaya.intelligence.ui.screens.amaya.AmayaScaffold
 import com.amaya.intelligence.ui.screens.amaya.AmayaSection
+import com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens
+import com.amaya.intelligence.ui.screens.amaya.amayaFloatingActionButtonBottomPadding
+import com.amaya.intelligence.ui.components.shared.SettingsEmptyState
 
 @Composable
 fun LocalAgentDetailScreen(
@@ -76,10 +79,12 @@ fun LocalAgentDetailScreen(
             }
             AmayaSection("Agents") {
                 if (agents.isEmpty()) {
-                    Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("No agents in this group", style = MaterialTheme.typography.titleSmall)
-                        Text("Use + Agent to add the first role.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    SettingsEmptyState(
+                        title = "No agents in this group",
+                        subtitle = "Use + Agent to add the first role.",
+                        icon = Icons.Default.SmartToy,
+                        modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
+                    )
                 } else agents.forEachIndexed { index, agent ->
                     if (index > 0) AmayaDivider()
                     AmayaNavigationRow(Icons.Default.SmartToy, "${agent.name} · ID ${agent.localId}", agent.role.ifBlank { "No role" }, onClick = { onOpenAgent(agent) })
@@ -96,27 +101,42 @@ fun LocalAgentDetailScreen(
             containerColor = MaterialTheme.colorScheme.primaryContainer,
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             elevation = FloatingActionButtonDefaults.elevation(4.dp),
-            modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp)
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = AmayaGroupedSettingsTokens.floatingActionButtonInset)
+                .amayaFloatingActionButtonBottomPadding()
         )
     }
 
     when (editSheet) {
         "name" -> StandardModalBottomSheet(onDismissRequest = { editSheet = null }, title = "Group name") {
-            OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Group name") }, singleLine = true)
-            Button(onClick = { onSaveGroupName(name.trim()); editSheet = null; dismiss() }, enabled = name.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Save Name") }
+            com.amaya.intelligence.ui.screens.amaya.AmayaSection("Settings") {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Group name") }, singleLine = true)
+                    Button(onClick = { onSaveGroupName(name.trim()); editSheet = null }, enabled = name.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Save Name") }
+                }
+            }
         }
         "instructions" -> StandardModalBottomSheet(onDismissRequest = { editSheet = null }, title = "Shared instructions") {
-            OutlinedTextField(instructions, { instructions = it }, Modifier.fillMaxWidth(), label = { Text("Instructions") }, minLines = 5)
-            Button(onClick = { onSaveGroupInstructions(instructions.trim()); editSheet = null; dismiss() }, modifier = Modifier.fillMaxWidth()) { Text("Save Instructions") }
+            com.amaya.intelligence.ui.screens.amaya.AmayaSection("Settings") {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    OutlinedTextField(instructions, { instructions = it }, Modifier.fillMaxWidth(), label = { Text("Instructions") }, minLines = 5)
+                    Button(onClick = { onSaveGroupInstructions(instructions.trim()); editSheet = null }, modifier = Modifier.fillMaxWidth()) { Text("Save Instructions") }
+                }
+            }
         }
         null -> Unit
     }
 
     if (creatingAgent) StandardModalBottomSheet(onDismissRequest = { creatingAgent = false }, title = "New agent") {
-        OutlinedTextField(agentName, { agentName = it }, Modifier.fillMaxWidth(), label = { Text("Agent name") }, singleLine = true)
-        OutlinedTextField(role, { role = it }, Modifier.fillMaxWidth(), label = { Text("Role") }, singleLine = true)
-        OutlinedTextField(agentInstructions, { agentInstructions = it }, Modifier.fillMaxWidth(), label = { Text("Instructions") }, minLines = 4)
-        Button(onClick = { onCreateAgent(agentName.trim(), role.trim(), agentInstructions.trim()); creatingAgent = false; dismiss() }, enabled = agentName.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Add Agent") }
+        com.amaya.intelligence.ui.screens.amaya.AmayaSection("Agent Details") {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                OutlinedTextField(agentName, { agentName = it }, Modifier.fillMaxWidth(), label = { Text("Agent name") }, singleLine = true)
+                OutlinedTextField(role, { role = it }, Modifier.fillMaxWidth(), label = { Text("Role") }, singleLine = true)
+                OutlinedTextField(agentInstructions, { agentInstructions = it }, Modifier.fillMaxWidth(), label = { Text("Instructions") }, minLines = 4)
+                Button(onClick = { onCreateAgent(agentName.trim(), role.trim(), agentInstructions.trim()); creatingAgent = false }, enabled = agentName.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("Add Agent") }
+            }
+        }
     }
 
     if (confirmDelete) AlertDialog(

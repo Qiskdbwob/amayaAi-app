@@ -46,23 +46,27 @@ fun McpEditSheet(
         onDismissRequest = onDismiss,
         title = "MCP Configuration"
     ) {
-        OutlinedTextField(
-            value = rawJson,
-            onValueChange = { rawJson = it },
-            placeholder = {
-                Text(
-                    "{\n  \"mcpServers\": {\n    \"my-server\": {\n      \"serverUrl\": \"https://mcp.example.com/mcp\",\n      \"headers\": {},\n      \"enabled\": true\n    }\n  }\n}",
-                    fontFamily = FontFamily.Monospace
+        com.amaya.intelligence.ui.screens.amaya.AmayaSection("JSON Configuration") {
+            Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                OutlinedTextField(
+                    value = rawJson,
+                    onValueChange = { rawJson = it },
+                    placeholder = {
+                        Text(
+                            "{\n  \"mcpServers\": {\n    \"my-server\": {\n      \"serverUrl\": \"https://mcp.example.com/mcp\",\n      \"headers\": {},\n      \"enabled\": true\n    }\n  }\n}",
+                            fontFamily = FontFamily.Monospace
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 10,
+                    maxLines = 24,
+                    shape = RoundedCornerShape(12.dp),
+                    isError = rawJsonError != null,
+                    supportingText = rawJsonError?.let { { Text(it) } },
+                    textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
                 )
-            },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 10,
-            maxLines = 24,
-            shape = RoundedCornerShape(12.dp),
-            isError = rawJsonError != null,
-            supportingText = rawJsonError?.let { { Text(it) } },
-            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
-        )
+            }
+        }
 
         Button(
             onClick = { dismiss { onSave(rawJson.trim()) } },

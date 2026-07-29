@@ -8,18 +8,23 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -41,43 +46,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.repository.MemoryRecord
-import com.amaya.intelligence.ui.theme.LocalAmayaGradients
-
-private data class IosMemoryAreaColors(
-    val groupedBackground: Color,
-    val groupSurface: Color,
-    val border: Color,
-    val iconBackground: Color,
-    val iconTint: Color,
-    val primaryText: Color,
-    val secondaryText: Color
-)
-
-@Composable
-private fun iosMemoryAreaColors(): IosMemoryAreaColors {
-    val isDark = isSystemInDarkTheme()
-    return if (isDark) {
-        IosMemoryAreaColors(
-            groupedBackground = Color(0xFF0B0B0F),
-            groupSurface = Color(0xFF1C1C1E),
-            border = Color.White.copy(alpha = 0.10f),
-            iconBackground = Color(0xFF2C2C2E),
-            iconTint = Color(0xFFC7C7CC),
-            primaryText = Color(0xFFF2F2F7),
-            secondaryText = Color(0xFFEBEBF5).copy(alpha = 0.60f)
-        )
-    } else {
-        IosMemoryAreaColors(
-            groupedBackground = Color(0xFFF2F2F7),
-            groupSurface = Color.White,
-            border = Color.Black.copy(alpha = 0.08f),
-            iconBackground = Color(0xFFE9E9EE),
-            iconTint = Color(0xFF5F6368),
-            primaryText = Color(0xFF1C1C1E),
-            secondaryText = Color(0xFF3C3C43).copy(alpha = 0.62f)
-        )
-    }
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -89,8 +57,7 @@ fun MemoryAreaListScreen(
     onAdd: (String) -> Unit,
     onDelete: (MemoryRecord) -> Unit = {}
 ) {
-    val colors = iosMemoryAreaColors()
-    val gradients = LocalAmayaGradients.current
+    val colors = iosAmayaColors()
     var showAddSheet by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<MemoryRecord?>(null) }
 
@@ -98,92 +65,81 @@ fun MemoryAreaListScreen(
         MemoryArea.USER -> state.userMemoryRecords
         MemoryArea.PROJECT -> state.projectMemoryRecords
     }
-
     Box(modifier = Modifier.fillMaxSize().background(colors.groupedBackground)) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(22.dp)
+        LazyColumn(
+            contentPadding = PaddingValues(
+                start = AmayaGroupedSettingsTokens.contentHorizontalPadding,
+                end = AmayaGroupedSettingsTokens.contentHorizontalPadding,
+                bottom = AmayaGroupedSettingsTokens.floatingActionButtonContentClearance
+            ),
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(AmayaGroupedSettingsTokens.sectionSpacing)
         ) {
-            Spacer(Modifier.statusBarsPadding().height(52.dp))
-
-            if (records.isNotEmpty()) {
-                AmayaSection("Saved") {
-                    records.forEachIndexed { index, record ->
-                        MemoryRecordCard(record = record, colors = colors, onDelete = { deleting = record })
-                        if (index < records.lastIndex) AmayaDivider()
+            item {
+                Spacer(
+                    Modifier
+                        .statusBarsPadding()
+                        .height(AmayaGroupedSettingsTokens.screenContentTopSpacer)
+                )
+            }
+            item {
+                if (records.isNotEmpty()) {
+                    AmayaSection("Saved") {
+                        records.forEachIndexed { index, record ->
+                            MemoryRecordCard(record = record, colors = colors, onDelete = { deleting = record })
+                            if (index < records.lastIndex) AmayaDivider()
+                        }
                     }
-                }
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 100.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "No saved items",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = colors.secondaryText
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            if (area == MemoryArea.PROJECT && state.workspacePath == null) "Select a workspace first" else "Tap + to add",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = colors.secondaryText.copy(alpha = 0.7f)
-                        )
-                    }
+                } else {
+                    com.amaya.intelligence.ui.components.shared.SettingsEmptyState(
+                        title = "No saved items",
+                        subtitle = if (area == MemoryArea.PROJECT && state.workspacePath == null) "Select a workspace first" else "Add a memory to get started",
+                        icon = if (area == MemoryArea.PROJECT) androidx.compose.material.icons.Icons.Default.FolderOpen else androidx.compose.material.icons.Icons.Default.Person,
+                        modifier = Modifier.padding(top = AmayaGroupedSettingsTokens.emptyStateListTopSpacing)
+                    )
                 }
             }
-
-            Spacer(Modifier.height(100.dp))
         }
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(170.dp)
-                .align(Alignment.TopCenter)
-                .background(gradients.topScrim)
-        )
+        AmayaTopScrim(Modifier.align(Alignment.TopCenter))
 
         TopAppBar(
             title = {
                 Text(
                     area.title,
                     style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.padding(start = 12.dp),
+                    modifier = Modifier.padding(start = AmayaGroupedSettingsTokens.topBarTitleStartPadding),
                     fontWeight = FontWeight.SemiBold
                 )
             },
             navigationIcon = {
-                com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
-                    icon = Icons.AutoMirrored.Filled.ArrowBack,
-                    onClick = onNavigateBack,
-                    contentDescription = "Back",
-                    modifier = Modifier.padding(start = 12.dp)
-                )
-            },
-            actions = {
-                if (area != MemoryArea.PROJECT || state.workspacePath != null) {
-                    com.amaya.intelligence.ui.components.shared.AmayaTopBarButton(
-                        icon = Icons.Default.Add,
-                        onClick = { showAddSheet = true },
-                        contentDescription = "Add Memory",
-                        modifier = Modifier.padding(end = 12.dp)
-                    )
-                }
+                com.amaya.intelligence.ui.components.shared.SettingsBackButton(onClick = onNavigateBack)
             },
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = Color.Transparent,
                 scrolledContainerColor = Color.Transparent
             ),
-            modifier = Modifier.statusBarsPadding().padding(start = 12.dp, end = 12.dp),
+            modifier = Modifier
+                .statusBarsPadding()
+                .padding(horizontal = AmayaGroupedSettingsTokens.topBarHorizontalPadding),
             windowInsets = WindowInsets(0.dp)
         )
+
+        val showFab = area != MemoryArea.PROJECT || state.workspacePath != null
+        if (showFab) {
+            androidx.compose.material3.ExtendedFloatingActionButton(
+                onClick = { showAddSheet = true },
+                icon = { androidx.compose.material3.Icon(Icons.Default.Add, "Add Memory") },
+                text = { androidx.compose.material3.Text("Memory") },
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                elevation = androidx.compose.material3.FloatingActionButtonDefaults.elevation(4.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = AmayaGroupedSettingsTokens.floatingActionButtonInset)
+                    .amayaFloatingActionButtonBottomPadding()
+            )
+        }
     }
 
     if (showAddSheet) {
@@ -209,7 +165,7 @@ private fun AddMemorySheet(
     onDismiss: () -> Unit,
     onAdd: (String) -> Unit
 ) {
-    val colors = iosMemoryAreaColors()
+    val colors = iosAmayaColors()
     var text by remember { mutableStateOf("") }
 
     com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet(
@@ -235,7 +191,7 @@ private fun AddMemorySheet(
             Button(onClick = cancel) {
                 Text("Cancel")
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(AmayaGroupedSettingsTokens.rowIconTextGap))
             Button(
                 onClick = save,
                 enabled = text.isNotBlank()
@@ -247,12 +203,20 @@ private fun AddMemorySheet(
 }
 
 @Composable
-private fun MemoryRecordCard(record: MemoryRecord, colors: IosMemoryAreaColors, onDelete: () -> Unit) {
+private fun MemoryRecordCard(record: MemoryRecord, colors: com.amaya.intelligence.ui.screens.amaya.IosAmayaColors, onDelete: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp),
+        Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = AmayaGroupedSettingsTokens.rowHorizontalPadding,
+                vertical = AmayaGroupedSettingsTokens.rowVerticalPadding
+            ),
         verticalAlignment = Alignment.Top
     ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(
+            Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(AmayaGroupedSettingsTokens.rowTextSpacing)
+        ) {
             Text(
                 record.content,
                 style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),

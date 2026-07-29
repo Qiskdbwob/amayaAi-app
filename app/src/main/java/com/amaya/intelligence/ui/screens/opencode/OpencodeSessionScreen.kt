@@ -85,7 +85,11 @@ fun OpencodeSessionScreen(
                     .padding(horizontal = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(22.dp)
             ) {
-                Spacer(Modifier.statusBarsPadding().height(52.dp))
+                Spacer(
+                    Modifier
+                        .statusBarsPadding()
+                        .height(com.amaya.intelligence.ui.screens.amaya.AmayaGroupedSettingsTokens.screenContentTopSpacer)
+                )
 
                 RuntimeSummaryCard(
                     runtime = state.runtime,

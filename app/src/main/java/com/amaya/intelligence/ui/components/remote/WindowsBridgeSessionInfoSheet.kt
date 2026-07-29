@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.amaya.intelligence.ui.screens.amaya.AmayaSwitch
 
 
 import com.amaya.intelligence.ui.theme.LocalAmayaGradients
@@ -85,7 +86,7 @@ fun WindowsBridgeSessionInfoSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                Switch(
+                AmayaSwitch(
                     checked = state.isAgentControlEnabled,
                     onCheckedChange = { onToggleAgentControl() }
                 )
