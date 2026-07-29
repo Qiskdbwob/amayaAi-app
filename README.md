@@ -1,10 +1,10 @@
 # Amaya
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: Apache--2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Platform: Android](https://img.shields.io/badge/Platform-Android-3DDC84)](app/)
 [![Language: Kotlin](https://img.shields.io/badge/Language-Kotlin-7F52FF)](app/)
 
-Amaya is an Android AI workspace for people who want more than a blank chat window. It combines conversations, project workspaces, persistent agents, web research, browser automation, files, reminders, and reusable workflows in one app.
+Amaya is a mobile AI chatbot and personal assistant that runs on Android. It lets you chat with the model you choose, then gives that assistant controlled access to projects, agents, web research, browser automation, files, reminders, and reusable workflows when a task needs more than a conversation.
 
 You choose the AI provider and model. Amaya handles the surrounding work: keeping context organized, giving the model the right tools for the current task, and showing what is running.
 
@@ -41,7 +41,9 @@ You can begin with a normal chat and use projects or agents only when the work n
 
 ### 1. Install the app
 
-Build and install the Android app from this repository, then open it on an Android device or emulator running Android 8.0 (API 26) or newer. The [Build from source](#build-from-source) section has the exact commands.
+Download the latest APK from the [GitHub Releases page](https://github.com/nazrielnr/amaya/releases/latest), install it, then open Amaya on an Android device running Android 8.0 (API 26) or newer.
+
+Use the APK asset published for your device. Android may ask you to allow installation from the app that downloaded the file. If you prefer to compile the app yourself, the [Build from source](#build-from-source) section is available for contributors.
 
 ### 2. Add a provider connection
 
@@ -66,25 +68,51 @@ Agent tools are independently configurable. Before asking an agent to touch file
 
 ## Choose a model
 
-Amaya supports direct providers, hosted gateways, and a custom OpenAI-compatible endpoint. The available model list depends on the account you connect.
+Amaya connects to the provider account you already use. It does not bundle a model, API key, subscription, or provider credit. The models you can select depend on the connection you add.
 
-| Connection type | Available provider presets |
+### Add a connection
+
+1. Open **Manage Models**.
+2. Choose **Add provider**.
+3. Select a provider preset, or choose **OpenAI-compatible** for a custom endpoint.
+4. Sign in with Codex or enter the provider URL and API key when required.
+5. Discover available models or add the model ID manually.
+6. Enable the models you want to see, then select one as the active model.
+
+The active model is your default. Projects and agents can use a different model when their work needs a different balance of speed, cost, reasoning, or tool use.
+
+### Provider options
+
+| Connection type | Available provider presets | Current status |
 | --- | --- |
-| **Subscription** | OpenAI through Codex authentication | [TESTED]
-| **Direct APIs** | OpenAI API [NON-TESTED], Anthropic API [EXPERIMENTAL], Google Gemini API [EXPERIMENTAL] |
-| **OpenAI-compatible gateways** | GitHub Models, Vercel AI Gateway, OpenRouter, Groq, DeepSeek, xAI, Z.ai GLM, Moonshot Kimi, and MiniMax | [NON-TESTED]
-| **Custom** | Any compatible OpenAI-style endpoint you configure | [TESTED]
+| **Subscription** | OpenAI through Codex authentication | Tested |
+| **Direct API** | OpenAI API | Not yet verified in a full user flow |
+| **Direct API** | Anthropic API, Google Gemini API | Experimental |
+| **OpenAI-compatible gateway** | GitHub Models, Vercel AI Gateway, OpenRouter, Groq, DeepSeek, xAI, Z.ai GLM, Moonshot Kimi, MiniMax | Not yet verified in a full user flow |
+| **Custom endpoint** | Any compatible OpenAI-style endpoint you configure | Tested |
 
-Model capabilities differ. Some models can stream reasoning, call tools, or support adjustable thinking effort, while others cannot. Amaya keeps the model settings separate from your conversations, so you can change the active model without recreating a project or agent.
+“Tested” means the connection path has been checked in this project. It does not guarantee every model offered by that provider will work the same way. Gateway compatibility also depends on whether the selected model supports streaming and tool calling.
 
-### Selecting a model for each kind of work
+### Pick a model for the job
 
-- Pick a fast general model for everyday chat and quick research.
-- Pick a model with reliable tool calling for projects and agents that need to read files, browse, or run commands.
-- Pick a stronger reasoning model for planning, code reviews, difficult research, or multi-step tasks.
-- Give an individual agent its own default model when its role needs a different trade-off than your main chat.
+Model choice is a practical trade-off. Start with a model you already trust, then change it only when the task needs something different.
 
-## Workspaces and conversation modes
+- **Everyday chat and research:** choose a fast general model with a comfortable price and rate limit.
+- **Projects and agents:** choose a model with dependable tool calling, because it must produce structured calls for files, terminal commands, research, or browser work.
+- **Planning, code review, and hard problems:** choose a stronger reasoning model. It may be slower or more expensive, but it can be a better fit for complex multi-step work.
+- **Specialist agents:** set a separate default model when a particular agent needs a different trade-off than your main chat.
+
+Some models can stream reasoning or accept a selectable thinking effort. Others only return an answer. If a model cannot use a feature, Amaya keeps the conversation usable and omits that model-specific option.
+
+### Troubleshooting a connection
+
+- Confirm the API key belongs to the provider and has the required account access.
+- For a custom endpoint, verify the base URL, model ID, and OpenAI-compatible API format with the provider.
+- If model discovery returns nothing, add the exact model ID manually when the provider allows it.
+- If normal chat works but a project or agent fails, try a model known to support tool calling.
+- Check provider billing, quotas, and regional availability before assuming an app issue.
+
+Provider keys and account tokens are sensitive. Do not paste them into chats, project files, screenshots, issue reports, or Git commits.
 
 ### Regular chat
 
@@ -151,8 +179,6 @@ Tools turn a model response into useful work. Amaya exposes only the tools that 
 | Persistent agent-to-agent delegation | No | No | Optional |
 | Browser automation | No | No | Optional |
 | Reminders and task list | No | No | Optional |
-| Invoke subagents | No | Yes | Optional |
-| Delegate agents | No | No | Optional |
 
 “Optional” means the capability can be enabled or disabled per agent.
 
@@ -370,4 +396,4 @@ The repository has module-specific contributor guidance. Read the nearest `AGENT
 
 ## License
 
-Amaya is released under the [MIT License](LICENSE).
+Amaya is released under the [Apache License 2.0](LICENSE).
