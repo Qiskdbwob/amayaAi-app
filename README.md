@@ -81,15 +81,15 @@ Amaya connects to the provider account you already use. It does not bundle a mod
 
 The active model is your default. Projects and agents can use a different model when their work needs a different balance of speed, cost, reasoning, or tool use.
 
-### Provider options
+### Provider Options
 
-| Connection type | Available provider presets | Current status |
-| --- | --- |
-| **Subscription** | OpenAI through Codex authentication | Tested |
-| **Direct API** | OpenAI API | Not yet verified in a full user flow |
-| **Direct API** | Anthropic API, Google Gemini API | Experimental |
-| **OpenAI-compatible gateway** | GitHub Models, Vercel AI Gateway, OpenRouter, Groq, DeepSeek, xAI, Z.ai GLM, Moonshot Kimi, MiniMax | Not yet verified in a full user flow |
-| **Custom endpoint** | Any compatible OpenAI-style endpoint you configure | Tested |
+| Connection | Provider | Status |
+|------------|----------|--------|
+| **Subscription** | OpenAI (via Codex authentication) | ✅ Tested |
+| **Direct API** | OpenAI API | ⚠️ Not yet verified in a complete user flow |
+| **Direct API** | Anthropic API, Google Gemini API | 🧪 Experimental |
+| **OpenAI-compatible Gateway** | GitHub Models, Vercel AI Gateway, OpenRouter, Groq, DeepSeek, xAI, Z.ai GLM, Moonshot Kimi, MiniMax | ⚠️ Not yet verified in a complete user flow |
+| **Custom Endpoint** | Any OpenAI-compatible endpoint you configure | ✅ Tested |
 
 “Tested” means the connection path has been checked in this project. It does not guarantee every model offered by that provider will work the same way. Gateway compatibility also depends on whether the selected model supports streaming and tool calling.
 
