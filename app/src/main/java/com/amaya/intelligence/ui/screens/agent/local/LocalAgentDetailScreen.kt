@@ -81,9 +81,11 @@ fun LocalAgentDetailScreen(
                 if (agents.isEmpty()) {
                     SettingsEmptyState(
                         title = "No agents in this group",
-                        subtitle = "Use + Agent to add the first role.",
+                        subtitle = "Add a new role to get started.",
                         icon = Icons.Default.SmartToy,
-                        modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
+                        buttonText = "Create Agent",
+                        onButtonClick = { creatingAgent = true },
+                        modifier = Modifier.padding(vertical = 24.dp)
                     )
                 } else agents.forEachIndexed { index, agent ->
                     if (index > 0) AmayaDivider()

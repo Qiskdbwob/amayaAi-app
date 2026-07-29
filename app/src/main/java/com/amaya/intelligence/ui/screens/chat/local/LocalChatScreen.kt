@@ -30,6 +30,7 @@ fun LocalChatScreen(
     activeReminderCount: Int = -1,
     onNavigateToSettings: () -> Unit = {},
     onNavigateToWorkspace: () -> Unit = {},
+    onNavigateToAgents: () -> Unit = {},
     onNavigateToRemoteSession: () -> Unit = {},
     onExit: () -> Unit = {}
 ) {
@@ -52,6 +53,7 @@ fun LocalChatScreen(
             config = config,
             onNavigateToSettings = onNavigateToSettings,
             onNavigateToWorkspace = onNavigateToWorkspace,
+            onNavigateToAgents = onNavigateToAgents,
             onNavigateToRemoteSession = onNavigateToRemoteSession,
             onExit = onExit
         )

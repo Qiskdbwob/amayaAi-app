@@ -319,8 +319,16 @@ internal fun DrawerNormalContent(
                     modifier = Modifier.padding(start = 16.dp, bottom = 8.dp)
                 )
                 IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
-                    agentGroups.forEachIndexed { index, group ->
-                        val members = allAgents.filter { it.groupId == group.id }
+                    if (agentGroups.isEmpty()) {
+                        IosRowWithChevron(
+                            icon = Icons.Default.SmartToy,
+                            title = "Manage Agents",
+                            showChevron = false,
+                            onClick = onNavigateToAgents
+                        )
+                    } else {
+                        agentGroups.forEachIndexed { index, group ->
+                            val members = allAgents.filter { it.groupId == group.id }
                             val expanded = expandedGroupId == group.id
                             IosRowWithChevron(
                                 icon = Icons.Default.Groups,
@@ -355,6 +363,7 @@ internal fun DrawerNormalContent(
                             }
                             if (index != agentGroups.lastIndex) IosRowSeparator()
                         }
+                    }
                 }
 
                 Spacer(Modifier.height(16.dp))
@@ -365,7 +374,15 @@ internal fun DrawerNormalContent(
                     modifier = Modifier.padding(start = 16.dp, bottom = 8.dp)
                 )
                 IosGroupSurface(modifier = Modifier.fillMaxWidth()) {
-                    projects.forEachIndexed { index, project ->
+                    if (projects.isEmpty()) {
+                        IosRowWithChevron(
+                            icon = Icons.Default.FolderOpen,
+                            title = "Manage Projects",
+                            showChevron = false,
+                            onClick = onNavigateToWorkspace
+                        )
+                    } else {
+                        projects.forEachIndexed { index, project ->
                             val sessions = allLocalConversations.filter { it.assistantMode == "PROJECT" && it.ownerId == project.id.toString() }
                                 .sortedByDescending { it.updatedAt }
                             val expanded = expandedProjectId == project.id
@@ -406,6 +423,7 @@ internal fun DrawerNormalContent(
                             if (index != projects.lastIndex) IosRowSeparator()
                         }
                     }
+                }
 
                 // CHATS
                 val localChats = allLocalConversations.filter { it.assistantMode == "CHAT" && (it.ownerId.isNullOrEmpty() || it.ownerId == "null") }

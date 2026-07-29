@@ -40,7 +40,14 @@ class LocalChatActivity : AppCompatActivity() {
                         com.amaya.intelligence.ui.activities.settings.local.LocalSettingsActivity.start(this)
                     },
                     onNavigateToWorkspace = {
-                        com.amaya.intelligence.ui.activities.project.local.LocalProjectActivity.start(this)
+                        com.amaya.intelligence.ui.activities.settings.local.LocalSettingsActivity.start(
+                            this, com.amaya.intelligence.domain.models.AssistantMode.PROJECT
+                        )
+                    },
+                    onNavigateToAgents = {
+                        com.amaya.intelligence.ui.activities.settings.local.LocalSettingsActivity.start(
+                            this, com.amaya.intelligence.domain.models.AssistantMode.AGENT
+                        )
                     },
                     onNavigateToRemoteSession = {
                         startActivity(android.content.Intent(this, com.amaya.intelligence.ui.activities.antigravity.RemoteSessionActivity::class.java))

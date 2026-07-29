@@ -117,10 +117,11 @@ class MainActivity : androidx.appcompat.app.AppCompatActivity() {
                         LocalSettingsActivity.start(this@MainActivity, mode, ownerId, workspacePath)
                     },
                     onNavigateToProjects = {
-                        @Suppress("DEPRECATION")
-                        LocalProjectListActivity.startForResult(this@MainActivity)
+                        LocalSettingsActivity.start(this@MainActivity, com.amaya.intelligence.domain.models.AssistantMode.PROJECT)
                     },
-                    onNavigateToAgents = { LocalAgentListActivity.startForResult(this@MainActivity) }
+                    onNavigateToAgents = {
+                        LocalSettingsActivity.start(this@MainActivity, com.amaya.intelligence.domain.models.AssistantMode.AGENT)
+                    }
                 )
             }
         }
