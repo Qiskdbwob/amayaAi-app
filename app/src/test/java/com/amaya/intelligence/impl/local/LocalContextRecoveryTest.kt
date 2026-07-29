@@ -21,6 +21,18 @@ class LocalContextRecoveryTest {
     )
 
     @Test
+    fun `deferred delegation stays running while completion event is pending`() {
+        val json = """
+            {"toolCallId":"task-call","name":"delegate_agent","status":"RUNNING","arguments":{},"metadata":{"delegationTaskId":"42"}}
+        """.trimIndent()
+
+        val execution = parseToolExecutionFromJson(org.json.JSONObject(json))
+
+        assertEquals(ToolStatus.RUNNING, execution.status)
+        assertNull(execution.result)
+    }
+
+    @Test
     fun `interrupted turn closes running tools and tags the message`() {
         val messages = listOf(UiMessage(role = MessageRole.USER, content = "go"), runningAssistant())
 

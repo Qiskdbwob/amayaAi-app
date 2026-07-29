@@ -31,6 +31,7 @@ internal suspend fun AiRepository.compressConversationImpl(
             .orEmpty()
         val summary = StringBuilder()
         var failure: String? = null
+        var completed = false
         resolveProvider(connection).chat(
             ChatRequest(
                 model = model,
@@ -47,11 +48,13 @@ internal suspend fun AiRepository.compressConversationImpl(
                 is ChatResponse.TextDelta -> summary.append(response.text)
                 is ChatResponse.Error -> failure = response.message
                 is ChatResponse.Incomplete -> failure = response.reason
+                is ChatResponse.Done -> completed = true
                 else -> Unit
             }
         }
         check(failure == null) { failure.orEmpty() }
-        summary.toString().trim().takeIf(String::isNotBlank) ?: error("Compression returned no summary")
+        summary.toString().trim().takeIf(String::isNotBlank)
+            ?: if (completed) fallbackCompressionSummary(plannedMessages, focus) else error("Compression returned no summary")
     }
 
     /**
@@ -61,6 +64,16 @@ internal suspend fun AiRepository.compressConversationImpl(
      * detail decayed with every compaction. Here the model only ever sees the newly evicted span,
      * never restates the goal, and cannot rewrite entries it wrote earlier.
      */
+private fun fallbackCompressionSummary(messages: List<ChatMessage>, focus: String): String = buildString {
+    appendLine("## SESSION STATE")
+    focus.takeIf(String::isNotBlank)?.let { appendLine("Focus: $it") }
+    messages.asReversed().take(12).forEach { message ->
+        val text = message.content?.trim().orEmpty()
+        if (text.isNotBlank()) appendLine("- ${message.role.name.lowercase()}: ${text.take(600)}")
+        message.toolCalls.orEmpty().forEach { appendLine("- tool: ${it.name}") }
+    }
+}.trim()
+
 internal suspend fun AiRepository.updateLedger(
         provider: AiProvider,
         connection: ProviderConnection,

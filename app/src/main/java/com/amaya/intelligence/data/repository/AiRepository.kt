@@ -6,6 +6,7 @@ import com.amaya.intelligence.data.local.files.FileWorkspaceMemoryStore
 import com.amaya.intelligence.data.remote.api.*
 import com.amaya.intelligence.data.remote.mcp.McpClientManager
 import com.amaya.intelligence.domain.models.AssistantMode
+import com.amaya.intelligence.domain.models.UiMessage
 import com.amaya.intelligence.tools.ConfirmationRequest
 import com.amaya.intelligence.tools.ToolExecutor
 import com.amaya.intelligence.tools.toAiToolDefinition
@@ -258,8 +259,8 @@ class AiRepository @Inject constructor(
     // → IllegalStateException → FATAL EXCEPTION → app force close.
     // channelFlow uses a Channel internally which IS thread-safe for concurrent senders.
     fun chat(
-        message: String, userImages: List<ChatImage> = emptyList(), conversationHistory: List<ChatMessage> = emptyList(), projectId: Long? = null, workspacePath: String? = null, assistantMode: AssistantMode = AssistantMode.forWorkspace(workspacePath), ownerId: String? = null, agentId: Long? = null, conversationId: Long? = null, connectionId: String? = null, selectedModel: String? = null, effort: ThinkingEffort? = null, runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL, onConfirmation: suspend (ConfirmationRequest) -> Boolean = { false }
-    ): Flow<AgentEvent> = chatImpl(message, userImages, conversationHistory, projectId, workspacePath, assistantMode, ownerId, agentId, conversationId, connectionId, selectedModel, effort, runtimeTarget, onConfirmation)
+        message: String, userImages: List<ChatImage> = emptyList(), conversationHistory: List<ChatMessage> = emptyList(), projectId: Long? = null, workspacePath: String? = null, assistantMode: AssistantMode = AssistantMode.forWorkspace(workspacePath), ownerId: String? = null, agentId: Long? = null, conversationId: Long? = null, connectionId: String? = null, selectedModel: String? = null, effort: ThinkingEffort? = null, runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL, onConfirmation: suspend (ConfirmationRequest) -> Boolean = { false }, pendingConversationEvents: suspend () -> List<UiMessage> = { emptyList() }, onConversationEventsInjected: suspend (List<UiMessage>) -> Unit = {}, messageRole: MessageRole = MessageRole.USER
+    ): Flow<AgentEvent> = chatImpl(message, userImages, conversationHistory, projectId, workspacePath, assistantMode, ownerId, agentId, conversationId, connectionId, selectedModel, effort, runtimeTarget, onConfirmation, pendingConversationEvents, onConversationEventsInjected, messageRole)
 
     internal fun buildToolDefinitions(
         runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL,
@@ -318,7 +319,13 @@ sealed class AgentEvent {
         val arguments: Map<String, Any?>,
         val metadata: Map<String, String> = emptyMap()
     ) : AgentEvent()
-    data class ToolCallResult(val toolCallId: String, val toolName: String, val result: String, val isError: Boolean) : AgentEvent()
+    data class ToolCallResult(
+        val toolCallId: String,
+        val toolName: String,
+        val result: String,
+        val isError: Boolean,
+        val deferredTaskId: Long? = null
+    ) : AgentEvent()
     data class Usage(val inputTokens: Int, val outputTokens: Int) : AgentEvent()
     data class ResponseItem(val json: String) : AgentEvent()
     data class Incomplete(val reason: String, val retryable: Boolean) : AgentEvent()

@@ -35,6 +35,51 @@ internal fun LocalIntelligenceService.updateTurnMessage(turn: LocalIntelligenceS
         turn.state = turn.state.copy(messages = visible, contextMessages = context)
     }
 
+internal fun completeDelegationMessages(
+    messages: List<UiMessage>,
+    taskId: Long,
+    result: String,
+    failed: Boolean
+): List<UiMessage> {
+    val taskIdText = taskId.toString()
+    fun complete(tool: ToolExecution): ToolExecution = if (tool.metadata["delegationTaskId"] == taskIdText) {
+        tool.copy(
+            status = if (failed) ToolStatus.ERROR else ToolStatus.SUCCESS,
+            result = result,
+            metadata = tool.metadata + ("delegationState" to if (failed) "failed" else "done")
+        )
+    } else tool
+    return messages.map { message ->
+        message.copy(
+            toolExecutions = message.toolExecutions.map(::complete),
+            steps = message.steps.map { step ->
+                if (step is MessageStep.ToolCall) step.copy(execution = complete(step.execution)) else step
+            }
+        )
+    }
+}
+
+internal fun LocalIntelligenceService.completeDelegationTool(
+    turn: LocalIntelligenceService.LocalTurn,
+    taskId: Long,
+    result: String,
+    failed: Boolean
+): Boolean {
+    val taskIdText = taskId.toString()
+    val found = (turn.state.messages + turn.state.contextMessages).any { message ->
+        message.toolExecutions.any { it.metadata["delegationTaskId"] == taskIdText } ||
+            message.steps.any { it is MessageStep.ToolCall && it.execution.metadata["delegationTaskId"] == taskIdText }
+    }
+    if (!found) return false
+    // Completion can arrive during the hidden continuation; the matching delegation tool then
+    // belongs to an older assistant message, not the continuation's current message.
+    turn.state = turn.state.copy(
+        messages = completeDelegationMessages(turn.state.messages, taskId, result, failed),
+        contextMessages = completeDelegationMessages(turn.state.contextMessages, taskId, result, failed)
+    )
+    return true
+}
+
 internal fun LocalIntelligenceService.markActiveTurnToolsStopped(turn: LocalIntelligenceService.LocalTurn, reason: String = "Stopped by user") {
         updateTurnMessage(turn) { message ->
             fun stop(tool: ToolExecution) = if (tool.status == ToolStatus.RUNNING || tool.status == ToolStatus.PENDING) {
@@ -117,22 +162,54 @@ internal fun LocalIntelligenceService.handleTurnEvent(turn: LocalIntelligenceSer
                 publishTurn(turn, "Tools: ${LocalToolMapper.displayLabel(event.name, event.arguments)}", toolEventDetail(event.name, event.arguments), urgent = true)
             }
             is AgentEvent.ToolCallResult -> {
-                if (LocalToolMapper.mapToolName(event.toolName) == "delegate_agent") turn.delegationActive = false
-                fun complete(tool: ToolExecution) = if (tool.toolCallId == event.toolCallId) tool.copy(result = event.result, status = if (event.isError) ToolStatus.ERROR else ToolStatus.SUCCESS) else tool
+                if (LocalToolMapper.mapToolName(event.toolName) == "delegate_agent") {
+                    turn.delegationActive = event.deferredTaskId != null
+                }
+                fun complete(tool: ToolExecution) = if (tool.toolCallId == event.toolCallId) tool.copy(
+                    result = event.result.takeUnless { event.deferredTaskId != null },
+                    status = when {
+                        event.deferredTaskId != null -> ToolStatus.RUNNING
+                        event.isError -> ToolStatus.ERROR
+                        else -> ToolStatus.SUCCESS
+                    },
+                    metadata = tool.metadata + if (event.deferredTaskId != null) mapOf(
+                        "delegationState" to "running",
+                        "delegationTaskId" to event.deferredTaskId.toString(),
+                        "approvalRequired" to "false"
+                    ) else emptyMap()
+                ) else tool
                 val canonicalResult = JSONObject()
                     .put("kind", "tool_result")
                     .put("id", event.toolCallId)
                     .put("name", event.toolName)
                     .put("result", event.result)
                     .put("isError", event.isError)
+                    .put("deferredTaskId", event.deferredTaskId)
                     .toString()
                 val pendingText = turn.drainCanonicalText()
+                event.deferredTaskId?.let { taskId ->
+                    expectedDelegationTasks.getOrPut(turn.conversationId) { mutableSetOf() }.add(taskId)
+                }
                 updateTurnMessage(turn) { message -> message.finishThinking().copy(
                     toolExecutions = message.toolExecutions.map(::complete),
                     steps = message.steps.finishThinking().map { if (it is MessageStep.ToolCall) it.copy(execution = complete(it.execution)) else it },
                     canonicalHistory = message.canonicalHistory.appendCanonicalText(pendingText) + canonicalResult
                 ) }
-                publishTurn(turn, if (event.isError) "Tool failed" else "Tool completed", event.result.takeLast(120), urgent = true)
+                event.deferredTaskId?.let { taskId ->
+                    deferredDelegationCompletions.remove(taskId)?.let { completion ->
+                        completeDelegationTool(turn, taskId, completion.result, completion.failed)
+                    }
+                }
+                publishTurn(
+                    turn,
+                    when {
+                        event.deferredTaskId != null -> "Delegation running"
+                        event.isError -> "Tool failed"
+                        else -> "Tool completed"
+                    },
+                    event.result.takeLast(120),
+                    urgent = true
+                )
             }
             is AgentEvent.ResponseItem -> {
                 val pendingText = turn.drainCanonicalText()
@@ -205,10 +282,18 @@ internal fun LocalIntelligenceService.handleTurnEvent(turn: LocalIntelligenceSer
                             it.metadata["compressed"] == "true" &&
                             it.content.startsWith(AUTO_COMPACTED_CONTEXT_PREFIX))
                 }
+                val compactionEvent = conversationEventMessage(
+                    type = ConversationEventType.COMPACTION,
+                    label = "Compacted",
+                    detail = "Older context compacted for continuation"
+                )
+                val timelineEvent = MessageStep.Event(event = compactionEvent.conversationEvent()!!)
                 turn.state = turn.state.copy(
                     isAutoCompacting = false,
-                    contextMessages = compressedSessionContext(event.ledger, auto = true) + retained
+                    messages = turn.state.messages,
+                    contextMessages = compressedSessionContext(event.ledger, auto = true) + retained + compactionEvent
                 )
+                updateTurnMessage(turn) { message -> message.copy(steps = message.steps + timelineEvent) }
                 publishTurn(
                     turn,
                     "Streaming",

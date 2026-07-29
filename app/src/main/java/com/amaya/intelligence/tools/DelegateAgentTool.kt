@@ -4,20 +4,25 @@ import com.amaya.intelligence.data.local.dao.AgentDao
 import com.amaya.intelligence.data.local.dao.DelegationTaskDao
 import com.amaya.intelligence.data.local.entity.DelegationTaskEntity
 import com.amaya.intelligence.data.repository.AgentConversationRepository
+import com.amaya.intelligence.di.ApplicationScope
 import com.amaya.intelligence.impl.local.LocalIntelligenceService
+import com.amaya.intelligence.util.StreamDebugLog
 import javax.inject.Inject
 import javax.inject.Provider
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
 @Singleton
 class DelegateAgentTool @Inject constructor(
     private val agentDao: AgentDao,
     private val delegationTaskDao: DelegationTaskDao,
     private val agentConversationRepository: AgentConversationRepository,
-    private val localIntelligenceService: Provider<LocalIntelligenceService>
+    private val localIntelligenceService: Provider<LocalIntelligenceService>,
+    @ApplicationScope private val appScope: CoroutineScope
 ) : Tool, ContextAwareTool {
     override val name = "delegate_agent"
-    override val description = "Delegate a task to another member of the active agent group. The target runs with its own configured model, instructions, references, memory, and enabled tools. Use the group-local agent_id; do not use a name or database ID."
+    override val description = "Dispatch one explicit task to another named member of the active agent group. The result is delivered automatically when that Agent finishes; never poll or call this tool to fetch output. Use the group-local agent_id; do not use a name or database ID."
 
     override suspend fun execute(arguments: Map<String, Any?>): ToolResult =
         ToolResult.Error("Agent group context is required", ErrorType.PERMISSION_ERROR)
@@ -51,49 +56,32 @@ class DelegateAgentTool @Inject constructor(
         }.getOrElse {
             return ToolResult.Error("Could not append delegation to ${agent.name}: ${it.message}", ErrorType.EXECUTION_ERROR)
         }
+        val sourceConversationId = context.conversationId?.toLongOrNull()
+            ?: return ToolResult.Error("Source conversation ID is required", ErrorType.VALIDATION_ERROR)
         val taskId = delegationTaskDao.insert(DelegationTaskEntity(groupId = groupId, agentId = agent.id, request = request, status = "RUNNING"))
-        val parentId = context.toolCallId ?: return ToolResult.Error("Delegation call ID is required", ErrorType.VALIDATION_ERROR)
-        context.onEvent?.invoke(com.amaya.intelligence.data.repository.AgentEvent.SubagentUpdate(
-            parentToolCallId = parentId,
-            index = 0,
-            taskName = agent.name,
-            prompt = request,
-            result = null,
-            isComplete = false,
-            isError = false
-        ))
-        val result = runCatching {
-            localIntelligenceService.get().runDelegatedAgentTurn(targetContext.conversationId, targetContext.incomingMessage)
-        }
-        return result.fold(
-            onSuccess = {
-                val failed = it.summary.startsWith("[ERROR]") || it.summary.startsWith("[RATE LIMITED]") || it.summary.startsWith("[INCOMPLETE]")
-                delegationTaskDao.complete(taskId, if (failed) "FAILED" else "COMPLETED", it.summary)
-                context.onEvent?.invoke(com.amaya.intelligence.data.repository.AgentEvent.SubagentUpdate(
-                    parentToolCallId = parentId,
-                    index = 0,
-                    taskName = agent.name,
-                    prompt = request,
-                    result = it.summary,
-                    isComplete = true,
-                    isError = failed
-                ))
-                if (failed) ToolResult.Error(it.summary, ErrorType.EXECUTION_ERROR) else ToolResult.Success(it.summary)
-            },
-            onFailure = {
-                val message = "Delegation failed: ${it.message}"
-                delegationTaskDao.complete(taskId, "FAILED", message)
-                context.onEvent?.invoke(com.amaya.intelligence.data.repository.AgentEvent.SubagentUpdate(
-                    parentToolCallId = parentId,
-                    index = 0,
-                    taskName = agent.name,
-                    prompt = request,
-                    result = message,
-                    isComplete = true,
-                    isError = true
-                ))
-                ToolResult.Error(message, ErrorType.EXECUTION_ERROR)
+        appScope.launch {
+            val completed = runCatching {
+                localIntelligenceService.get().runDelegatedAgentTurn(targetContext.conversationId, targetContext.incomingMessage)
+            }.getOrElse { error ->
+                SubagentResult(agent.name, "Delegation failed: ${error.message.orEmpty().ifBlank { "unknown error" }}")
             }
+            val failed = completed.summary.startsWith("[ERROR]") || completed.summary.startsWith("[RATE LIMITED]") ||
+                completed.summary.startsWith("[INCOMPLETE]") || completed.summary.startsWith("Delegation failed:")
+            delegationTaskDao.complete(taskId, if (failed) "FAILED" else "COMPLETED", completed.summary)
+            localIntelligenceService.get().completeDelegationEvent(
+                conversationId = sourceConversationId,
+                taskId = taskId,
+                title = title,
+                sourceAgentName = source.name,
+                targetAgentName = agent.name,
+                result = completed.summary,
+                failed = failed
+            )
+            StreamDebugLog.event(sourceConversationId, null, "DELEGATE_DELIVERED", "task=$taskId failed=$failed chars=${completed.summary.length}")
+        }
+        return ToolResult.Deferred(
+            output = "Delegation started: task_id=$taskId target=${agent.name}. The result will be delivered automatically when ${agent.name} finishes. Do not call delegate_agent to poll for output; use the latest conversation context while waiting.",
+            taskId = taskId
         )
     }
 }

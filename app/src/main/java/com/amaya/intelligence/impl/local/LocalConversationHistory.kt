@@ -156,6 +156,12 @@ internal fun compressedSessionContext(summary: String, auto: Boolean = false): L
 
 // Extension to map domain to repository model
 internal fun UiMessage.toChatMessages(): List<ChatMessage> {
+    conversationEvent()?.let {
+        return listOf(ChatMessage(
+            role = MessageRole.SYSTEM,
+            content = conversationEventProviderContent() ?: content
+        ))
+    }
     if (role == MessageRole.SYSTEM && metadata["compressed"] == "true") {
         return listOf(ChatMessage(role = role, content = content.takeIf(String::isNotBlank)))
     }

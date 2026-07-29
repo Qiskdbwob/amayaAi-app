@@ -2,6 +2,9 @@ package com.amaya.intelligence.impl.common.conversation
 
 import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.domain.models.MessageAttachment
+import com.amaya.intelligence.domain.models.ConversationEventType
+import com.amaya.intelligence.domain.models.conversationEvent
+import com.amaya.intelligence.domain.models.conversationEventMessage
 import com.amaya.intelligence.domain.models.MessageStep
 import com.amaya.intelligence.domain.models.SubagentExecution
 import com.amaya.intelligence.domain.models.ToolExecution
@@ -54,6 +57,23 @@ class ConversationJsonCodecTest {
         assertEquals(original.copy(toolExecutions = decoded.toolExecutions, steps = decoded.steps), decoded)
         assertEquals(execution.arguments["path"], decoded.toolExecutions.single().arguments["path"])
         assertEquals(execution.children, decoded.toolExecutions.single().children)
+    }
+
+    @Test
+    fun localRoundTripPreservesWorkSummaryEventStep() {
+        val event = conversationEventMessage(ConversationEventType.COMPACTION, "Compacted")
+        val message = UiMessage(
+            role = MessageRole.ASSISTANT,
+            content = "answer",
+            steps = listOf(MessageStep.Event(event = event.conversationEvent()!!))
+        )
+
+        val decoded = ConversationJsonCodec.parseLocal(
+            ConversationJsonCodec.serializeLocal(listOf(message))
+        ).getOrThrow().single()
+
+        assertEquals(MessageStep.Event::class, decoded.steps.single()::class)
+        assertEquals("Compacted", decoded.steps.single().let { (it as MessageStep.Event).event.label })
     }
 
     @Test

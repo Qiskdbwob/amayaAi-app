@@ -10,6 +10,17 @@ import org.junit.Test
 
 class OpenAiStreamProtocolTest {
     @Test
+    fun `dynamic tool schema uses parameterized Moshi map adapter`() {
+        val moshi = Moshi.Builder().build()
+        val json = """{"type":"object","properties":{"task":{"type":"string"}},"required":["task"]}"""
+
+        val schema = moshi.parseJsonArgs(json).getOrThrow()
+
+        assertEquals("object", schema["type"])
+        assertEquals("string", (schema["properties"] as Map<*, *>)["task"].let { it as Map<*, *> }["type"])
+    }
+
+    @Test
     fun `text deltas coalesce without crossing thinking boundary`() {
         val coalescer = OpenAiDeltaCoalescer()
 

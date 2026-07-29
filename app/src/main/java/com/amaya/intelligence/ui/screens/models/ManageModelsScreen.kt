@@ -53,7 +53,7 @@ fun ManageModelsScreen(
     var setupProvider by remember { mutableStateOf<ProviderConfig?>(null) }
 
 
-    Scaffold(containerColor = Color.Transparent) { paddingValues ->
+    Scaffold(containerColor = Color.Transparent, contentWindowInsets = WindowInsets(0.dp)) { paddingValues ->
         Box(Modifier.padding(paddingValues).fillMaxSize().background(colors.groupedBackground)) {
             ConnectionsOverview(
                 settings = settings,

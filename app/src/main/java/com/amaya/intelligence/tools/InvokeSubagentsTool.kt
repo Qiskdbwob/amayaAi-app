@@ -380,6 +380,7 @@ class SubagentRunner @Inject constructor(
                     )
                     val resultContent = when (result) {
                         is ToolResult.Success              -> result.output
+                        is ToolResult.Deferred             -> result.output
                         is ToolResult.Error                -> "Error: ${result.message}"
                         is ToolResult.RequiresConfirmation -> "Skipped (requires confirmation): ${result.reason}"
                     }

@@ -127,6 +127,9 @@ interface ConversationDao {
     @Query("UPDATE conversations SET title = :title, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateTitle(id: Long, title: String, updatedAt: Long = System.currentTimeMillis())
 
+    @Query("UPDATE conversations SET messages_json = :messagesJson, context_messages_json = :contextMessagesJson, updated_at = :updatedAt WHERE id = :id")
+    suspend fun updateConversationCompaction(id: Long, messagesJson: String, contextMessagesJson: String, updatedAt: Long = System.currentTimeMillis())
+
     @Query("UPDATE conversations SET context_messages_json = :contextMessagesJson, updated_at = :updatedAt WHERE id = :id")
     suspend fun updateConversationContext(id: Long, contextMessagesJson: String, updatedAt: Long = System.currentTimeMillis())
 

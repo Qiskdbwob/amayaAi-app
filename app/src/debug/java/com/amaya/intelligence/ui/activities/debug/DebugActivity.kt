@@ -38,6 +38,7 @@ class DebugActivity : AppCompatActivity() {
     @Inject lateinit var toolExecutor: ToolExecutor
     @Inject lateinit var conversationDao: ConversationDao
     @Inject lateinit var agentDao: AgentDao
+    @Inject lateinit var delegationTaskDao: com.amaya.intelligence.data.local.dao.DelegationTaskDao
 
     private lateinit var output: TextView
     private val rows = mutableListOf<JSONObject>()
@@ -84,6 +85,9 @@ class DebugActivity : AppCompatActivity() {
                     "tools" -> toolSuite()
                     "delegation" -> delegationSuite()
                     "delegation-matrix" -> delegationMatrixSuite()
+                    "delegation-async-compact" -> delegationAsyncCompactSuite()
+                    "delegation-stream-stress" -> delegationStreamingStressSuite()
+                    "delegation-five-trace" -> delegationStreamingStressSuite(traceFive = true)
                     "corruption" -> corruptionSuite()
                     "persistence-deep" -> persistenceDeepSuite()
                     "stress" -> stressSuite()
@@ -295,6 +299,240 @@ class DebugActivity : AppCompatActivity() {
         } ?: ToolResult.Error("Delegation timed out after 180 seconds")
         val outputText = (result as? ToolResult.Success)?.output.orEmpty()
         record("delegation-live", result is ToolResult.Success && outputText.isNotBlank() && events.count { it == "SubagentUpdate" } >= 2, JSONObject().put("source", source.name).put("target", target.name).put("result", result.toDebugJson()).put("events", JSONArray(events)).put("expectedMarkerSeen", outputText.contains("DELEGATE_FINAL_OK")))
+    }
+
+    private suspend fun delegationAsyncCompactSuite() {
+        val ready = withTimeoutOrNull(10_000) { service.uiState.filter { it.activeModelKey.isNotBlank() }.first() }
+        val groupId = intent.getLongExtra("group_id", -1L).takeIf { it > 0 }
+            ?: agentDao.observeGroups().first().firstOrNull()?.id ?: -1L
+        val members = if (groupId > 0) agentDao.getByGroup(groupId) else emptyList()
+        if (ready == null || members.size < 2) {
+            record("delegation-async-compact", false, JSONObject().put("error", "Need active model and two agents"))
+            return
+        }
+        val source = members[0]
+        val target = members[1]
+        service.setAssistantOwner(AssistantMode.AGENT, groupId.toString(), filesDir.absolutePath, source.id)
+        service.sendMessage("Delegate a task to agent ${target.localId} with title async-post. Then continue and reply ASYNC_PARENT_OK. Do not wait for delegate completion.")
+        val started = withTimeoutOrNull(30_000) {
+            service.uiState.filter { state -> state.isStreaming && state.conversationId != null }.first()
+        }
+        val sourceConversationId = started?.conversationId?.toLongOrNull()
+        val pending = withTimeoutOrNull(30_000) {
+            service.uiState.filter { state ->
+                state.messages.any { it.toolExecutions.any { tool -> tool.metadata["delegationState"] == "pending" } }
+            }.first()
+        }
+        val parentContinued = withTimeoutOrNull(120_000) {
+            service.uiState.filter { state ->
+                state.conversationId == sourceConversationId?.toString() &&
+                    state.messages.any { it.content.contains("ASYNC_PARENT_OK") }
+            }.first()
+        }
+        val task: com.amaya.intelligence.data.local.entity.DelegationTaskEntity? = withTimeoutOrNull(180_000) {
+            while (true) {
+                val item = delegationTaskDao.getLatestByGroup(groupId)
+                if (item?.status in setOf("COMPLETED", "FAILED")) return@withTimeoutOrNull item
+                delay(250)
+            }
+            null
+        }
+        val event = sourceConversationId?.let { id -> conversationDao.getConversationById(id)?.messagesJson?.let(::parseStoredMessages)?.lastOrNull { it.optJSONObject("metadata")?.optString("eventType") == "delegation_completed" } }
+        record("delegation-async-compact", started != null && pending != null && parentContinued != null && task != null && event != null,
+            JSONObject().put("started", started != null).put("pending", pending != null).put("parentContinued", parentContinued != null).put("taskStatus", task?.status ?: "missing").put("event", event ?: JSONObject.NULL))
+    }
+
+    /**
+     * Real provider-stream regression for completion races. Each pattern asks Agent 1 to dispatch
+     * all other group Agents in one streamed turn; persistent context must retain every result in
+     * task creation order even if completions land while its response is ending.
+     */
+    private suspend fun delegationStreamingStressSuite(traceFive: Boolean = false) {
+        val ready = withTimeoutOrNull(10_000) { service.uiState.filter { it.activeModelKey.isNotBlank() }.first() }
+        val groupId = intent.getLongExtra("group_id", -1L).takeIf { it > 0 }
+            ?: agentDao.observeGroups().first().firstOrNull()?.id ?: -1L
+        val members = if (groupId > 0) agentDao.getByGroup(groupId) else emptyList()
+        val source = members.firstOrNull()
+        val targets = members.drop(1).take(if (traceFive) 5 else 4)
+        val minimumTargets = if (traceFive) 5 else 2
+        val checkName = if (traceFive) "delegation-five-trace" else "delegation-stream-stress"
+        if (ready == null || source == null || targets.size < minimumTargets) {
+            record(checkName, false, JSONObject().put("error", "Need active model, source, and $minimumTargets targets").put("members", members.size))
+            return
+        }
+        val patterns = if (traceFive) listOf(
+            "five-way-trace" to "Dispatch all five delegations immediately in one provider response, then finish with a very short answer."
+        ) else listOf(
+            "parallel-burst" to "Dispatch every requested delegation immediately, then write a detailed 20-line work plan while the results arrive.",
+            "terminal-race" to "Dispatch every requested delegation immediately, then give a very short answer and finish immediately.",
+            "staggered-stream" to "Dispatch every requested delegation immediately, then write 40 numbered short lines slowly before your final answer."
+        )
+        val rounds = JSONArray()
+        var failures = 0
+        for ((pattern, behavior) in patterns) {
+            awaitAgentIdle(source.id)
+            if (traceFive) {
+                // Agent identity owns one persistent conversation, but old debug runs may have
+                // left historical rows behind. Remove the complete source/target set, not only
+                // the latest row returned by the header query.
+                (listOf(source) + targets).forEach { agent ->
+                    conversationDao.deleteAgentConversations(agent.id)
+                }
+            }
+            service.setAssistantOwner(AssistantMode.AGENT, groupId.toString(), filesDir.absolutePath, source.id)
+            delay(500)
+            withTimeoutOrNull(30_000) {
+                service.uiState.filter { it.agentId == source.id && !it.isStreaming && !it.isLoadingHistory }.first()
+            }
+            val startedAt = System.currentTimeMillis()
+            val markers = targets.mapIndexed { index, target -> "DELEGATION_${pattern.uppercase().replace('-', '_')}_${index + 1}_${target.localId}_OK" }
+            val asks = targets.zip(markers).joinToString("\n") { (target, marker) ->
+                "- Delegate to agent ${target.localId}: title stress-${pattern.take(8)}-${target.localId}; task: Reply exactly $marker. Do not call tools."
+            }
+            service.sendMessage("$asks\n$behavior Do not poll delegated agents. When results are delivered, incorporate all of them and reply STRESS_${pattern.uppercase().replace('-', '_')}_PARENT_OK.")
+            val started = withTimeoutOrNull(30_000) { service.uiState.filter { it.isStreaming && it.conversationId != null }.first() }
+            val conversationId = started?.conversationId?.toLongOrNull()
+            val tasks: List<com.amaya.intelligence.data.local.entity.DelegationTaskEntity> = withTimeoutOrNull(90_000) {
+                var created = emptyList<com.amaya.intelligence.data.local.entity.DelegationTaskEntity>()
+                while (created.size < targets.size) {
+                    created = delegationTaskDao.getByGroupSince(groupId, startedAt).filter { it.agentId in targets.map { target -> target.id } }
+                    if (created.size < targets.size) delay(100)
+                }
+                created
+            } ?: emptyList()
+            val settledTasks: List<com.amaya.intelligence.data.local.entity.DelegationTaskEntity> = withTimeoutOrNull(240_000) {
+                var current = emptyList<com.amaya.intelligence.data.local.entity.DelegationTaskEntity>()
+                while (current.size != targets.size || current.any { it.status !in setOf("COMPLETED", "FAILED") }) {
+                    current = delegationTaskDao.getByGroupSince(groupId, startedAt).filter { it.id in tasks.map { task -> task.id } }
+                    if (current.size != targets.size || current.any { it.status !in setOf("COMPLETED", "FAILED") }) delay(200)
+                }
+                current
+            } ?: emptyList()
+            val completedTasks = settledTasks.filter { it.status == "COMPLETED" }.sortedBy { it.updatedAt }
+            val expected = completedTasks.mapNotNull { task ->
+                markers.getOrNull(targets.indexOfFirst { it.id == task.agentId })
+            }
+            val persisted: List<JSONObject> = if (conversationId != null) {
+                withTimeoutOrNull(240_000) {
+                    var context = emptyList<JSONObject>()
+                    var deliveredIds = emptySet<String>()
+                    while (!completedTasks.all { it.id.toString() in deliveredIds }) {
+                        val entity = conversationDao.getConversationById(conversationId)
+                        context = entity?.contextMessagesJson?.let(::parseStoredMessages).orEmpty()
+                        deliveredIds = context.filter { it.optJSONObject("metadata")?.optString("eventType") == "delegation_completed" }
+                            .map { it.optJSONObject("metadata")?.optString("delegationTaskId").orEmpty() }.toSet()
+                        if (!completedTasks.all { it.id.toString() in deliveredIds }) delay(200)
+                    }
+                    context
+                } ?: emptyList()
+            } else emptyList()
+            val taskIds = settledTasks.map { it.id.toString() }.toSet()
+            val events = persisted.filter {
+                val metadata = it.optJSONObject("metadata")
+                metadata?.optString("eventType") == "delegation_completed" && metadata.optString("delegationTaskId") in taskIds
+            }
+            val eventDetails = events.map { it.optJSONObject("metadata")?.optString("eventDetail").orEmpty() }
+            val deliveredTaskIds = events.map { it.optJSONObject("metadata")?.optString("delegationTaskId").orEmpty() }
+            val deliveryOrders = events.map { it.optJSONObject("metadata")?.optLong("deliveryOrder", -1L) ?: -1L }
+            val detailIndexes = expected.map { marker -> eventDetails.indexOfFirst { marker in it } }
+            val completionIndexes = completedTasks.map { task -> deliveredTaskIds.indexOf(task.id.toString()) }
+            val terminalToolTaskIds = persisted.flatMap { message ->
+                buildList {
+                    val executions = message.optJSONArray("toolExecutions")
+                    for (index in 0 until (executions?.length() ?: 0)) {
+                        val execution = executions?.optJSONObject(index) ?: continue
+                        if (execution.optString("status") in setOf("SUCCESS", "ERROR")) {
+                            execution.optJSONObject("metadata")?.optString("delegationTaskId")
+                                ?.takeIf(String::isNotBlank)?.let(::add)
+                        }
+                    }
+                    val steps = message.optJSONArray("steps")
+                    for (index in 0 until (steps?.length() ?: 0)) {
+                        val execution = steps?.optJSONObject(index)?.optJSONObject("execution") ?: continue
+                        if (execution.optString("status") in setOf("SUCCESS", "ERROR")) {
+                            execution.optJSONObject("metadata")?.optString("delegationTaskId")
+                                ?.takeIf(String::isNotBlank)?.let(::add)
+                        }
+                    }
+                }
+            }.toSet()
+            val pendingToolTaskIds = persisted.flatMap { message ->
+                buildList {
+                    val executions = message.optJSONArray("toolExecutions")
+                    for (index in 0 until (executions?.length() ?: 0)) {
+                        val execution = executions?.optJSONObject(index) ?: continue
+                        if (execution.optString("status") in setOf("PENDING", "RUNNING")) {
+                            execution.optJSONObject("metadata")?.optString("delegationTaskId")
+                                ?.takeIf { it in taskIds }?.let(::add)
+                        }
+                    }
+                }
+            }.toSet()
+            val duplicateEventTaskIds = deliveredTaskIds.groupingBy { it }.eachCount().filterValues { it != 1 }.keys
+            val visible = conversationId?.let { id -> conversationDao.getConversationById(id)?.messagesJson?.let(::parseStoredMessages) }.orEmpty()
+            val nestedEventTaskIds = visible.flatMap { message ->
+                val steps = message.optJSONArray("steps")
+                buildList {
+                    for (index in 0 until (steps?.length() ?: 0)) {
+                        val metadata = steps?.optJSONObject(index)?.optJSONObject("metadata") ?: continue
+                        metadata.optString("delegationTaskId").takeIf { it in taskIds }?.let(::add)
+                    }
+                }
+            }
+            val parentAnswerCount = visible.count { message ->
+                val content = message.optString("content")
+                message.optLong("timestamp", 0L) >= startedAt &&
+                    content.contains("STRESS_${pattern.uppercase().replace('-', '_')}_PARENT_OK") &&
+                    expected.all(content::contains)
+            }
+            val parentDone = withTimeoutOrNull(240_000) {
+                while (true) {
+                    val entity = conversationId?.let { id -> conversationDao.getConversationById(id) }
+                    val messages = entity?.messagesJson?.let(::parseStoredMessages).orEmpty()
+                    val completed = messages.any { it.optString("content").contains("STRESS_${pattern.uppercase().replace('-', '_')}_PARENT_OK") && it.optJSONObject("metadata")?.optString("turnStatus") == "completed" }
+                    if (completed) return@withTimeoutOrNull true
+                    delay(200)
+                }
+                false
+            } == true
+            val passed = conversationId != null && tasks.size == targets.size && settledTasks.all { it.status == "COMPLETED" } &&
+                expected.size == targets.size && detailIndexes.all { it >= 0 } && completionIndexes.all { it >= 0 } &&
+                completedTasks.all { it.id.toString() in terminalToolTaskIds } && pendingToolTaskIds.isEmpty() &&
+                deliveryOrders == deliveryOrders.sorted() && duplicateEventTaskIds.isEmpty() && nestedEventTaskIds.isEmpty() &&
+                parentAnswerCount == 1 && parentDone
+            if (!passed) failures++
+            rounds.put(JSONObject()
+                .put("pattern", pattern)
+                .put("conversationId", conversationId ?: JSONObject.NULL)
+                .put("tasksCreated", tasks.size)
+                .put("taskStatuses", JSONArray(settledTasks.map { it.status }))
+                .put("expectedMarkers", JSONArray(expected))
+                .put("eventDetailIndexes", JSONArray(detailIndexes))
+                .put("completionEventIndexes", JSONArray(completionIndexes))
+                .put("deliveredTaskIds", JSONArray(deliveredTaskIds))
+                .put("terminalToolTaskIds", JSONArray(terminalToolTaskIds))
+                .put("pendingToolTaskIds", JSONArray(pendingToolTaskIds))
+                .put("deliveryOrders", JSONArray(deliveryOrders))
+                .put("duplicateEventTaskIds", JSONArray(duplicateEventTaskIds))
+                .put("nestedEventTaskIds", JSONArray(nestedEventTaskIds))
+                .put("parentAnswerCount", parentAnswerCount)
+                .put("eventCount", eventDetails.size)
+                .put("parentDone", parentDone)
+                .put("passed", passed))
+        }
+        record(checkName, failures == 0, JSONObject().put("rounds", rounds).put("failures", failures))
+    }
+
+    private suspend fun awaitAgentIdle(agentId: Long) {
+        conversationDao.getAgentConversation(agentId)?.id?.let { id -> service.loadConversation(id.toString()) }
+        withTimeoutOrNull(60_000) {
+            var idleSnapshots = 0
+            while (idleSnapshots < 5) {
+                if (service.uiState.value.isStreaming || service.uiState.value.isLoading) idleSnapshots = 0
+                else idleSnapshots++
+                delay(100)
+            }
+        }
     }
 
     private suspend fun delegationMatrixSuite() {
@@ -640,6 +878,7 @@ class DebugActivity : AppCompatActivity() {
 
 private fun ToolResult.toDebugJson(): JSONObject = when (this) {
     is ToolResult.Success -> JSONObject().put("type", "success").put("outputChars", output.length).put("output", output.take(1_000))
+    is ToolResult.Deferred -> JSONObject().put("type", "deferred").put("taskId", taskId).put("outputChars", output.length).put("output", output.take(1_000))
     is ToolResult.Error -> JSONObject().put("type", "error").put("errorType", errorType.name).put("recoverable", recoverable).put("message", message.take(1_000))
     is ToolResult.RequiresConfirmation -> JSONObject().put("type", "approval").put("reason", reason.take(1_000))
 }

@@ -6,6 +6,7 @@ import com.amaya.intelligence.data.repository.compressedSessionSummary
 import com.amaya.intelligence.data.repository.withCompressedSessionContext
 import com.amaya.intelligence.data.repository.delegationHistoryFromJson
 import com.amaya.intelligence.domain.models.UiMessage
+import com.amaya.intelligence.domain.models.conversationEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -26,6 +27,16 @@ class ConversationContextTest {
         assertEquals("call-1", history[1].toolCalls?.single()?.id)
         assertEquals(MessageRole.TOOL, history[2].role)
         assertEquals("call-1", history[2].toolResult?.toolCallId)
+    }
+
+    @Test
+    fun `manual compaction event uses shared marker`() {
+        val event = com.amaya.intelligence.domain.models.conversationEventMessage(
+            com.amaya.intelligence.domain.models.ConversationEventType.COMPACTION,
+            "Compacted"
+        )
+        assertEquals("--- Compacted done ---", event.content)
+        assertEquals(com.amaya.intelligence.domain.models.ConversationEventType.COMPACTION, event.conversationEvent()?.type)
     }
 
     @Test

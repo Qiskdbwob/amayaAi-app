@@ -18,7 +18,8 @@ internal suspend fun LocalIntelligenceService.startTurn(
         images: List<com.amaya.intelligence.data.remote.api.ChatImage>,
         initialState: ChatUiState,
         projectVisible: Boolean,
-        preexistingUserMessage: Boolean = false
+        preexistingUserMessage: Boolean = false,
+        internalContinuation: Boolean = false
     ): Boolean {
         val trimmedContent = content.trim()
         if (trimmedContent.isBlank() && images.isEmpty()) return false
@@ -45,13 +46,14 @@ internal suspend fun LocalIntelligenceService.startTurn(
             return false
         }
         val userMsg = UiMessage(
-            role = MessageRole.USER,
+            role = if (internalContinuation) MessageRole.SYSTEM else MessageRole.USER,
             content = trimmedContent,
-            attachments = images.map { MessageAttachment(it.mediaType, it.base64, it.fileName) }
+            attachments = images.map { MessageAttachment(it.mediaType, it.base64, it.fileName) },
+            metadata = if (internalContinuation) mapOf("internalContinuation" to "true") else emptyMap()
         )
         val turnState = initialState.copy(
-            messages = if (preexistingUserMessage) initialState.messages else initialState.messages + userMsg,
-            contextMessages = if (preexistingUserMessage) initialState.contextMessages else initialState.contextMessages + userMsg,
+            messages = if (preexistingUserMessage || internalContinuation) initialState.messages else initialState.messages + userMsg,
+            contextMessages = if (preexistingUserMessage || internalContinuation) initialState.contextMessages else initialState.contextMessages + userMsg,
             isLoading = true,
             isStreaming = true,
             error = null
@@ -109,7 +111,8 @@ internal suspend fun LocalIntelligenceService.startTurn(
                     aiRepository.chat(
                         message = trimmedContent,
                         userImages = images,
-                        conversationHistory = runtimeState.contextMessages.dropLast(1).flatMap { it.toChatMessages() },
+                        conversationHistory = (if (internalContinuation) runtimeState.contextMessages else runtimeState.contextMessages.dropLast(1))
+                            .flatMap { it.toChatMessages() },
                         workspacePath = runtimeState.workspacePath,
                         assistantMode = runtimeState.assistantMode,
                         ownerId = runtimeState.ownerId,
@@ -118,7 +121,23 @@ internal suspend fun LocalIntelligenceService.startTurn(
                         conversationId = conversationId,
                         selectedModel = runtimeState.selectedModel,
                         effort = runtimeState.effort,
-                        onConfirmation = { request -> awaitInlineToolConfirmation(request, turnId) }
+                        onConfirmation = { request -> awaitInlineToolConfirmation(request, turnId) },
+                        // Delegation completions never interrupt an active provider/tool loop. They
+                        // are materialized together only by the hidden continuation.
+                        pendingConversationEvents = { if (internalContinuation) drainQueuedConversationEvents(conversationId) else emptyList() },
+                        messageRole = if (internalContinuation) MessageRole.SYSTEM else MessageRole.USER,
+                        onConversationEventsInjected = { events ->
+                            val injected = events.filter { it.conversationEvent() != null }
+                            if (injected.isNotEmpty()) {
+                                turn.state = turn.state.copy(
+                                    messages = turn.state.messages + injected,
+                                    contextMessages = turn.state.contextMessages + injected
+                                )
+                                persistTurn(turn)
+                                acknowledgeConversationEvents(conversationId, injected)
+                                publishTurn(turn, turn.lastStatus, turn.lastDetail, urgent = true)
+                            }
+                        }
                     ).collect { event ->
                         completed = completed || event is AgentEvent.Done
                         failed = failed || event is AgentEvent.Error || event is AgentEvent.Incomplete
@@ -164,7 +183,9 @@ internal suspend fun LocalIntelligenceService.startTurn(
                                     )
                                 }
                             }
-                            pendingMessage?.let { pending ->
+                            if (completed && hasQueuedConversationEvents(conversationId)) {
+                                scheduleContinuationAfterConversationEvent(conversationId)
+                            } else pendingMessage?.let { pending ->
                                 scope.launch {
                                     startTurn(
                                         content = pending.content,

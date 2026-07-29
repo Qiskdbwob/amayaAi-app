@@ -20,6 +20,7 @@ object ToolDebugLog {
         if (!BuildConfig.DEBUG) return
         val outcome = when (result) {
             is ToolResult.Success -> "success outputChars=${result.output.length}"
+            is ToolResult.Deferred -> "deferred taskId=${result.taskId} outputChars=${result.output.length}"
             is ToolResult.Error -> "error type=${result.errorType} recoverable=${result.recoverable} message=${result.message.take(160)}"
             is ToolResult.RequiresConfirmation -> "approval reason=${result.reason.take(160)}"
         }

@@ -327,13 +327,19 @@ class AnthropicProvider @Inject constructor(
             }
         }
 
+        val eventSystem = request.messages
+            .filter { it.role == MessageRole.SYSTEM }
+            .mapNotNull { it.content?.takeIf(String::isNotBlank) }
+            .joinToString("\n\n")
+        val systemPrompt = listOfNotNull(request.systemPrompt?.takeIf(String::isNotBlank), eventSystem.takeIf(String::isNotBlank))
+            .joinToString("\n\n")
+            .takeIf(String::isNotBlank)
+
         val tools = request.tools.map { tool ->
             AnthropicTool(
                 name = tool.name,
                 description = tool.description,
-                inputSchema = moshi.adapter(Map::class.java)
-                    .fromJson(tool.schemaJson())
-                    ?: emptyMap<String, Any?>()
+                inputSchema = moshi.parseJsonArgs(tool.schemaJson()).getOrElse { emptyMap() }
             )
         }
 
@@ -342,7 +348,7 @@ class AnthropicProvider @Inject constructor(
         return AnthropicRequest(
             model = request.model,
             messages = messages,
-            system = request.systemPrompt,
+            system = systemPrompt,
             tools = tools.takeIf { it.isNotEmpty() },
             maxTokens = request.maxTokens,
             stream = request.stream,

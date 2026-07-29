@@ -148,19 +148,6 @@ fun ChatInput(
     }
 
     val anyCompacting = isCompressing || isAutoCompacting
-    var showCompactingDone by remember(resetKey) { mutableStateOf(false) }
-    var previousIsCompressing by remember { mutableStateOf(anyCompacting) }
-    var isCanceled by remember(resetKey) { mutableStateOf(false) }
-
-    LaunchedEffect(anyCompacting) {
-        if (previousIsCompressing && !anyCompacting) {
-            showCompactingDone = true
-            kotlinx.coroutines.delay(1200)
-            showCompactingDone = false
-            isCanceled = false
-        }
-        previousIsCompressing = anyCompacting
-    }
 
     val pillColor = remember(isDark) {
         if (isDark) Color(0xFF1F2126).copy(alpha = 0.94f)
@@ -289,7 +276,6 @@ fun ChatInput(
         val canSend = text.isNotBlank() || hasAttachment
         val submitMessage = {
             if (isCompressing) {
-                isCanceled = true
                 onCancelCompactConversation()
             } else if (canSend) {
                 val message = text.trim()
@@ -320,7 +306,7 @@ fun ChatInput(
                 }
             }
 
-            val pillVisible = commandMode != null || anyCompacting || showCompactingDone
+            val pillVisible = commandMode != null || anyCompacting
 
             // Hoisted out of AnimatedVisibility so the content below can tell whether an enter or
             // exit is currently in flight.
@@ -336,9 +322,9 @@ fun ChatInput(
                     agents = mentionAgents,
                     files = fileResults,
                     isSearching = isSearchingFiles,
-                    showCompact = anyCompacting || showCompactingDone,
-                    compactDone = showCompactingDone,
-                    compactCanceled = isCanceled
+                    showCompact = anyCompacting,
+                    compactDone = false,
+                    compactCanceled = false
                 )
             } else null
             val lastPill = remember { mutableStateOf(livePill) }

@@ -333,15 +333,21 @@ class GeminiProvider @Inject constructor(
             }
         }
 
+        val eventSystem = request.messages
+            .filter { it.role == MessageRole.SYSTEM }
+            .mapNotNull { it.content?.takeIf(String::isNotBlank) }
+            .joinToString("\n\n")
+        val systemPrompt = listOfNotNull(request.systemPrompt?.takeIf(String::isNotBlank), eventSystem.takeIf(String::isNotBlank))
+            .joinToString("\n\n")
+            .takeIf(String::isNotBlank)
+
         val tools = if (request.tools.isNotEmpty()) {
             listOf(GeminiTools(
                 functionDeclarations = request.tools.map { tool ->
                     GeminiFunctionDeclaration(
                         name = tool.name,
                         description = tool.description,
-                        parameters = moshi.adapter(Map::class.java)
-                            .fromJson(tool.schemaJson())
-                            ?: emptyMap<String, Any?>()
+                        parameters = moshi.parseJsonArgs(tool.schemaJson()).getOrElse { emptyMap() }
                     )
                 }
             ))
@@ -349,7 +355,7 @@ class GeminiProvider @Inject constructor(
 
         return GeminiRequest(
             contents = contents,
-            systemInstruction = request.systemPrompt?.let {
+            systemInstruction = systemPrompt?.let {
                 GeminiContent(parts = listOf(GeminiPart(text = it)))
             },
             tools = tools,

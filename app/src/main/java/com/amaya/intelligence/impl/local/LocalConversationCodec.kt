@@ -60,6 +60,16 @@ internal fun parseMessagesFromJson(json: String, includeModelState: Boolean = tr
                                     execution = parseToolExecutionFromJson(eObj)
                                 ))
                             }
+                            "event" -> {
+                                val eventMessage = UiMessage(
+                                    role = MessageRole.SYSTEM,
+                                    content = s.optString("content"),
+                                    metadata = buildMap {
+                                        s.optJSONObject("metadata")?.keys()?.forEach { key -> put(key, s.optJSONObject("metadata")?.optString(key).orEmpty()) }
+                                    }
+                                )
+                                eventMessage.conversationEvent()?.let { steps.add(MessageStep.Event(id = stepId, event = it)) }
+                            }
                         }
                     }
                 }
@@ -167,13 +177,14 @@ internal fun parseToolExecutionFromJson(e: JSONObject): ToolExecution {
         val persistedStatus = runCatching { ToolStatus.valueOf(e.getString("status")) }
             .getOrDefault(ToolStatus.SUCCESS)
         val interrupted = persistedStatus == ToolStatus.PENDING || persistedStatus == ToolStatus.RUNNING
+        val deferred = metaMap["delegationTaskId"]?.toLongOrNull()?.let { it > 0L } == true
         return ToolExecution(
             toolCallId = e.getString("toolCallId"),
             name = e.getString("name"),
             arguments = argsMap,
             result = e.optString("result").takeIf { it.isNotBlank() }
-                ?: "Stopped before completion".takeIf { interrupted },
-            status = if (interrupted) ToolStatus.ERROR else persistedStatus,
+                ?: if (interrupted && !deferred) "Stopped before completion" else null,
+            status = if (interrupted && !deferred) ToolStatus.ERROR else persistedStatus,
             children = children,
             metadata = if (metaMap["approvalState"] == "pending") metaMap + mapOf(
                 "approvalRequired" to "false",

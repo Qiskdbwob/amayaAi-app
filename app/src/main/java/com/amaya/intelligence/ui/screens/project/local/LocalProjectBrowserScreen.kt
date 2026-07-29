@@ -98,6 +98,7 @@ fun LocalProjectBrowserScreen(
 
     Scaffold(
         containerColor = Color.Transparent,
+        contentWindowInsets = WindowInsets(0.dp),
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { onWorkspaceSelected(currentPath) },

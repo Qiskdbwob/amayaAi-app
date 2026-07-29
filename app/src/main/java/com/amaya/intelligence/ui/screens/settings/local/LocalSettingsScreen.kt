@@ -93,7 +93,7 @@ fun LocalSettingsScreen(
     val gradients = LocalAmayaGradients.current
     var addSheet by remember { mutableStateOf<SettingsScope?>(null) }
 
-    Scaffold(containerColor = Color.Transparent, snackbarHost = { SnackbarHost(snackbar) }) { paddingValues ->
+    Scaffold(containerColor = Color.Transparent, contentWindowInsets = WindowInsets(0.dp), snackbarHost = { SnackbarHost(snackbar) }) { paddingValues ->
         Box(Modifier.padding(paddingValues).fillMaxSize().background(colors.groupedBackground)) {
             HorizontalPager(
                 state = pagerState,

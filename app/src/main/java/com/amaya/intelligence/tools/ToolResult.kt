@@ -15,6 +15,12 @@ sealed class ToolResult {
         val metadata: Map<String, Any> = emptyMap()
     ) : ToolResult()
 
+    /** Host accepted durable asynchronous work; the current model iteration may continue. */
+    data class Deferred(
+        val output: String,
+        val taskId: Long
+    ) : ToolResult()
+
     /**
      * Tool execution failed.
      */

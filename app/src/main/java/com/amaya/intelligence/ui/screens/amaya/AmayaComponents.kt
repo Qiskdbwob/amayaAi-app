@@ -92,6 +92,7 @@ fun AmayaScaffold(
     val gradients = LocalAmayaGradients.current
     Scaffold(
         containerColor = Color.Transparent,
+        contentWindowInsets = WindowInsets(0.dp),
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
         Box(Modifier.padding(paddingValues).fillMaxSize().background(colors.groupedBackground)) {

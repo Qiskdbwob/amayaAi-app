@@ -23,6 +23,7 @@ class ThinkingCardTest {
                 is MessageStep.Thinking -> it.text
                 is MessageStep.Text -> it.content
                 is MessageStep.ToolCall -> it.execution.name
+                is MessageStep.Event -> it.event.label
             }
         })
         assertFalse((ordered.first() as MessageStep.Thinking).isStreaming)

@@ -81,7 +81,7 @@ internal fun LocalIntelligenceService.sessionPhase(status: String, delegating: B
         status == "Completed" -> SessionPhase.COMPLETED
         status in setOf("Failed", "Incomplete") -> SessionPhase.FAILED
         status == "Stopped" -> SessionPhase.STOPPED
-        delegating -> SessionPhase.DELEGATING
+        status == "Delegation pending" || delegating -> SessionPhase.DELEGATING
         status == "Thinking" -> SessionPhase.THINKING
         status.startsWith("Tools:") || status.startsWith("Tool ") -> SessionPhase.TOOL
         status == "Streaming" -> SessionPhase.STREAMING

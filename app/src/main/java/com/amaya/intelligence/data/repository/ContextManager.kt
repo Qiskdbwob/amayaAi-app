@@ -30,7 +30,9 @@ data class ContextBuildRequest(
     val userImages: List<ChatImage> = emptyList(),
     val assistantMode: AssistantMode = AssistantMode.forWorkspace(workspacePath),
     val ownerId: String? = null,
-    val ownerContext: String? = null
+    val ownerContext: String? = null,
+    /** Host continuations are system instructions, not user-authored messages. */
+    val userMessageRole: MessageRole = MessageRole.USER
 )
 
 data class ContextBuildResult(
@@ -193,7 +195,7 @@ class ContextManager @Inject constructor(
             baseSystemPrompt = budgeted.prompt,
             manualSummary = manualSummary,
             autoSummary = autoSummary,
-            messages = history + ChatMessage(role = MessageRole.USER, content = request.userMessage, images = request.userImages),
+            messages = history + ChatMessage(role = request.userMessageRole, content = request.userMessage, images = request.userImages),
             estimatedPromptTokens = TokenEstimator.text(systemPrompt) + TokenEstimator.messages(history),
             droppedItems = budgeted.droppedItems
         )
@@ -212,7 +214,7 @@ class ContextManager @Inject constructor(
             baseSystemPrompt = base,
             manualSummary = manualSummary,
             autoSummary = autoSummary,
-            messages = history + ChatMessage(role = MessageRole.USER, content = request.userMessage, images = request.userImages),
+            messages = history + ChatMessage(role = request.userMessageRole, content = request.userMessage, images = request.userImages),
             estimatedPromptTokens = TokenEstimator.text(systemPrompt) + TokenEstimator.messages(history),
             droppedItems = emptyList()
         )

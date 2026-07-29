@@ -79,6 +79,45 @@ class AgentConversationRepository @Inject constructor(
         AgentDelegationContext(conversationId, history, incoming)
     }
 
+    suspend fun hasDelegationCompletion(conversationId: Long, taskId: Long): Boolean = lock.withLock {
+        if (taskId <= 0L) return@withLock false
+        val existing = conversationDao.getConversationById(conversationId) ?: return@withLock false
+        hasDelegationCompletion(existing.messagesJson, taskId) ||
+            hasDelegationCompletion(existing.contextMessagesJson.ifBlank { existing.messagesJson }, taskId)
+    }
+
+    suspend fun appendDelegationCompletion(
+        conversationId: Long,
+        title: String,
+        sourceAgentName: String,
+        targetAgentName: String,
+        result: SubagentResult,
+        failed: Boolean,
+        taskId: Long = -1L,
+        deliveryOrder: Long = 0L
+    ): Boolean = lock.withLock {
+        val existing = conversationDao.getConversationById(conversationId) ?: return@withLock false
+        // The task callback is process-wide and may be retried after a timeout. Repair both
+        // projections every time, but append the marker only to the column that lacks it.
+        val storedContext = existing.contextMessagesJson.ifBlank { existing.messagesJson }
+        val metadata = delegationCompletionMetadata(sourceAgentName, targetAgentName, result.completedAt, taskId, deliveryOrder)
+        val event = delegationCompletionMessage(title, result.summary, metadata, result.completedAt, failed)
+        val messagesHadEvent = hasDelegationCompletion(existing.messagesJson, taskId)
+        val contextHadEvent = hasDelegationCompletion(storedContext, taskId)
+        val completedMessages = completeDelegationTools(existing.messagesJson, taskId, result.summary, failed)
+        val completedContext = completeDelegationTools(storedContext, taskId, result.summary, failed)
+        val messagesJson = if (messagesHadEvent) completedMessages else appendDelegationMessageJson(completedMessages, event)
+        val contextJson = if (contextHadEvent) completedContext else appendDelegationMessageJson(completedContext, event)
+        if (messagesJson != existing.messagesJson || contextJson != storedContext) {
+            conversationDao.updateConversation(existing.copy(
+                messagesJson = messagesJson,
+                contextMessagesJson = contextJson,
+                updatedAt = maxOf(existing.updatedAt, result.completedAt)
+            ))
+        }
+        !messagesHadEvent || !contextHadEvent
+    }
+
     private fun delegationMetadata(source: AgentEntity) = mapOf(
         "delegation" to "incoming",
         "sourceAgentId" to source.localId.toString(),
@@ -86,6 +125,125 @@ class AgentConversationRepository @Inject constructor(
         "sourceAgentName" to source.name,
         "sourceAgentMention" to agentMentionMarkdown(source.localId, source.name)
     )
+}
+
+internal fun delegationCompletionMetadata(
+    sourceAgentName: String,
+    targetAgentName: String,
+    completedAt: Long,
+    taskId: Long = -1L,
+    deliveryOrder: Long = 0L
+): Map<String, String> = buildMap {
+    put("sourceAgentName", sourceAgentName)
+    put("targetAgentName", targetAgentName)
+    put("completedAt", completedAt.toString())
+    if (taskId > 0L) put("delegationTaskId", taskId.toString())
+    if (deliveryOrder > 0L) put("deliveryOrder", deliveryOrder.toString())
+}
+
+internal fun delegationCompletionMessage(
+    title: String,
+    output: String,
+    metadata: Map<String, String>,
+    timestamp: Long,
+    failed: Boolean = false
+) = com.amaya.intelligence.domain.models.conversationEventMessage(
+    type = com.amaya.intelligence.domain.models.ConversationEventType.DELEGATION_COMPLETED,
+    label = title,
+    state = if (failed) com.amaya.intelligence.domain.models.ConversationEventState.FAILED else com.amaya.intelligence.domain.models.ConversationEventState.DONE,
+    detail = output,
+    timestamp = timestamp,
+    metadata = metadata
+)
+
+internal fun completeDelegationTools(json: String, taskId: Long, result: String, failed: Boolean): String {
+    if (taskId <= 0L) return json
+    val array = runCatching { JSONArray(json) }.getOrElse { return json }
+    val taskIdText = taskId.toString()
+    val terminalStatus = if (failed) "ERROR" else "SUCCESS"
+    val delegationState = if (failed) "failed" else "done"
+    fun complete(execution: JSONObject) {
+        execution.put("status", terminalStatus).put("result", result)
+        val metadata = execution.optJSONObject("metadata") ?: JSONObject().also { execution.put("metadata", it) }
+        metadata.put("delegationTaskId", taskIdText).put("delegationState", delegationState)
+    }
+    for (index in 0 until array.length()) {
+        val message = array.optJSONObject(index) ?: continue
+        val executions = message.optJSONArray("toolExecutions")
+        for (toolIndex in 0 until (executions?.length() ?: 0)) {
+            val execution = executions?.optJSONObject(toolIndex) ?: continue
+            if (execution.optJSONObject("metadata")?.optString("delegationTaskId") == taskIdText) {
+                complete(execution)
+            }
+        }
+        val canonical = message.optJSONArray("canonicalHistory")
+        for (canonicalIndex in 0 until (canonical?.length() ?: 0)) {
+            val item = runCatching { JSONObject(canonical?.optString(canonicalIndex).orEmpty()) }.getOrNull() ?: continue
+            if (item.optString("kind") == "tool_result" && item.optLong("deferredTaskId", -1L) == taskId) {
+                item.put("result", result).put("isError", failed)
+                canonical?.put(canonicalIndex, item.toString())
+            }
+        }
+        val steps = message.optJSONArray("steps")
+        for (stepIndex in 0 until (steps?.length() ?: 0)) {
+            val step = steps?.optJSONObject(stepIndex) ?: continue
+            val execution = step.optJSONObject("execution") ?: continue
+            if (execution.optJSONObject("metadata")?.optString("delegationTaskId") == taskIdText) {
+                complete(execution)
+            }
+        }
+    }
+    return array.toString()
+}
+
+internal fun hasDelegationCompletion(json: String, taskId: Long): Boolean {
+    if (taskId <= 0L) return false
+    val array = runCatching { JSONArray(json) }.getOrElse { return false }
+    val taskIdText = taskId.toString()
+    for (index in 0 until array.length()) {
+        val message = array.optJSONObject(index) ?: continue
+        val metadata = message.optJSONObject("metadata")
+        if (metadata?.optString("eventType") == "delegation_completed" &&
+            metadata.optString("delegationTaskId") == taskIdText
+        ) return true
+        val steps = message.optJSONArray("steps")
+        for (stepIndex in 0 until (steps?.length() ?: 0)) {
+            val stepMetadata = steps?.optJSONObject(stepIndex)?.optJSONObject("metadata") ?: continue
+            if (stepMetadata.optString("eventType") == "delegation_completed" &&
+                stepMetadata.optString("delegationTaskId") == taskIdText
+            ) return true
+        }
+    }
+    return false
+}
+
+internal fun appendDelegationMessageJson(json: String, message: com.amaya.intelligence.domain.models.UiMessage): String {
+    val array = runCatching { JSONArray(json) }.getOrElse { JSONArray() }
+    val item = JSONObject().apply {
+        put("id", message.id)
+        put("role", message.role.name)
+        put("content", message.content)
+        put("timestamp", message.timestamp)
+        put("metadata", JSONObject(message.metadata))
+    }
+    val deliveryOrder = message.metadata["deliveryOrder"]?.toLongOrNull()
+    val insertion = deliveryOrder?.let { candidate ->
+        (0 until array.length()).firstOrNull { index ->
+            val metadata = array.optJSONObject(index)?.optJSONObject("metadata") ?: return@firstOrNull false
+            metadata.optString("eventType") == "delegation_completed" &&
+                metadata.optString("deliveryOrder").toLongOrNull()?.let { it > candidate } == true
+        }
+    }
+    if (insertion == null) array.put(item)
+    else {
+        val ordered = JSONArray()
+        for (index in 0 until array.length()) {
+            if (index == insertion) ordered.put(item)
+            ordered.put(array.opt(index))
+        }
+        return ordered.toString()
+    }
+    return array.toString()
 }
 
 internal fun delegationPrompt(source: AgentEntity, request: String): String =

@@ -41,6 +41,14 @@ fun MessageBubble(
     onToolDecline: ((ToolExecution) -> Unit)? = null,
     onLocalhostLinkClick: ((String) -> Unit)? = null
 ) {
+    // Host continuations are provider input, never transcript content. Hide legacy persisted
+    // copies too; older builds accidentally materialized this SYSTEM prompt as a blue user bubble.
+    if (message.metadata["internalContinuation"] == "true") return
+    val conversationEvent = message.conversationEvent()
+    if (conversationEvent != null) {
+        SharedConversationEvent(conversationEvent)
+        return
+    }
     val isUser = message.role == MessageRole.USER
     if (isUser) {
         val screenWidth = LocalConfiguration.current.screenWidthDp
@@ -169,6 +177,9 @@ fun MessageBubble(
                                     }
                                 }
                             }
+                            split.trailingEvents.forEach { eventStep ->
+                                key(eventStep.id) { SharedConversationEvent(eventStep.event) }
+                            }
                         } else {
                             // Field reasoning is legacy fallback only. New
                             // reasoning lives in ordered MessageStep.Thinking.
@@ -291,6 +302,9 @@ private fun StepTimeline(
                         onLocalhostLinkClick = onLocalhostLinkClick
                     )
                 }
+            }
+            is MessageStep.Event -> {
+                SharedConversationEvent(step.event)
             }
             is MessageStep.ToolCall -> {
                 when {
@@ -503,6 +517,7 @@ private fun WorkSummaryCard(
 private data class AssistantTurnSplit(
     val workSteps: List<MessageStep>,
     val answerStep: MessageStep.Text?,
+    val trailingEvents: List<MessageStep.Event>,
     val wrapInSummary: Boolean
 )
 
@@ -519,28 +534,39 @@ private fun splitAssistantTurn(message: UiMessage): AssistantTurnSplit {
             (text.formattedContent ?: text.content).isNotBlank()
         }
     } else {
-        steps.lastIndex.takeIf { last ->
-            val text = steps.getOrNull(last) as? MessageStep.Text
+        steps.indices.lastOrNull { index ->
+            val text = steps[index] as? MessageStep.Text
+            val onlyPostAnswerMarkers = steps.drop(index + 1).all { it is MessageStep.Event }
             text != null &&
                 (text.formattedContent ?: text.content).isNotBlank() &&
-                browserRanges.none { last in it }
+                browserRanges.none { index in it } &&
+                (index == steps.lastIndex || onlyPostAnswerMarkers)
         }
     }
     val answerStep = answerIndex?.let { steps[it] as? MessageStep.Text }
+    val trailingEvents = answerIndex?.let { answer ->
+        steps.drop(answer + 1).filterIsInstance<MessageStep.Event>()
+    }.orEmpty()
 
     val workSteps = steps.filterIndexed { index, step ->
         index != answerIndex && when (step) {
             is MessageStep.Thinking -> true
             is MessageStep.ToolCall -> step.execution.name != "update_todo"
+            // An event after the answer is a conversation-level update, not work belonging
+            // to the completed answer. Keeping it outside avoids a one-event work card.
+            is MessageStep.Event -> answerIndex == null || index < answerIndex
             // Remote keeps only tools and reasoning inside the card; local preserves its
             // interleaved intermediate text so the timeline still reads in order.
             is MessageStep.Text -> !isRemote && (step.formattedContent ?: step.content).isNotBlank()
         }
     }
 
-    // A turn of plain text is not "work" — don't hide an answer behind a summary header.
-    val wrapInSummary = workSteps.any { it is MessageStep.Thinking || it is MessageStep.ToolCall }
-    return AssistantTurnSplit(workSteps, answerStep, wrapInSummary)
+    // A turn of plain text or trailing events is not "work" — don't hide an answer behind
+    // a summary header that contains only a separator.
+    val wrapInSummary = workSteps.any {
+        it is MessageStep.Thinking || it is MessageStep.ToolCall
+    }
+    return AssistantTurnSplit(workSteps, answerStep, trailingEvents, wrapInSummary)
 }
 
 private fun browserToolRanges(steps: List<MessageStep>): List<IntRange> {

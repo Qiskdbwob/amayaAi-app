@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -164,6 +165,7 @@ fun RemoteProjectBrowserScreen(
 
     Scaffold(
         containerColor = Color.Transparent,
+        contentWindowInsets = WindowInsets(0.dp),
         topBar = {
             TopAppBar(
                 title = {
@@ -191,7 +193,8 @@ fun RemoteProjectBrowserScreen(
                 ),
                 modifier = Modifier
                     .statusBarsPadding()
-                    .padding(start = 12.dp, end = 12.dp)
+                    .padding(start = 12.dp, end = 12.dp),
+                windowInsets = WindowInsets(0.dp)
             )
         }
     ) { padding ->

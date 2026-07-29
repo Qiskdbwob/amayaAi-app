@@ -226,11 +226,15 @@ data class AiToolPropertyItems(
     val type: String = "string"
 )
 
+private val JSON_ARGUMENTS_TYPE = com.squareup.moshi.Types.newParameterizedType(
+    Map::class.java, String::class.java, Any::class.java
+)
+
 fun com.squareup.moshi.Moshi.parseJsonArgs(json: String): Result<Map<String, Any?>> = runCatching {
     require(json.isNotBlank()) { "Tool arguments are empty" }
-    val type = com.squareup.moshi.Types.newParameterizedType(
-        Map::class.java, String::class.java, Any::class.java
-    )
-    adapter<Map<String, Any?>>(type).fromJson(json)
+    adapter<Map<String, Any?>>(JSON_ARGUMENTS_TYPE).fromJson(json)
         ?: error("Tool arguments must be a JSON object")
 }
+
+fun com.squareup.moshi.Moshi.jsonArgs(arguments: Map<String, Any?>): String =
+    adapter<Map<String, Any?>>(JSON_ARGUMENTS_TYPE).toJson(arguments)

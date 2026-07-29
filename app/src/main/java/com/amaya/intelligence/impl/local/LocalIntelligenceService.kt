@@ -11,6 +11,7 @@ import com.amaya.intelligence.data.local.dao.AgentDao
 import com.amaya.intelligence.data.local.dao.ProjectDao
 import com.amaya.intelligence.data.local.entity.ConversationEntity
 import com.amaya.intelligence.data.repository.AiRepository
+import com.amaya.intelligence.data.repository.AgentConversationRepository
 import com.amaya.intelligence.data.repository.SessionMemoryRepository
 
 import com.amaya.intelligence.domain.models.*
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.amaya.intelligence.tools.SubagentResult
+import com.amaya.intelligence.util.StreamDebugLog
 import org.json.JSONArray
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
@@ -43,6 +45,7 @@ class LocalIntelligenceService @Inject constructor(
     internal val agentDao: AgentDao,
     internal val projectDao: ProjectDao,
     internal val sessionMemoryRepository: SessionMemoryRepository,
+    internal val agentConversationRepository: AgentConversationRepository,
     internal val ledgerStore: com.amaya.intelligence.data.repository.ActiveContextLedgerStore,
     internal val settingsManager: AiSettingsManager,
     internal val browserSessionManager: BrowserSessionManager,
@@ -91,6 +94,17 @@ class LocalIntelligenceService @Inject constructor(
     internal val startingConversations = ConcurrentHashMap<Long, Long>()
     internal val startingNewTurnId = AtomicLong(0L)
     internal val stoppingConversations = ConcurrentHashMap.newKeySet<Long>()
+    internal val queuedConversationEvents = ConcurrentHashMap<Long, java.util.concurrent.ConcurrentLinkedQueue<UiMessage>>()
+    internal val injectingConversationEventTasks = ConcurrentHashMap.newKeySet<String>()
+    /** One continuation owns each terminal completion batch; concurrent completions coalesce here. */
+    internal val continuationJobs = ConcurrentHashMap<Long, Job>()
+    internal val continuationRequested = ConcurrentHashMap.newKeySet<Long>()
+    internal val delegationCompletionLocks = ConcurrentHashMap<Long, Mutex>()
+    internal val expectedDelegationTasks = ConcurrentHashMap<Long, MutableSet<Long>>()
+    internal val lastDelegationCompletionAt = ConcurrentHashMap<Long, Long>()
+    internal data class DeferredDelegationCompletion(val result: String, val failed: Boolean)
+    internal val deferredDelegationCompletions = ConcurrentHashMap<Long, DeferredDelegationCompletion>()
+    internal val nextDelegationEventOrder = AtomicLong(System.currentTimeMillis() * 1_000L)
     internal val turnsById = ConcurrentHashMap<Long, LocalTurn>()
     internal data class PendingMessage(
         val content: String,
@@ -178,6 +192,235 @@ class LocalIntelligenceService @Inject constructor(
 
     suspend fun runDelegatedAgentTurn(conversationId: Long, request: String): SubagentResult =
         runDelegatedAgentTurnImpl(conversationId, request)
+
+    suspend fun completeDelegationEvent(
+        conversationId: Long,
+        taskId: Long,
+        title: String,
+        sourceAgentName: String,
+        targetAgentName: String,
+        result: String,
+        failed: Boolean,
+        deliveryOrder: Long = nextDelegationEventOrder.incrementAndGet()
+    ): Unit = withContext(Dispatchers.Main.immediate) {
+        if (taskId <= 0L) return@withContext
+        delegationCompletionLocks.getOrPut(conversationId) { Mutex() }.withLock {
+        var turn = activeTurns[conversationId]
+        // The initial conversation write can still be in flight. Appending to Room here would be
+        // overwritten by that stale initial state, so retry through the normal active/idle paths.
+        if (turn == null && startingConversations.containsKey(conversationId)) {
+            scope.launch {
+                while (startingConversations.containsKey(conversationId)) delay(25)
+                completeDelegationEvent(conversationId, taskId, title, sourceAgentName, targetAgentName, result, failed, deliveryOrder)
+            }
+            return@withContext
+        }
+        // Durable Room locking and queue de-duplication make retries idempotent. Do not drop a
+        // retry before it can repair a partially persisted messages/context projection.
+        // `activeTurns` is removed in LocalTurn's finally block, after its state has already been
+        // marked done. Join that tail before writing an external event, otherwise the old finally
+        // persistence can overwrite the event and the continuation starts from stale history.
+        if (turn == null || !turn.state.isStreaming) {
+            turn?.job?.takeIf { it.isActive }?.join()
+            val inserted = agentConversationRepository.appendDelegationCompletion(
+                conversationId = conversationId,
+                title = title,
+                sourceAgentName = sourceAgentName,
+                targetAgentName = targetAgentName,
+                result = SubagentResult(targetAgentName, result),
+                failed = failed,
+                taskId = taskId,
+                deliveryOrder = deliveryOrder
+            )
+            if (inserted) {
+                lastDelegationCompletionAt[conversationId] = System.currentTimeMillis()
+                // Idle completions are persisted directly, so publish the same durable event before
+                // starting the hidden continuation. A pending sibling must not hide completed events.
+                refreshConversationEvent(conversationId)
+                scheduleContinuationAfterConversationEvent(conversationId)
+            } else {
+                StreamDebugLog.event(conversationId, null, "DELEGATE_DUPLICATE", "task=$taskId")
+            }
+            return@withContext
+        }
+
+        if (agentConversationRepository.hasDelegationCompletion(conversationId, taskId)) {
+            deferredDelegationCompletions[taskId] = DeferredDelegationCompletion(result, failed)
+            if (completeDelegationTool(turn, taskId, result, failed)) deferredDelegationCompletions.remove(taskId)
+            StreamDebugLog.event(conversationId, null, "DELEGATE_DUPLICATE", "task=$taskId")
+            return@withLock
+        }
+        lastDelegationCompletionAt[conversationId] = System.currentTimeMillis()
+        StreamDebugLog.event(conversationId, null, "DELEGATE_ACCEPTED", "task=$taskId active=${turn.state.isStreaming} order=$deliveryOrder")
+        val event = conversationEventMessage(
+            type = ConversationEventType.DELEGATION_COMPLETED,
+            label = title,
+            state = if (failed) ConversationEventState.FAILED else ConversationEventState.DONE,
+            detail = result,
+            metadata = mapOf(
+                "sourceAgentName" to sourceAgentName,
+                "targetAgentName" to targetAgentName,
+                "delegationTaskId" to taskId.toString(),
+                "deliveryOrder" to deliveryOrder.toString()
+            )
+        )
+        // Do not render or persist this event yet. The provider must receive it first at its next
+        // safe request boundary; the same injection callback then commits the work-card event.
+        queueConversationEvent(conversationId, event)
+        deferredDelegationCompletions[taskId] = DeferredDelegationCompletion(result, failed)
+        if (completeDelegationTool(turn, taskId, result, failed)) deferredDelegationCompletions.remove(taskId)
+        // The event stays hidden until provider injection, but the tool terminal state must survive
+        // a process death in the gap between child completion and the next provider boundary.
+        persistTurn(turn)
+        publishTurn(turn, turn.lastStatus, turn.lastDetail, urgent = true)
+        // The owning turn's finally block schedules the continuation after every deferred
+        // ToolCallResult has been projected. Scheduling here races the remaining tool results.
+        }
+    }
+
+    internal fun queueConversationEvent(conversationId: Long, event: UiMessage) {
+        val taskId = event.metadata["delegationTaskId"]
+        val queue = queuedConversationEvents.getOrPut(conversationId) { java.util.concurrent.ConcurrentLinkedQueue() }
+        synchronized(queue) {
+            val key = taskId?.takeIf(String::isNotBlank)?.let { "$conversationId:$it" }
+            if (key == null || (key !in injectingConversationEventTasks && queue.none { it.metadata["delegationTaskId"] == taskId })) {
+                queue.add(event)
+            }
+        }
+    }
+
+    internal fun drainQueuedConversationEvents(conversationId: Long): List<UiMessage> = buildList {
+        val queue = queuedConversationEvents[conversationId] ?: return@buildList
+        synchronized(queue) {
+            while (true) {
+                val event = queue.poll() ?: break
+                event.metadata["delegationTaskId"]?.let { injectingConversationEventTasks.add("$conversationId:$it") }
+                add(event)
+            }
+            if (queue.isEmpty()) queuedConversationEvents.remove(conversationId, queue)
+        }
+        sortWith(compareBy { it.metadata["deliveryOrder"]?.toLongOrNull() ?: Long.MAX_VALUE })
+    }
+
+    internal fun acknowledgeConversationEvents(conversationId: Long, events: List<UiMessage>) {
+        events.forEach { event ->
+            event.metadata["delegationTaskId"]?.let { taskId ->
+                injectingConversationEventTasks.remove("$conversationId:$taskId")
+                expectedDelegationTasks[conversationId]?.remove(taskId.toLongOrNull())
+            }
+        }
+    }
+
+    private suspend fun awaitDelegationBatch(conversationId: Long) {
+        val expected = expectedDelegationTasks[conversationId]?.toSet().orEmpty()
+        if (expected.isEmpty()) return
+        withTimeoutOrNull(120_000L) {
+            while (true) {
+                val entity = conversationDao.getConversationById(conversationId)
+                val messages = entity?.messagesJson?.let { parseMessagesFromJson(it).getOrNull() }.orEmpty()
+                val context = entity?.contextMessagesJson?.let { parseMessagesFromJson(it).getOrNull() }.orEmpty()
+                val persistedEvents = (messages + context).mapNotNull { it.conversationEvent() }
+                val persistedIds = (messages + context).flatMap { message ->
+                    listOfNotNull(message.metadata["delegationTaskId"])
+                }.mapNotNull(String::toLongOrNull).toSet()
+                val queuedIds = queuedConversationEvents[conversationId].orEmpty()
+                    .mapNotNull { it.metadata["delegationTaskId"]?.toLongOrNull() }.toSet()
+                val delivered = persistedIds + queuedIds
+                if (expected.all { it in delivered }) return@withTimeoutOrNull
+                delay(100)
+            }
+        }
+    }
+
+    internal fun hasQueuedConversationEvents(conversationId: Long): Boolean =
+        queuedConversationEvents[conversationId]?.isNotEmpty() == true
+
+    internal fun scheduleContinuationAfterConversationEvent(conversationId: Long) {
+        if (!continuationRequested.add(conversationId)) return
+        val job = continuationJobs.computeIfAbsent(conversationId) {
+            scope.launch(start = CoroutineStart.LAZY) {
+                try {
+                    // A completion can win the gap between persistence and active-turn registration.
+                    // Wait for that registration/turn to settle instead of launching a second turn.
+                    while (activeTurns.containsKey(conversationId) || startingConversations.containsKey(conversationId)) {
+                        delay(25)
+                    }
+                    // Let sibling completions in the same terminal window settle before taking
+                    // the durable snapshot. New completions move this quiet point forward.
+                    awaitDelegationBatch(conversationId)
+                    continueAfterConversationEvent(conversationId)
+                    // startTurn returns after registration, not after the provider turn finishes.
+                    // Keep the coalescing gate closed for the whole hidden continuation.
+                    while (activeTurns.containsKey(conversationId) || startingConversations.containsKey(conversationId)) {
+                        delay(25)
+                    }
+                } finally {
+                    continuationJobs.remove(conversationId)
+                    continuationRequested.remove(conversationId)
+                    if (hasQueuedConversationEvents(conversationId)) scheduleContinuationAfterConversationEvent(conversationId)
+                }
+            }
+        }
+        job.start()
+    }
+
+    internal suspend fun continueAfterConversationEvent(conversationId: Long) {
+        val entity = conversationDao.getConversationById(conversationId) ?: return
+        val messages = parseMessagesFromJson(entity.messagesJson).getOrNull() ?: return
+        val contextMessages = parseMessagesFromJson(entity.contextMessagesJson.ifBlank { entity.messagesJson }).getOrNull() ?: return
+        val settings = settingsManager.getSettings()
+        val modelKey = entity.agentId?.let { agentDao.getById(it)?.defaultModelKeysJson }
+            ?.let { runCatching { JSONArray(it) }.getOrNull() }
+            ?.let { values -> (0 until values.length()).map(values::optString).firstOrNull(String::isNotBlank) }
+            ?: settings.activeSelection?.key.orEmpty()
+        val parts = modelKey.split('|', limit = 3)
+        val state = ChatUiState(
+            messages = messages,
+            contextMessages = contextMessages,
+            selectedModel = parts.getOrNull(2).orEmpty().ifBlank { settings.activeSelection?.modelId.orEmpty() },
+            workspacePath = entity.workspacePath,
+            assistantMode = runCatching { AssistantMode.valueOf(entity.assistantMode) }.getOrDefault(AssistantMode.CHAT),
+            ownerId = entity.ownerId,
+            agentId = entity.agentId,
+            modelOptions = _uiState.value.modelOptions,
+            activeModelKey = modelKey,
+            conversationId = conversationId.toString(),
+            effort = if (parts.size == 3) settingsManager.getThinkingEffort(parts[1], parts[2]) else _uiState.value.effort,
+            sessionMode = IntelligenceSessionManager.SessionMode.LOCAL
+        )
+        startTurn(
+            content = "A background delegation completed. Read the latest system event and continue the task with that result. Do not repeat the event marker.",
+            images = emptyList(),
+            initialState = state,
+            projectVisible = currentConversationId == conversationId,
+            internalContinuation = true
+        )
+    }
+
+    suspend fun refreshConversationEvent(conversationId: Long) {
+        if (currentConversationId != conversationId) return
+        activeTurns[conversationId]?.let { turn ->
+            val entity = conversationDao.getConversationById(conversationId) ?: return
+            val persistedMessages = parseMessagesFromJson(entity.messagesJson, includeModelState = false).getOrNull() ?: return
+            val persistedContext = parseMessagesFromJson(entity.contextMessagesJson.ifBlank { entity.messagesJson }).getOrNull() ?: return
+            val visibleEvents = persistedMessages.filter { it.conversationEvent() != null }
+            val contextEvents = persistedContext.filter { it.conversationEvent() != null }
+            turn.state = turn.state.copy(
+                messages = mergeConversationEvents(turn.state.messages, visibleEvents),
+                contextMessages = mergeConversationEvents(turn.state.contextMessages, contextEvents)
+            )
+            publishTurn(turn, turn.lastStatus, turn.lastDetail, urgent = true)
+            return
+        }
+        val entity = conversationDao.getConversationById(conversationId) ?: return
+        val messages = parseMessagesFromJson(entity.messagesJson, includeModelState = false).getOrNull() ?: return
+        val contextMessages = parseMessagesFromJson(entity.contextMessagesJson.ifBlank { entity.messagesJson }).getOrNull() ?: return
+        if (currentConversationId == conversationId) {
+            _uiState.update { state ->
+                state.copy(messages = messages, contextMessages = contextMessages)
+            }
+        }
+    }
 
     override fun sendMessageWithImage(content: String, imageBase64: String, mimeType: String, fileName: String) {
         if (!mimeType.startsWith("image/") || imageBase64.isBlank() || imageBase64.length > 1_000_000) {
@@ -392,16 +635,24 @@ class LocalIntelligenceService @Inject constructor(
                     focus = focus
                 ).getOrThrow()
                 val context = compressedSessionContext(summary)
+                val compactionEvent = conversationEventMessage(
+                    type = ConversationEventType.COMPACTION,
+                    label = "Compacted",
+                    detail = "Manual summary created${focus.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()}"
+                )
+                val messages = state.messages + compactionEvent
+                val visibleContext = context + compactionEvent
                 // The manual summary supersedes whatever the automatic ledger had accumulated.
                 ledgerStore.invalidate(conversationId.toString())
                 conversationSaveMutex.withLock {
-                    conversationDao.updateConversationContext(
+                    conversationDao.updateConversationCompaction(
                         id = conversationId,
-                        contextMessagesJson = serializeMessagesToJson(context)
+                        messagesJson = serializeMessagesToJson(messages),
+                        contextMessagesJson = serializeMessagesToJson(visibleContext)
                     )
                 }
                 if (currentConversationId == conversationId) {
-                    _uiState.update { it.copy(contextMessages = context) }
+                    _uiState.update { it.copy(messages = messages, contextMessages = visibleContext) }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -528,6 +779,14 @@ class LocalIntelligenceService @Inject constructor(
                     )
                 }
             }
+        }
+    }
+
+    internal fun mergeConversationEvents(current: List<UiMessage>, persisted: List<UiMessage>): List<UiMessage> {
+        val known = current.mapNotNull { it.conversationEvent()?.let { _ -> it.metadata["completedAt"] ?: it.id } }.toSet()
+        return current + persisted.filter { message ->
+            val event = message.conversationEvent() ?: return@filter false
+            (message.metadata["completedAt"] ?: message.id) !in known
         }
     }
 

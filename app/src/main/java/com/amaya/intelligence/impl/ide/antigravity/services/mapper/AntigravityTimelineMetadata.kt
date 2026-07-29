@@ -146,6 +146,7 @@ object AntigravityTimelineMetadata {
                 is MessageStep.Thinking -> step.id
                 is MessageStep.Text -> step.id
                 is MessageStep.ToolCall -> "tool:${step.execution.toolCallId}"
+                is MessageStep.Event -> "event:${step.id}"
             }
             val existing = stepMap[key]
             stepMap[key] = when {

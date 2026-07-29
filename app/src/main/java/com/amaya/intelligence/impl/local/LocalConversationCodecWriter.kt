@@ -66,6 +66,16 @@ internal fun LocalIntelligenceService.serializeMessagesToJson(messages: List<UiM
                                 put("type", "toolCall")
                                 put("execution", serializeToolExecutionToJson(step.execution))
                             }
+                            is MessageStep.Event -> {
+                                put("type", "event")
+                                put("content", step.event.displayLabel)
+                                put("metadata", JSONObject(step.event.metadata + mapOf(
+                                    "eventType" to step.event.type.wireName,
+                                    "eventLabel" to step.event.label,
+                                    "eventState" to step.event.state.wireName,
+                                    "eventDetail" to step.event.detail
+                                )))
+                            }
                         }
                     }
                     stepsArr.put(stepObj)

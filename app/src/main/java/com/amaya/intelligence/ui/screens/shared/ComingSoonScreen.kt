@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -75,6 +76,7 @@ fun ComingSoonScreen(
     val colors = iosComingSoonColors()
     Scaffold(
         containerColor = Color.Transparent,
+        contentWindowInsets = WindowInsets(0.dp),
         topBar = {
             TopAppBar(
                 title = { Text(title, fontWeight = FontWeight.SemiBold) },
@@ -91,6 +93,7 @@ fun ComingSoonScreen(
                     scrolledContainerColor = Color.Transparent
                 ),
                 modifier = Modifier.statusBarsPadding(),
+                windowInsets = WindowInsets(0.dp)
             )
         }
     ) { padding ->

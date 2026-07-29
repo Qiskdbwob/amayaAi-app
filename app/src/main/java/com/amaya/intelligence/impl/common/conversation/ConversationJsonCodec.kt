@@ -62,6 +62,19 @@ object ConversationJsonCodec {
                                     execution = parseToolExecutionFromJson(eObj)
                                 ))
                             }
+                            "event" -> {
+                                val eventMetadata = s.optJSONObject("metadata") ?: JSONObject()
+                                val eventMessage = UiMessage(
+                                    role = MessageRole.SYSTEM,
+                                    content = s.optString("content"),
+                                    metadata = buildMap {
+                                        eventMetadata.keys().forEach { key -> put(key, eventMetadata.optString(key)) }
+                                    }
+                                )
+                                eventMessage.conversationEvent()?.let { event ->
+                                    steps.add(MessageStep.Event(id = stepId, event = event))
+                                }
+                            }
                         }
                     }
                 }
@@ -191,6 +204,16 @@ object ConversationJsonCodec {
                             is MessageStep.ToolCall -> {
                                 put("type", "toolCall")
                                 put("execution", serializeToolExecutionToJson(step.execution))
+                            }
+                            is MessageStep.Event -> {
+                                put("type", "event")
+                                put("content", step.event.displayLabel)
+                                put("metadata", JSONObject(step.event.metadata + mapOf(
+                                    "eventType" to step.event.type.wireName,
+                                    "eventLabel" to step.event.label,
+                                    "eventState" to step.event.state.wireName,
+                                    "eventDetail" to step.event.detail
+                                )))
                             }
                         }
                     }
@@ -341,6 +364,17 @@ object ConversationJsonCodec {
                                 put("type", "toolCall")
                                 put("execution", serializeToolExecution(step.execution))
                             })
+                            is MessageStep.Event -> put(JSONObject().apply {
+                                put("id", step.id)
+                                put("type", "event")
+                                put("content", step.event.displayLabel)
+                                put("metadata", JSONObject(step.event.metadata + mapOf(
+                                    "eventType" to step.event.type.wireName,
+                                    "eventLabel" to step.event.label,
+                                    "eventState" to step.event.state.wireName,
+                                    "eventDetail" to step.event.detail
+                                )))
+                            })
                         }
                     }
                 })
@@ -471,6 +505,17 @@ object ConversationJsonCodec {
                             put("result", step.execution.result ?: JSONObject.NULL)
                         })
                     })
+                    is MessageStep.Event -> put(JSONObject().apply {
+                        put("id", step.id)
+                        put("type", "event")
+                        put("content", step.event.displayLabel)
+                        put("metadata", JSONObject(step.event.metadata + mapOf(
+                            "eventType" to step.event.type.wireName,
+                            "eventLabel" to step.event.label,
+                            "eventState" to step.event.state.wireName,
+                            "eventDetail" to step.event.detail
+                        )))
+                    })
                 }
             }
         })
@@ -517,6 +562,19 @@ object ConversationJsonCodec {
                                 )
                                 tools.add(execution)
                                 steps.add(MessageStep.ToolCall(id = step.optString("id", UUID.randomUUID().toString()), execution = execution))
+                            }
+                            "event" -> {
+                                val metadata = step.optJSONObject("metadata") ?: JSONObject()
+                                val eventMessage = UiMessage(
+                                    role = MessageRole.SYSTEM,
+                                    content = step.optString("content"),
+                                    metadata = buildMap {
+                                        metadata.keys().forEach { key -> put(key, metadata.optString(key)) }
+                                    }
+                                )
+                                eventMessage.conversationEvent()?.let { event ->
+                                    steps.add(MessageStep.Event(step.optString("id", UUID.randomUUID().toString()), event))
+                                }
                             }
                         }
                     }

@@ -85,6 +85,7 @@ fun ProviderDetailScreen(
 
     Scaffold(
         containerColor = colors.groupedBackground,
+        contentWindowInsets = WindowInsets(0.dp),
         topBar = {
             Box {
                 Box(
@@ -123,7 +124,8 @@ fun ProviderDetailScreen(
                         }
                     },
                     modifier = Modifier.statusBarsPadding().padding(horizontal = 12.dp),
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+                    windowInsets = WindowInsets(0.dp)
                 )
             }
         }

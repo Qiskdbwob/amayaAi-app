@@ -625,7 +625,7 @@ class OpenAiProvider @Inject constructor(
                             .put("type", "function_call")
                             .put("call_id", call.id)
                             .put("name", call.name)
-                            .put("arguments", moshi.adapter(Map::class.java).toJson(call.arguments))
+                            .put("arguments", moshi.jsonArgs(call.arguments))
                         )
                     }
                 }
@@ -860,7 +860,7 @@ class OpenAiProvider @Inject constructor(
                             type = "function",
                             function = OpenAiFunction(
                                 name = call.name,
-                                arguments = moshi.adapter(Map::class.java).toJson(call.arguments)
+                                arguments = moshi.jsonArgs(call.arguments)
                             )
                         )
                     }
@@ -916,7 +916,15 @@ class OpenAiProvider @Inject constructor(
                         }
                     }
                 }
-                MessageRole.SYSTEM -> { /* Already handled above */ }
+                MessageRole.SYSTEM -> {
+                    // System messages in request.messages are conversation events or compacted
+                    // context. They must remain visible to OpenAI-compatible models; only the
+                    // stable request.systemPrompt is emitted in the leading system message.
+                    messages.add(OpenAiMessage(
+                        role = "system",
+                        content = msg.content
+                    ))
+                }
             }
         }
 

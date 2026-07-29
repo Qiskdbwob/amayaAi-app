@@ -13,6 +13,78 @@ import java.util.UUID
 
 enum class SessionPhase { STARTING, THINKING, STREAMING, TOOL, COMPACTING, DELEGATING, WAITING_APPROVAL, COMPLETED, FAILED, STOPPED }
 
+enum class ConversationEventType(val wireName: String, val defaultLabel: String) {
+    COMPACTION("compaction", "Compacted"),
+    DELEGATION_COMPLETED("delegation_completed", "Delegation")
+}
+
+enum class ConversationEventState(val wireName: String, val displayLabel: String) {
+    DONE("done", "done"),
+    FAILED("failed", "failed")
+}
+
+data class ConversationEvent(
+    val type: ConversationEventType,
+    val label: String,
+    val state: ConversationEventState,
+    val detail: String,
+    val metadata: Map<String, String> = emptyMap()
+) {
+    val displayLabel: String get() = "--- $label ${state.displayLabel} ---"
+}
+
+const val CONVERSATION_EVENT_TYPE_KEY = "eventType"
+const val CONVERSATION_EVENT_LABEL_KEY = "eventLabel"
+const val CONVERSATION_EVENT_STATE_KEY = "eventState"
+
+fun conversationEventMessage(
+    type: ConversationEventType,
+    label: String,
+    state: ConversationEventState = ConversationEventState.DONE,
+    detail: String = "",
+    timestamp: Long = System.currentTimeMillis(),
+    metadata: Map<String, String> = emptyMap(),
+    role: MessageRole = MessageRole.SYSTEM
+): UiMessage = UiMessage(
+    role = role,
+    content = "--- $label ${state.displayLabel} ---",
+    timestamp = timestamp,
+    metadata = metadata + mapOf(
+        "eventDetail" to detail,
+        CONVERSATION_EVENT_TYPE_KEY to type.wireName,
+        CONVERSATION_EVENT_LABEL_KEY to label,
+        CONVERSATION_EVENT_STATE_KEY to state.wireName
+    )
+)
+
+fun UiMessage.conversationEvent(): ConversationEvent? {
+    val type = ConversationEventType.entries.firstOrNull { it.wireName == metadata[CONVERSATION_EVENT_TYPE_KEY] } ?: return null
+    val state = ConversationEventState.entries.firstOrNull { it.wireName == metadata[CONVERSATION_EVENT_STATE_KEY] }
+        ?: ConversationEventState.DONE
+    return ConversationEvent(
+        type,
+        metadata[CONVERSATION_EVENT_LABEL_KEY].orEmpty().ifBlank { type.defaultLabel },
+        state,
+        metadata["eventDetail"].orEmpty().ifBlank { content.takeUnless { it.trim().startsWith("---") }.orEmpty() },
+        metadata
+    )
+}
+
+fun UiMessage.conversationEventProviderContent(): String? {
+    val event = conversationEvent() ?: return null
+    return buildString {
+        append(event.displayLabel)
+        metadata["sourceAgentName"]?.takeIf(String::isNotBlank)?.let { append("\nSource Agent: ").append(it) }
+        metadata["targetAgentName"]?.takeIf(String::isNotBlank)?.let { append("\nDelegated Agent: ").append(it) }
+        if (event.type == ConversationEventType.DELEGATION_COMPLETED) {
+            append("\nThis is the final delivered result for this delegation. Use it directly; do not delegate this task again.")
+        }
+        event.detail.takeIf(String::isNotBlank)?.let {
+            append("\nResult detail:\n").append(it)
+        }
+    }
+}
+
 data class RunningSession(
     val conversationId: Long,
     val title: String,
@@ -145,6 +217,12 @@ sealed class MessageStep {
     data class ToolCall(
         override val id: String = UUID.randomUUID().toString(),
         val execution: ToolExecution
+    ): MessageStep()
+
+    /** A non-provider timeline marker shown inside the live work summary. */
+    data class Event(
+        override val id: String = UUID.randomUUID().toString(),
+        val event: ConversationEvent
     ): MessageStep()
 }
 
