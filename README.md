@@ -48,15 +48,11 @@ Amaya does not supply model subscriptions, API keys, or provider credits. Use yo
 
 Use Chat for a simple conversation. Move to a Project when the assistant needs a workspace. Use an Agent group when the work benefits from distinct, persistent roles.
 
-## Screenshots
+## Demo videos
 
-| Homepage | Drawer |
-| --- | --- |
-| <img src="docs/assets/homepage.png" alt="Homepage" width="260"> | <img src="docs/assets/drawer.png" alt="Navigation drawer" width="260"> |
-| Chat | Approval context |
-| <img src="docs/assets/chat-message.png" alt="Chat message" width="260"> | <img src="docs/assets/approval-context.png" alt="Tool approval context" width="260"> |
-| Settings | Demo videos |
-| <img src="docs/assets/settings.png" alt="Settings" width="260"> | [Chat](docs/assets/chat-demo.mp4)<br>[Project](docs/assets/project-demo.mp4)<br>[Agent](docs/assets/agent-demo.mp4) |
+| Chat | Project | Agent |
+| --- | --- | --- |
+| [Watch Chat demo](docs/assets/chat-demo.mp4) | [Watch Project demo](docs/assets/project-demo.mp4) | [Watch Agent demo](docs/assets/agent-demo.mp4) |
 
 ## Provider support
 
