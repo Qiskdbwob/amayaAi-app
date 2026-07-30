@@ -20,13 +20,12 @@ class UpdateRepository @Inject constructor(
         private const val OWNER = "nazrielnr"
         private const val REPO = "amaya"
 
-        internal fun selectApkAsset(assets: List<GitHubAsset>, supportedAbis: Array<String>): GitHubAsset? =
-            supportedAbis.firstNotNullOfOrNull { abi ->
-                assets.firstOrNull { asset ->
-                    asset.name.endsWith(".apk", ignoreCase = true) &&
-                        asset.name.contains(abi, ignoreCase = true)
-                }
-            }
+        internal fun selectApkAsset(assets: List<GitHubAsset>, supportedAbis: Array<String>): GitHubAsset? {
+            val apks = assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
+            return supportedAbis.firstNotNullOfOrNull { abi ->
+                apks.firstOrNull { it.name.contains(abi, ignoreCase = true) }
+            } ?: apks.firstOrNull()
+        }
 
         internal fun isVersionNewer(latest: String, current: String): Boolean {
             if (latest == current) return false
@@ -60,6 +59,7 @@ class UpdateRepository @Inject constructor(
             val isNewer = downloadUrl.isNotBlank() && isVersionNewer(latestVersionName, currentVersionName)
 
             UpdateInfo(
+                tagName = response.tagName,
                 versionName = latestVersionName,
                 versionCode = 0,
                 changelog = response.body,

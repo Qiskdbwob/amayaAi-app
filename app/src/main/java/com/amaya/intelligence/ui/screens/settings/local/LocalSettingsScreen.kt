@@ -38,6 +38,7 @@ import com.amaya.intelligence.data.local.entity.ProjectEntity
 import com.amaya.intelligence.data.remote.api.AiSettings
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.data.remote.api.McpConfig
+import com.amaya.intelligence.domain.models.UpdateInfo
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.components.shared.StandardModalBottomSheet
 import com.amaya.intelligence.ui.res.UiStrings
@@ -74,6 +75,7 @@ fun LocalSettingsScreen(
     onNavigateToAboutYou: () -> Unit,
     onNavigateToSkills: () -> Unit,
     updateStatus: String?,
+    updateInfo: UpdateInfo?,
     onCheckForUpdate: () -> Unit,
     onInstallUpdate: () -> Unit,
     onOpenProject: (ProjectEntity) -> Unit,
@@ -125,6 +127,7 @@ fun LocalSettingsScreen(
                             onSkills = onNavigateToSkills,
                             onTerminal = onNavigateToTerminal,
                             updateStatus = updateStatus,
+                            updateInfo = updateInfo,
                             onCheckForUpdate = onCheckForUpdate,
                             onInstallUpdate = onInstallUpdate,
                             onSelectTheme = { theme -> scope.launch { aiSettingsManager.setTheme(theme) } },
@@ -386,6 +389,7 @@ private fun GlobalSettings(
     onSkills: () -> Unit,
     onTerminal: () -> Unit,
     updateStatus: String?,
+    updateInfo: UpdateInfo?,
     onCheckForUpdate: () -> Unit,
     onInstallUpdate: () -> Unit,
     onSelectTheme: (String) -> Unit,
@@ -423,6 +427,7 @@ private fun GlobalSettings(
         )
     }
     com.amaya.intelligence.ui.screens.amaya.AmayaSection("Appearance") { IosThemeRow(settings.theme, onSelectTheme) }
+    var showUpdateSheet by remember(updateInfo) { mutableStateOf(updateInfo != null) }
     com.amaya.intelligence.ui.screens.amaya.AmayaSection("About") {
         IosSettingsRow(Icons.Default.Info, UiStrings.Settings.VERSION, com.amaya.intelligence.BuildConfig.VERSION_NAME, true, false) {
             onSnackbar("Amaya Intelligence v${com.amaya.intelligence.BuildConfig.VERSION_NAME}")
@@ -430,18 +435,58 @@ private fun GlobalSettings(
         IosSettingsDivider()
         IosSettingsRow(
             Icons.Default.SystemUpdate,
-            if (updateStatus?.startsWith("Version ") == true) "Install update" else UiStrings.Settings.CHECK_FOR_UPDATE,
+            if (updateInfo?.isNewer == true) "View update" else UiStrings.Settings.CHECK_FOR_UPDATE,
             updateStatus ?: "Check GitHub Releases for a signed APK",
             false,
             false
         ) {
-            if (updateStatus?.startsWith("Version ") == true) onInstallUpdate() else onCheckForUpdate()
+            if (updateInfo != null) showUpdateSheet = true else onCheckForUpdate()
+        }
+        if (showUpdateSheet && updateInfo != null) {
+            UpdateDetailsSheet(
+                update = updateInfo,
+                status = updateStatus,
+                onDismiss = { showUpdateSheet = false },
+                onDownload = onInstallUpdate,
+                onCheckAgain = onCheckForUpdate
+            )
         }
         IosSettingsDivider()
         val context = androidx.compose.ui.platform.LocalContext.current
         IosSettingsRow(Icons.AutoMirrored.Filled.Help, UiStrings.Settings.HELP_FEEDBACK, UiStrings.Settings.HELP_FEEDBACK_SUBTITLE, false, true) {
             context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/nazrielnr/amaya/pulls")))
         }
+    }
+}
+
+@Composable
+private fun UpdateDetailsSheet(
+    update: UpdateInfo,
+    status: String?,
+    onDismiss: () -> Unit,
+    onDownload: () -> Unit,
+    onCheckAgain: () -> Unit
+) {
+    StandardModalBottomSheet(onDismissRequest = onDismiss, title = "Update ${update.tagName}") {
+        Text(
+            text = if (update.isNewer) "A signed APK is available." else "You already have this release.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text("Release notes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            text = update.changelog.ifBlank { "No release notes were provided." },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        status?.let { Text(it, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary) }
+        val downloading = status?.startsWith("Downloading update...") == true
+        if (update.isNewer) {
+            Button(onClick = onDownload, enabled = !downloading, modifier = Modifier.fillMaxWidth()) {
+                Text(if (downloading) "Downloading…" else "Download and install")
+            }
+        }
+        OutlinedButton(onClick = onCheckAgain, enabled = !downloading, modifier = Modifier.fillMaxWidth()) { Text("Check again") }
     }
 }
 
