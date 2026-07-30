@@ -15,6 +15,7 @@ class UpdateRepositoryTest {
 
         assertTrue(UpdateRepository.selectApkAsset(assets, arrayOf("arm64-v8a", "armeabi-v7a"))?.downloadUrl == "https://example.com/64")
         assertTrue(UpdateRepository.selectApkAsset(assets, arrayOf("armeabi-v7a"))?.downloadUrl == "https://example.com/32")
+        assertTrue(UpdateRepository.selectApkAsset(listOf(GitHubAsset("app-release.apk", "https://example.com/universal")), arrayOf("arm64-v8a"))?.downloadUrl == "https://example.com/universal")
     }
 
     @Test

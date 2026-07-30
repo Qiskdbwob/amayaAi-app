@@ -23,6 +23,7 @@ import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.data.local.entity.ProjectEntity
 import com.amaya.intelligence.data.local.entity.AgentGroupEntity
 import com.amaya.intelligence.domain.models.AssistantMode
+import com.amaya.intelligence.domain.models.UpdateInfo
 import com.amaya.intelligence.ui.activities.agent.local.LocalAgentDetailActivity
 import com.amaya.intelligence.ui.activities.amaya.local.LocalMemoryAreaActivity
 import com.amaya.intelligence.ui.activities.amaya.local.LocalSkillsActivity
@@ -45,7 +46,9 @@ class LocalSettingsActivity : AppCompatActivity() {
     @Inject lateinit var updateRepository: UpdateRepository
     @Inject lateinit var appUpdateInstaller: AppUpdateInstaller
     private var updateStatus by mutableStateOf<String?>(null)
+    private var updateInfo by mutableStateOf<UpdateInfo?>(null)
     private var updateUrl by mutableStateOf<String?>(null)
+    private var isDownloadingUpdate by mutableStateOf(false)
     private var pendingWorkspaceTarget by mutableStateOf<SettingsScope?>(null)
     private var projectWorkspace by mutableStateOf<String?>(null)
     private var agentWorkspace by mutableStateOf<String?>(null)
@@ -84,6 +87,7 @@ class LocalSettingsActivity : AppCompatActivity() {
                     onNavigateToAboutYou = { LocalMemoryAreaActivity.start(this, MemoryArea.USER) },
                     onNavigateToSkills = { LocalSkillsActivity.start(this) },
                     updateStatus = updateStatus,
+                    updateInfo = updateInfo,
                     onCheckForUpdate = ::checkForUpdate,
                     onInstallUpdate = ::installUpdate,
                     onOpenProject = { LocalProjectDetailActivity.startForResult(this, it.id) },
@@ -116,9 +120,11 @@ class LocalSettingsActivity : AppCompatActivity() {
 
     private fun checkForUpdate() {
         updateStatus = "Checking for updates..."
+        updateInfo = null
         updateUrl = null
         lifecycleScope.launch {
             val update = updateRepository.getLatestUpdate()
+            updateInfo = update
             updateUrl = update?.takeIf { it.isNewer }?.downloadUrl
             updateStatus = when {
                 update == null -> "Could not check for updates"
@@ -129,19 +135,30 @@ class LocalSettingsActivity : AppCompatActivity() {
     }
 
     private fun installUpdate() {
+        if (isDownloadingUpdate) return
         val url = updateUrl ?: return
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
             startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
             return
         }
+        isDownloadingUpdate = true
         updateStatus = "Downloading update..."
         lifecycleScope.launch {
-            appUpdateInstaller.download(url).onSuccess {
-                updateStatus = "Opening Android installer..."
+            appUpdateInstaller.download(url) { downloaded, total ->
+                runOnUiThread {
+                    updateStatus = if (total != null) {
+                        "Downloading update... ${downloaded * 100 / total}%"
+                    } else {
+                        "Downloading update... ${downloaded / 1024 / 1024} MB"
+                    }
+                }
+            }.onSuccess {
+                updateStatus = "Downloaded. Opening Android installer..."
                 appUpdateInstaller.install(it)
             }.onFailure {
                 updateStatus = it.message ?: "Could not download update"
             }
+            isDownloadingUpdate = false
         }
     }
 
