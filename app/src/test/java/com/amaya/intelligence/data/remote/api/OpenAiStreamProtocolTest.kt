@@ -6,6 +6,7 @@ import org.junit.Assert.assertEquals
 import com.squareup.moshi.Moshi
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
+import org.json.JSONObject
 import org.junit.Test
 
 class OpenAiStreamProtocolTest {
@@ -18,6 +19,17 @@ class OpenAiStreamProtocolTest {
 
         assertEquals("object", schema["type"])
         assertEquals("string", (schema["properties"] as Map<*, *>)["task"].let { it as Map<*, *> }["type"])
+    }
+
+    @Test
+    fun `tool arguments serialize nested JSON objects`() {
+        val json = Moshi.Builder().build().jsonArgs(mapOf(
+            "payload" to JSONObject().put("label", "ok").put("nested", JSONObject().put("count", 2))
+        ))
+
+        val payload = JSONObject(json).getJSONObject("payload")
+        assertEquals("ok", payload.getString("label"))
+        assertEquals(2, payload.getJSONObject("nested").getInt("count"))
     }
 
     @Test
@@ -50,7 +62,6 @@ class OpenAiStreamProtocolTest {
     @Test
     fun `metadata-free delta chunk parses`() {
         val chunk = Moshi.Builder()
-            .addLast(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
             .build()
             .adapter(OpenAiStreamChunk::class.java)
             .fromJson("""{"choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}""")
@@ -62,7 +73,6 @@ class OpenAiStreamProtocolTest {
     @Test
     fun `usage chunk without choices parses`() {
         val chunk = Moshi.Builder()
-            .addLast(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
             .build()
             .adapter(OpenAiStreamChunk::class.java)
             .fromJson("""{"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}}""")

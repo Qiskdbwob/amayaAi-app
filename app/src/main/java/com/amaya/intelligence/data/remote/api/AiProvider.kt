@@ -1,6 +1,7 @@
 ﻿package com.amaya.intelligence.data.remote.api
 
 import kotlinx.coroutines.flow.Flow
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -236,5 +237,19 @@ fun com.squareup.moshi.Moshi.parseJsonArgs(json: String): Result<Map<String, Any
         ?: error("Tool arguments must be a JSON object")
 }
 
-fun com.squareup.moshi.Moshi.jsonArgs(arguments: Map<String, Any?>): String =
-    adapter<Map<String, Any?>>(JSON_ARGUMENTS_TYPE).toJson(arguments)
+fun com.squareup.moshi.Moshi.jsonArgs(arguments: Map<String, Any?>): String {
+    if (arguments.values.any(::containsNativeJsonValue)) return JSONObject(arguments).toString()
+    return runCatching {
+        adapter<Map<String, Any?>>(JSON_ARGUMENTS_TYPE).toJson(arguments)
+    }.getOrElse {
+        JSONObject(arguments).toString()
+    }
+}
+
+private fun containsNativeJsonValue(value: Any?): Boolean = when (value) {
+    is JSONObject, is JSONArray -> true
+    is Map<*, *> -> value.values.any(::containsNativeJsonValue)
+    is Iterable<*> -> value.any(::containsNativeJsonValue)
+    is Array<*> -> value.any(::containsNativeJsonValue)
+    else -> false
+}

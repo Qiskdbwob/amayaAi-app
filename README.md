@@ -91,7 +91,7 @@ Web pages, tool output, and MCP servers are external inputs. Treat them as untru
 - An external AI provider is required. Amaya doesn't run language models on-device.
 - DOCX, XLSX, and PDF read/write aren't supported yet. Hopefully in a future release.
 - Browser automation only works inside Amaya's embedded browser.
-- The web tool currently uses DuckDuckGo HTML scraping. I may switch to Exa or another search provider later.
+- The web tool currently uses DuckDuckGo & Bing scraping. I may switch to Exa or another search provider later.
 - Some Android devices aggressively kill background apps to save battery. If that happens, Amaya may stop while streaming responses, running delegated agents, performing long-running tasks, or even after you switch to another app. This depends on your device manufacturer and battery optimization settings.
 
 ## Build from source

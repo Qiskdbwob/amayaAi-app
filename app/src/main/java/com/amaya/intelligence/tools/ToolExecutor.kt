@@ -422,7 +422,7 @@ class ToolExecutor @Inject constructor(
             ),
             ToolDefinition(
                 name = "web_search",
-                description = "Search the web and fetch result pages as extracted readable text only. Safe for deep research: the AI may call many web_search tools in parallel. Returns one JSON object with search_results and pages[].text; raw DOM, HTML, screenshots, and browser state are omitted. Use urls[] to fetch known links directly, or query to discover links first.",
+                description = "Search the web and fetch result pages as extracted readable text only. Safe for deep research: the AI may call many web_search tools in parallel. Returns one JSON object with search_results and pages[].text; raw DOM, HTML, screenshots, and browser state are omitted. Use urls[] to fetch known links directly, or query to discover links first. Tries DuckDuckGo then Bing by default; set search_provider to bing to reverse the fallback order.",
                 parameters = listOf(
                     ToolParameter("query", "string", "Search query. Optional when urls is provided.", required = false),
                     ToolParameter("urls", "array", "Known URLs to fetch directly. Can be combined with query results.", required = false, items = "string"),

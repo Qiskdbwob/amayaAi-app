@@ -59,7 +59,8 @@ class ManageModelsViewModel @Inject constructor(
                 val connection = ProviderConnection(
                     name = name.trim().ifBlank { provider.displayName },
                     providerId = provider.id,
-                    baseUrl = normalizedUrl
+                    baseUrl = normalizedUrl,
+                    visibleModels = models
                 )
                 settingsManager.saveConnection(connection, apiKey)
                 connection to models
@@ -110,6 +111,26 @@ class ManageModelsViewModel @Inject constructor(
                 onSuccess(models)
             }.onFailure { failure ->
                 _operation.value = OperationState(error = failure.message ?: "Could not refresh models")
+                onFailure()
+            }
+        }
+    }
+
+    fun cacheModels(
+        connection: ProviderConnection,
+        models: List<ConfiguredModel>,
+        onSuccess: () -> Unit = {},
+        onFailure: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _operation.value = OperationState(loading = true)
+            runCatching {
+                settingsManager.saveConnection(connection.copy(visibleModels = models))
+            }.onSuccess {
+                _operation.value = OperationState()
+                onSuccess()
+            }.onFailure { failure ->
+                _operation.value = OperationState(error = failure.message ?: "Could not save models")
                 onFailure()
             }
         }

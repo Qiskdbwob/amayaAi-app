@@ -2,7 +2,6 @@ package com.amaya.intelligence.di
 
 import android.content.Context
 import com.squareup.moshi.Moshi
-import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -23,9 +22,7 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideMoshi(): Moshi {
-        return Moshi.Builder()
-            .addLast(KotlinJsonAdapterFactory())
-            .build()
+        return Moshi.Builder().build()
     }
     
     @Provides

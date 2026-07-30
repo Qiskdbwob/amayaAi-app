@@ -34,6 +34,15 @@ android {
         }
     }
 
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a")
+            isUniversalApk = false
+        }
+    }
+
     signingConfigs {
         create("release") {
             if (keystoreProperties.containsKey("AMAYA_KEYSTORE_PASSWORD")) {
@@ -136,7 +145,7 @@ dependencies {
 
     // Moshi JSON
     implementation(libs.moshi.core)
-    implementation(libs.moshi.kotlin)
+
     ksp(libs.moshi.codegen)
 
     // Coroutines

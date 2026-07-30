@@ -72,6 +72,28 @@ fun ProviderDetailScreen(
         }
     }
 
+    LaunchedEffect(connectionId, connection?.providerId) {
+        val currentConnection = connection ?: return@LaunchedEffect
+        if (!AmayaProviderRegistry.require(currentConnection.providerId).isSubscription && !refreshingModels) {
+            refreshingModels = true
+            refreshTurns += 1
+            viewModel.refresh(
+                connection = currentConnection,
+                onSuccess = { refreshed ->
+                    val merged = mergeConfiguredModels(currentConnection.visibleModels, refreshed)
+                    availableModels = merged
+                    viewModel.cacheModels(
+                        connection = currentConnection,
+                        models = merged,
+                        onSuccess = { refreshingModels = false },
+                        onFailure = { refreshingModels = false }
+                    )
+                },
+                onFailure = { refreshingModels = false }
+            )
+        }
+    }
+
     var query by remember { mutableStateOf("") }
 
     val filteredModels = remember(availableModels, query) {
@@ -263,8 +285,14 @@ fun ProviderDetailScreen(
                                 viewModel.refresh(
                                     connection = connection,
                                     onSuccess = { refreshed ->
-                                        availableModels = mergeConfiguredModels(availableModels, refreshed)
-                                        refreshingModels = false
+                                        val merged = mergeConfiguredModels(connection.visibleModels, refreshed)
+                                        availableModels = merged
+                                        viewModel.cacheModels(
+                                            connection = connection,
+                                            models = merged,
+                                            onSuccess = { refreshingModels = false },
+                                            onFailure = { refreshingModels = false }
+                                        )
                                     },
                                     onFailure = { refreshingModels = false }
                                 )
@@ -332,8 +360,9 @@ fun ProviderDetailScreen(
             onSave = { apiKey ->
                 viewModel.replaceCredential(connection, apiKey) { refreshed ->
                     hasCredential = true
-                    availableModels = mergeConfiguredModels(availableModels, refreshed)
-                    editingApiKey = false
+                    val merged = mergeConfiguredModels(connection.visibleModels, refreshed)
+                    availableModels = merged
+                    viewModel.cacheModels(connection, merged) { editingApiKey = false }
                 }
             }
         )
