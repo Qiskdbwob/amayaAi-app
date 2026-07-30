@@ -23,14 +23,20 @@ android {
         applicationId = "com.amaya.intelligence"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // Room schema export for migrations
         ksp {
             arg("room.schemaLocation", "$projectDir/schemas")
+        }
+    }
+
+    splits {
+        abi {
+            isEnable = false
         }
     }
 
@@ -136,7 +142,7 @@ dependencies {
 
     // Moshi JSON
     implementation(libs.moshi.core)
-    implementation(libs.moshi.kotlin)
+
     ksp(libs.moshi.codegen)
 
     // Coroutines

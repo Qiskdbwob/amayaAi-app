@@ -69,9 +69,18 @@ class WebSearchTool @Inject constructor(
         val maxCharsPerPage = arguments.intArg("max_chars_per_page", DEFAULT_MAX_CHARS_PER_PAGE)
             .coerceIn(MIN_MAX_CHARS_PER_PAGE, MAX_MAX_CHARS_PER_PAGE)
         val includeSearchOnly = arguments.boolArg("include_search_results", true)
+        val preferredProvider = arguments.firstString("search_provider", "provider")
+            ?.lowercase()
+            ?.takeIf { it == "bing" || it == "duckduckgo" }
+            ?: "duckduckgo"
 
         try {
-            val searchResults = if (!query.isNullOrBlank()) searchDuckDuckGo(query, maxResults) else emptyList()
+            val search = if (!query.isNullOrBlank()) {
+                searchWithFallback(query, maxResults, preferredProvider)
+            } else {
+                SearchResponse(emptyList(), preferredProvider, null)
+            }
+            val searchResults = search.hits
             val targets = (urls.map { SearchHit(title = "Provided URL", url = it, snippet = "") } + searchResults)
                 .distinctBy { normalizeUrlForDedupe(it.url) }
                 .take(maxPages)
@@ -81,6 +90,8 @@ class WebSearchTool @Inject constructor(
                 put("tool", "web_search")
                 put("query", query ?: JSONObject.NULL)
                 put("status", "completed")
+                put("search_provider", search.provider)
+                search.fallbackError?.let { put("search_fallback_error", it) }
                 put("search_results", JSONArray(searchResults.map { it.toJson(includeSnippet = includeSearchOnly) }))
                 put("pages", JSONArray(pages.map { it.toJson() }))
                 put("summary", "Fetched ${pages.count { it.error == null }} page(s); ${pages.count { it.error != null }} failed")
@@ -102,6 +113,27 @@ class WebSearchTool @Inject constructor(
         }.awaitAll()
     }
 
+    private fun searchWithFallback(query: String, maxResults: Int, preferredProvider: String): SearchResponse {
+        val providers = if (preferredProvider == "bing") {
+            listOf("bing", "duckduckgo")
+        } else {
+            listOf("duckduckgo", "bing")
+        }
+        var firstError: String? = null
+        providers.forEach { provider ->
+            try {
+                val hits = when (provider) {
+                    "bing" -> searchBing(query, maxResults)
+                    else -> searchDuckDuckGo(query, maxResults)
+                }
+                if (hits.isNotEmpty()) return SearchResponse(hits, provider, firstError)
+            } catch (error: Exception) {
+                if (firstError == null) firstError = "$provider: ${error.message ?: error::class.java.simpleName}"
+            }
+        }
+        return SearchResponse(emptyList(), providers.last(), firstError)
+    }
+
     private fun searchDuckDuckGo(query: String, maxResults: Int): List<SearchHit> {
         val url = "https://duckduckgo.com/html/".toHttpUrl().newBuilder()
             .addQueryParameter("q", query)
@@ -116,7 +148,9 @@ class WebSearchTool @Inject constructor(
             "<a[^>]+class=\\\"[^\\\"]*result__snippet[^\\\"]*\\\"[^>]*>(.*?)</a>|<div[^>]+class=\\\"[^\\\"]*result__snippet[^\\\"]*\\\"[^>]*>(.*?)</div>",
             setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
         )
-        val snippets = snippetRegex.findAll(html).map { stripHtml(it.groupValues.drop(1).firstOrNull { group -> group.isNotBlank() }.orEmpty(), 500) }.toList()
+        val snippets = snippetRegex.findAll(html).map { snippetMatch ->
+            stripHtml(snippetMatch.groupValues.drop(1).firstOrNull { it.isNotBlank() }.orEmpty(), 500)
+        }.toList()
         linkRegex.findAll(html).forEachIndexed { index, match ->
             val urlValue = decodeDuckDuckGoUrl(htmlDecode(match.groupValues[1]))
             if (urlValue.startsWith("http://") || urlValue.startsWith("https://")) {
@@ -129,6 +163,36 @@ class WebSearchTool @Inject constructor(
             if (hits.size >= maxResults) return hits
         }
         return hits.distinctBy { normalizeUrlForDedupe(it.url) }.take(maxResults)
+    }
+
+    private fun searchBing(query: String, maxResults: Int): List<SearchHit> {
+        val url = "https://www.bing.com/search".toHttpUrl().newBuilder()
+            .addQueryParameter("q", query)
+            .build()
+        val html = get(url.toString()) ?: return emptyList()
+        val resultRegex = Regex(
+            "<li[^>]+class=\\\"[^\\\"]*b_algo[^\\\"]*\\\"[^>]*>(.*?)</li>",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
+        val linkRegex = Regex(
+            "<a[^>]+href=\\\"(https?://[^\\\"]+)\\\"[^>]*>\\s*<h2[^>]*>(.*?)</h2>",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
+        val snippetRegex = Regex(
+            "<p[^>]+class=\\\"[^\\\"]*b_lineclamp[^\\\"]*\\\"[^>]*>(.*?)</p>",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
+        return resultRegex.findAll(html).mapNotNull { result ->
+            val block = result.groupValues[1]
+            val link = linkRegex.find(block) ?: return@mapNotNull null
+            val target = htmlDecode(link.groupValues[1])
+            if (!target.startsWith("https://") && !target.startsWith("http://")) return@mapNotNull null
+            SearchHit(
+                title = stripHtml(link.groupValues[2], 180),
+                url = target,
+                snippet = stripHtml(snippetRegex.find(block)?.groupValues?.getOrNull(1).orEmpty(), 500)
+            )
+        }.distinctBy { normalizeUrlForDedupe(it.url) }.take(maxResults).toList()
     }
 
     private fun fetchAndExtract(hit: SearchHit, maxChars: Int): PageExtraction {
@@ -233,6 +297,12 @@ class WebSearchTool @Inject constructor(
             .joinToString("\n")
             .take(maxChars)
     }
+
+    private data class SearchResponse(
+        val hits: List<SearchHit>,
+        val provider: String,
+        val fallbackError: String?
+    )
 
     private fun decodeDuckDuckGoUrl(raw: String): String {
         val uddg = Regex("[?&]uddg=([^&]+)").find(raw)?.groupValues?.getOrNull(1)
