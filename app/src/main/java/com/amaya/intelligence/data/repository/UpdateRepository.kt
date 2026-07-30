@@ -1,6 +1,8 @@
 package com.amaya.intelligence.data.repository
 
+import android.os.Build
 import com.amaya.intelligence.BuildConfig
+import com.amaya.intelligence.data.remote.api.GitHubAsset
 import com.amaya.intelligence.data.remote.api.GitHubUpdateService
 import com.amaya.intelligence.domain.models.UpdateInfo
 import com.amaya.intelligence.util.errorLog
@@ -17,6 +19,14 @@ class UpdateRepository @Inject constructor(
     companion object {
         private const val OWNER = "nazrielnr"
         private const val REPO = "amaya"
+
+        internal fun selectApkAsset(assets: List<GitHubAsset>, supportedAbis: Array<String>): GitHubAsset? =
+            supportedAbis.firstNotNullOfOrNull { abi ->
+                assets.firstOrNull { asset ->
+                    asset.name.endsWith(".apk", ignoreCase = true) &&
+                        asset.name.contains(abi, ignoreCase = true)
+                }
+            }
 
         internal fun isVersionNewer(latest: String, current: String): Boolean {
             if (latest == current) return false
@@ -46,7 +56,7 @@ class UpdateRepository @Inject constructor(
             
             val currentVersionName = BuildConfig.VERSION_NAME
             
-            val downloadUrl = response.assets.firstOrNull { it.name.endsWith(".apk", ignoreCase = true) }?.downloadUrl.orEmpty()
+            val downloadUrl = selectApkAsset(response.assets, Build.SUPPORTED_ABIS)?.downloadUrl.orEmpty()
             val isNewer = downloadUrl.isNotBlank() && isVersionNewer(latestVersionName, currentVersionName)
 
             UpdateInfo(
