@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- DataStore, Room, session, skill, reference, and workspace-memory files stay
+         device-local until their backup policy is deliberately reviewed. -->
+    <include domain="sharedpref" path="." />
+    <exclude domain="sharedpref" path="amaya_secure_prefs.xml" />
+    <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_key_keyset__.xml" />
+    <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_prefs_value_keyset__.xml" />
+</full-backup-content>

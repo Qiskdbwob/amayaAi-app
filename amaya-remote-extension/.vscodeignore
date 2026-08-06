@@ -1,0 +1,13 @@
+.vscode/**
+.vscodeignore
+.gitignore
+tsconfig.json
+src/**
+test/**
+docs/**
+docs/antigravity/**
+package-lock.json
+REVERSE-ENGINEERING.md
+MODEL_DISCOVERY.md
+AGENTS.md
+amaya-remote-*.vsix

@@ -1,0 +1,16 @@
+node_modules/
+dist/
+release/
+logs/
+*.log
+*.exe
+*.msi
+*.zip
+*.dmg
+*.blockmap
+*.tmp
+*.temp
+*.bak
+.env
+.env.local
+*.json

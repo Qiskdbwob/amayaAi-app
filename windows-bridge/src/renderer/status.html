@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'" />
+<title>Amaya Windows Bridge</title>
+<style>
+  :root {
+    color-scheme: dark;
+    font-family: "Segoe UI", system-ui, sans-serif;
+  }
+  body {
+    margin: 0;
+    padding: 16px;
+    background: #101214;
+    color: #e7e7e7;
+  }
+  h1 { font-size: 15px; margin: 0 0 8px; letter-spacing: 0.02em; }
+  h2 { font-size: 12px; margin: 14px 0 6px; color: #9aa0a6; text-transform: uppercase; letter-spacing: 0.08em; }
+  .row { display: flex; gap: 8px; margin: 6px 0; }
+  .label { width: 140px; color: #9aa0a6; font-size: 12px; }
+  .value { font-size: 12px; font-family: "Cascadia Mono", Consolas, monospace; word-break: break-all; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: #555; margin-right: 6px; }
+  .dot.connected { background: #2ecc71; }
+  .dot.agent { background: #f39c12; }
+  .dot.paused { background: #e74c3c; }
+  button {
+    padding: 6px 10px;
+    background: #1f2326;
+    color: #e7e7e7;
+    border: 1px solid #2c3134;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  button:hover { background: #2a2f33; }
+  .controls { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .hint {
+    margin-top: 14px; font-size: 11px; color: #707478;
+    border-top: 1px solid #22262a; padding-top: 10px;
+  }
+  ul.audit {
+    margin: 6px 0 0; padding: 0; list-style: none;
+    max-height: 220px; overflow-y: auto;
+    border: 1px solid #22262a; border-radius: 6px; background: #0c0e10;
+  }
+  ul.audit li {
+    padding: 6px 10px; border-bottom: 1px solid #181b1e;
+    font-size: 11px; font-family: "Cascadia Mono", Consolas, monospace;
+    display: flex; gap: 8px;
+  }
+  ul.audit li:last-child { border-bottom: none; }
+  ul.audit .ts { color: #6f7680; width: 64px; flex-shrink: 0; }
+  ul.audit .outcome.succeeded { color: #2ecc71; }
+  ul.audit .outcome.failed { color: #e74c3c; }
+  ul.audit .outcome.rejected { color: #e67e22; }
+  ul.audit .outcome.running { color: #3498db; }
+  ul.audit .outcome.awaiting { color: #f1c40f; }
+</style>
+</head>
+<body>
+  <h1>Amaya Windows Bridge</h1>
+  <div id="uipi-warn" style="display:none; margin:0 0 10px; padding:10px 12px; border-radius:6px; background:#3d2a12; color:#ffd699; border:1px solid #7a5a20; font-size:12px; line-height:1.4;">
+    <strong>Bridge is not running as Administrator.</strong>
+    Mouse click, keyboard typing, and hotkeys into elevated windows (Task Manager, Registry Editor,
+    Windows Security, UAC prompts, anything launched with "Run as administrator") will be silently
+    dropped by Windows UIPI. Most desktop apps still work. To control elevated apps, close the tray
+    and relaunch "Amaya Windows Bridge.exe" via right-click → Run as administrator.
+  </div>
+  <div class="row"><div class="label">Listening</div><div class="value" id="listen">—</div></div>
+  <div class="row"><div class="label">LAN Address</div><div class="value" id="lan">—</div></div>
+  <div class="row"><div class="label">Token</div><div class="value" id="token">—</div></div>
+  <div class="row"><div class="label">Session</div><div class="value"><span id="dot" class="dot"></span><span id="status">disconnected</span></div></div>
+  <div class="row"><div class="label">Device ID</div><div class="value" id="device">—</div></div>
+  <div class="row"><div class="label">Session ID</div><div class="value" id="session">—</div></div>
+  <div class="row"><div class="label">Agent Control</div><div class="value" id="agent">off</div></div>
+  <div class="row"><div class="label">Emergency stop</div><div class="value" id="emergency">off</div></div>
+  <div class="row"><div class="label">Seq in/out</div><div class="value" id="seq">0 / 0</div></div>
+  <div class="row"><div class="label">Helper</div><div class="value" id="helper">—</div></div>
+
+  <div class="controls">
+    <button id="toggle-agent">Toggle Agent Control</button>
+    <button id="stop">Emergency stop</button>
+    <button id="resume">Resume</button>
+    <button id="restart-helper">Restart helper</button>
+    <button id="refresh-audit">Refresh activity</button>
+    <button id="copy-info">Copy connection info</button>
+  </div>
+
+  <h2>Debug log (full audit)</h2>
+  <div class="controls">
+    <button id="load-debug">Load full audit log</button>
+    <button id="copy-debug">Copy to clipboard</button>
+    <button id="clear-debug">Clear view</button>
+    <button id="clear-log-file" style="color:#e74c3c;">Clear log file</button>
+  </div>
+  <pre id="debug-log" style="font-size:10px;background:#0c0e10;padding:10px;border-radius:6px;max-height:320px;overflow:auto;display:none;margin-top:6px;white-space:pre-wrap;word-break:break-all;color:#b0b8c0;border:1px solid #22262a;"></pre>
+
+  <h2>Pairing</h2>
+  <div class="row"><div class="label">Pairing token</div><div class="value" id="pairing-status">not generated</div></div>
+  <div class="controls">
+    <button id="gen-pairing">Generate pairing payload</button>
+  </div>
+  <pre id="pairing-payload" style="font-size:10px;background:#0c0e10;padding:8px;border-radius:6px;max-height:100px;overflow:auto;display:none;margin-top:6px;white-space:pre-wrap;word-break:break-all;"></pre>
+
+  <h2>Trusted devices</h2>
+  <ul class="audit" id="devices"><li><span class="ts">—</span><span>no devices yet</span></li></ul>
+
+  <h2>Recent activity</h2>
+  <ul class="audit" id="audit"><li><span class="ts">—</span><span>no events yet</span></li></ul>
+
+  <div class="hint">Phase 6: agent control is synced with Android, approvals round-trip through the
+    bridge, and the audit viewer shows redacted events only. Typed text, tokens and base64
+    images are never displayed here.</div>
+<script>
+  const api = window.bridge;
+  if (!api) {
+    document.body.innerHTML = '<p style="padding:16px;color:#e74c3c">Preload failed to expose bridge API.</p>';
+    throw new Error('bridge preload missing');
+  }
+
+  function render(snap) {
+    if (!snap) return;
+    const server = snap.server || {};
+    document.getElementById('listen').textContent =
+      server.host ? server.host + ':' + server.port : '—';
+    const lanIps = Array.isArray(server.lanIps) && server.lanIps.length > 0
+      ? server.lanIps.map(ip => ip + ':' + server.port).join(', ')
+      : '—';
+    document.getElementById('lan').textContent = lanIps;
+    const tokenLabel = server.tokenConfigured
+      ? 'configured' + (server.queryTokenFallback ? '' : ' (header only)')
+      : server.requireToken ? 'required — NOT configured' : 'none';
+    document.getElementById('token').textContent = tokenLabel;
+    const s = snap.session || {};
+    document.getElementById('status').textContent = s.status || 'disconnected';
+    document.getElementById('device').textContent = s.deviceId || '—';
+    document.getElementById('session').textContent = s.sessionId || '—';
+    document.getElementById('agent').textContent = s.agentControlEnabled ? 'on' : 'off';
+    document.getElementById('emergency').textContent = s.emergencyStopped ? 'on' : 'off';
+    document.getElementById('seq').textContent = (s.incomingSeq ?? 0) + ' / ' + (s.outgoingSeq ?? 0);
+    const helper = snap.helper || {};
+    const helperLabel = helper.running
+      ? 'running (pid ' + (helper.pid ?? '?') + ')'
+      : helper.lastError
+        ? 'stopped — ' + helper.lastError
+        : 'stopped';
+    document.getElementById('helper').textContent = helperLabel;
+    // Show UIPI warning when helper is running but not elevated.
+    const warn = document.getElementById('uipi-warn');
+    if (helper.running && helper.elevated === false) {
+      warn.style.display = 'block';
+    } else {
+      warn.style.display = 'none';
+    }
+    const dot = document.getElementById('dot');
+    dot.classList.remove('connected', 'agent', 'paused');
+    if (s.emergencyStopped) dot.classList.add('paused');
+    else if (s.agentControlEnabled) dot.classList.add('agent');
+    else if (s.sessionId) dot.classList.add('connected');
+  }
+
+  function fmtTs(ts) {
+    try {
+      const d = new Date(ts);
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mm = String(d.getMinutes()).padStart(2, '0');
+      const ss = String(d.getSeconds()).padStart(2, '0');
+      return `${hh}:${mm}:${ss}`;
+    } catch {
+      return '--:--:--';
+    }
+  }
+
+  function renderAudit(entries) {
+    const list = document.getElementById('audit');
+    if (!Array.isArray(entries) || entries.length === 0) {
+      list.innerHTML = '<li><span class="ts">—</span><span>no events yet</span></li>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const e of entries) {
+      const li = document.createElement('li');
+      const ts = document.createElement('span');
+      ts.className = 'ts';
+      ts.textContent = fmtTs(e.timestamp);
+      const text = document.createElement('span');
+      const outcome = document.createElement('span');
+      outcome.className = 'outcome ' + (e.outcome || '').replace(/\s+/g, '-');
+      outcome.textContent = e.summary || e.eventType;
+      text.appendChild(outcome);
+      li.appendChild(ts);
+      li.appendChild(text);
+      list.appendChild(li);
+    }
+  }
+
+  document.getElementById('toggle-agent').addEventListener('click', async () => {
+    const snap = await api.snapshot();
+    api.toggleAgent(!(snap?.session?.agentControlEnabled));
+  });
+  document.getElementById('stop').addEventListener('click', () => api.emergencyStop());
+  document.getElementById('resume').addEventListener('click', () => api.resume());
+  document.getElementById('restart-helper').addEventListener('click', () => api.restartHelper());
+  document.getElementById('copy-info').addEventListener('click', () => {
+    api.snapshot().then((snap) => {
+      const server = snap?.server || {};
+      const lanIps = Array.isArray(server.lanIps) ? server.lanIps : [];
+      const host = lanIps.length > 0 ? lanIps[0] : (server.host || '0.0.0.0');
+      const port = server.port || 17878;
+      const token = server.tokenConfigured ? 'configured (hidden)' : 'none';
+      const text = `Host: ${host}\nPort: ${port}\nToken: ${token}`;
+      navigator.clipboard.writeText(text).then(() => {
+        document.getElementById('copy-info').textContent = 'Copied!';
+        setTimeout(() => { document.getElementById('copy-info').textContent = 'Copy connection info'; }, 2000);
+      }).catch(() => {});
+    });
+  });
+
+  document.getElementById('gen-pairing').addEventListener('click', () => {
+    api.generatePairingPayload().then((payload) => {
+      if (!payload) { document.getElementById('pairing-status').textContent = 'failed'; return; }
+      const el = document.getElementById('pairing-payload');
+      // Display masked version (never show raw token in UI)
+      const masked = { ...payload, token: '••••••••' };
+      el.textContent = JSON.stringify(masked, null, 2);
+      el.style.display = 'block';
+      document.getElementById('pairing-status').textContent = 'active (expires in 10 min)';
+      // Copy full payload including real token to clipboard
+      const fullJson = JSON.stringify(payload, null, 2);
+      navigator.clipboard.writeText(fullJson).then(() => {
+        document.getElementById('gen-pairing').textContent = 'Copied! (token included in clipboard)';
+        setTimeout(() => { document.getElementById('gen-pairing').textContent = 'Generate pairing payload'; }, 3000);
+      }).catch(() => {});
+    });
+  });
+
+  function refreshDevices() {
+    api.trustedDevices().then((devices) => {
+      const list = document.getElementById('devices');
+      if (!Array.isArray(devices) || devices.length === 0) {
+        list.innerHTML = '<li><span class="ts">—</span><span>no devices yet</span></li>';
+        return;
+      }
+      list.innerHTML = '';
+      for (const d of devices) {
+        const li = document.createElement('li');
+        const name = document.createElement('span');
+        name.textContent = (d.deviceName || d.deviceId) + ' · last seen ' + fmtTs(d.lastSeenAt);
+        name.style.flex = '1';
+        const btn = document.createElement('button');
+        btn.textContent = 'Revoke';
+        btn.style.fontSize = '10px';
+        btn.style.padding = '2px 6px';
+        btn.addEventListener('click', () => { api.revokeDevice(d.deviceId); setTimeout(refreshDevices, 300); });
+        li.appendChild(name);
+        li.appendChild(btn);
+        list.appendChild(li);
+      }
+    }).catch(() => {});
+  }
+  refreshDevices();
+  setInterval(refreshDevices, 10000);
+  const refreshAudit = () => api.audit(25).then(renderAudit).catch(() => { /* ignore */ });
+  document.getElementById('refresh-audit').addEventListener('click', refreshAudit);
+
+  // ── Debug log ──────────────────────────────────────────────────────────────
+  const debugEl = document.getElementById('debug-log');
+  document.getElementById('load-debug').addEventListener('click', () => {
+    api.rawAuditLog().then((raw) => {
+      debugEl.textContent = raw || '(empty)';
+      debugEl.style.display = 'block';
+      document.getElementById('load-debug').textContent = 'Reload';
+    }).catch((e) => {
+      debugEl.textContent = 'Error: ' + e;
+      debugEl.style.display = 'block';
+    });
+  });
+  document.getElementById('copy-debug').addEventListener('click', () => {
+    const text = debugEl.textContent || '';
+    if (!text) { alert('Load the log first.'); return; }
+    navigator.clipboard.writeText(text).then(() => {
+      document.getElementById('copy-debug').textContent = 'Copied!';
+      setTimeout(() => { document.getElementById('copy-debug').textContent = 'Copy to clipboard'; }, 2000);
+    }).catch(() => {});
+  });
+  document.getElementById('clear-debug').addEventListener('click', () => {
+    debugEl.textContent = '';
+    debugEl.style.display = 'none';
+    document.getElementById('load-debug').textContent = 'Load full audit log';
+  });
+  document.getElementById('clear-log-file').addEventListener('click', () => {
+    if (!confirm('Clear the audit log file on disk? This cannot be undone.')) return;
+    api.clearAuditLog().then((res) => {
+      if (res.ok) {
+        debugEl.textContent = '(log cleared)';
+        debugEl.style.display = 'block';
+        document.getElementById('load-debug').textContent = 'Load full audit log';
+        refreshAudit();
+      } else {
+        alert('Failed to clear log: ' + (res.error || 'unknown error'));
+      }
+    }).catch((e) => alert('Error: ' + e));
+  });
+
+  api.onSnapshot((snap) => {
+    render(snap);
+    refreshAudit();
+  });
+
+  // Pull immediately on load, then poll every 2s as fallback in case
+  // the push from main process arrives before the listener is registered.
+  function pollSnapshot() {
+    api.snapshot().then((snap) => { if (snap) render(snap); }).catch(() => {});
+  }
+  pollSnapshot();
+  setInterval(pollSnapshot, 2000);
+  refreshAudit();
+  setInterval(refreshAudit, 5000);
+</script>
+</body>
+</html>

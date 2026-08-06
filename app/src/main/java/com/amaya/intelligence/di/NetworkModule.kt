@@ -1,0 +1,67 @@
+package com.amaya.intelligence.di
+
+import android.content.Context
+import com.squareup.moshi.Moshi
+import dagger.Module
+import dagger.Provides
+import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
+import dagger.hilt.components.SingletonComponent
+import okhttp3.OkHttpClient
+import okhttp3.logging.HttpLoggingInterceptor
+import java.util.concurrent.TimeUnit
+import javax.inject.Singleton
+
+/**
+ * Hilt module for network dependencies.
+ */
+@Module
+@InstallIn(SingletonComponent::class)
+object NetworkModule {
+    
+    @Provides
+    @Singleton
+    fun provideMoshi(): Moshi {
+        return Moshi.Builder().build()
+    }
+    
+    @Provides
+    @Singleton
+    fun provideOkHttpClient(): OkHttpClient {
+        val loggingInterceptor = HttpLoggingInterceptor().apply {
+            // Set to BODY for debugging, NONE for production
+            level = HttpLoggingInterceptor.Level.NONE
+        }
+        
+        return OkHttpClient.Builder()
+            // Extended timeouts for AI streaming
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.MINUTES)  // AI responses can be long
+            .writeTimeout(1, TimeUnit.MINUTES)
+            .addInterceptor(loggingInterceptor)
+            // Retry on connection failure
+            .retryOnConnectionFailure(true)
+            .build()
+    }
+    @Provides
+    @Singleton
+    fun provideRemoteSessionClient(
+        @ApplicationContext context: Context
+    ): com.amaya.intelligence.impl.ide.antigravity.client.RemoteSessionClient {
+        return com.amaya.intelligence.impl.ide.antigravity.client.RemoteSessionClient(context)
+    }
+
+    @Provides
+    @Singleton
+    fun provideGitHubUpdateService(
+        httpClient: okhttp3.OkHttpClient,
+        moshi: com.squareup.moshi.Moshi
+    ): com.amaya.intelligence.data.remote.api.GitHubUpdateService {
+        return retrofit2.Retrofit.Builder()
+            .baseUrl("https://api.github.com/")
+            .client(httpClient)
+            .addConverterFactory(retrofit2.converter.moshi.MoshiConverterFactory.create(moshi))
+            .build()
+            .create(com.amaya.intelligence.data.remote.api.GitHubUpdateService::class.java)
+    }
+}

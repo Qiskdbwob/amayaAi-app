@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>AmayaBridgeHelper</RootNamespace>
+    <AssemblyName>AmayaBridgeHelper</AssemblyName>
+    <UseWindowsForms>false</UseWindowsForms>
+    <UseWPF>false</UseWPF>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!--
+      Embed the DPI-awareness manifest so the helper process is PerMonitorV2
+      before any win32 API is called. This is the foundation that keeps
+      SendInput/GetCursorPos/GetWindowRect in physical pixels on scaled
+      monitors.
+    -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      System.Drawing.Common is a Windows-only runtime package. We use it purely
+      to wrap a GDI HDC for PrintWindow-based per-window capture. It adds about
+      1 MB to the helper but avoids taking on WinRT interop for now.
+    -->
+    <PackageReference Include="System.Drawing.Common" Version="9.0.0" />
+  </ItemGroup>
+
+  <!--
+    System.Text.Json is part of the .NET runtime from 8+ on, so no explicit
+    PackageReference is needed. NU1510 would warn that the package is pruned.
+  -->
+
+
+</Project>

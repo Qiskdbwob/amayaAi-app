@@ -1,0 +1,41 @@
+appId: com.amaya.windowsbridge
+productName: Amaya Windows Bridge
+copyright: Copyright © 2026 Amaya
+
+directories:
+  output: release
+
+files:
+  - dist/**/*
+  - package.json
+
+extraResources:
+  - from: dist/native
+    to: native
+
+win:
+  target:
+    - nsis
+  artifactName: AmayaWindowsBridge-${version}-${arch}.${ext}
+  # Embed a Windows manifest into the Electron .exe so Windows prompts for UAC
+  # every launch. Without this the app starts at medium integrity and UIPI
+  # blocks every SendInput into elevated windows (Task Manager, Registry Editor,
+  # apps running as admin). The single prompt up front is clearer than surprise
+  # "tool call succeeded but nothing changed" failures later.
+  requestedExecutionLevel: requireAdministrator
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  # Bundle the elevate helper so the installer relaunches itself elevated when
+  # the user clicks "Run as administrator" from the Start Menu or tray shortcut.
+  packElevateHelper: true
+  # Install for the current user only. Mixing per-machine installs with per-user
+  # autostart shortcuts is what lets a "medium-integrity autostart copy" run
+  # alongside a "high-integrity user-launched copy" on the same machine.
+  perMachine: false
+  # Same shortcut name on desktop and Start Menu so we never end up with two
+  # user-visible entries pointing at different install paths.
+  shortcutName: Amaya Windows Bridge
