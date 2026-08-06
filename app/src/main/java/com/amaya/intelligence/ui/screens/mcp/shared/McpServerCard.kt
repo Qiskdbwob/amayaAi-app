@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -121,7 +122,7 @@ fun McpServerCard(
             if (onTest != null) {
                 IconButton(onClick = onTest, modifier = Modifier.size(36.dp)) {
                     Icon(
-                        Icons.Default.PlayArrow,
+                        Icons.Default.CheckCircle,
                         contentDescription = "Test",
                         tint = colors.iconTint.copy(alpha = 0.75f),
                         modifier = Modifier.size(18.dp)

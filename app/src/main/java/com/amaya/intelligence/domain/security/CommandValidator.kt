@@ -134,7 +134,7 @@ class CommandValidator @Inject constructor(
         val tokens = ABSOLUTE_PATH_TOKEN.findAll(command).map { it.groupValues[1] }.toList()
         if (tokens.isEmpty()) return ValidationResult.Allowed
         for (raw in tokens) {
-            val cleaned = raw.trimEnd('"', "\'", '`', ',', ';', ')', ']')
+            val cleaned = raw.trimEnd('"', ''', '`', ',', ';', ')', ']')
             if (cleaned.isBlank() || cleaned == "/") continue
             val normalized = normalizePath(cleaned)
             if (isWithinPath(normalized, normalizedRoot)) continue
