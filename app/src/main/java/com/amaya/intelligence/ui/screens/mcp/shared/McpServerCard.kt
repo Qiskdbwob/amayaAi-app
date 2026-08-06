@@ -43,6 +43,7 @@ fun McpServerCard(
     onToggle: (Boolean) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    onTest: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val colors = iosAmayaColors()
@@ -116,6 +117,16 @@ fun McpServerCard(
                     contentDescription = "Edit",
                     tint = colors.iconTint.copy(alpha = 0.75f)
                 )
+            }
+            if (onTest != null) {
+                IconButton(onClick = onTest, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Default.PlayArrow,
+                        contentDescription = "Test",
+                        tint = colors.iconTint.copy(alpha = 0.75f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
             IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
                 Icon(

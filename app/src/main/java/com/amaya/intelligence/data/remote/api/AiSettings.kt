@@ -542,5 +542,6 @@ data class AiSettings(
     val activeSelection: ActiveModelSelection? = null,
     val mcpConfigJson: String = "",
     val lastWorkspacePath: String? = null,
-    val onboardingCompleted: Boolean = false
+    val onboardingCompleted: Boolean = false,
+    val autoApproveTools: Boolean = false
 )

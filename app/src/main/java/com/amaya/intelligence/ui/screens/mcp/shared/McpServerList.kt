@@ -27,6 +27,7 @@ fun McpServerList(
     onServerClick: (McpServerConfig) -> Unit,
     onToggleEnabled: (McpServerConfig, Boolean) -> Unit,
     onDelete: (McpServerConfig) -> Unit,
+    onTest: ((McpServerConfig) -> Unit)? = null,
     topPadding: androidx.compose.ui.unit.Dp = 72.dp,
     modifier: Modifier = Modifier
 ) {
@@ -66,7 +67,8 @@ fun McpServerList(
                                 server = server,
                                 onToggle = { enabled -> onToggleEnabled(server, enabled) },
                                 onEdit = { onServerClick(server) },
-                                onDelete = { onDelete(server) }
+                                onDelete = { onDelete(server) },
+                                onTest = onTest?.let { { it(server) } }
                             )
                             if (index < activeServers.size - 1) {
                                 HorizontalDivider(

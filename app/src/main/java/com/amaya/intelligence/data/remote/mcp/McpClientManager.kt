@@ -87,6 +87,16 @@ class McpClientManager @Inject constructor(
         return tools
     }
 
+    suspend fun testServer(server: McpServerConfig): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val tools = withTimeoutOrNull(5000L) { fetchTools(server) }
+            if (tools == null) Result.failure(IllegalStateException("Timeout"))
+            else Result.success("OK (${tools.size} tools)")
+        } catch (e: Throwable) {
+            Result.failure(e)
+        }
+    }
+
     fun getCachedToolDefinitions(): List<AiToolDefinition> = mcpState.definitions
 
     suspend fun callTool(toolName: String, arguments: Map<String, Any?>): ToolResult {

@@ -37,6 +37,28 @@ class CommandValidator @Inject constructor(
         )
 
         // ====================================================================
+        private val DANGEROUS_PATTERNS = listOf(
+            Regex("(?i)\\brm\\s+-[^\n]*r"),
+            Regex("(?i)\\bgit\\s+push\\b[^\n]*--force"),
+            Regex("(?i)\\bgit\\s+reset\\s+--hard\\b"),
+            Regex("(?i)\\bgit\\s+clean\\s+-[^\n]*f"),
+            Regex("(?i)\\bsudo\\b"),
+            Regex("(?i)\\bsu\\b"),
+            Regex("(?i)\\breboot\\b|\\bshutdown\\b"),
+            Regex("(?i)\\bchmod\\s+-R\\b"),
+            Regex("(?i)\\bchown\\s+-R\\b"),
+            Regex("(?i)\\bcurl\\b[^\n]*\\|\\s*(?:sh|bash)"),
+            Regex("(?i)\\bwget\\b[^\n]*\\|\\s*(?:sh|bash)"),
+            Regex("(?i)\\bkill\\s+-9\\b"),
+            Regex("(?i)\\btruncate\\b"),
+            Regex("(?i)\\bmkfifo\\b")
+        )
+        private val ABSOLUTE_PATH_TOKEN = Regex("(?<![\\w@%$.-])(/[^\\s\"'`;|&<>()]+)")
+        private val SAFE_SYSTEM_READ_PREFIXES = listOf(
+            "/proc", "/sys", "/system", "/vendor", "/dev/null", "/dev/zero", "/dev/urandom", "/dev/random"
+        )
+
+
         // PROTECTED PATHS
         // ====================================================================
 
@@ -80,13 +102,65 @@ class CommandValidator @Inject constructor(
             return ValidationResult.Denied("Command matches a declined terminal pattern", command)
         }
         if (settings.trustedCommands.any { commandMatchesWildcard(normalized, it) }) {
+            DANGEROUS_PATTERNS.firstOrNull { it.containsMatchIn(normalized) }?.let {
+                return ValidationResult.RequiresConfirmation(
+                    "Trusted command still requires review because it matches a dangerous pattern",
+                    command,
+                    RiskLevel.HIGH
+                )
+            }
             return ValidationResult.Allowed
+        }
+        DANGEROUS_PATTERNS.firstOrNull { it.containsMatchIn(normalized) }?.let {
+            return ValidationResult.RequiresConfirmation(
+                "Dangerous shell command requires confirmation",
+                command,
+                RiskLevel.HIGH
+            )
         }
         return ValidationResult.RequiresConfirmation(
             "Shell command is not in Trusted Commands",
             command,
             RiskLevel.MEDIUM
         )
+    }
+
+    fun validateShellCommandPaths(
+        command: String,
+        workspacePath: String?
+    ): ValidationResult {
+        val root = workspacePath?.trim()?.takeIf { it.isNotBlank() } ?: return ValidationResult.Allowed
+        val normalizedRoot = normalizePath(root)
+        val tokens = ABSOLUTE_PATH_TOKEN.findAll(command).map { it.groupValues[1] }.toList()
+        if (tokens.isEmpty()) return ValidationResult.Allowed
+        for (raw in tokens) {
+            val cleaned = raw.trimEnd('"', "\'", '`', ',', ';', ')', ']')
+            if (cleaned.isBlank() || cleaned == "/") continue
+            val normalized = normalizePath(cleaned)
+            if (isWithinPath(normalized, normalizedRoot)) continue
+            if (SAFE_SYSTEM_READ_PREFIXES.any { isWithinPath(normalized, it) || normalized == it }) continue
+            if (isWithinPath(normalized, appDataDir)) continue
+            return ValidationResult.Denied(
+                "Shell path escapes the active workspace: $cleaned",
+                cleaned
+            )
+        }
+        return ValidationResult.Allowed
+    }
+
+    fun isDangerousTool(toolName: String, arguments: Map<String, Any?> = emptyMap()): Boolean {
+        return when (toolName) {
+            "delete_file" -> true
+            "skill_manage", "skill" -> {
+                val op = (arguments["operation"] as? String)?.lowercase().orEmpty()
+                op in setOf("delete", "remove", "uninstall", "disable")
+            }
+            "run_shell" -> {
+                val command = (arguments["command"] as? String).orEmpty()
+                DANGEROUS_PATTERNS.any { it.containsMatchIn(command) }
+            }
+            else -> toolName.startsWith("mcp__")
+        }
     }
 
     /**
@@ -175,7 +249,8 @@ class CommandValidator @Inject constructor(
                 val workingDir = arguments["working_dir"] as? String
                 val pathResult = if (workingDir.isNullOrBlank()) ValidationResult.Allowed
                     else validatePath(workingDir, isWrite = false)
-                combineValidation(commandResult, pathResult)
+                val workspaceFence = validateShellCommandPaths(command, workingDir)
+                combineValidation(commandResult, pathResult, workspaceFence)
             }
 
             "read_file" -> {

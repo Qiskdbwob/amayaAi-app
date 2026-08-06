@@ -4,6 +4,7 @@ import com.amaya.intelligence.domain.models.*
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,7 +40,8 @@ fun MessageBubble(
     hideThinkingHeader: Boolean = false,
     onToolAccept: ((ToolExecution) -> Unit)? = null,
     onToolDecline: ((ToolExecution) -> Unit)? = null,
-    onLocalhostLinkClick: ((String) -> Unit)? = null
+    onLocalhostLinkClick: ((String) -> Unit)? = null,
+    onLongPress: ((UiMessage) -> Unit)? = null
 ) {
     // Host continuations are provider input, never transcript content. Hide legacy persisted
     // copies too; older builds accidentally materialized this SYSTEM prompt as a blue user bubble.
@@ -57,7 +59,12 @@ fun MessageBubble(
         val vPad = 10.dp
 
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = { onLongPress?.invoke(message) }
+                ),
             horizontalAlignment = Alignment.End
         ) {
             // Display image attachments
@@ -128,7 +135,12 @@ fun MessageBubble(
         }
     } else {
         Row(
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(
+                    onClick = {},
+                    onLongClick = { onLongPress?.invoke(message) }
+                )
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 if (message.steps.isNotEmpty()) {

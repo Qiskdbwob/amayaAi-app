@@ -202,8 +202,12 @@ internal fun AiRepository.chatImpl(
             }
             AssistantMode.CHAT -> null
         }
+        val effectiveMessage = if (TokenEstimator.text(message) > maxInputTokens / 2) {
+            TokenEstimator.truncateToTokens(message, (maxInputTokens / 2).coerceAtLeast(256), marker = "\n... [input truncated]")
+        } else message
+
         val contextRequest = ContextBuildRequest(
-            userMessage = message,
+            userMessage = effectiveMessage,
             conversationHistory = conversationHistory,
             workspacePath = workspacePath,
             conversationId = conversationId,
@@ -248,6 +252,7 @@ internal fun AiRepository.chatImpl(
         var browserTaskStarted = false
         var lastBrowserErrorSignature: String? = null
         var repeatedBrowserErrors = 0
+        var consecutiveToolErrors = 0
         var terminalError = false
         var streamContinuations = 0
         val invalidToolArgumentErrors = mutableMapOf<String, Throwable>()
@@ -416,9 +421,7 @@ internal fun AiRepository.chatImpl(
 
             provider.chat(request).collect { response ->
                 if (providerTerminal) {
-                    send(AgentEvent.Error("Provider emitted an event after its terminal event", retryable = false))
-                    terminalError = true
-                    continueLoop = false
+                    StreamDebugLog.event(conversationId, null, "POST_TERMINAL_EVENT", "ignored: ${response::class.simpleName}")
                     return@collect
                 }
                 when (response) {
@@ -640,9 +643,20 @@ internal fun AiRepository.chatImpl(
                         toolCallId = toolCall.id,
                         toolName = toolCall.name,
                         result = resultContent,
-                        isError = result is ToolResult.Error || result is ToolResult.RequiresConfirmation,
+                        isError = toolFailed,
                         deferredTaskId = (result as? ToolResult.Deferred)?.taskId
                     ))
+
+                    if (toolFailed) {
+                        consecutiveToolErrors++
+                    } else {
+                        consecutiveToolErrors = 0
+                    }
+                    if (consecutiveToolErrors >= 3) {
+                        send(AgentEvent.Error("Stopping: 3 consecutive tool failures", retryable = false))
+                        terminalError = true
+                        break
+                    }
 
                     val resultMetadata = toolCall.metadata.toMutableMap()
                     resultMetadata["toolName"] = toolCall.name  // Gemini needs the function name

@@ -6,6 +6,7 @@ import com.amaya.intelligence.data.remote.api.MessageRole
 import com.amaya.intelligence.data.repository.AgentEvent
 
 import com.amaya.intelligence.domain.models.*
+import com.amaya.intelligence.domain.security.RiskLevel
 import com.amaya.intelligence.util.LocalStreamPerfLog
 import com.amaya.intelligence.tools.ConfirmationRequest
 import kotlinx.coroutines.*
@@ -17,6 +18,18 @@ internal suspend fun LocalIntelligenceService.awaitInlineToolConfirmation(reques
         val toolCallId = request.toolCallId ?: return false
         if (turnsById[turnId] == null) return false
         val approvalId = "$turnId:$toolCallId"
+
+        // Auto-approve non-dangerous tools when the global toggle is enabled.
+        val settings = settingsManager.getSettings()
+        val dangerous = request.toolName in setOf("delete_file", "run_shell") ||
+            request.toolName.startsWith("mcp__") ||
+            request.riskLevel == RiskLevel.HIGH
+        if (settings.autoApproveTools && !dangerous) {
+            pendingConfirmationUi[toolCallId] = request
+            pendingApprovalIds[toolCallId] = approvalId
+            return true
+        }
+
         pendingConfirmationUi[toolCallId] = request
         pendingApprovalIds[toolCallId] = approvalId
         return try {
