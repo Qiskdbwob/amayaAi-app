@@ -12,7 +12,7 @@
 ## Build
 - ./gradlew installDebug
 - ./gradlew assembleDebug
-- CI/CD: `.github/workflows/android-ci.yml` builds debug APKs on push/PR and signed release APKs with a GitHub Release on `v*` tags (repo secrets: `AMAYA_KEYSTORE_BASE64`, `AMAYA_KEYSTORE_PASSWORD`, `AMAYA_KEY_ALIAS`).
+- CI/CD: `.github/workflows/android-ci.yml` builds debug + `perf` APKs on push/PR and signed release APKs with a GitHub Release on `v*` tags (repo secrets: `AMAYA_KEYSTORE_BASE64`, `AMAYA_KEYSTORE_PASSWORD`, `AMAYA_KEY_ALIAS`). The `perf` build type is release-optimized (R8 + baseline profile) but debug-signed with a `.perf` applicationId, so it can be sideloaded for performance testing without release secrets.
 - ./gradlew :app:installBenchmark
 - ./gradlew :baselineprofile:connectedBenchmarkAndroidTest
 - npx @vscode/vsce package

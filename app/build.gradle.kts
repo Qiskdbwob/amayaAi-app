@@ -80,6 +80,16 @@ android {
             signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
         }
+        // Installable production-like build for performance testing on every CI push:
+        // release code paths + R8 + baseline profile, but debug signing (and a `.perf`
+        // applicationId) so it can be sideloaded without release keystore secrets and
+        // installed side-by-side with debug/release builds. Not for distribution.
+        create("perf") {
+            initWith(buildTypes.getByName("release"))
+            applicationIdSuffix = ".perf"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += listOf("release")
+        }
     }
 
     compileOptions {

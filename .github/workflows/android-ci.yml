@@ -39,11 +39,21 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
+      - name: Build perf APK (R8-optimized, debug-signed, for performance testing)
+        run: ./gradlew :app:assemblePerf --stacktrace
+
       - name: Upload debug APK(s)
         uses: actions/upload-artifact@v4
         with:
           name: amaya-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Upload perf APK(s)
+        uses: actions/upload-artifact@v4
+        with:
+          name: amaya-perf-apk
+          path: app/build/outputs/apk/perf/*.apk
           if-no-files-found: error
 
   build-release:
