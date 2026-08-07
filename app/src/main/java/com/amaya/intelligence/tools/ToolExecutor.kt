@@ -194,6 +194,40 @@ class ToolExecutor @Inject constructor(
         val approvedContext = executionContext.copy(
             confirmed = validation is ValidationResult.RequiresConfirmation
         )
+
+        // Workspace fence for shell commands: reject absolute paths outside the active workspace.
+        val finalValidation = if (handlerName == "run_shell" && validation is ValidationResult.Allowed) {
+            val command = modelArguments["command"] as? String ?: ""
+            commandValidator.validateShellCommandPaths(command, workspacePath)
+        } else validation
+
+        when (finalValidation) {
+            is ValidationResult.Denied -> {
+                return finish(ToolResult.Error(
+                    finalValidation.reason,
+                    ErrorType.SECURITY_VIOLATION
+                ))
+            }
+            is ValidationResult.RequiresConfirmation -> {
+                val confirmed = onConfirmationRequired(
+                    ConfirmationRequest(
+                        toolName = CapabilityToolMapper.displayName(toolName, arguments),
+                        reason = finalValidation.reason,
+                        details = modelArguments.toString(),
+                        riskLevel = finalValidation.riskLevel,
+                        toolCallId = callIdentity
+                    )
+                )
+                if (!confirmed) {
+                    return finish(ToolResult.Error(
+                        "User declined: ${finalValidation.reason}",
+                        ErrorType.PERMISSION_ERROR
+                    ))
+                }
+            }
+            is ValidationResult.Allowed -> { /* proceed */ }
+        }
+
         val result = try {
             run(approvedContext)
         } catch (cancelled: kotlinx.coroutines.CancellationException) {

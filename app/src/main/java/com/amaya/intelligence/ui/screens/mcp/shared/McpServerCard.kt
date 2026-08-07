@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,6 +44,7 @@ fun McpServerCard(
     onToggle: (Boolean) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    onTest: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val colors = iosAmayaColors()
@@ -116,6 +118,16 @@ fun McpServerCard(
                     contentDescription = "Edit",
                     tint = colors.iconTint.copy(alpha = 0.75f)
                 )
+            }
+            if (onTest != null) {
+                IconButton(onClick = onTest, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = "Test",
+                        tint = colors.iconTint.copy(alpha = 0.75f),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
             IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
                 Icon(

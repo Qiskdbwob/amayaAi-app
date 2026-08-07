@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.remote.api.AiSettingsManager
+import com.amaya.intelligence.data.remote.mcp.McpClientManager
 import com.amaya.intelligence.data.remote.api.McpConfig
 import com.amaya.intelligence.ui.components.shared.SettingsBackButton
 import com.amaya.intelligence.ui.screens.mcp.shared.McpEditSheet
@@ -30,7 +31,8 @@ import com.amaya.intelligence.ui.screens.amaya.iosAmayaColors
 @Composable
 fun LocalMcpScreen(
     onNavigateBack: () -> Unit,
-    aiSettingsManager: AiSettingsManager
+    aiSettingsManager: AiSettingsManager,
+    mcpClientManager: McpClientManager
 ) {
     val colors = iosAmayaColors()
     val scope = rememberCoroutineScope()
@@ -93,6 +95,12 @@ fun LocalMcpScreen(
                         val updated = mcpConfig.servers.filter { it.name != server.name }
                         aiSettingsManager.setMcpConfigJson(McpConfig(updated).toJson())
                         snackbarHostState.showSnackbar("${server.name} removed")
+                    }
+                },
+                onTest = { server ->
+                    scope.launch {
+                        val result = mcpClientManager.testServer(server)
+                        snackbarHostState.showSnackbar(result.getOrElse { "Test failed: $it" })
                     }
                 },
                 topPadding = topPadding
