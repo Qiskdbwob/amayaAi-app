@@ -71,7 +71,13 @@ class AppUpdateInstaller @Inject constructor(
         val archive = context.packageManager.getPackageArchiveInfo(apk.path, PACKAGE_INFO_FLAGS)
             ?: error("Downloaded file is not an Android package")
         check(archive.packageName == context.packageName) { "Update is for a different app" }
-        check(archive.longVersionCode > BuildConfig.VERSION_CODE.toLong()) { "Update is not newer" }
+        @Suppress("DEPRECATION")
+        val archiveVersion = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            archive.longVersionCode
+        } else {
+            archive.versionCode.toLong()
+        }
+        check(archiveVersion > BuildConfig.VERSION_CODE.toLong()) { "Update is not newer" }
         check(signatures(archive).contentEquals(signatures(context.packageManager.getPackageInfo(context.packageName, PACKAGE_INFO_FLAGS)))) {
             "Update is not signed with this app's certificate"
         }
