@@ -52,7 +52,7 @@ fun TerminalSettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
-                    "One wildcard pattern per line. Trusted commands run automatically. Declined commands are blocked. Other commands require review.",
+                    "One wildcard pattern per line. Trusted commands run automatically without approval. Declined commands are blocked. Other non-destructive commands are auto-approved (see toggle below); destructive commands require review.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -88,7 +88,7 @@ fun TerminalSettingsScreen(
                 )
                 AmayaSwitchRow(
                     title = "Auto-approve safe commands",
-                    subtitle = "Run non-destructive commands (ls, cat, grep, git status, …) without asking every time",
+                    subtitle = "Trusted commands always run. Auto-approve other non-destructive commands (MCP, gradle, python, git status, …); only destructive commands (deletion, overwrite, chmod, sudo, git push, …) require approval",
                     checked = autoApproveNonDestructive,
                     onCheckedChange = { autoApproveNonDestructive = it },
                     enabled = loaded

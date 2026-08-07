@@ -19,6 +19,8 @@ data class PendingProposal(
 )
 
 enum class PendingProposalType {
+    /** Durable user preference/profie fact, proposed by auto-consolidation (approval-gated). */
+    USER_PROFILE,
     SKILL_CREATE,
     SKILL_PATCH,
     SKILL_UPDATE,

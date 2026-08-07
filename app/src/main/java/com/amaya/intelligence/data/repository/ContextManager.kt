@@ -393,6 +393,9 @@ class MemorySnapshotProvider @Inject constructor(
                 query = buildString {
                     append(userMessage)
                     workspacePath?.let { append(' ').append(it) }
+                    // Site-specific recall: hosts mentioned in the message (e.g. github.com)
+                    // are added so saved facts about that site rank higher.
+                    extractHosts(userMessage).forEach { append(' ').append(it) }
                 },
                 limit = maxItems,
                 enabled = workspacePath != null,
@@ -402,6 +405,12 @@ class MemorySnapshotProvider @Inject constructor(
             ))
         }
     }
+
+    /** Hosts mentioned in the user message (https://github.com/… → github.com), for site recall. */
+    private fun extractHosts(text: String): Set<String> = Regex("https?://([^/\\s]+)")
+        .findAll(text)
+        .map { it.groupValues[1].removePrefix("www.").lowercase() }
+        .toSet()
 
     private suspend fun memoryItem(
         id: String,

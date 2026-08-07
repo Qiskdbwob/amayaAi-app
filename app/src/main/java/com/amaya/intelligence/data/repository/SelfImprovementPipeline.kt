@@ -36,6 +36,8 @@ internal data class WorkflowEvidence(
     val activeSkill: String? = null,
     /** First observed failure reason for this workflow, used to learn reusable pitfalls. */
     val failureHint: String? = null,
+    /** Host of the site an automated browser workflow operated on (site-scoped learning). */
+    val siteHost: String? = null,
     val timestamp: Long,
     val workspacePath: String?
 )
@@ -51,7 +53,8 @@ class SelfImprovementPipeline @Inject constructor(
 
     suspend fun analyzeAndImprove(context: CompletedInteractionContext): SelfImprovementResult {
         val skillProposals = extractSkillCandidates(context)
-        skillProposals.forEach { pendingProposalRepository.addProposal(it) }
+        val factProposals = extractDurableFacts(context)
+        (skillProposals + factProposals).forEach { pendingProposalRepository.addProposal(it) }
         return SelfImprovementResult(skillProposals)
     }
 
@@ -67,7 +70,14 @@ class SelfImprovementPipeline @Inject constructor(
 
         val trigger = sanitizeEvidence(context.userMessages.firstOrNull().orEmpty()).take(220)
         val sequence = tools.distinct()
-        val fingerprint = if (sequence.isEmpty()) "explicit:${trigger.lowercase()}" else sequence.joinToString("|").lowercase()
+        val siteHost = siteHostFromContext(context)
+        // Browser workflows are fingerprinted per site so pitfalls and skill candidates are
+        // learned per host (e.g. browser|login.example.com) instead of one bucket for all sites.
+        val fingerprint = when {
+            sequence.isEmpty() -> "explicit:${trigger.lowercase()}"
+            siteHost != null -> (sequence + listOf("site:$siteHost")).joinToString("|").lowercase()
+            else -> sequence.joinToString("|").lowercase()
+        }
         val failureHint = sanitizeEvidence(failedResults.firstOrNull().orEmpty()).take(180).takeIf(String::isNotBlank)
         val evidence = WorkflowEvidence(
             sessionId = context.sessionId,
@@ -77,6 +87,7 @@ class SelfImprovementPipeline @Inject constructor(
             successful = successful,
             activeSkill = viewedSkillName(context),
             failureHint = failureHint,
+            siteHost = siteHost,
             timestamp = context.timestamp,
             workspacePath = context.workspacePath
         )
@@ -91,7 +102,7 @@ class SelfImprovementPipeline @Inject constructor(
             val allMatches = (previousEvidence + evidence).distinctBy { it.sessionId }
             val sameFailures = allMatches.filter { !it.successful && it.failureHint == failureHint }
             if (allMatches.none { it.successful } && sameFailures.size >= REQUIRED_FAILURE_SESSIONS) {
-                proposals += buildFailureLessonProposal(context, sequence, fingerprint, trigger, failureHint, allMatches)
+                proposals += buildFailureLessonProposal(context, sequence, fingerprint, trigger, failureHint, allMatches, siteHost)
             }
         }
 
@@ -158,7 +169,8 @@ class SelfImprovementPipeline @Inject constructor(
         fingerprint: String,
         trigger: String,
         failureHint: String,
-        matches: List<WorkflowEvidence>
+        matches: List<WorkflowEvidence>,
+        siteHost: String?
     ): PendingProposal {
         val failedCount = matches.count { !it.successful }
         val target = "avoid-" + fingerprint
@@ -188,6 +200,11 @@ class SelfImprovementPipeline @Inject constructor(
             appendLine()
             appendLine("## Observed Error")
             appendLine("> $failureHint")
+            siteHost?.let {
+                appendLine()
+                appendLine("## Site")
+                appendLine("- $it")
+            }
             appendLine()
             appendLine("Do not repeat this sequence unchanged. Verify tool arguments, available tools, and prerequisites first; prefer smaller steps.")
             appendLine()
@@ -208,7 +225,7 @@ class SelfImprovementPipeline @Inject constructor(
             status = PendingProposalStatus.PENDING,
             workspacePath = context.workspacePath,
             sourceSessionIds = sourceSessions,
-            evidence = sourceSessions.map { "Failed session $it: $failureHint" }
+            evidence = sourceSessions.map { "Failed session $it${if (siteHost != null) " on $siteHost" else ""}: $failureHint" }
         )
     }
 
@@ -252,6 +269,125 @@ class SelfImprovementPipeline @Inject constructor(
         Regex("(?:skill_id|name)=([^,}]+)").find(call)?.groupValues?.getOrNull(1)?.trim()?.takeIf(String::isNotBlank)
     }
 
+    // ====================================================================
+    // AUTO MEMORY CONSOLIDATION (Hermes-style self-learning)
+    // ====================================================================
+
+    /**
+     * Hermes-style memory consolidation. After a successful interaction, scan the user's own
+     * messages for explicit durable preferences and workspace/environment facts and propose them
+     * for approval (the write-approval gate), so memory accumulates even when the model never
+     * called a memory tool. Conservative: only explicit markers, short declarative sentences,
+     * and never questions or task requests.
+     */
+    internal fun extractDurableFacts(context: CompletedInteractionContext): List<PendingProposal> {
+        if (!context.successful || context.assistantMessages.isEmpty()) return emptyList()
+        val workspace = context.workspacePath?.takeIf(String::isNotBlank)
+        val proposals = mutableListOf<PendingProposal>()
+        val seen = mutableSetOf<String>()
+        for (message in context.userMessages) {
+            if (proposals.size >= MAX_FACTS_PER_TURN) break
+            val lower = message.lowercase()
+            for ((markers, kind) in DURABLE_FACT_PATTERNS) {
+                if (proposals.size >= MAX_FACTS_PER_TURN) break
+                val marker = markers.firstOrNull { it in lower } ?: continue
+                val fact = extractFactSentence(message, lower.indexOf(marker))
+                    ?.let(::cleanFact)
+                    ?.takeIf { seen.add(it.lowercase()) }
+                    ?.let { buildFactProposal(it, kind, workspace, context) }
+                    ?: continue
+                proposals += fact
+            }
+        }
+        return proposals
+    }
+
+    /** Sentence containing [index]; stops at sentence punctuation or the length cap. */
+    private fun extractFactSentence(message: String, index: Int): String? {
+        val sentenceEnd = message.indexOfAny(charArrayOf('.', '!', '\n', '?'), index)
+            .let { if (it < 0) message.length else it + 1 }
+        return message.substring(index, sentenceEnd.coerceAtMost(index + MAX_FACT_LENGTH)).trim()
+    }
+
+    /** Strip politeness/reminder prefixes and reject tasks, questions, URLs, and secrets. */
+    private fun cleanFact(sentence: String): String? {
+        val text = sentence.trim()
+            .trimEnd('.', '!', '?')
+            .replace(Regex("^(?i)(please always|tolong selalu|remember that|please|tolong|remember|ingat bahwa|ingat)\\s*"), "")
+            .trim()
+        if (text.length !in MIN_FACT_LENGTH..MAX_FACT_LENGTH) return null
+        val lower = text.lowercase()
+        if (lower.contains('?')) return null
+        if (FACT_TASK_VERBS.any { lower.contains(it) }) return null
+        if (lower.contains("http://") || lower.contains("https://")) return null
+        if (!classifier.checkSafety(text).safe) return null
+        return text
+    }
+
+    private fun buildFactProposal(
+        fact: String,
+        kind: FactKind,
+        workspacePath: String?,
+        context: CompletedInteractionContext
+    ): PendingProposal? {
+        if (kind == FactKind.WORKSPACE && workspacePath == null) return null
+        val isWorkspace = kind == FactKind.WORKSPACE
+        val type = if (isWorkspace) PendingProposalType.WORKSPACE_FACT else PendingProposalType.USER_PROFILE
+        val lower = fact.lowercase()
+        val title = when {
+            !isWorkspace && listOf("name", "call me", "panggil", "nama").any { it in lower } -> "User name"
+            !isWorkspace && listOf("language", "bahasa", "respond", "reply", "jawab", "speak").any { it in lower } -> "Language preference"
+            isWorkspace && listOf("build", "gradle", "maven", "npm", "bun", "yarn", "package manager").any { it in lower } -> "Build tooling"
+            isWorkspace && "test" in lower -> "Testing convention"
+            else -> if (isWorkspace) "Learned workspace fact" else "Learned user preference"
+        }
+        val target = (if (isWorkspace) "fact-" else "profile-") + lower
+            .replace(Regex("[^a-z0-9]+"), "-")
+            .trim('-')
+            .take(40)
+            .ifBlank { if (isWorkspace) "workspace" else "user" }
+        return PendingProposal(
+            id = "mem_${java.util.UUID.randomUUID().toString().take(12)}",
+            sourceSessionId = context.sessionId,
+            type = type,
+            target = target,
+            action = PendingProposalAction.ADD,
+            title = title,
+            content = fact,
+            reason = if (isWorkspace) {
+                "Detected durable workspace fact from a successful interaction (auto-consolidation)."
+            } else {
+                "Detected durable user preference from a successful interaction (auto-consolidation)."
+            },
+            confidence = 0.7,
+            createdAt = context.timestamp,
+            status = PendingProposalStatus.PENDING,
+            workspacePath = if (isWorkspace) workspacePath else null,
+            workspaceId = if (isWorkspace) context.workspaceId else null,
+            sourceSessionIds = listOf(context.sessionId),
+            evidence = listOf("Detected from user message in session ${context.sessionId}")
+        )
+    }
+
+    // ====================================================================
+    // SITE-SCOPED BROWSER SELF-LEARNING
+    // ====================================================================
+
+    /** Host of the site an automated browser workflow operated on, for site-scoped learning. */
+    private fun siteHostFromContext(context: CompletedInteractionContext): String? =
+        context.toolCalls.firstNotNullOfOrNull(::siteHostFromToolCall)
+
+    private fun siteHostFromToolCall(call: String): String? {
+        if (!call.startsWith("browser:")) return null
+        val url = Regex("(?:url|active_url)=(\"?)([^,\"}]+)\\1")
+            .find(call)?.groupValues?.getOrNull(2)?.trim() ?: return null
+        if (url.isBlank()) return null
+        return runCatching {
+            val raw = if (url.startsWith("http://") || url.startsWith("https://")) url else "https://$url"
+            java.net.URI(raw).host?.removePrefix("www.")
+        }.getOrNull()
+    }
+
     private fun saveEvidence(evidence: WorkflowEvidence) = synchronized(evidenceLock) {
         val existing = readEvidence()
         if (existing.any { it.sessionId == evidence.sessionId && it.fingerprint == evidence.fingerprint }) return@synchronized
@@ -289,6 +425,7 @@ class SelfImprovementPipeline @Inject constructor(
         .put("successful", successful)
         .put("activeSkill", activeSkill)
         .put("failureHint", failureHint)
+        .put("siteHost", siteHost)
         .put("timestamp", timestamp)
         .put("workspacePath", workspacePath)
 
@@ -300,6 +437,7 @@ class SelfImprovementPipeline @Inject constructor(
         successful = optBoolean("successful"),
         activeSkill = optString("activeSkill").takeIf(String::isNotBlank),
         failureHint = optString("failureHint").takeIf(String::isNotBlank),
+        siteHost = optString("siteHost").takeIf(String::isNotBlank),
         timestamp = optLong("timestamp"),
         workspacePath = optString("workspacePath").takeIf(String::isNotBlank)
     )
@@ -319,13 +457,42 @@ class SelfImprovementPipeline @Inject constructor(
             .take(60)
             .ifBlank { "learned-workflow" }
 
+    private enum class FactKind { USER, WORKSPACE }
+
     companion object {
         private const val REQUIRED_SUCCESSFUL_SESSIONS = 2
         private const val REQUIRED_FAILURE_SESSIONS = 2
         private const val MAX_EVIDENCE_RECORDS = 500
         private const val EVIDENCE_MAX_AGE_MS = 90L * 24L * 60L * 60L * 1000L
+        private const val MAX_FACTS_PER_TURN = 2
+        private const val MIN_FACT_LENGTH = 8
+        private const val MAX_FACT_LENGTH = 180
         private val TEACH_TERMS = listOf("save this workflow", "remember this workflow", "teach this workflow", "simpan workflow", "pelajari workflow", "jadikan skill")
         private val FAILURE_TERMS = listOf("error", "failed", "timeout", "cancelled", "gagal")
         private val SELF_IMPROVEMENT_TOOLS = setOf("memory", "skill", "update_memory", "memory_manage", "skill_view", "skill_manage", "session_search", "update_todo")
+        /** Imperative/task phrases that disqualify a sentence from being a durable fact. */
+        private val FACT_TASK_VERBS = listOf(
+            " fix ", " implement ", " create ", " add ", " write ", " edit ", " update ",
+            " delete ", " remove ", " refactor ", " build ", " compile ", " install ", " explain ",
+            " show ", " compare ", " generate ", " buat ", " buatkan ", " tulis ", " perbaiki ",
+            " tambahkan ", " hapus ", " ubah ", " instal ", " jelaskan ", " bantu ",
+            "please fix", "tolong buat", "tolong perbaiki", "can you", "bisa tolong"
+        )
+        /** Marker phrases that signal a durable fact, grouped by target memory type (longest first). */
+        private val DURABLE_FACT_PATTERNS = listOf(
+            FactKind.WORKSPACE to listOf(
+                "this repository", "this repo", "the repository", "the workspace", "the project",
+                "uses gradle", "uses maven", "uses npm", "uses bun", "uses yarn", "package manager",
+                "build command", "test command", "build system", "ci uses", "the app is built"
+            ),
+            FactKind.USER to listOf(
+                "please always", "tolong selalu", "i'd prefer", "i would prefer", "i prefer",
+                "jangan pernah", "remember that", "ingat bahwa", "call me", "my name is",
+                "respond in", "reply in", "my language", "i speak", "panggil aku", "panggil saya",
+                "nama saya", "saya lebih suka", "saya suka", "saya biasanya", "i usually",
+                "prefer to", "i like", "i love", "i work at", "my email", "i am a", "i am an",
+                "bahasa indonesia", "bahasa inggris", "preferens", "selalu", "always ", "never "
+            )
+        )
     }
 }

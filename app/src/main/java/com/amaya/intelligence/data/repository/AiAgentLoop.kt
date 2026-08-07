@@ -416,6 +416,8 @@ internal fun AiRepository.chatImpl(
             var hasToolCalls = false
             var providerTerminal = false
             var retryableFailure: String? = null
+            /** Provider could not parse a model tool call's arguments; needs failure feedback. */
+            var providerParseFailure: String? = null
             /** Tool calls rejected in this request that still need failure feedback to the model. */
             val rejectedToolCalls = mutableListOf<ToolCallMessage>()
 
@@ -507,6 +509,24 @@ internal fun AiRepository.chatImpl(
                     is ChatResponse.Error -> {
                         StreamDebugLog.event(conversationId, null, "PROVIDER_ERROR", response.message)
                         providerTerminal = true
+                        if (response.message.startsWith(INVALID_TOOL_ARGUMENTS_PREFIX)) {
+                            // The model emitted tool-call arguments the provider could not parse.
+                            // That is a recoverable call failure, not a terminal error: record it
+                            // and feed it back so the model can re-issue the call, bounded by
+                            // MAX_FAILED_TOOL_ATTEMPTS so a pathological model cannot loop forever.
+                            failedToolAttempts++
+                            providerParseFailure = response.message
+                            StreamDebugLog.event(conversationId, null, "TOOL_ARGS_PARSE_FAILED", "attempts=$failedToolAttempts")
+                            if (failedToolAttempts >= MAX_FAILED_TOOL_ATTEMPTS) {
+                                send(AgentEvent.Error(
+                                    "The model issued $failedToolAttempts tool calls with unparseable arguments (last: ${response.message.take(120)}); stopping the tool loop after $MAX_FAILED_TOOL_ATTEMPTS failures.",
+                                    retryable = false
+                                ))
+                                terminalError = true
+                                continueLoop = false
+                            }
+                            return@collect
+                        }
                         retryableFailure = response.message.takeIf { canContinueStream(response, hasToolCalls) }
                         if (retryableFailure == null && !shouldExecuteReceivedToolCalls(response, hasToolCalls)) {
                             send(AgentEvent.Error(response.message, response.retryable))
@@ -534,6 +554,23 @@ internal fun AiRepository.chatImpl(
                 )
                 StreamDebugLog.event(conversationId, null, "TOOL_CALL_REJECTED_FEEDBACK", "attempts=$failedToolAttempts name=${lastRejected.name}")
                 continue
+            }
+
+            // Unparseable tool-call arguments must not kill the turn either: append the parse
+            // failure as user feedback so the next request re-issues the call correctly (bounded
+            // by MAX_FAILED_TOOL_ATTEMPTS). When valid tool calls were also received they are
+            // executed below, and this feedback still lets the model correct the malformed one
+            // on the next iteration.
+            if (providerParseFailure != null) {
+                if (textBuffer.isNotBlank()) {
+                    messages = messages + ChatMessage(role = MessageRole.ASSISTANT, content = textBuffer.toString())
+                }
+                messages = messages + ChatMessage(
+                    role = MessageRole.USER,
+                    content = "Host tool-loop feedback: the provider could not parse the arguments of the tool call in the previous response: $providerParseFailure. Re-issue the tool call with valid JSON arguments (quote all keys and string values, no trailing commas) or answer directly. (Failure $failedToolAttempts/$MAX_FAILED_TOOL_ATTEMPTS.)"
+                )
+                StreamDebugLog.event(conversationId, null, "TOOL_ARGS_PARSE_FAILED_FEEDBACK", "attempts=$failedToolAttempts")
+                if (!hasToolCalls) continue
             }
 
             if (!providerTerminal && !hasToolCalls) retryableFailure = "Provider stream ended without a terminal event"

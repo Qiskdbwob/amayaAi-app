@@ -17,8 +17,10 @@ data class TerminalSettings(
     val trustedCommands: List<String> = DEFAULT_TRUSTED_COMMANDS,
     val declinedCommands: List<String> = emptyList(),
     /**
-     * Auto-approve read-only / non-destructive shell commands so the user is not prompted
-     * repeatedly for safe commands such as `ls`, `cat`, `grep`, or `git status`.
+     * Auto-approve commands that are not in Trusted Commands when they have no destructive
+     * impact (read-only commands, MCP invocations, builds, scripts, …) so the user is not
+     * prompted repeatedly. Destructive commands (deletion, overwrite, permission changes,
+     * effectful git subcommands, …) always require review.
      */
     val autoApproveNonDestructive: Boolean = true
 ) {

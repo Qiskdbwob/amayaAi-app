@@ -22,7 +22,11 @@ fun PendingProposal.toMemoryProposal(): MemoryProposal = MemoryProposal(
     workspacePath = workspacePath,
     workspaceId = workspaceId,
     sourceConversationId = sourceSessionId,
-    subject = if (type == PendingProposalType.WORKSPACE_FACT) "workspace" else "memory",
+    subject = when (type) {
+        PendingProposalType.WORKSPACE_FACT -> "workspace"
+        PendingProposalType.USER_PROFILE -> "user"
+        else -> "memory"
+    },
     attribute = inferProposalAttribute(title, content)
 )
 
@@ -34,6 +38,7 @@ private fun inferProposalAttribute(title: String, content: String): String = (ti
     .take(80)
 
 private fun PendingProposalType.toMemoryType(): MemoryType = when (this) {
+    PendingProposalType.USER_PROFILE -> MemoryType.USER_PROFILE
     PendingProposalType.WORKSPACE_FACT -> MemoryType.WORKSPACE_FACT
     PendingProposalType.SKILL_CREATE,
     PendingProposalType.SKILL_PATCH,
@@ -50,6 +55,7 @@ private fun PendingProposalAction.toMemoryAction(): MemoryAction = when (this) {
 }
 
 private fun PendingProposalType.toMemoryScope(): MemoryScope = when (this) {
+    PendingProposalType.USER_PROFILE -> MemoryScope.USER
     PendingProposalType.WORKSPACE_FACT -> MemoryScope.WORKSPACE
     PendingProposalType.SKILL_CREATE,
     PendingProposalType.SKILL_PATCH,

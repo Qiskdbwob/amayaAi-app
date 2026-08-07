@@ -553,16 +553,41 @@ class FileMemoryRepository @Inject constructor(
         return content.trim()
     }
 
+    /**
+     * Rank a memory record against the query. Field-weighted lexical scoring (title 3x,
+     * attribute 2.5x, content 2x), fuzzy substring hits, multi-word bigram co-occurrence, and a
+     * recency decay so recently relevant memories outrank stale ones. Purely local (no embedding
+     * API) while keeping the same pass threshold as before, so recall improves without noise.
+     */
     private fun scoreMemoryRecord(record: MemoryRecord, query: String): Double {
-        val terms = expandTerms(query)
-        if (terms.isEmpty()) return 0.0
-        val haystack = expandTerms("${record.title} ${record.content} ${record.label} ${record.type}")
+        val queryTerms = expandTerms(query)
+        if (queryTerms.isEmpty()) return 0.0
+        val titleTerms = expandTerms(record.title)
+        val attributeTerms = expandTerms(record.attribute)
+        val contentTerms = expandTerms("${record.content} ${record.label} ${record.type.name}")
+        val allTerms = titleTerms + attributeTerms + contentTerms
         var score = 0.0
-        terms.forEach { term ->
-            if (term in haystack) score += 2.0
-            else if (haystack.any { it.contains(term) || term.contains(it) }) score += 0.75
+        queryTerms.forEach { term ->
+            when {
+                term in titleTerms -> score += 3.0
+                term in attributeTerms -> score += 2.5
+                term in contentTerms -> score += 2.0
+                allTerms.any { it.contains(term) || term.contains(it) } -> score += 0.75
+            }
         }
+        score += bigramOverlap(query, "${record.title} ${record.attribute} ${record.content} ${record.label}") * 1.5
+        val ageDays = (System.currentTimeMillis() - record.updatedAt).coerceAtLeast(0L) / (24L * 60L * 60L * 1000L)
+        score += 1.0 / (1.0 + ageDays / 30.0) * 0.5
         return score
+    }
+
+    /** Fraction of the query's adjacent token pairs whose tokens both appear in [candidate]. */
+    private fun bigramOverlap(query: String, candidate: String): Double {
+        val queryTerms = expandTerms(query).toList()
+        if (queryTerms.size < 2) return 0.0
+        val candidateTerms = expandTerms(candidate).toSet()
+        val hits = queryTerms.zipWithNext().count { pair -> pair.first in candidateTerms && pair.second in candidateTerms }
+        return hits.toDouble() / (queryTerms.size - 1)
     }
 
     private fun expandTerms(text: String): Set<String> {
@@ -622,7 +647,15 @@ class FileMemoryRepository @Inject constructor(
             "detail" to setOf("rinci", "lengkap", "panjang", "verbose"),
             "name" to setOf("nama", "panggil", "nickname", "call"),
             "project" to setOf("workspace", "repo", "repository", "codebase", "kode"),
-            "memory" to setOf("ingat", "remember", "memori")
+            "memory" to setOf("ingat", "remember", "memori"),
+            // Site/browser terms so browser-site memory and login/flow facts recall across languages.
+            "login" to setOf("sign in", "signin", "log in", "masuk", "authenticate", "auth"),
+            "register" to setOf("sign up", "signup", "daftar", "buat akun"),
+            "search" to setOf("cari", "find", "lookup"),
+            "download" to setOf("unduh", "downloads"),
+            "upload" to setOf("unggah"),
+            "settings" to setOf("pengaturan", "config", "configuration"),
+            "browser" to setOf("web", "website", "site", "halaman", "page")
         )
     }
 }

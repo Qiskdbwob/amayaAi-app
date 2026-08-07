@@ -61,40 +61,35 @@ class CommandValidator @Inject constructor(
         // NON-DESTRUCTIVE COMMAND CLASSIFIER (auto-approve)
         // ====================================================================
 
-        /** Simple read-only commands that never modify state (checked by first token). */
-        private val NON_DESTRUCTIVE_COMMANDS = setOf(
-            "pwd", "date", "uptime", "whoami", "hostname", "uname", "id", "groups", "env", "printenv", "true", "false",
-            "echo", "printf",
-            "ls", "find", "locate", "which", "whereis", "type",
-            "cat", "head", "tail", "less", "more", "wc", "grep", "egrep", "fgrep", "rg", "awk", "sort", "uniq", "cut", "tr",
-            "diff", "cmp", "md5sum", "sha1sum", "sha256sum", "cksum", "file", "stat",
-            "du", "df", "free", "ps", "top", "htop", "history", "getprop", "dumpsys"
-        )
-
         /**
-         * Read-only git invocations (exact prefix match; a following token must be a flag/arg,
-         * never a subcommand that writes). Effectful ones like commit/push/checkout/reset/fetch
-         * are deliberately absent and fall through to user review.
+         * Read-only git invocations (exact prefix match; the following token must be a flag/arg,
+         * never a subcommand that writes). Effectful ones like commit/push/checkout/reset/fetch are
+         * deliberately absent: they fall through to user review via [isEffectfulGitCommand].
          */
         private val NON_DESTRUCTIVE_GIT_PREFIXES = listOf(
             "git status", "git diff", "git log", "git show", "git blame", "git describe",
             "git rev-parse", "git ls-files", "git ls-tree",
             "git remote -v", "git remote show", "git remote get-url", "git remote list",
-            "git var", "git reflog", "git help", "git --version",
+            "git var", "git reflog", "git help", "git --version", "git -h", "git --help",
             "git stash list", "git stash show",
             "git tag -l", "git tag --list", "git tag -n",
             "git branch -a", "git branch -r", "git branch --list", "git branch -v", "git branch --show-current",
             "git config -l", "git config --list", "git config --get"
         )
 
-        /** Operators that can turn a read-only command into a write (redirection, chaining, substitution). */
-        private val NON_DESTRUCTIVE_OPERATOR_MARKERS = listOf(
-            ">", ";", "&&", "||", "&", "$(", "`"
-        )
+        /** Redirection/appends are writes — they require review even when the verb itself is safe. */
+        private const val NON_DESTRUCTIVE_WRITE_MARKER = '>'
 
-        /** Dangerous verbs that can appear mid-command (e.g. inside `find … -exec`). */
+        /** Command/process substitution and backticks are opaque — they require review. */
+        private val NON_DESTRUCTIVE_SUBSTITUTION_MARKERS = listOf("$(", "`", "<(")
+
+        /**
+         * Dangerous verbs that can appear anywhere in a command (including inside chains and
+         * `find … -exec`). Deletion, overwrite, permission changes, privilege escalation,
+         * process control, power, mounts, and network downloads all require review.
+         */
         private val NON_DESTRUCTIVE_DANGEROUS_VERBS = Regex(
-            "\\b(rm|mv|dd|mkfs|chmod|chown|chgrp|sudo|su|kill|pkill|killall|reboot|shutdown|halt|poweroff|mount|umount|tee|truncate|ln|curl|wget|exec|delete)\\b"
+            "\\b(rm|rmdir|unlink|shred|mv|dd|mkfs|fdisk|parted|format|wipe|erase|chmod|chown|chgrp|sudo|su|kill|pkill|killall|reboot|shutdown|halt|poweroff|mount|umount|tee|truncate|ln|curl|wget|exec|delete|uninstall)\\b"
         )
     }
 
@@ -122,8 +117,9 @@ class CommandValidator @Inject constructor(
         if (settings.trustedCommands.any { commandMatchesWildcard(normalized, it) }) {
             return ValidationResult.Allowed
         }
-        // Auto-approve read-only commands so the user is not asked repeatedly for safe commands
-        // (ls, cat, grep, git status, …). Anything else still falls through to the review dialog.
+        // Auto-approve commands that are not in Trusted Commands but have no destructive impact
+        // (read-only commands, MCP invocations, builds, scripts, …). Only destructive commands
+        // fall through to the review dialog.
         if (settings.autoApproveNonDestructive && isNonDestructiveCommand(normalized)) {
             return ValidationResult.Allowed
         }
@@ -367,31 +363,42 @@ class CommandValidator @Inject constructor(
     // ========================================================================
 
     /**
-     * True when [command] is read-only and safe to run without a confirmation prompt.
+     * True when [command] is safe to run without a confirmation prompt.
      *
-     * Conservative by design: any ambiguity (redirection, chaining, substitution, unknown
-     * first token, dangerous verbs, effectful git subcommands) returns false, which simply
-     * falls back to the normal user-review flow — never to denial.
+     * Auto-approve covers commands that are NOT in Trusted Commands but have no destructive
+     * impact — read-only commands, MCP invocations, builds, scripts, and so on. Approval is
+     * only requested for destructive commands (deletion, overwrite, permission changes,
+     * privilege escalation, process control, effectful git subcommands, …). Conservative by
+     * design: any ambiguity (redirection, substitution, dangerous verb, hard-block pattern)
+     * returns false, which falls back to the normal user-review flow — never to denial.
      */
     fun isNonDestructiveCommand(command: String): Boolean {
         val trimmed = command.trim()
         if (trimmed.isEmpty()) return false
-        if (NON_DESTRUCTIVE_OPERATOR_MARKERS.any { trimmed.contains(it) }) return false
+        if (HARD_BLOCK_PATTERNS.any { it.containsMatchIn(trimmed) }) return false
+        if (trimmed.contains(NON_DESTRUCTIVE_WRITE_MARKER)) return false
+        if (NON_DESTRUCTIVE_SUBSTITUTION_MARKERS.any { trimmed.contains(it) }) return false
         if (NON_DESTRUCTIVE_DANGEROUS_VERBS.containsMatchIn(trimmed)) return false
-        // Each pipe segment must itself be non-destructive (e.g. `ls | grep x` is fine).
-        return trimmed.split('|').all { segment ->
-            val seg = segment.trim()
-            if (seg.isEmpty()) return false
-            val head = seg.substringBefore(' ').substringBefore('\t').trim()
-            if (head == "git") {
-                NON_DESTRUCTIVE_GIT_PREFIXES.any { prefix ->
-                    seg.startsWith(prefix) && (seg.length == prefix.length || seg[prefix.length].isWhitespace())
-                }
-            } else {
-                head in NON_DESTRUCTIVE_COMMANDS
+        if (isEffectfulGitCommand(trimmed)) return false
+        return true
+    }
+
+    /**
+     * True when any `git` segment of [command] uses a subcommand that writes (commit, push,
+     * checkout, reset, fetch, …). Read-only git invocations listed in [NON_DESTRUCTIVE_GIT_PREFIXES]
+     * stay safe; everything else (including writes inside chains like `git status && git push`)
+     * requires review.
+     */
+    private fun isEffectfulGitCommand(command: String): Boolean =
+        command.split(Regex("""\s*(?:;|&&|\|\||\|)\s*""")).any { rawSegment ->
+            val segment = rawSegment.trim()
+            if (!segment.startsWith("git")) return@any false
+            val normalized = segment.replace(Regex("\\s+"), " ")
+            if (normalized == "git") return@any false // bare `git` prints help — safe
+            NON_DESTRUCTIVE_GIT_PREFIXES.none { prefix ->
+                normalized == prefix || normalized.startsWith("$prefix ")
             }
         }
-    }
 
     private fun normalizePath(path: String): String {
         // Resolve all . and .. segments, remove double slashes
