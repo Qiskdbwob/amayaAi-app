@@ -135,6 +135,24 @@ internal fun AiRepository.browserErrorSignature(resultContent: String): String? 
         return "$code:${message.take(120)}"
     }
 
+    /**
+     * Stable signature for any tool failure, so identical repeated failures can be detected
+     * across iterations. Browser failures use the structured JSON signature; every other tool
+     * uses the first error-looking line of its result.
+     */
+    internal fun AiRepository.toolErrorSignature(resultContent: String): String? {
+        browserErrorSignature(resultContent)?.let { return it }
+        val errorLine = resultContent.lineSequence().firstOrNull { line ->
+            val lower = line.lowercase()
+            TOOL_ERROR_SIGNAL_WORDS.any { it in lower }
+        } ?: return null
+        return errorLine.trim().take(120)
+    }
+
+    private val TOOL_ERROR_SIGNAL_WORDS = listOf(
+        "error", "failed", "failure", "timeout", "cancelled", "exception", "denied", "blocked", "invalid", "not found", "unavailable"
+    )
+
 
 
     /**

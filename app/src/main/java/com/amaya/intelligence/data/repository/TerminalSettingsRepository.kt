@@ -1,6 +1,7 @@
 package com.amaya.intelligence.data.repository
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -14,7 +15,12 @@ private val Context.terminalSettingsStore by preferencesDataStore(name = "termin
 
 data class TerminalSettings(
     val trustedCommands: List<String> = DEFAULT_TRUSTED_COMMANDS,
-    val declinedCommands: List<String> = emptyList()
+    val declinedCommands: List<String> = emptyList(),
+    /**
+     * Auto-approve read-only / non-destructive shell commands so the user is not prompted
+     * repeatedly for safe commands such as `ls`, `cat`, `grep`, or `git status`.
+     */
+    val autoApproveNonDestructive: Boolean = true
 ) {
     companion object {
         val DEFAULT_TRUSTED_COMMANDS = listOf(
@@ -35,7 +41,8 @@ class DataStoreTerminalSettingsRepository @Inject constructor(
     override suspend fun getSettings(): TerminalSettings = context.terminalSettingsStore.data.map { prefs ->
         TerminalSettings(
             trustedCommands = prefs[KEY_TRUSTED]?.sorted() ?: TerminalSettings.DEFAULT_TRUSTED_COMMANDS,
-            declinedCommands = prefs[KEY_DECLINED]?.sorted().orEmpty()
+            declinedCommands = prefs[KEY_DECLINED]?.sorted().orEmpty(),
+            autoApproveNonDestructive = prefs[KEY_AUTO_APPROVE_NON_DESTRUCTIVE] ?: true
         )
     }.first()
 
@@ -43,6 +50,7 @@ class DataStoreTerminalSettingsRepository @Inject constructor(
         context.terminalSettingsStore.edit { prefs ->
             prefs[KEY_TRUSTED] = normalizePatterns(settings.trustedCommands).toSet()
             prefs[KEY_DECLINED] = normalizePatterns(settings.declinedCommands).toSet()
+            prefs[KEY_AUTO_APPROVE_NON_DESTRUCTIVE] = settings.autoApproveNonDestructive
         }
     }
 
@@ -54,6 +62,7 @@ class DataStoreTerminalSettingsRepository @Inject constructor(
     private companion object {
         val KEY_TRUSTED = stringSetPreferencesKey("trusted_commands")
         val KEY_DECLINED = stringSetPreferencesKey("declined_commands")
+        val KEY_AUTO_APPROVE_NON_DESTRUCTIVE = booleanPreferencesKey("auto_approve_non_destructive")
     }
 }
 

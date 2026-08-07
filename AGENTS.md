@@ -12,6 +12,7 @@
 ## Build
 - ./gradlew installDebug
 - ./gradlew assembleDebug
+- CI/CD: `.github/workflows/android-ci.yml` builds debug APKs on push/PR and signed release APKs with a GitHub Release on `v*` tags (repo secrets: `AMAYA_KEYSTORE_BASE64`, `AMAYA_KEYSTORE_PASSWORD`, `AMAYA_KEY_ALIAS`).
 - ./gradlew :app:installBenchmark
 - ./gradlew :baselineprofile:connectedBenchmarkAndroidTest
 - npx @vscode/vsce package

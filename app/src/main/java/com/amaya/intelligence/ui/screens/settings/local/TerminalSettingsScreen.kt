@@ -22,6 +22,7 @@ import com.amaya.intelligence.data.repository.TerminalSettings
 import com.amaya.intelligence.data.repository.TerminalSettingsRepository
 import com.amaya.intelligence.ui.screens.amaya.AmayaScaffold
 import com.amaya.intelligence.ui.screens.amaya.AmayaSection
+import com.amaya.intelligence.ui.screens.amaya.AmayaSwitchRow
 import kotlinx.coroutines.launch
 
 @Composable
@@ -33,12 +34,14 @@ fun TerminalSettingsScreen(
     val scope = rememberCoroutineScope()
     var trusted by remember { mutableStateOf("") }
     var declined by remember { mutableStateOf("") }
+    var autoApproveNonDestructive by remember { mutableStateOf(true) }
     var loaded by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         val settings = repository.getSettings()
         trusted = settings.trustedCommands.joinToString("\n")
         declined = settings.declinedCommands.joinToString("\n")
+        autoApproveNonDestructive = settings.autoApproveNonDestructive
         loaded = true
     }
 
@@ -83,13 +86,21 @@ fun TerminalSettingsScreen(
                         focusedBorderColor = MaterialTheme.colorScheme.primary
                     )
                 )
+                AmayaSwitchRow(
+                    title = "Auto-approve safe commands",
+                    subtitle = "Run non-destructive commands (ls, cat, grep, git status, …) without asking every time",
+                    checked = autoApproveNonDestructive,
+                    onCheckedChange = { autoApproveNonDestructive = it },
+                    enabled = loaded
+                )
                 Button(
                     onClick = {
                         scope.launch {
                             repository.setSettings(
                                 TerminalSettings(
                                     trustedCommands = trusted.lines(),
-                                    declinedCommands = declined.lines()
+                                    declinedCommands = declined.lines(),
+                                    autoApproveNonDestructive = autoApproveNonDestructive
                                 )
                             )
                             snackbar.showSnackbar("Terminal settings saved")

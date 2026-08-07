@@ -150,11 +150,13 @@ class ToolExecutor @Inject constructor(
             readOnly = readOnly
         )
 
-        // Pre-validate model-owned arguments only.
+        // Pre-validate model-owned arguments only. The workspace root is passed so shell
+        // commands are contained inside the active workspace (the AI never leaves it).
         val validation = commandValidator.validateToolCall(
             handlerName,
             modelArguments,
-            terminalSettingsRepository.getSettings()
+            terminalSettingsRepository.getSettings(),
+            workspacePath = workspacePath
         )
 
         when (validation) {

@@ -34,6 +34,8 @@ internal data class WorkflowEvidence(
     val tools: List<String>,
     val successful: Boolean,
     val activeSkill: String? = null,
+    /** First observed failure reason for this workflow, used to learn reusable pitfalls. */
+    val failureHint: String? = null,
     val timestamp: Long,
     val workspacePath: String?
 )
@@ -57,14 +59,16 @@ class SelfImprovementPipeline @Inject constructor(
         val tools = context.toolCalls.map { it.substringBefore(':').trim() }
             .filter { it.isNotBlank() && it !in SELF_IMPROVEMENT_TOOLS }
         val explicitTeach = context.userMessages.any { message -> TEACH_TERMS.any { it in message.lowercase() } }
+        val failedResults = context.toolResults.filter { result -> FAILURE_TERMS.any { it in result.lowercase() } }
         val successful = context.successful &&
-            context.toolResults.none { result -> FAILURE_TERMS.any { it in result.lowercase() } } &&
+            failedResults.isEmpty() &&
             (explicitTeach || context.assistantMessages.isNotEmpty())
         if (tools.isEmpty() && !explicitTeach) return emptyList()
 
         val trigger = sanitizeEvidence(context.userMessages.firstOrNull().orEmpty()).take(220)
         val sequence = tools.distinct()
         val fingerprint = if (sequence.isEmpty()) "explicit:${trigger.lowercase()}" else sequence.joinToString("|").lowercase()
+        val failureHint = sanitizeEvidence(failedResults.firstOrNull().orEmpty()).take(180).takeIf(String::isNotBlank)
         val evidence = WorkflowEvidence(
             sessionId = context.sessionId,
             fingerprint = fingerprint,
@@ -72,22 +76,37 @@ class SelfImprovementPipeline @Inject constructor(
             tools = sequence,
             successful = successful,
             activeSkill = viewedSkillName(context),
+            failureHint = failureHint,
             timestamp = context.timestamp,
             workspacePath = context.workspacePath
         )
         val previousEvidence = readEvidence().filter { it.fingerprint == fingerprint }.distinctBy { it.sessionId }
         saveEvidence(evidence)
-        if (!successful) return emptyList()
+        val proposals = mutableListOf<PendingProposal>()
 
+        // Hermes-style learning from mistakes: when the same workflow keeps failing with the
+        // same error and never succeeds, propose a durable "pitfall" lesson for user approval
+        // (the write-approval gate) instead of silently forgetting the failure.
+        if (failureHint != null) {
+            val allMatches = (previousEvidence + evidence).distinctBy { it.sessionId }
+            val sameFailures = allMatches.filter { !it.successful && it.failureHint == failureHint }
+            if (allMatches.none { it.successful } && sameFailures.size >= REQUIRED_FAILURE_SESSIONS) {
+                proposals += buildFailureLessonProposal(context, sequence, fingerprint, trigger, failureHint, allMatches)
+            }
+        }
+
+        if (!successful) return proposals
+
+        // A skill that failed repeatedly then completed successfully gets a recovery patch.
         val viewedSkill = evidence.activeSkill
         val failedSessions = previousEvidence.filter { !it.successful && it.activeSkill == viewedSkill }.map { it.sessionId }
         if (viewedSkill != null && failedSessions.size >= REQUIRED_FAILURE_SESSIONS) {
             val sourceSessions = (failedSessions.takeLast(REQUIRED_FAILURE_SESSIONS) + context.sessionId).distinct()
-            return listOf(buildSkillPatchProposal(viewedSkill, sequence, sourceSessions, context))
+            proposals += buildSkillPatchProposal(viewedSkill, sequence, sourceSessions, context)
         }
 
         val matching = (previousEvidence + evidence).filter { it.successful }.distinctBy { it.sessionId }
-        if (!explicitTeach && matching.size < REQUIRED_SUCCESSFUL_SESSIONS) return emptyList()
+        if (!explicitTeach && matching.size < REQUIRED_SUCCESSFUL_SESSIONS) return proposals
         val sourceSessions = matching.map { it.sessionId }.takeLast(REQUIRED_SUCCESSFUL_SESSIONS).ifEmpty { listOf(context.sessionId) }
         val name = skillName(sequence, trigger)
         val content = buildString {
@@ -111,7 +130,7 @@ class SelfImprovementPipeline @Inject constructor(
             appendLine()
             appendLine("Review scope, procedure details, and task-specific assumptions before activation.")
         }.trim()
-        return listOf(PendingProposal(
+        proposals += PendingProposal(
             id = "skill_${name}_${sourceSessions.joinToString("_")}".replace(Regex("[^A-Za-z0-9_-]"), "_").take(180),
             sourceSessionId = sourceSessions.last(),
             type = PendingProposalType.SKILL_CREATE,
@@ -129,7 +148,68 @@ class SelfImprovementPipeline @Inject constructor(
             evidence = sourceSessions.map {
                 if (sequence.isEmpty()) "Explicitly taught in session $it" else "Successful session $it with sequence: ${sequence.joinToString(" → ")}"
             }
-        ))
+        )
+        return proposals
+    }
+
+    private fun buildFailureLessonProposal(
+        context: CompletedInteractionContext,
+        sequence: List<String>,
+        fingerprint: String,
+        trigger: String,
+        failureHint: String,
+        matches: List<WorkflowEvidence>
+    ): PendingProposal {
+        val failedCount = matches.count { !it.successful }
+        val target = "avoid-" + fingerprint
+            .lowercase()
+            .replace(Regex("[^a-z0-9-]+"), "-")
+            .trim('-')
+            .take(50)
+            .ifBlank { "tool-pitfall" }
+        val sourceSessions = matches.map { it.sessionId }.takeLast(REQUIRED_FAILURE_SESSIONS + 2)
+        val content = buildString {
+            appendLine("---")
+            appendLine("name: $target")
+            appendLine("description: Lesson learned from repeated tool failures. Read before attempting this workflow.")
+            appendLine("version: 0.1.0")
+            appendLine("createdBy: self-improvement")
+            appendLine("---")
+            appendLine()
+            appendLine("# Pitfall")
+            appendLine()
+            appendLine("This workflow failed $failedCount times with the same error and never completed successfully:")
+            appendLine()
+            appendLine("## Trigger")
+            appendLine("- ${trigger.ifBlank { sequence.joinToString(" → ") }}")
+            appendLine()
+            appendLine("## Failing Sequence")
+            if (sequence.isEmpty()) appendLine("- $trigger") else sequence.forEach { appendLine("- $it") }
+            appendLine()
+            appendLine("## Observed Error")
+            appendLine("> $failureHint")
+            appendLine()
+            appendLine("Do not repeat this sequence unchanged. Verify tool arguments, available tools, and prerequisites first; prefer smaller steps.")
+            appendLine()
+            appendLine("## Evidence")
+            sourceSessions.forEach { appendLine("- Failed session $it") }
+        }.trim()
+        return PendingProposal(
+            id = "lesson_${fingerprint}_${failureHint.hashCode()}".replace(Regex("[^A-Za-z0-9_-]"), "_").take(180),
+            sourceSessionId = sourceSessions.last(),
+            type = PendingProposalType.SKILL_CREATE,
+            target = target,
+            action = PendingProposalAction.CREATE,
+            title = "Tool pitfall to avoid: ${sequence.take(3).joinToString(" → ").ifBlank { trigger.take(40) }}",
+            content = content,
+            reason = "The same tool workflow failed $failedCount times with the same error and never succeeded.",
+            confidence = 0.7,
+            createdAt = context.timestamp,
+            status = PendingProposalStatus.PENDING,
+            workspacePath = context.workspacePath,
+            sourceSessionIds = sourceSessions,
+            evidence = sourceSessions.map { "Failed session $it: $failureHint" }
+        )
     }
 
     private fun buildSkillPatchProposal(
@@ -208,6 +288,7 @@ class SelfImprovementPipeline @Inject constructor(
         .put("tools", JSONArray(tools))
         .put("successful", successful)
         .put("activeSkill", activeSkill)
+        .put("failureHint", failureHint)
         .put("timestamp", timestamp)
         .put("workspacePath", workspacePath)
 
@@ -218,6 +299,7 @@ class SelfImprovementPipeline @Inject constructor(
         tools = optJSONArray("tools")?.let { array -> List(array.length()) { array.optString(it) } } ?: emptyList(),
         successful = optBoolean("successful"),
         activeSkill = optString("activeSkill").takeIf(String::isNotBlank),
+        failureHint = optString("failureHint").takeIf(String::isNotBlank),
         timestamp = optLong("timestamp"),
         workspacePath = optString("workspacePath").takeIf(String::isNotBlank)
     )

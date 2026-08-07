@@ -41,6 +41,12 @@ internal val THINK_BLOCK = Regex("(?is)<think>.*?</think>")
 internal val INTEGER_TEXT = Regex("[+-]?\\d+")
 internal const val MAX_STREAM_CONTINUATIONS = 3
 internal const val MAX_STREAM_BACKOFF_MS = 4_000L
+/**
+ * How many invalid/duplicate/unadvertised tool calls a single turn tolerates before the
+ * tool loop stops. Every rejection is fed back to the model as a failure so it can
+ * self-correct; this bound prevents an infinite mis-call loop.
+ */
+internal const val MAX_FAILED_TOOL_ATTEMPTS = 3
 internal const val STREAM_CONTINUATION_PROMPT = "Continue the previous response exactly where it stopped. Do not repeat any text. Use tools if needed to complete the request."
 internal const val TOOL_RESULT_TRUNCATION_MARKER = "\n… [tool result truncated by context budget]"
 internal const val AUTO_COMPACTION_MARKER = "[AUTO-COMPACTED ACTIVE CONTEXT]"
@@ -78,8 +84,14 @@ internal fun canContinueStream(response: ChatResponse, hasToolCalls: Boolean): B
         else -> false
     }
 
-internal fun repeatedBrowserFailureWarning(signature: String, count: Int): String? =
-    if (count < 2) null else "Warning: the same browser tool error has occurred $count times ($signature). Do not repeat the same call unchanged. Inspect the current page state, choose a different action, or ask the user for clarification."
+internal fun repeatedToolFailureWarning(toolName: String, signature: String, count: Int): String? =
+    if (count < 2) {
+        null
+    } else if (toolName == "browser") {
+        "Warning: the same browser tool error has occurred $count times ($signature). Do not repeat the same call unchanged. Inspect the current page state, choose a different action, or ask the user for clarification."
+    } else {
+        "Warning: tool '$toolName' failed $count times with the same error ($signature). Do not repeat the same call unchanged; inspect the failure, adjust the arguments, try a different approach, or ask the user for clarification."
+    }
 
 internal fun shouldExecuteReceivedToolCalls(response: ChatResponse, hasToolCalls: Boolean): Boolean =
     hasToolCalls && when (response) {

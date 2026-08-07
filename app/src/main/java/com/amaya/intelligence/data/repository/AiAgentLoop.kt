@@ -246,10 +246,13 @@ internal fun AiRepository.chatImpl(
         var continueLoop = true
         var iterations = 0
         var browserTaskStarted = false
-        var lastBrowserErrorSignature: String? = null
-        var repeatedBrowserErrors = 0
         var terminalError = false
         var streamContinuations = 0
+        /** Cumulative rejected tool calls across iterations; capped at [MAX_FAILED_TOOL_ATTEMPTS]. */
+        var failedToolAttempts = 0
+        // Per-tool repeated-failure tracking for self-correction warnings (browser + any tool).
+        val lastToolErrorSignature = mutableMapOf<String, String>()
+        val repeatedToolErrors = mutableMapOf<String, Int>()
         val invalidToolArgumentErrors = mutableMapOf<String, Throwable>()
 
         while (continueLoop) {
@@ -413,12 +416,15 @@ internal fun AiRepository.chatImpl(
             var hasToolCalls = false
             var providerTerminal = false
             var retryableFailure: String? = null
+            /** Tool calls rejected in this request that still need failure feedback to the model. */
+            val rejectedToolCalls = mutableListOf<ToolCallMessage>()
 
             provider.chat(request).collect { response ->
                 if (providerTerminal) {
-                    send(AgentEvent.Error("Provider emitted an event after its terminal event", retryable = false))
-                    terminalError = true
-                    continueLoop = false
+                    // Some providers flush buffered events after the terminal one (Done/Incomplete/
+                    // Error). They are stale by definition — ignore them instead of failing the whole
+                    // turn with "Provider emitted an event after its terminal event".
+                    StreamDebugLog.event(conversationId, null, "POST_TERMINAL_IGNORED", response.javaClass.simpleName)
                     return@collect
                 }
                 when (response) {
@@ -435,10 +441,27 @@ internal fun AiRepository.chatImpl(
                     is ChatResponse.ToolCall -> {
                         StreamDebugLog.event(conversationId, null, "TOOL_CALL", "id=${response.id} name=${response.name}")
                         if (!isValidToolCall(response.id, response.name, allowedToolNames, toolCalls.map { it.id }.toSet())) {
-                            send(AgentEvent.Error("Invalid, duplicate, or unadvertised tool call: ${response.name}", retryable = false))
-                            terminalError = true
-                            providerTerminal = true
-                            continueLoop = false
+                            // Mis-called tool: do not terminate the turn. Record the rejection and
+                            // feed a failure back so the model can self-correct (Hermes-style
+                            // recovery). Bounded by MAX_FAILED_TOOL_ATTEMPTS to stop an infinite
+                            // mis-call loop.
+                            failedToolAttempts++
+                            rejectedToolCalls.add(ToolCallMessage(
+                                id = response.id.ifBlank { "rejected_$failedToolAttempts" },
+                                name = response.name,
+                                arguments = response.arguments,
+                                metadata = response.metadata
+                            ))
+                            StreamDebugLog.event(conversationId, null, "TOOL_CALL_REJECTED", "id=${response.id} name=${response.name} attempts=$failedToolAttempts")
+                            if (failedToolAttempts >= MAX_FAILED_TOOL_ATTEMPTS) {
+                                send(AgentEvent.Error(
+                                    "The model issued $failedToolAttempts invalid or duplicate tool calls (last: ${response.name}); stopping the tool loop after $MAX_FAILED_TOOL_ATTEMPTS failures.",
+                                    retryable = false
+                                ))
+                                terminalError = true
+                                providerTerminal = true
+                                continueLoop = false
+                            }
                             return@collect
                         }
                         val validation = validateToolArguments(response.name, response.arguments, tools)
@@ -495,6 +518,24 @@ internal fun AiRepository.chatImpl(
             }
 
             if (terminalError) break
+
+            // Feed rejected tool calls back as an explicit failure so the model can correct its
+            // next call instead of the loop silently ending (previously a hard turn-terminating
+            // error on the first mis-call).
+            if (rejectedToolCalls.isNotEmpty() && !hasToolCalls) {
+                if (textBuffer.isNotBlank()) {
+                    messages = messages + ChatMessage(role = MessageRole.ASSISTANT, content = textBuffer.toString())
+                }
+                val lastRejected = rejectedToolCalls.last()
+                val available = allowedToolNames.take(16).joinToString()
+                messages = messages + ChatMessage(
+                    role = MessageRole.USER,
+                    content = "Host tool-loop feedback: the previous response called '${lastRejected.name}' but the host rejected it (blank call ID, unadvertised tool, or duplicate ID). Available tools: $available. Fix the call and retry, or answer directly. (Failure $failedToolAttempts/$MAX_FAILED_TOOL_ATTEMPTS.)"
+                )
+                StreamDebugLog.event(conversationId, null, "TOOL_CALL_REJECTED_FEEDBACK", "attempts=$failedToolAttempts name=${lastRejected.name}")
+                continue
+            }
+
             if (!providerTerminal && !hasToolCalls) retryableFailure = "Provider stream ended without a terminal event"
             if (providerTerminal && !hasToolCalls && textBuffer.isBlank() && responseItemOutputText(responseItems).isNullOrBlank()) {
                 retryableFailure = "Provider completed without a final response"
@@ -594,18 +635,21 @@ internal fun AiRepository.chatImpl(
                         is ToolResult.RequiresConfirmation -> "Error: Approval could not be completed: ${result.reason}"
                     }
                     var resultContent = rawResultContent
-                    if (toolCall.name == "browser") {
-                        val signature = browserErrorSignature(resultContent)
-                        if (signature != null) {
-                            repeatedBrowserErrors = if (signature == lastBrowserErrorSignature) repeatedBrowserErrors + 1 else 1
-                            lastBrowserErrorSignature = signature
-                            repeatedBrowserFailureWarning(signature, repeatedBrowserErrors)?.let { warning ->
-                                resultContent += "\n\n$warning"
-                            }
-                        } else {
-                            lastBrowserErrorSignature = null
-                            repeatedBrowserErrors = 0
+                    // Repeated identical tool failures get a self-correction hint appended to the
+                    // result, for browser and every other tool (Hermes-style in-loop recovery).
+                    val errorSignature = toolErrorSignature(resultContent)
+                    if (errorSignature != null) {
+                        val repeated = if (lastToolErrorSignature[toolCall.name] == errorSignature) {
+                            (repeatedToolErrors[toolCall.name] ?: 0) + 1
+                        } else 1
+                        lastToolErrorSignature[toolCall.name] = errorSignature
+                        repeatedToolErrors[toolCall.name] = repeated
+                        repeatedToolFailureWarning(toolCall.name, errorSignature, repeated)?.let { warning ->
+                            resultContent += "\n\n$warning"
                         }
+                    } else {
+                        lastToolErrorSignature.remove(toolCall.name)
+                        repeatedToolErrors.remove(toolCall.name)
                     }
 
                     completedToolResults.add("${toolCall.name}: $resultContent")
