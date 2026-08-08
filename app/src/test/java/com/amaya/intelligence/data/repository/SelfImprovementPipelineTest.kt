@@ -37,6 +37,7 @@ class SelfImprovementPipelineTest {
         skillRepository = FileSkillRepository(FileSkillStore(context), classifier, SkillPatchApplier()),
         projectStateRepository = FileProjectStateRepository(context),
         androidCapabilityRepository = FileAndroidCapabilityRepository(context),
+        recommendationRepository = FileRecommendationRepository(context),
         context = context
     )
 
@@ -49,6 +50,21 @@ class SelfImprovementPipelineTest {
         )
         assertTrue(result.skillProposals.isEmpty())
         assertTrue(pending.proposals.isEmpty())
+    }
+
+    @Test
+    fun `failed build turn suggests an evidence-gated build-fix recommendation`() = kotlinx.coroutines.runBlocking {
+        val workspace = File(root, "workspace").apply { mkdirs() }.canonicalPath
+        pipeline.analyzeAndImprove(
+            interaction("one", successful = false).copy(
+                workspacePath = workspace,
+                toolResults = listOf("FAILURE: Build failed with an exception.")
+            )
+        )
+        val recommendations = FileRecommendationRepository(context).list(workspacePath = workspace)
+        val buildFix = recommendations.firstOrNull { it.title == "Fix the failed build" }
+        assertTrue("expected a build-fix recommendation", buildFix != null)
+        assertTrue(buildFix!!.verificationRule.contains("build successful"))
     }
 
     @Test

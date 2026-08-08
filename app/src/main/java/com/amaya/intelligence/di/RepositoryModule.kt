@@ -4,6 +4,7 @@ import com.amaya.intelligence.data.repository.BrainSettingsRepository
 import com.amaya.intelligence.data.repository.DataStoreBrainSettingsRepository
 import com.amaya.intelligence.data.repository.FileMemoryRepository
 import com.amaya.intelligence.data.repository.FilePendingProposalRepository
+import com.amaya.intelligence.data.repository.FileRecommendationRepository
 import com.amaya.intelligence.data.repository.FileSessionMemoryRepository
 import com.amaya.intelligence.data.repository.FileSkillRepository
 import com.amaya.intelligence.data.repository.MaintenanceScheduler
@@ -16,6 +17,7 @@ import com.amaya.intelligence.data.repository.AndroidCapabilityRepository
 import com.amaya.intelligence.data.repository.FileAndroidCapabilityRepository
 import com.amaya.intelligence.data.repository.FileProjectStateRepository
 import com.amaya.intelligence.data.repository.ProjectStateRepository
+import com.amaya.intelligence.data.repository.RecommendationRepository
 import com.amaya.intelligence.data.repository.SessionMemoryRepository
 import com.amaya.intelligence.data.repository.SessionSummarizer
 import com.amaya.intelligence.data.repository.SkillRepository
@@ -58,6 +60,10 @@ abstract class RepositoryModule {
     @Binds
     @Singleton
     abstract fun bindAndroidCapabilityRepository(impl: FileAndroidCapabilityRepository): AndroidCapabilityRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindRecommendationRepository(impl: FileRecommendationRepository): RecommendationRepository
 
     @Binds
     @Singleton

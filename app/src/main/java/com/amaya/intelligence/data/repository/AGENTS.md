@@ -14,3 +14,4 @@ Applies to `data/repository/`.
 - `AiConversationCompression.kt`: manual compression and automatic task-ledger updates.
 - `AiArgumentValidation.kt`: advertised-tool argument and JSON Schema validation.
 - `AiTitleGenerator.kt`: bounded title generation with deterministic fallback.
+- `RecommendationRepository.kt`: evidence-verified implementation recommendation lifecycle (suggested → accepted → in_progress → verified → completed; JSONL store; `verify` is evidence-gated by the recommendation's verification rule).

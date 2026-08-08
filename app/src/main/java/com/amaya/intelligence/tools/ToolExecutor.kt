@@ -35,6 +35,7 @@ class ToolExecutor @Inject constructor(
     private val agentMemoryTool: AgentMemoryTool,
     private val skillViewTool: SkillViewTool,
     private val skillManageTool: SkillManageTool,
+    private val recommendationManageTool: RecommendationManageTool,
     private val sessionSearchTool: SessionSearchTool,
     // Todo tool
     private val updateTodoTool: UpdateTodoTool,
@@ -65,6 +66,7 @@ class ToolExecutor @Inject constructor(
             agentMemoryTool.name    to agentMemoryTool,
             skillViewTool.name      to skillViewTool,
             skillManageTool.name    to skillManageTool,
+            recommendationManageTool.name to recommendationManageTool,
             sessionSearchTool.name  to sessionSearchTool,
             updateTodoTool.name     to updateTodoTool,
             invokeSubagentsTool.name to invokeSubagentsTool,

@@ -7,6 +7,8 @@ import com.amaya.intelligence.domain.memory.PendingProposalStatus
 import com.amaya.intelligence.domain.memory.PendingProposalType
 import com.amaya.intelligence.domain.memory.PrimedState
 import com.amaya.intelligence.domain.memory.PrimedTriggerType
+import com.amaya.intelligence.domain.memory.Recommendation
+import com.amaya.intelligence.domain.memory.RecommendationPriority
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -54,6 +56,8 @@ class SelfImprovementPipeline @Inject constructor(
     // Project Intelligence System phase B/D: per-workspace live state and Android capability matrix.
     private val projectStateRepository: ProjectStateRepository,
     private val androidCapabilityRepository: AndroidCapabilityRepository,
+    // Project Intelligence System: evidence-grounded implementation recommendations.
+    private val recommendationRepository: RecommendationRepository,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context
 ) {
     private val evidenceFile: File get() = File(context.filesDir, "skills/workflow-evidence.jsonl")
@@ -83,6 +87,10 @@ class SelfImprovementPipeline @Inject constructor(
             runCatching {
                 androidCapabilityRepository.recordBuildOutcome(context.workspacePath, successful = context.successful)
             }.onFailure { android.util.Log.w("AmayaMemory", "Capability outcome failed: ${it.message}") }
+            // Recommendations: a failed turn suggests concrete, evidence-grounded next steps so the
+            // agent keeps pursuing blockers instead of repeating the same mistake.
+            runCatching { suggestBlockerRecommendations(context) }
+                .onFailure { android.util.Log.w("AmayaMemory", "Recommendation suggest failed: ${it.message}") }
         }
         // End-of-turn batch housekeeping (scheme §5): recompute decay, archive memories that decayed
         // below the floor, and enforce the per-scope cap in one bounded pass. Any failure is
@@ -95,6 +103,53 @@ class SelfImprovementPipeline @Inject constructor(
         runCatching { skillRepository.computeDynamicReputations() }
             .onFailure { android.util.Log.w("AmayaMemory", "Skill reputation pass failed: ${it.message}") }
         return SelfImprovementResult(skillProposals)
+    }
+
+    /**
+     * Suggests blocker recommendations from a failed turn. Build failures become HIGH-priority
+     * recommendations whose verification rule is a successful build; other failures become
+     * MEDIUM-priority recommendations with no rule (any evidence). Deduplicates against active
+     * recommendations and caps the per-turn suggestion count. Non-fatal, best-effort.
+     */
+    internal suspend fun suggestBlockerRecommendations(context: CompletedInteractionContext) {
+        val workspacePath = context.workspacePath ?: return
+        val hasFailedBuild = context.toolResults.any { result ->
+            val lower = result.lowercase()
+            BUILD_FAILURE_PATTERNS.any { lower.contains(it) }
+        }
+        val blockers = context.toolResults
+            .flatMap { result -> result.lineSequence().map { it.trim() }.filter { line -> line.isNotBlank() && FAILURE_TERMS.any { it in line.lowercase() } } }
+            .distinct()
+            .map { it.take(120) }
+            .take(MAX_RECOMMENDATIONS_PER_TURN)
+        if (!hasFailedBuild && blockers.isEmpty()) return
+        val active = recommendationRepository.list(workspacePath = workspacePath)
+            .filter { it.status in Recommendation.ACTIVE_STATUSES }
+            .map { it.title.lowercase().trim() }
+            .toSet()
+        if (hasFailedBuild && "Fix the failed build".lowercase() !in active) {
+            recommendationRepository.suggest(
+                workspacePath = workspacePath,
+                title = "Fix the failed build",
+                rationale = "The last turn reported a failed build.",
+                priority = RecommendationPriority.HIGH,
+                verificationRule = "build successful, build succeeded, compilation succeeded",
+                sourceSessionId = context.sessionId
+            )
+        }
+        blockers.take(MAX_RECOMMENDATIONS_PER_TURN - 1).forEach { blocker ->
+            val title = "Resolve: $blocker"
+            if (title.lowercase() !in active) {
+                recommendationRepository.suggest(
+                    workspacePath = workspacePath,
+                    title = title,
+                    rationale = "Blocked progress in the last turn.",
+                    priority = RecommendationPriority.MEDIUM,
+                    verificationRule = "",
+                    sourceSessionId = context.sessionId
+                )
+            }
+        }
     }
 
     internal fun extractSkillCandidates(context: CompletedInteractionContext): List<PendingProposal> {
@@ -784,6 +839,8 @@ class SelfImprovementPipeline @Inject constructor(
         )
         private val TEACH_TERMS = listOf("save this workflow", "remember this workflow", "teach this workflow", "simpan workflow", "pelajari workflow", "jadikan skill")
         private val FAILURE_TERMS = listOf("error", "failed", "timeout", "cancelled", "gagal")
+        private val BUILD_FAILURE_PATTERNS = listOf("build failed", "assemble failed", "execution failed", "compilation failed", "failed to build", "error: failed")
+        private const val MAX_RECOMMENDATIONS_PER_TURN = 2
         private val SELF_IMPROVEMENT_TOOLS = setOf("memory", "skill", "update_memory", "memory_manage", "skill_view", "skill_manage", "session_search", "update_todo")
         /** Imperative/task phrases that disqualify a sentence from being a durable fact. */
         private val FACT_TASK_VERBS = listOf(

@@ -84,7 +84,9 @@ enum class ContextSource {
     /** Project Intelligence System phase B: live per-workspace state (goal, blockers, build). */
     PROJECT_STATE,
     /** Project Intelligence System phase D: Android capability matrix. */
-    CAPABILITY
+    CAPABILITY,
+    /** Project Intelligence System: active implementation recommendations with verification rules. */
+    RECOMMENDATIONS
 }
 
 enum class ContextInclusionMode {
@@ -148,7 +150,8 @@ class ContextManager @Inject constructor(
     private val promptBudgetManager: PromptBudgetManager,
     private val contextRanker: ContextRanker,
     private val projectStateProvider: ProjectStateProvider,
-    private val capabilityMatrixProvider: CapabilityMatrixProvider
+    private val capabilityMatrixProvider: CapabilityMatrixProvider,
+    private val recommendationProvider: RecommendationProvider
 ) {
     suspend fun buildContext(request: ContextBuildRequest): ContextBuildResult {
         val settings = brainSettingsRepository.getBrainSettings()
@@ -169,6 +172,7 @@ class ContextManager @Inject constructor(
         var sessionItem: ContextItem = ContextItem("past_sessions", "past_sessions", ContextSource.SESSION_SUMMARY, "Past Sessions", "", 620, mode = ContextInclusionMode.DROP)
         var projectStateItem: ContextItem = ContextItem("project_state", "project_state", ContextSource.PROJECT_STATE, "Project State", "", 900, mode = ContextInclusionMode.DROP)
         var capabilityItem: ContextItem = ContextItem("android_capability", "android_capability", ContextSource.CAPABILITY, "Android Compatibility", "", 880, mode = ContextInclusionMode.DROP)
+        var recommendationItem: ContextItem = ContextItem("recommendations", "recommendations", ContextSource.RECOMMENDATIONS, "Recommendations", "", 930, mode = ContextInclusionMode.DROP)
 
         val sections = defaultSections()
         // Memory, skills, and session recall are independent IO subsystems. Awaiting them one at a
@@ -184,12 +188,14 @@ class ContextManager @Inject constructor(
             }
             val projectState = async { projectStateProvider.stateItem(request.workspacePath) }
             val capability = async { capabilityMatrixProvider.capabilityItem(request.workspacePath) }
+            val recommendations = async { recommendationProvider.recommendationItem(request.workspacePath) }
             memoryItems = memory.await()
             skillItem = skills.await()
             pitfallItem = pitfalls.await()
             sessionItem = session.await()
             projectStateItem = projectState.await()
             capabilityItem = capability.await()
+            recommendationItem = recommendations.await()
         }
         val items = buildList {
             add(ContextItem("operating_rules", "operating_rules", ContextSource.OPERATING_RULES, "System", baseOperatingRules(request.assistantMode), 1000, mode = ContextInclusionMode.ALWAYS, alwaysInclude = true))
@@ -204,6 +210,7 @@ class ContextManager @Inject constructor(
             add(sessionItem)
             add(projectStateItem)
             add(capabilityItem)
+            add(recommendationItem)
             workspaceItem(request.workspacePath, settings, intent)?.let { add(it) }
             add(ContextItem("time", "time", ContextSource.TIME, "Current Time", clock, 100, mode = ContextInclusionMode.ALWAYS, alwaysInclude = true, maxTokens = 80))
         }
@@ -276,6 +283,7 @@ class ContextManager @Inject constructor(
         PromptSection("project_context", "PROJECT CONTEXT", 980, ContextInclusionMode.ALWAYS, true),
         PromptSection("project_state", "PROJECT STATE", 960, ContextInclusionMode.ALWAYS, true),
         PromptSection("android_capability", "ANDROID COMPATIBILITY", 940, ContextInclusionMode.ALWAYS, true),
+        PromptSection("recommendations", "RECOMMENDATIONS", 930, ContextInclusionMode.ALWAYS, true),
         // Volatile tail: re-ranked per turn against the current message.
         PromptSection("known_pitfalls", "KNOWN PITFALLS", 720, ContextInclusionMode.SEARCH_FIRST),
         PromptSection("skill_index", "SKILL INDEX", 700, ContextInclusionMode.INDEX_ONLY),
@@ -730,6 +738,30 @@ class CapabilityMatrixProvider @Inject constructor(
         return ContextItem(
             "android_capability", "android_capability", ContextSource.CAPABILITY, "Android Compatibility",
             content, 880, score = 1.5, mode = ContextInclusionMode.FULL, maxTokens = 600
+        )
+    }
+}
+
+/**
+ * Project Intelligence System: active implementation recommendations with verification rules,
+ * injected as project-level context so the agent keeps pursuing evidence-backed next steps.
+ * Only emitted for a workspace with active recommendations.
+ */
+@Singleton
+class RecommendationProvider @Inject constructor(
+    private val recommendationRepository: RecommendationRepository
+) {
+    suspend fun recommendationItem(workspacePath: String?): ContextItem {
+        if (workspacePath.isNullOrBlank()) {
+            return ContextItem("recommendations", "recommendations", ContextSource.RECOMMENDATIONS, "Recommendations", "", 930, mode = ContextInclusionMode.DROP)
+        }
+        val content = recommendationRepository.renderForContext(workspacePath)
+        if (content.isBlank()) {
+            return ContextItem("recommendations", "recommendations", ContextSource.RECOMMENDATIONS, "Recommendations", "", 930, mode = ContextInclusionMode.DROP)
+        }
+        return ContextItem(
+            "recommendations", "recommendations", ContextSource.RECOMMENDATIONS, "Recommendations",
+            content, 930, score = 1.5, mode = ContextInclusionMode.FULL, maxTokens = 400
         )
     }
 }
