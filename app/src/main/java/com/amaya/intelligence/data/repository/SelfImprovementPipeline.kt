@@ -288,7 +288,7 @@ class SelfImprovementPipeline @Inject constructor(
         for (message in context.userMessages) {
             if (proposals.size >= MAX_FACTS_PER_TURN) break
             val lower = message.lowercase()
-            for ((markers, kind) in DURABLE_FACT_PATTERNS) {
+            for ((kind, markers) in DURABLE_FACT_PATTERNS) {
                 if (proposals.size >= MAX_FACTS_PER_TURN) break
                 val marker = markers.firstOrNull { it in lower } ?: continue
                 val fact = extractFactSentence(message, lower.indexOf(marker))
