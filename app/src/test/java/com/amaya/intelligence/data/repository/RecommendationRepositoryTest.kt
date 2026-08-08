@@ -170,6 +170,8 @@ class RecommendationRepositoryTest {
     fun `renderForContext lists only active recommendations`() = run {
         val active = repository.suggest("/ws", "Support arm64-v8a", rationale = "Release target").getOrThrow()
         val done = repository.suggest("/ws", "Clean up dead code").getOrThrow()
+        // The guarded lifecycle (canTransition) requires ACCEPTED before COMPLETED.
+        assertTrue(repository.transition(done, RecommendationStatus.ACCEPTED).isSuccess)
         assertTrue(repository.transition(done, RecommendationStatus.COMPLETED).isSuccess)
 
         val rendered = repository.renderForContext("/ws")

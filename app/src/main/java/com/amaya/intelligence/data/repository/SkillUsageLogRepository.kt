@@ -97,11 +97,14 @@ class FileSkillUsageLogRepository @Inject constructor(
     override suspend fun listRecent(limit: Int): List<SkillUsageEntry> = withContext(Dispatchers.IO) {
         runCatching {
             if (!file.exists()) return@withContext emptyList()
+            // The log is append-only, so the file order IS the chronological order. Reversing the
+            // lines gives a deterministic newest-first view without relying on millisecond-precision
+            // createdAt timestamps (two records in the same millisecond must not tie-break arbitrarily).
             file.readLines()
                 .mapNotNull { line ->
                     runCatching { JSONObject(line).toSkillUsageEntry() }.getOrNull()
                 }
-                .sortedByDescending { it.createdAt }
+                .asReversed()
                 .take(limit.coerceIn(1, 500))
         }.getOrDefault(emptyList())
     }

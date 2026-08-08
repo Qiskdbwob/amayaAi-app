@@ -43,9 +43,11 @@ class CommandPolicyTest {
 
     @Test
     fun `unmatched command requires review`() {
+        // autoApproveNonDestructive defaults to true, which would auto-allow a harmless command;
+        // the review path is what this test pins down, so it disables auto-approval explicitly.
         val result = validator().validateCommand(
             "custom-linter --check",
-            TerminalSettings(trustedCommands = emptyList())
+            TerminalSettings(trustedCommands = emptyList(), autoApproveNonDestructive = false)
         )
         assertTrue(result is ValidationResult.RequiresConfirmation)
     }

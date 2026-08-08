@@ -47,8 +47,10 @@ class SelfImprovementPipelineTest {
 
     @Test
     fun `ordinary user messages never create hidden about you proposals`() = kotlinx.coroutines.runBlocking {
+        // Note: "Remember that I prefer …" deliberately matches a USER durable-fact marker and
+        // SHOULD propose a preference fact (approval-gated). A truly ordinary message must not.
         val result = pipeline.analyzeAndImprove(
-            interaction("one", successful = true).copy(userMessages = listOf("Remember that I prefer Indonesian."), toolCalls = emptyList())
+            interaction("one", successful = true).copy(userMessages = listOf("Let's move on to the next task."), toolCalls = emptyList())
         )
         assertTrue(result.skillProposals.isEmpty())
         assertTrue(pending.proposals.isEmpty())
@@ -85,7 +87,8 @@ class SelfImprovementPipelineTest {
     @Test
     fun `repeated failures then recovery creates patch only for viewed skill`() {
         assertTrue(pipeline.extractSkillCandidates(interaction("fail-1", false, "skill:name=android-build")).isEmpty())
-        assertTrue(pipeline.extractSkillCandidates(interaction("fail-2", false, "skill:name=android-build")).isEmpty())
+        // Two identical failures now trigger the approval-gated failure lesson (scheme §2), not a patch.
+        assertEquals(1, pipeline.extractSkillCandidates(interaction("fail-2", false, "skill:name=android-build")).size)
         val proposals = pipeline.extractSkillCandidates(interaction("recovered", true, "skill:name=android-build"))
         assertEquals(1, proposals.size)
         assertEquals("android-build", proposals.single().target)
