@@ -85,4 +85,12 @@ interface MemoryRepository {
      * proposals — usage alone can never confirm a memory.
      */
     suspend fun confirmMemory(id: String, workspacePath: String? = null): Result<String>
+
+    /**
+     * Provenance (project intelligence): append a verification evidence line to an active memory
+     * without changing its content. Used by the recommendation system so that when a recommendation
+     * is VERIFIED, the proof is linked back to every memory it drew from ("where do you know this
+     * from?"). Bumps the record version like any other mutation.
+     */
+    suspend fun appendEvidence(id: String, evidenceLine: String, workspacePath: String? = null): Result<Unit>
 }

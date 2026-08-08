@@ -200,6 +200,7 @@ class AiRepository @Inject constructor(
     internal val sessionMemoryRepository: SessionMemoryRepository,
     internal val workspaceMemoryStore: FileWorkspaceMemoryStore,
     internal val skillRepository: SkillRepository,
+    internal val skillUsageLogRepository: SkillUsageLogRepository,
     internal val selfImprovementPipeline: SelfImprovementPipeline,
     internal val contextManager: ContextManager,
     internal val referenceDocumentRepository: ReferenceDocumentRepository,

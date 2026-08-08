@@ -19,6 +19,8 @@ import com.amaya.intelligence.data.repository.FileProjectStateRepository
 import com.amaya.intelligence.data.repository.ProjectStateRepository
 import com.amaya.intelligence.data.repository.RecommendationRepository
 import com.amaya.intelligence.data.repository.SessionMemoryRepository
+import com.amaya.intelligence.data.repository.SkillUsageLogRepository
+import com.amaya.intelligence.data.repository.FileSkillUsageLogRepository
 import com.amaya.intelligence.data.repository.SessionSummarizer
 import com.amaya.intelligence.data.repository.SkillRepository
 import com.amaya.intelligence.data.repository.DataStoreTerminalSettingsRepository
@@ -64,6 +66,10 @@ abstract class RepositoryModule {
     @Binds
     @Singleton
     abstract fun bindRecommendationRepository(impl: FileRecommendationRepository): RecommendationRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindSkillUsageLogRepository(impl: FileSkillUsageLogRepository): SkillUsageLogRepository
 
     @Binds
     @Singleton

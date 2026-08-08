@@ -843,9 +843,14 @@ internal fun AiRepository.chatImpl(
         )
 
         if (viewedSkills.isNotEmpty()) {
+            val outcome = !terminalError
             viewedSkills.forEach { skillName ->
-                runCatching { skillRepository.recordSkillUsage(skillName, success = !terminalError) }
+                runCatching { skillRepository.recordSkillUsage(skillName, success = outcome) }
                     .onFailure { errorLog("AiRepository", "Failed to record skill outcome", it) }
+                // Batched usage log (scheme §1.4): buffer in memory, flush once at end-of-session
+                // housekeeping so flash I/O stays bounded to a single session boundary.
+                runCatching { skillUsageLogRepository.recordUsage(skillName, sessionId, outcome) }
+                    .onFailure { errorLog("AiRepository", "Failed to buffer skill usage log", it) }
             }
         }
         if (runtimeTarget == AgentRuntimeTarget.LOCAL) {

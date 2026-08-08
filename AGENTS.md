@@ -76,7 +76,7 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/data/remote/`: remote API clients, provider presets/discovery, settings, and transport-facing models.
 - `app/src/main/java/com/amaya/intelligence/data/local/`: local entities, DAOs, Room database, file-backed stores, and stable workspace-memory UUID metadata.
 - `app/schemas/`: exported Room schema snapshots and versioning notes.
-- `app/src/main/java/com/amaya/intelligence/data/repository/`: repositories and orchestration for AI, signed GitHub APK updates, Chat/Project/Agent-group-owned sessions, owner-scoped recall, imported references, memory, skills, evidence-verified implementation recommendations, terminal policy, and maintenance.
+- `app/src/main/java/com/amaya/intelligence/data/repository/`: repositories and orchestration for AI, signed GitHub APK updates, Chat/Project/Agent-group-owned sessions, owner-scoped recall, imported references, memory, skills, evidence-verified implementation recommendations, buffered skill usage logging, terminal policy, and maintenance.
 - `app/src/main/java/com/amaya/intelligence/domain/memory/`: user/workspace memory classification, safety, normalization, proposals, dedupe, and compaction domain logic; no global catch-all or model-owned importance score.
 - `app/src/main/java/com/amaya/intelligence/domain/skills/`: reusable skill domain models and patch/usage helpers.
 - `app/src/main/java/com/amaya/intelligence/impl/ide/antigravity/`: Antigravity provider, protocol, client, and event mapping.
@@ -100,6 +100,7 @@ amaya/
 - `app/src/main/java/com/amaya/intelligence/tools/CapabilityToolMapper.kt`: canonical capability-operation mapping to existing handlers.
 - `app/src/main/java/com/amaya/intelligence/tools/MemoryManageTool.kt`: active user/workspace saved-memory list/search/update tool with optimistic version checks. User-memory proposals are removed; direct tool/manual writes remain. Daily-log, global Important Memory, model-owned importance, and memory archive/delete/restore capabilities are removed.
 - `app/src/main/java/com/amaya/intelligence/tools/SkillManageTool.kt`: explicit reusable-skill management tool.
+- `app/src/main/java/com/amaya/intelligence/tools/RecommendationManageTool.kt`: evidence-verified implementation-recommendation lifecycle tool (list/suggest/accept/start/verify/complete/archive).
 - `app/src/main/java/com/amaya/intelligence/util/LocalStreamPerfLog.kt`: temporary local streaming profiler.
 - `app/src/main/java/com/amaya/intelligence/impl/local/browser/`: WebView controller, session manager, DOM inspection, and safety guard.
 - `windows-bridge/`: Electron Windows bridge main process, transport, permissions, audit, and native helper runtime.

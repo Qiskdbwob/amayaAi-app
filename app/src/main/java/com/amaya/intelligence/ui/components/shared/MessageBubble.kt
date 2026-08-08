@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -138,6 +139,28 @@ fun MessageBubble(
                         lineHeight = 24.sp
                     )
                 }
+            }
+            // Quick actions: always-visible icons, so copy/edit don't depend on discovering the
+            // long-press menu. Both entry points invoke the same callbacks wired by the chat host.
+            Row(
+                modifier = Modifier.padding(top = 4.dp, end = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                MessageQuickAction(
+                    icon = Icons.Default.ContentCopy,
+                    label = "Copy message",
+                    onClick = onCopyMessage?.let { callback ->
+                        { callback(message.formattedContent ?: message.content) }
+                    }
+                )
+                MessageQuickAction(
+                    icon = Icons.Default.Edit,
+                    label = "Edit message",
+                    onClick = onEditUserMessage?.let { callback ->
+                        { callback(message.formattedContent ?: message.content) }
+                    }
+                )
             }
             DropdownMenu(
                 expanded = userMenuOpen,
@@ -312,6 +335,27 @@ fun MessageBubble(
                 }
             }
         }
+            // Quick actions for assistant responses (same callbacks as the long-press menu).
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp, end = 2.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                MessageQuickAction(
+                    icon = Icons.Default.ContentCopy,
+                    label = "Copy response",
+                    onClick = onCopyMessage?.let { callback ->
+                        { callback(message.formattedContent ?: message.content) }
+                    }
+                )
+                if (message.content.isNotBlank()) {
+                    MessageQuickAction(
+                        icon = Icons.Default.Refresh,
+                        label = "Regenerate response",
+                        onClick = onRegenerate
+                    )
+                }
+            }
             DropdownMenu(
                 expanded = assistantMenuOpen,
                 onDismissRequest = { assistantMenuOpen = false }
@@ -335,6 +379,29 @@ fun MessageBubble(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun MessageQuickAction(
+    icon: ImageVector,
+    label: String,
+    onClick: (() -> Unit)?
+) {
+    if (onClick == null) return
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        modifier = Modifier.size(30.dp)
+    ) {
+        IconButton(onClick = onClick, modifier = Modifier.size(30.dp)) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+            )
         }
     }
 }

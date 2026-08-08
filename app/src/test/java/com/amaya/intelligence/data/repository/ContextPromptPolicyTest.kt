@@ -78,7 +78,7 @@ class ContextPromptPolicyTest {
         val pipeline = SelfImprovementPipeline(
             classifier, pendingProposalRepository, memory, primedStateRepository, skills,
             FileProjectStateRepository(context), FileAndroidCapabilityRepository(context),
-            FileRecommendationRepository(context), context
+            FileRecommendationRepository(context, memory), FileSkillUsageLogRepository(context), context
         )
         return ContextManager(
             settingsRepository,
@@ -90,7 +90,7 @@ class ContextPromptPolicyTest {
             ContextRanker(),
             ProjectStateProvider(FileProjectStateRepository(context)),
             CapabilityMatrixProvider(FileAndroidCapabilityRepository(context)),
-            RecommendationProvider(FileRecommendationRepository(context))
+            RecommendationProvider(FileRecommendationRepository(context, memory))
         )
     }
 

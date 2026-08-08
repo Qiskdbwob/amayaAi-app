@@ -58,6 +58,8 @@ class SelfImprovementPipeline @Inject constructor(
     private val androidCapabilityRepository: AndroidCapabilityRepository,
     // Project Intelligence System: evidence-grounded implementation recommendations.
     private val recommendationRepository: RecommendationRepository,
+    // Scheme §1.4: buffered skill usage log, flushed once as a batch at end-of-session housekeeping.
+    private val skillUsageLogRepository: SkillUsageLogRepository,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context
 ) {
     private val evidenceFile: File get() = File(context.filesDir, "skills/workflow-evidence.jsonl")
@@ -102,6 +104,10 @@ class SelfImprovementPipeline @Inject constructor(
         // Phase 4: one batched pass recomputing every skill's dynamic reputation.
         runCatching { skillRepository.computeDynamicReputations() }
             .onFailure { android.util.Log.w("AmayaMemory", "Skill reputation pass failed: ${it.message}") }
+        // Scheme §1.4: flush the whole session's buffered skill usage as one batch write. Any failure
+        // is non-fatal — the buffer is retained and retried on the next housekeeping pass.
+        runCatching { skillUsageLogRepository.flush() }
+            .onFailure { android.util.Log.w("AmayaMemory", "Skill usage log flush failed: ${it.message}") }
         return SelfImprovementResult(skillProposals)
     }
 

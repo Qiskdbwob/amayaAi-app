@@ -250,6 +250,30 @@ class FileMemoryRepository @Inject constructor(
         }
     }
 
+    override suspend fun appendEvidence(
+        id: String,
+        evidenceLine: String,
+        workspacePath: String?
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        synchronized(fileLock) {
+            runCatching {
+                ensureMigrated()
+                val clean = evidenceLine.trim()
+                require(clean.isNotBlank()) { "Evidence line is required." }
+                val record = findActiveMemory(id, workspacePath)
+                val now = System.currentTimeMillis()
+                supersedeMemoryRecord(record, now)
+                appendMemoryRecord(record.copy(
+                    action = MemoryAction.REPLACE,
+                    reason = "Verification evidence appended.",
+                    updatedAt = now,
+                    version = record.version + 1,
+                    evidence = (record.evidence + clean.take(300)).take(MAX_EVIDENCE_LINES)
+                ))
+            }
+        }
+    }
+
     override suspend fun deleteMemoryById(
         id: String,
         expectedVersion: Int,
@@ -839,6 +863,8 @@ class FileMemoryRepository @Inject constructor(
         private const val MIN_DECAY_FLOOR = 0.05
         /** Bounded memory cap per scope (user file and each workspace file). */
         private const val MEMORY_CAP_PER_SCOPE = 200
+        /** Cap on appended provenance lines kept per memory record. */
+        private const val MAX_EVIDENCE_LINES = 8
         private val UUID_REGEX = Regex("[0-9a-fA-F-]{36}")
         private val DURABLE_TYPES = setOf(MemoryType.USER_PROFILE, MemoryType.WORKSPACE_FACT, MemoryType.DECISION)
         private val WORKSPACE_SCOPED_TYPES = setOf(MemoryType.WORKSPACE_FACT, MemoryType.DECISION)

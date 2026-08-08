@@ -66,7 +66,9 @@ interface RecommendationRepository {
 
 @Singleton
 class FileRecommendationRepository @Inject constructor(
-    @ApplicationContext context: Context
+    @ApplicationContext context: Context,
+    /** Provenance linking: a VERIFIED recommendation appends its evidence to related memories. */
+    private val memoryRepository: MemoryRepository
 ) : RecommendationRepository {
     private val file = File(context.filesDir, "memory/recommendations.jsonl")
     private val fileLock = Any()
@@ -185,6 +187,7 @@ class FileRecommendationRepository @Inject constructor(
                     )
                     records[index] = next
                     writeAll(records)
+                    linkEvidenceToRelatedMemories(next, cleanEvidence)
                     next
                 }
             }
@@ -223,6 +226,23 @@ class FileRecommendationRepository @Inject constructor(
                     appendLine(line.take(180))
                 }
             }.trimEnd()
+        }
+    }
+
+    /**
+     * Provenance (phase A): when the system proves a recommendation with evidence, link that proof
+     * back to every memory the recommendation drew from, so each memory can answer "where do you
+     * know this from?". Best-effort and non-fatal — the recommendation itself is already persisted.
+     */
+    private suspend fun linkEvidenceToRelatedMemories(recommendation: Recommendation, evidence: String) {
+        if (recommendation.relatedMemoryIds.isEmpty()) return
+        val evidenceLine = "verified by recommendation '${recommendation.title}': $evidence"
+        recommendation.relatedMemoryIds.forEach { memoryId ->
+            runCatching {
+                memoryRepository.appendEvidence(memoryId, evidenceLine, recommendation.workspacePath)
+            }.onFailure {
+                android.util.Log.w("AmayaMemory", "Evidence link to memory $memoryId failed: ${it.message}")
+            }
         }
     }
 

@@ -22,22 +22,24 @@ class SelfImprovementPipelineTest {
     private val context = object : ContextWrapper(null) { override fun getFilesDir(): File = root }
     private val classifier = MemoryClassifier(MemorySafetyFilter(), MemoryContentNormalizer())
     private val pending = RecordingPendingRepository()
+    private val memoryRepository = FileMemoryRepository(
+        context = context,
+        classifier = classifier,
+        deduper = MemoryDeduper(),
+        workspaceStore = FileWorkspaceMemoryStore(context),
+        settingsManager = AiSettingsManager(context),
+        embeddingClient = EmbeddingClient()
+    )
     private val pipeline = SelfImprovementPipeline(
         classifier = classifier,
         pendingProposalRepository = pending,
-        memoryRepository = FileMemoryRepository(
-            context = context,
-            classifier = classifier,
-            deduper = MemoryDeduper(),
-            workspaceStore = FileWorkspaceMemoryStore(context),
-            settingsManager = AiSettingsManager(context),
-            embeddingClient = EmbeddingClient()
-        ),
+        memoryRepository = memoryRepository,
         primedStateRepository = FilePrimedStateRepository(context, AiSettingsManager(context), EmbeddingClient()),
         skillRepository = FileSkillRepository(FileSkillStore(context), classifier, SkillPatchApplier()),
         projectStateRepository = FileProjectStateRepository(context),
         androidCapabilityRepository = FileAndroidCapabilityRepository(context),
-        recommendationRepository = FileRecommendationRepository(context),
+        recommendationRepository = FileRecommendationRepository(context, memoryRepository),
+        skillUsageLogRepository = FileSkillUsageLogRepository(context),
         context = context
     )
 
@@ -61,7 +63,7 @@ class SelfImprovementPipelineTest {
                 toolResults = listOf("FAILURE: Build failed with an exception.")
             )
         )
-        val recommendations = FileRecommendationRepository(context).list(workspacePath = workspace)
+        val recommendations = FileRecommendationRepository(context, memoryRepository).list(workspacePath = workspace)
         val buildFix = recommendations.firstOrNull { it.title == "Fix the failed build" }
         assertTrue("expected a build-fix recommendation", buildFix != null)
         assertTrue(buildFix!!.verificationRule.contains("build successful"))

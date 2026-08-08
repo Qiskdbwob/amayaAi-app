@@ -39,6 +39,9 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
+      - name: Run unit tests (debug)
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
       - name: Build perf APK (R8-optimized, debug-signed, for performance testing)
         run: ./gradlew :app:assemblePerf --stacktrace
 
