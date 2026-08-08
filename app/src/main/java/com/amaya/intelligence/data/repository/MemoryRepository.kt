@@ -37,7 +37,12 @@ data class MemoryRecord(
     val status: MemoryStatus = MemoryStatus.ACTIVE,
     val sourceConversationId: String? = null,
     /** Decay class derived from the memory type (scheme §1.1). Stable for preferences, moderate for project facts. */
-    val volatility: MemoryVolatility = MemoryVolatility.fromType(MemoryType.USER_PROFILE)
+    val volatility: MemoryVolatility = MemoryVolatility.fromType(MemoryType.USER_PROFILE),
+    /** Scheme §4 confidence status: true only after independent validation (explicit user confirm or
+     * an approved proposal), never from usage or source reputation alone. */
+    val verified: Boolean = false,
+    val verifyCount: Int = 0,
+    val lastConfirmedAt: Long? = null
 )
 
 /** Result of one batch end-of-session housekeeping run (decay, archiving, and cap enforcement). */
@@ -69,4 +74,11 @@ interface MemoryRepository {
     ): List<MemoryRecord>
     suspend fun updateMemoryById(id: String, content: String, expectedVersion: Int, workspacePath: String? = null): Result<String>
     suspend fun deleteMemoryById(id: String, expectedVersion: Int, workspacePath: String? = null): Result<String>
+
+    /**
+     * Scheme §4: promote a memory to verified (independent validation) without changing its content.
+     * The only callers are explicit user confirmations (memory_manage update) and approved pending
+     * proposals — usage alone can never confirm a memory.
+     */
+    suspend fun confirmMemory(id: String, workspacePath: String? = null): Result<String>
 }

@@ -263,6 +263,26 @@ class FileMemoryRepository @Inject constructor(
         }
     }
 
+    override suspend fun confirmMemory(id: String, workspacePath: String?): Result<String> = withContext(Dispatchers.IO) {
+        synchronized(fileLock) {
+            runCatching {
+                ensureMigrated()
+                val record = findActiveMemory(id, workspacePath)
+                val now = System.currentTimeMillis()
+                // Content is unchanged; only the confirmation status advances. Supersede + append so
+                // the active record (last per id) carries the new verified state.
+                supersedeMemoryRecord(record, now)
+                appendMemoryRecord(record.copy(
+                    updatedAt = now,
+                    verified = true,
+                    verifyCount = record.verifyCount + 1,
+                    lastConfirmedAt = now
+                ))
+                "Confirmed memory ${record.id} (verified)."
+            }
+        }
+    }
+
     private fun findActiveMemory(id: String, workspacePath: String?): MemoryRecord {
         val canonicalWorkspace = workspacePath?.takeIf(String::isNotBlank)?.let(::canonicalWorkspacePath)
         return activeMemoryRecords().firstOrNull {
@@ -588,6 +608,9 @@ class FileMemoryRepository @Inject constructor(
         .put("status", status.name)
         .put("sourceConversationId", sourceConversationId)
         .put("volatility", volatility.name)
+        .put("verified", verified)
+        .put("verifyCount", verifyCount)
+        .put("lastConfirmedAt", lastConfirmedAt)
 
     private fun JSONObject.toMemoryRecordOrNull(): MemoryRecord? {
         val type = runCatching { MemoryType.valueOf(optString("type")) }.getOrNull() ?: return null
@@ -620,7 +643,10 @@ class FileMemoryRepository @Inject constructor(
                 else conflictFreeStatus(optString("status", MemoryStatus.ACTIVE.name)),
             sourceConversationId = optString("sourceConversationId").takeIf(String::isNotBlank),
             volatility = runCatching { MemoryVolatility.valueOf(optString("volatility")) }
-                .getOrDefault(MemoryVolatility.fromType(type))
+                .getOrDefault(MemoryVolatility.fromType(type)),
+            verified = optBoolean("verified", false),
+            verifyCount = optInt("verifyCount", 0).coerceAtLeast(0),
+            lastConfirmedAt = if (has("lastConfirmedAt") && !isNull("lastConfirmedAt")) optLong("lastConfirmedAt") else null
         ).withIdentity()
     }
 

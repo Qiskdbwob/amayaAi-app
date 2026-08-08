@@ -10,6 +10,8 @@ import com.amaya.intelligence.data.repository.MaintenanceScheduler
 import com.amaya.intelligence.data.repository.ManualMaintenanceScheduler
 import com.amaya.intelligence.data.repository.MemoryRepository
 import com.amaya.intelligence.data.repository.PendingProposalRepository
+import com.amaya.intelligence.data.repository.FilePrimedStateRepository
+import com.amaya.intelligence.data.repository.PrimedStateRepository
 import com.amaya.intelligence.data.repository.SessionMemoryRepository
 import com.amaya.intelligence.data.repository.SessionSummarizer
 import com.amaya.intelligence.data.repository.SkillRepository
@@ -40,6 +42,10 @@ abstract class RepositoryModule {
     @Binds
     @Singleton
     abstract fun bindPendingProposalRepository(impl: FilePendingProposalRepository): PendingProposalRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindPrimedStateRepository(impl: FilePrimedStateRepository): PrimedStateRepository
 
     @Binds
     @Singleton

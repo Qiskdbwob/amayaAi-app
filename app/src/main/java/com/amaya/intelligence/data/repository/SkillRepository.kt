@@ -26,6 +26,12 @@ interface SkillRepository {
     suspend fun recordSkillViewed(name: String)
     suspend fun recordSkillUsage(name: String, success: Boolean)
     suspend fun updateSkillMetadata(metadata: SkillMetadata): Result<Unit>
+
+    /**
+     * Batch end-of-session pass (scheme §1.4): recompute `dynamicReputation` for every skill as
+     * 0.6×SuccessRate + 0.4×FrequencyNorm (no cost term) and persist it once per session.
+     */
+    suspend fun computeDynamicReputations(): Result<Unit>
 }
 
 @Singleton
@@ -140,6 +146,27 @@ class FileSkillRepository @Inject constructor(
         }
     }
 
+    override suspend fun computeDynamicReputations(): Result<Unit> = withContext(Dispatchers.IO) {
+        fileMutex.withLock {
+            runCatching {
+                val all = store.rootDir.listFiles().orEmpty()
+                    .filter(File::isDirectory)
+                    .mapNotNull { dir ->
+                        val file = store.metadataFile(dir.name)
+                        readMetadata(file)?.let { it to file }
+                    }
+                val maxUsage = all.maxOfOrNull { it.first.usageCount } ?: 0
+                all.forEach { (metadata, file) ->
+                    val outcomes = metadata.successCount + metadata.failureCount
+                    val successRate = if (outcomes <= 0) 0.5 else metadata.successCount.toDouble() / outcomes.toDouble()
+                    val frequencyNorm = if (maxUsage <= 0) 0.0 else metadata.usageCount.toDouble() / maxUsage.toDouble()
+                    val reputation = REPUTATION_SUCCESS_WEIGHT * successRate + REPUTATION_FREQUENCY_WEIGHT * frequencyNorm
+                    atomicWrite(file, metadata.copy(dynamicReputation = reputation.coerceIn(0.0, 1.0)).toJson().toString(2))
+                }
+            }
+        }
+    }
+
     private fun readSkillLocked(name: String): Skill? {
         val safeName = store.sanitizeName(name)
         val metadata = readMetadata(store.metadataFile(safeName)) ?: return null
@@ -179,7 +206,8 @@ class FileSkillRepository @Inject constructor(
             tags = json.optJSONArray("tags")?.let { array -> List(array.length()) { idx -> array.optString(idx) } } ?: emptyList(),
             enabled = json.optBoolean("enabled", true),
             needsReview = json.optBoolean("needsReview", false),
-            reviewReason = json.optString("reviewReason").takeIf { it.isNotBlank() }
+            reviewReason = json.optString("reviewReason").takeIf { it.isNotBlank() },
+            dynamicReputation = json.optDouble("dynamicReputation", 0.0).coerceIn(0.0, 1.0)
         )
     }.getOrNull()
 
@@ -199,6 +227,7 @@ class FileSkillRepository @Inject constructor(
         .put("enabled", enabled)
         .put("needsReview", needsReview)
         .put("reviewReason", reviewReason)
+        .put("dynamicReputation", dynamicReputation)
 
     private fun ensureFrontMatter(metadata: SkillMetadata, content: String): String {
         if (content.trimStart().startsWith("---")) return content.trimEnd() + "\n"
@@ -223,5 +252,11 @@ class FileSkillRepository @Inject constructor(
             file.writeText(content)
             tmp.delete()
         }
+    }
+
+    private companion object {
+        /** Scheme §1.4 weights (renormalized without the cost term). */
+        const val REPUTATION_SUCCESS_WEIGHT = 0.6
+        const val REPUTATION_FREQUENCY_WEIGHT = 0.4
     }
 }

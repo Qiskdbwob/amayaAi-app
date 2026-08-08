@@ -186,7 +186,15 @@ class FilePendingProposalRepository @Inject constructor(
         if (!safety.safe) return Result.failure(IllegalArgumentException("Unsafe proposal cannot be applied: ${safety.reasons.joinToString()}"))
         return when (currentProposal.type) {
             PendingProposalType.USER_PROFILE,
-            PendingProposalType.WORKSPACE_FACT -> memoryRepository.applyProposal(currentProposal.toMemoryProposal())
+            PendingProposalType.WORKSPACE_FACT -> {
+                val applied = memoryRepository.applyProposal(currentProposal.toMemoryProposal())
+                if (applied.isSuccess) {
+                    // Scheme §4 confidence breaker: the user approved this proposal, which is
+                    // independent validation (V_independent) for the written memory.
+                    runCatching { memoryRepository.confirmMemory(currentProposal.id, currentProposal.workspacePath) }
+                }
+                applied
+            }
             PendingProposalType.SKILL_CREATE -> createSkill(currentProposal).map { "Created skill ${currentProposal.target}" }
             PendingProposalType.SKILL_PATCH -> skillRepository.patchSkill(currentProposal.target, currentProposal.content).map { "Patched skill ${currentProposal.target}" }
             PendingProposalType.SKILL_UPDATE -> skillRepository.updateSkill(currentProposal.target, currentProposal.content).map { "Updated skill ${currentProposal.target}" }

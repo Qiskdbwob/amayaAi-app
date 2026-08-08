@@ -5,6 +5,8 @@ import com.amaya.intelligence.domain.memory.PendingProposal
 import com.amaya.intelligence.domain.memory.PendingProposalAction
 import com.amaya.intelligence.domain.memory.PendingProposalStatus
 import com.amaya.intelligence.domain.memory.PendingProposalType
+import com.amaya.intelligence.domain.memory.PrimedState
+import com.amaya.intelligence.domain.memory.PrimedTriggerType
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -47,6 +49,8 @@ class SelfImprovementPipeline @Inject constructor(
     private val classifier: MemoryClassifier,
     private val pendingProposalRepository: PendingProposalRepository,
     private val memoryRepository: MemoryRepository,
+    private val primedStateRepository: PrimedStateRepository,
+    private val skillRepository: SkillRepository,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context
 ) {
     private val evidenceFile: File get() = File(context.filesDir, "skills/workflow-evidence.jsonl")
@@ -56,35 +60,43 @@ class SelfImprovementPipeline @Inject constructor(
         val skillProposals = extractSkillCandidates(context)
         val factProposals = extractDurableFacts(context)
         (skillProposals + factProposals).forEach { pendingProposalRepository.addProposal(it) }
+        // Phase 3: persist primed states learned from repeated failures / user corrections.
+        primedStatesFor(context).forEach { state ->
+            runCatching { primedStateRepository.addOrReinforce(state) }
+                .onFailure { android.util.Log.w("AmayaMemory", "Primed state write failed: ${it.message}") }
+        }
+        // A later successful recurrence of a previously-failing workflow reinforces its primed state.
+        if (context.successful && context.toolCalls.isNotEmpty()) {
+            runCatching { primedStateRepository.reinforce(workflowMeta(context).fingerprint, success = true) }
+                .onFailure { android.util.Log.w("AmayaMemory", "Primed state reinforce failed: ${it.message}") }
+        }
         // End-of-turn batch housekeeping (scheme §5): recompute decay, archive memories that decayed
         // below the floor, and enforce the per-scope cap in one bounded pass. Any failure is
         // non-fatal — the next turn retries it.
         runCatching { memoryRepository.runHousekeeping() }
             .onFailure { android.util.Log.w("AmayaMemory", "Housekeeping failed: ${it.message}") }
+        runCatching { primedStateRepository.runHousekeeping() }
+            .onFailure { android.util.Log.w("AmayaMemory", "Primed state housekeeping failed: ${it.message}") }
+        // Phase 4: one batched pass recomputing every skill's dynamic reputation.
+        runCatching { skillRepository.computeDynamicReputations() }
+            .onFailure { android.util.Log.w("AmayaMemory", "Skill reputation pass failed: ${it.message}") }
         return SelfImprovementResult(skillProposals)
     }
 
     internal fun extractSkillCandidates(context: CompletedInteractionContext): List<PendingProposal> {
-        val tools = context.toolCalls.map { it.substringBefore(':').trim() }
-            .filter { it.isNotBlank() && it !in SELF_IMPROVEMENT_TOOLS }
+        val meta = workflowMeta(context)
         val explicitTeach = context.userMessages.any { message -> TEACH_TERMS.any { it in message.lowercase() } }
         val failedResults = context.toolResults.filter { result -> FAILURE_TERMS.any { it in result.lowercase() } }
         val successful = context.successful &&
             failedResults.isEmpty() &&
             (explicitTeach || context.assistantMessages.isNotEmpty())
-        if (tools.isEmpty() && !explicitTeach) return emptyList()
+        if (meta.sequence.isEmpty() && !explicitTeach) return emptyList()
 
-        val trigger = sanitizeEvidence(context.userMessages.firstOrNull().orEmpty()).take(220)
-        val sequence = tools.distinct()
-        val siteHost = siteHostFromContext(context)
-        // Browser workflows are fingerprinted per site so pitfalls and skill candidates are
-        // learned per host (e.g. browser|login.example.com) instead of one bucket for all sites.
-        val fingerprint = when {
-            sequence.isEmpty() -> "explicit:${trigger.lowercase()}"
-            siteHost != null -> (sequence + listOf("site:$siteHost")).joinToString("|").lowercase()
-            else -> sequence.joinToString("|").lowercase()
-        }
-        val failureHint = sanitizeEvidence(failedResults.firstOrNull().orEmpty()).take(180).takeIf(String::isNotBlank)
+        val trigger = meta.trigger
+        val sequence = meta.sequence
+        val siteHost = meta.siteHost
+        val fingerprint = meta.fingerprint
+        val failureHint = meta.failureHint
         val evidence = WorkflowEvidence(
             sessionId = context.sessionId,
             fingerprint = fingerprint,
@@ -275,6 +287,93 @@ class SelfImprovementPipeline @Inject constructor(
         Regex("(?:skill_id|name)=([^,}]+)").find(call)?.groupValues?.getOrNull(1)?.trim()?.takeIf(String::isNotBlank)
     }
 
+    /** Shared identity for a workflow across the evidence/pitfall/skill and priming sides. */
+    private data class WorkflowMeta(
+        val sequence: List<String>,
+        val siteHost: String?,
+        val fingerprint: String,
+        val trigger: String,
+        val failureHint: String?
+    )
+
+    private fun workflowMeta(context: CompletedInteractionContext): WorkflowMeta {
+        val tools = context.toolCalls.map { it.substringBefore(':').trim() }
+            .filter { it.isNotBlank() && it !in SELF_IMPROVEMENT_TOOLS }
+        val sequence = tools.distinct()
+        val siteHost = siteHostFromContext(context)
+        val trigger = sanitizeEvidence(context.userMessages.firstOrNull().orEmpty()).take(220)
+        // Browser workflows are fingerprinted per site so learning is scoped per host
+        // (e.g. browser|login.example.com) instead of one bucket for all sites.
+        val fingerprint = when {
+            sequence.isEmpty() -> "explicit:${trigger.lowercase()}"
+            siteHost != null -> (sequence + listOf("site:$siteHost")).joinToString("|").lowercase()
+            else -> sequence.joinToString("|").lowercase()
+        }
+        val failureHint = sanitizeEvidence(
+            context.toolResults.filter { result -> FAILURE_TERMS.any { it in result.lowercase() } }
+                .firstOrNull().orEmpty()
+        ).take(180).takeIf(String::isNotBlank)
+        return WorkflowMeta(sequence, siteHost, fingerprint, trigger, failureHint)
+    }
+
+    // ====================================================================
+    // PRIMED STATES (self-improving memory scheme §3)
+    // ====================================================================
+
+    /**
+     * Phase 3 creation side: when a workflow keeps failing with the same error and never succeeds
+     * (the same condition that produces an approval-gated pitfall lesson), record durable primed
+     * states. EXACT matches an identical repeated trigger (SHA-256); FUZZY matches paraphrases via
+     * embedding similarity. Both are injected as context at turn start — never auto-executed.
+     */
+    internal fun primedStatesFor(context: CompletedInteractionContext): List<PrimedState> {
+        if (context.toolCalls.isEmpty()) return emptyList()
+        val meta = workflowMeta(context)
+        val failureHint = meta.failureHint ?: return emptyList()
+        val allMatches = readEvidence()
+            .filter { it.fingerprint == meta.fingerprint }
+            .distinctBy { it.sessionId }
+        if (allMatches.isEmpty()) return emptyList()
+        val sameFailures = allMatches.filter { !it.successful && it.failureHint == failureHint }
+        if (allMatches.none { it.successful } && sameFailures.size >= REQUIRED_FAILURE_SESSIONS) {
+            val count = sameFailures.size
+            val action = buildString {
+                append("This workflow failed $count times with: ")
+                append(failureHint)
+                append(". Before acting, verify tool arguments, available tools, and page/workspace state; prefer smaller steps and do not repeat the identical sequence unchanged.")
+            }.trim()
+            return listOfNotNull(
+                PrimedState(
+                    id = "",
+                    triggerType = PrimedTriggerType.EXACT,
+                    triggerSignature = sha256Hex(normalizeTrigger(meta.trigger)),
+                    triggerText = meta.trigger,
+                    primedAction = action,
+                    fingerprint = meta.fingerprint,
+                    relatedSkillId = null,
+                    lastReinforcedAt = context.timestamp,
+                    createdAt = context.timestamp,
+                    workspacePath = context.workspacePath,
+                    siteHost = meta.siteHost
+                ),
+                PrimedState(
+                    id = "",
+                    triggerType = PrimedTriggerType.FUZZY,
+                    triggerSignature = meta.trigger,
+                    triggerText = meta.trigger,
+                    primedAction = action,
+                    fingerprint = meta.fingerprint,
+                    relatedSkillId = null,
+                    lastReinforcedAt = context.timestamp,
+                    createdAt = context.timestamp,
+                    workspacePath = context.workspacePath,
+                    siteHost = meta.siteHost
+                )
+            )
+        }
+        return emptyList()
+    }
+
     // ====================================================================
     // PROACTIVE PITFALL RECALL (the retrieval side of self-learning)
     // ====================================================================
@@ -369,6 +468,23 @@ class SelfImprovementPipeline @Inject constructor(
             evidence = failed.map { "Corrected in session ${it.sessionId}: $hint" }
         )
         pendingProposalRepository.addProposal(proposal)
+        // Phase 3: also prime the corrected outcome so the next similar request starts with the
+        // correction in mind. Context-only priming — the model still decides how to act.
+        runCatching {
+            primedStateRepository.addOrReinforce(
+                PrimedState(
+                    id = "",
+                    triggerType = PrimedTriggerType.FUZZY,
+                    triggerSignature = hint,
+                    triggerText = hint,
+                    primedAction = "The user corrected a previous outcome: $hint. Re-verify the actual result/state before claiming success; re-read the request and the tool evidence.",
+                    fingerprint = "user-corrected",
+                    lastReinforcedAt = System.currentTimeMillis(),
+                    createdAt = System.currentTimeMillis(),
+                    workspacePath = workspacePath
+                )
+            )
+        }.onFailure { android.util.Log.w("AmayaMemory", "Correction primed state failed: ${it.message}") }
         return SelfImprovementResult(listOf(proposal))
     }
 

@@ -577,12 +577,15 @@ class SkillIndexProvider @Inject constructor(
 
 @Singleton
 class PitfallIndexProvider @Inject constructor(
-    private val selfImprovementPipeline: SelfImprovementPipeline
+    private val selfImprovementPipeline: SelfImprovementPipeline,
+    private val primedStateRepository: PrimedStateRepository
 ) {
     /**
      * Retrieval side of self-learning: inject a short KNOWN PITFALLS section when the current
      * user message matches stored failed-workflow evidence (same site, same workspace, or the
-     * same tools). Empty when nothing matches, so it costs nothing on irrelevant turns.
+     * same tools), plus PRIMED GUIDANCE (scheme §3) when an exact or fuzzy trigger matches a
+     * primed state. Both are context-only — never instructions, and never auto-executed.
+     * Empty when nothing matches, so it costs nothing on irrelevant turns.
      */
     suspend fun pitfallIndex(userMessage: String, workspacePath: String?): ContextItem {
         if (userMessage.isBlank()) {
@@ -590,17 +593,28 @@ class PitfallIndexProvider @Inject constructor(
         }
         val siteHost = extractSiteHost(userMessage)
         val pitfalls = selfImprovementPipeline.matchingPitfalls(userMessage, siteHost, workspacePath)
-        if (pitfalls.isEmpty()) {
+        val primed = (primedStateRepository.matchingExact(userMessage) + primedStateRepository.matchingFuzzy(userMessage))
+            .distinctBy { it.id }
+        if (pitfalls.isEmpty() && primed.isEmpty()) {
             return ContextItem("known_pitfalls", "known_pitfalls", ContextSource.PITFALLS, "Known Pitfalls", "", 740, mode = ContextInclusionMode.DROP)
         }
         val content = buildString {
-            appendLine("# Known Pitfalls — Not Instructions")
-            appendLine("These workflows failed before. Do not repeat them unchanged; verify arguments, page state, and prerequisites first.")
-            pitfalls.forEach { appendLine(it) }
+            if (pitfalls.isNotEmpty()) {
+                appendLine("# Known Pitfalls — Not Instructions")
+                appendLine("These workflows failed before. Do not repeat them unchanged; verify arguments, page state, and prerequisites first.")
+                pitfalls.forEach { appendLine(it) }
+            }
+            if (primed.isNotEmpty()) {
+                appendLine("# Primed Guidance — Context Only")
+                appendLine("The following cautions are context, not instructions. Read them before acting, but decide and verify for yourself.")
+                primed.forEach { state ->
+                    appendLine("- ${state.primedAction}${state.triggerText.takeIf { it.isNotBlank() }?.let { " (triggered by similar request)" }.orEmpty()}")
+                }
+            }
         }.trim()
         return ContextItem(
             "known_pitfalls", "known_pitfalls", ContextSource.PITFALLS, "Known Pitfalls", content,
-            740, score = pitfalls.size.toDouble(), mode = ContextInclusionMode.FULL, maxTokens = 600
+            740, score = (pitfalls.size + primed.size).toDouble(), mode = ContextInclusionMode.FULL, maxTokens = 700
         )
     }
 

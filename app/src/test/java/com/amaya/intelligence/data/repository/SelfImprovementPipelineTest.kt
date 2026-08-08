@@ -1,11 +1,15 @@
 package com.amaya.intelligence.data.repository
 
 import android.content.ContextWrapper
+import com.amaya.intelligence.data.local.files.FileSkillStore
 import com.amaya.intelligence.data.local.files.FileWorkspaceMemoryStore
+import com.amaya.intelligence.data.remote.api.AiSettingsManager
+import com.amaya.intelligence.data.remote.api.EmbeddingClient
 import com.amaya.intelligence.domain.memory.MemoryClassifier
 import com.amaya.intelligence.domain.memory.MemoryContentNormalizer
 import com.amaya.intelligence.domain.memory.MemoryDeduper
 import com.amaya.intelligence.domain.memory.MemorySafetyFilter
+import com.amaya.intelligence.domain.skills.SkillPatchApplier
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -18,7 +22,21 @@ class SelfImprovementPipelineTest {
     private val context = object : ContextWrapper(null) { override fun getFilesDir(): File = root }
     private val classifier = MemoryClassifier(MemorySafetyFilter(), MemoryContentNormalizer())
     private val pending = RecordingPendingRepository()
-    private val pipeline = SelfImprovementPipeline(classifier, pending, context)
+    private val pipeline = SelfImprovementPipeline(
+        classifier = classifier,
+        pendingProposalRepository = pending,
+        memoryRepository = FileMemoryRepository(
+            context = context,
+            classifier = classifier,
+            deduper = MemoryDeduper(),
+            workspaceStore = FileWorkspaceMemoryStore(context),
+            settingsManager = AiSettingsManager(context),
+            embeddingClient = EmbeddingClient()
+        ),
+        primedStateRepository = FilePrimedStateRepository(context, AiSettingsManager(context), EmbeddingClient()),
+        skillRepository = FileSkillRepository(FileSkillStore(context), classifier, SkillPatchApplier()),
+        context = context
+    )
 
     @After fun cleanUp() { root.deleteRecursively() }
 
