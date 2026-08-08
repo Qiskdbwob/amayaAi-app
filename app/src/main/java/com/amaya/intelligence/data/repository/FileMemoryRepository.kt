@@ -12,7 +12,9 @@ import com.amaya.intelligence.domain.memory.MemoryProposal
 import com.amaya.intelligence.domain.memory.MemoryScope
 import com.amaya.intelligence.domain.memory.MemoryStatus
 import com.amaya.intelligence.domain.memory.MemoryType
+import com.amaya.intelligence.domain.memory.MemoryVolatility
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlin.math.pow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -126,6 +128,59 @@ class FileMemoryRepository @Inject constructor(
         }
     }
 
+    override suspend fun runHousekeeping(): Result<MemoryHousekeepingReport> = withContext(Dispatchers.IO) {
+        synchronized(fileLock) {
+            runCatching {
+                ensureMigrated()
+                var archivedCount = 0
+                var cappedCount = 0
+                var decayedCount = 0
+                val now = System.currentTimeMillis()
+                recordFiles().forEach { file ->
+                    val records = readRecords(file)
+                    if (records.isEmpty()) return@forEach
+                    var changed = false
+                    val decayed = records.map { record ->
+                        if (record.status != MemoryStatus.ACTIVE) return@map record
+                        val factor = decayFactor(record)
+                        when {
+                            factor < ARCHIVE_DECAY_FLOOR -> {
+                                archivedCount++
+                                changed = true
+                                record.copy(status = MemoryStatus.SUPERSEDED, updatedAt = now)
+                            }
+                            factor < 1.0 -> {
+                                decayedCount++
+                                record
+                            }
+                            else -> record
+                        }
+                    }
+                    val active = decayed.filter { it.status == MemoryStatus.ACTIVE }
+                    val finalized = if (active.size > MEMORY_CAP_PER_SCOPE) {
+                        val keepIds = active.sortedByDescending { priorityScore(it, 1.0) }
+                            .take(MEMORY_CAP_PER_SCOPE)
+                            .map { it.id to it.version }
+                            .toSet()
+                        decayed.map { record ->
+                            if (record.status == MemoryStatus.ACTIVE && (record.id to record.version) !in keepIds) {
+                                cappedCount++
+                                changed = true
+                                record.copy(status = MemoryStatus.SUPERSEDED, updatedAt = now)
+                            } else record
+                        }
+                    } else decayed
+                    if (changed) writeRecords(file, finalized)
+                }
+                MemoryHousekeepingReport(
+                    archivedCount = archivedCount,
+                    cappedCount = cappedCount,
+                    decayedCount = decayedCount
+                )
+            }
+        }
+    }
+
     override suspend fun listMemoryRecords(
         type: MemoryType?,
         query: String?,
@@ -148,7 +203,11 @@ class FileMemoryRepository @Inject constructor(
             val lexical = scoped.map { it to scoreMemoryRecord(it, query) }
                 .filter { it.second >= MIN_SEARCH_SCORE }
                 .sortedByDescending { it.second }
-            rerankWithEmbeddings(lexical, query) ?: lexical
+            val blended = rerankWithEmbeddings(lexical, query) ?: lexical
+            // Fusion priority (scheme §2): relevance × volatility decay × confidence. Decay is applied
+            // after the relevance threshold so stale memories are ranked lower, not filtered out.
+            blended.map { (record, relevance) -> record to priorityScore(record, relevance) }
+                .sortedByDescending { it.second }
         }
         ranked.map { it.first }.take(limit.coerceIn(1, MAX_LIST_LIMIT))
     }
@@ -234,7 +293,8 @@ class FileMemoryRepository @Inject constructor(
             workspaceId = proposal.workspaceId ?: canonicalWorkspace?.let(::workspaceId),
             subject = proposal.subject.ifBlank { defaultSubject(proposal.scope) },
             attribute = proposal.attribute.ifBlank { inferAttribute(finalContent, proposal.title, proposal.type) },
-            sourceConversationId = proposal.sourceConversationId
+            sourceConversationId = proposal.sourceConversationId,
+            volatility = MemoryVolatility.fromType(proposal.type)
         ).withIdentity()
         val existing = activeMemoryRecords().firstOrNull { memoryIdentity(it) == memoryIdentity(candidate) }
         if (existing != null && deduper.isDuplicate(candidate.content, existing.content)) return "Skipped duplicate $label."
@@ -431,7 +491,8 @@ class FileMemoryRepository @Inject constructor(
                     workspacePath = workspacePath,
                     workspaceId = workspacePath?.let(::workspaceId),
                     subject = defaultSubject(scope),
-                    attribute = inferAttribute(content, inferTitle(content, type), type)
+                    attribute = inferAttribute(content, inferTitle(content, type), type),
+                    volatility = MemoryVolatility.fromType(type)
                 )
             }.toList()
     }
@@ -526,6 +587,7 @@ class FileMemoryRepository @Inject constructor(
         .put("attribute", attribute)
         .put("status", status.name)
         .put("sourceConversationId", sourceConversationId)
+        .put("volatility", volatility.name)
 
     private fun JSONObject.toMemoryRecordOrNull(): MemoryRecord? {
         val type = runCatching { MemoryType.valueOf(optString("type")) }.getOrNull() ?: return null
@@ -556,7 +618,9 @@ class FileMemoryRepository @Inject constructor(
             attribute = optString("attribute"),
             status = if (rawAction.equals("REMOVE", true)) MemoryStatus.SUPERSEDED
                 else conflictFreeStatus(optString("status", MemoryStatus.ACTIVE.name)),
-            sourceConversationId = optString("sourceConversationId").takeIf(String::isNotBlank)
+            sourceConversationId = optString("sourceConversationId").takeIf(String::isNotBlank),
+            volatility = runCatching { MemoryVolatility.valueOf(optString("volatility")) }
+                .getOrDefault(MemoryVolatility.fromType(type))
         ).withIdentity()
     }
 
@@ -591,10 +655,28 @@ class FileMemoryRepository @Inject constructor(
             }
         }
         score += bigramOverlap(query, "${record.title} ${record.attribute} ${record.content} ${record.label}") * 1.5
-        val ageDays = (System.currentTimeMillis() - record.updatedAt).coerceAtLeast(0L) / (24L * 60L * 60L * 1000L)
-        score += 1.0 / (1.0 + ageDays / 30.0) * 0.5
+        // Recency was removed here: time-based ranking is handled by priorityScore (volatility decay)
+        // so the relevance threshold stays age-independent and decay applies to the final rank.
         return score
     }
+
+    /**
+     * Final ranking weight = relevance × volatility decay × confidence. Mirrors the biomimetic
+     * priority_score (decay_score × urgency_weight) from the self-improving memory scheme §2,
+     * where decay depends on the memory's volatility class and how long ago it was updated.
+     */
+    private fun priorityScore(record: MemoryRecord, relevance: Double): Double =
+        relevance * decayFactor(record) * confidenceFactor(record.confidence)
+
+    /** Decay multiplier^(periods) with a floor so decayed memories still surface at a low priority. */
+    private fun decayFactor(record: MemoryRecord): Double {
+        val ageDays = (System.currentTimeMillis() - record.updatedAt).coerceAtLeast(0L) / (24L * 60L * 60L * 1000L)
+        val periods = ageDays / DECAY_PERIOD_DAYS
+        return record.volatility.decayMultiplier.pow(periods).coerceIn(MIN_DECAY_FLOOR, 1.0)
+    }
+
+    /** Low-confidence memories rank below confirmed ones (0.7–1.0 multiplier). */
+    private fun confidenceFactor(confidence: Double): Double = 0.7 + 0.3 * confidence.coerceIn(0.0, 1.0)
 
     /**
      * Semantic rerank: when the user configured an embedding endpoint, re-score the top lexical
@@ -705,6 +787,14 @@ class FileMemoryRepository @Inject constructor(
         /** Cosine (0..1) weight added on top of the lexical score. */
         private const val EMBEDDING_SIMILARITY_WEIGHT = 3.0
         private const val VECTOR_CACHE_MAX = 200
+        /** Decay period for the volatility multiplier (scheme §2 uses 30-day periods). */
+        private const val DECAY_PERIOD_DAYS = 30.0
+        /** Memories decayed below this are archived during end-of-session housekeeping. */
+        private const val ARCHIVE_DECAY_FLOOR = 0.05
+        /** Floor for the live decay factor so decayed memories still rank (but last). */
+        private const val MIN_DECAY_FLOOR = 0.05
+        /** Bounded memory cap per scope (user file and each workspace file). */
+        private const val MEMORY_CAP_PER_SCOPE = 200
         private val UUID_REGEX = Regex("[0-9a-fA-F-]{36}")
         private val DURABLE_TYPES = setOf(MemoryType.USER_PROFILE, MemoryType.WORKSPACE_FACT)
         private val LEGACY_DAILY_FILE = Regex("\\d{4}-\\d{2}-\\d{2}\\.md")

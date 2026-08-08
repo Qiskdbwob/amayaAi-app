@@ -5,6 +5,7 @@ import com.amaya.intelligence.domain.memory.MemoryProposal
 import com.amaya.intelligence.domain.memory.MemoryScope
 import com.amaya.intelligence.domain.memory.MemoryStatus
 import com.amaya.intelligence.domain.memory.MemoryType
+import com.amaya.intelligence.domain.memory.MemoryVolatility
 
 data class WorkspaceMemoryBinding(
     val id: String,
@@ -34,7 +35,16 @@ data class MemoryRecord(
     val subject: String = "memory",
     val attribute: String = "",
     val status: MemoryStatus = MemoryStatus.ACTIVE,
-    val sourceConversationId: String? = null
+    val sourceConversationId: String? = null,
+    /** Decay class derived from the memory type (scheme §1.1). Stable for preferences, moderate for project facts. */
+    val volatility: MemoryVolatility = MemoryVolatility.fromType(MemoryType.USER_PROFILE)
+)
+
+/** Result of one batch end-of-session housekeeping run (decay, archiving, and cap enforcement). */
+data class MemoryHousekeepingReport(
+    val archivedCount: Int = 0,
+    val cappedCount: Int = 0,
+    val decayedCount: Int = 0
 )
 
 interface MemoryRepository {
@@ -44,6 +54,13 @@ interface MemoryRepository {
     suspend fun listWorkspaceBindings(): List<WorkspaceMemoryBinding>
     suspend fun remapWorkspace(workspaceId: String, newRoot: String): Result<Unit>
     suspend fun compactStoredMemory(): Result<Unit>
+
+    /**
+     * Batch end-of-session housekeeping: recompute decay scores from volatility + age, archive
+     * memories that decayed below the floor, and enforce the per-scope cap. Runs as one batched
+     * pass so flash I/O is bounded to a single session boundary (scheme §5).
+     */
+    suspend fun runHousekeeping(): Result<MemoryHousekeepingReport>
     suspend fun listMemoryRecords(
         type: MemoryType? = null,
         query: String? = null,

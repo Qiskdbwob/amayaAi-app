@@ -46,6 +46,7 @@ internal data class WorkflowEvidence(
 class SelfImprovementPipeline @Inject constructor(
     private val classifier: MemoryClassifier,
     private val pendingProposalRepository: PendingProposalRepository,
+    private val memoryRepository: MemoryRepository,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context
 ) {
     private val evidenceFile: File get() = File(context.filesDir, "skills/workflow-evidence.jsonl")
@@ -55,6 +56,11 @@ class SelfImprovementPipeline @Inject constructor(
         val skillProposals = extractSkillCandidates(context)
         val factProposals = extractDurableFacts(context)
         (skillProposals + factProposals).forEach { pendingProposalRepository.addProposal(it) }
+        // End-of-turn batch housekeeping (scheme §5): recompute decay, archive memories that decayed
+        // below the floor, and enforce the per-scope cap in one bounded pass. Any failure is
+        // non-fatal — the next turn retries it.
+        runCatching { memoryRepository.runHousekeeping() }
+            .onFailure { android.util.Log.w("AmayaMemory", "Housekeeping failed: ${it.message}") }
         return SelfImprovementResult(skillProposals)
     }
 
