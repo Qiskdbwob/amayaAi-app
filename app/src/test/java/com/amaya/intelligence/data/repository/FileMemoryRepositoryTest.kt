@@ -169,7 +169,9 @@ class FileMemoryRepositoryTest {
             context = testContext,
             classifier = classifier,
             deduper = MemoryDeduper(),
-            workspaceStore = FileWorkspaceMemoryStore(testContext)
+            workspaceStore = FileWorkspaceMemoryStore(testContext),
+            settingsManager = AiSettingsManager(testContext),
+            embeddingClient = EmbeddingClient()
         )
         assertEquals("The user prefers concise responses.", restarted.listMemoryRecords(MemoryType.USER_PROFILE).single().content)
     }

@@ -198,7 +198,7 @@ class RecommendationRepositoryTest {
             async(Dispatchers.Default) { repository.suggest("/ws", "Concurrent task $index") }
         }.awaitAll()
         // Every concurrent write succeeded — the file lock + atomic rewrite never drops a record.
-        assertTrue(results.all { it.isSuccess }, "Expected all suggests to succeed, got failures: ${results.count { it.isFailure }}")
+        assertTrue("Expected all suggests to succeed, got failures: ${results.count { it.isFailure }}", results.all { it.isSuccess })
         assertEquals(total, repository.list(workspacePath = "/ws", limit = 200).size)
     }
 
