@@ -2,6 +2,7 @@ package com.amaya.intelligence.data.repository
 
 import android.content.ContextWrapper
 import com.amaya.intelligence.data.local.files.FileWorkspaceMemoryStore
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -46,7 +47,9 @@ class RecommendationRepositoryTest {
         root.deleteRecursively()
     }
 
-    private fun run(block: suspend () -> Unit) = runBlocking { block() }
+    // Receiver lambda: inside `run { }` the implicit receiver is the runBlocking scope, so
+    // CoroutineScope extensions like async() resolve without an explicit receiver.
+    private fun run(block: suspend CoroutineScope.() -> Unit) = runBlocking { block() }
 
     @Test
     fun `suggest creates suggested recommendation and dedupes active titles`() = run {
