@@ -278,7 +278,9 @@ internal fun AiRepository.chatImpl(
         val manualSummary = managedContext.manualSummary
         var autoSummary: String? = ledger?.render() ?: managedContext.autoSummary
         var persistedLedgerText: String? = managedContext.autoSummary
-        // Scheme E: pin the active plan into every system prompt so it survives compaction.
+        // Scheme E: host-pinned plan mirroring the visible todo list (survives compaction).
+        // Declared before composeWithPlan because the local function captures it.
+        var taskPlan: TaskPlan = TaskPlan(emptyList())
         fun composeWithPlan(): String {
             val composed = composeSystemPrompt(basePrompt, manualSummary, autoSummary, ledgerBudgetTokens)
             return if (taskPlan.steps.isEmpty()) composed else "$composed\n\n${taskPlan.renderSection()}"
@@ -296,8 +298,6 @@ internal fun AiRepository.chatImpl(
         val lastToolErrorSignature = mutableMapOf<String, String>()
         val repeatedToolErrors = mutableMapOf<String, Int>()
         val invalidToolArgumentErrors = mutableMapOf<String, Throwable>()
-        // Scheme E: host-pinned plan mirroring the visible todo list (survives compaction).
-        var taskPlan: TaskPlan = TaskPlan(emptyList())
         // Scheme C: how many tool calls actually executed this turn + how many verification
         // passes have run (bounded by MAX_VERIFICATION_PASSES).
         var executedToolCalls = 0

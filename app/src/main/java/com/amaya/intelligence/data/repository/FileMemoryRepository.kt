@@ -31,10 +31,14 @@ class FileMemoryRepository @Inject constructor(
     private val embeddingClient: EmbeddingClient
 ) : MemoryRepository {
     private val fileLock = Any()
-    /** Small LRU of embedded text vectors, keyed by `endpoint|model|text-hash`. */
-    private val vectorCache = object : LinkedHashMap<String, List<Float>>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Float>>?): Boolean = size > VECTOR_CACHE_MAX
-    }
+    /** Small LRU of embedded text vectors, keyed by `endpoint|model|text-hash`. Synchronized because
+     * semantic reranking runs outside [fileLock] (a suspend call inside a critical section is an
+     * error), so concurrent searches may touch the cache. */
+    private val vectorCache: MutableMap<String, List<Float>> = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, List<Float>>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Float>>?): Boolean = size > VECTOR_CACHE_MAX
+        }
+    )
 
     private val memoryDir: File
         get() = File(context.filesDir, "memory").also { it.mkdirs() }
@@ -128,22 +132,25 @@ class FileMemoryRepository @Inject constructor(
         limit: Int,
         workspacePath: String?
     ): List<MemoryRecord> = withContext(Dispatchers.IO) {
-        synchronized(fileLock) {
+        // Records are read under the file lock, but lexical scoring and the optional semantic
+        // rerank run outside it — rerankWithEmbeddings is a suspend call (network), which is not
+        // allowed inside a critical section.
+        val scoped = synchronized(fileLock) {
             ensureMigrated()
             val canonicalWorkspace = workspacePath?.takeIf(String::isNotBlank)?.let(::canonicalWorkspacePath)
-            val scoped = activeMemoryRecords()
+            activeMemoryRecords()
                 .filter { type == null || it.type == type }
                 .filter { it.type != MemoryType.WORKSPACE_FACT || it.workspacePath == canonicalWorkspace }
-            val ranked = if (query.isNullOrBlank()) {
-                scoped.sortedByDescending { it.updatedAt }
-            } else {
-                val lexical = scoped.map { it to scoreMemoryRecord(it, query) }
-                    .filter { it.second >= MIN_SEARCH_SCORE }
-                    .sortedByDescending { it.second }
-                rerankWithEmbeddings(lexical, query) ?: lexical
-            }
-            ranked.map { it.first }.take(limit.coerceIn(1, MAX_LIST_LIMIT))
         }
+        val ranked = if (query.isNullOrBlank()) {
+            scoped.sortedByDescending { it.updatedAt }
+        } else {
+            val lexical = scoped.map { it to scoreMemoryRecord(it, query) }
+                .filter { it.second >= MIN_SEARCH_SCORE }
+                .sortedByDescending { it.second }
+            rerankWithEmbeddings(lexical, query) ?: lexical
+        }
+        ranked.map { it.first }.take(limit.coerceIn(1, MAX_LIST_LIMIT))
     }
 
     override suspend fun updateMemoryById(

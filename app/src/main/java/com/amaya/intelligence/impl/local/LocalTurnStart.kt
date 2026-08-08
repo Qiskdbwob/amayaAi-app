@@ -122,7 +122,7 @@ internal suspend fun LocalIntelligenceService.startTurn(
                         selectedModel = runtimeState.selectedModel,
                         effort = runtimeState.effort,
                         onConfirmation = { request -> awaitInlineToolConfirmation(request, turnId) },
-                        onClarificationRequired = { request -> awaitInlineToolClarification(request, turnId) },
+                        onClarification = { request -> awaitInlineToolClarification(request, turnId) },
                         // Delegation completions never interrupt an active provider/tool loop. They
                         // are materialized together only by the hidden continuation.
                         pendingConversationEvents = { if (internalContinuation) drainQueuedConversationEvents(conversationId) else emptyList() },

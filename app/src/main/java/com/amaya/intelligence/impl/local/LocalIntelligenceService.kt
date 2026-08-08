@@ -819,13 +819,15 @@ class LocalIntelligenceService @Inject constructor(
             error = null
         )
         _uiState.value = regeneratedState
-        startTurn(
-            content = lastUser.content,
-            images = lastUser.attachments.map { com.amaya.intelligence.data.remote.api.ChatImage(it.dataBase64, it.mimeType, it.fileName) },
-            initialState = regeneratedState,
-            projectVisible = currentConversationId == conversationId,
-            preexistingUserMessage = true
-        )
+        scope.launch {
+            startTurn(
+                content = lastUser.content,
+                images = lastUser.attachments.map { com.amaya.intelligence.data.remote.api.ChatImage(it.dataBase64, it.mimeType, it.fileName) },
+                initialState = regeneratedState,
+                projectVisible = currentConversationId == conversationId,
+                preexistingUserMessage = true
+            )
+        }
     }
 
     override fun respondToClarification(executionId: String, answer: String?) {
