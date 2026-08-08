@@ -21,12 +21,16 @@ data class MemoryProposal(
     val workspaceId: String? = null,
     val sourceConversationId: String? = null,
     val subject: String = "",
-    val attribute: String = ""
+    val attribute: String = "",
+    /** Provenance lines attached to the stored record (source, session, verification). */
+    val evidence: List<String> = emptyList()
 )
 
 enum class MemoryType {
     USER_PROFILE,
-    WORKSPACE_FACT
+    WORKSPACE_FACT,
+    /** Project Intelligence System phase A: durable design decisions with their rationale. */
+    DECISION
 }
 
 enum class MemoryAction {

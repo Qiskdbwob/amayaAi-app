@@ -35,6 +35,8 @@ class SelfImprovementPipelineTest {
         ),
         primedStateRepository = FilePrimedStateRepository(context, AiSettingsManager(context), EmbeddingClient()),
         skillRepository = FileSkillRepository(FileSkillStore(context), classifier, SkillPatchApplier()),
+        projectStateRepository = FileProjectStateRepository(context),
+        androidCapabilityRepository = FileAndroidCapabilityRepository(context),
         context = context
     )
 

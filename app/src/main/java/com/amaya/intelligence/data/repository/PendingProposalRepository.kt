@@ -186,7 +186,8 @@ class FilePendingProposalRepository @Inject constructor(
         if (!safety.safe) return Result.failure(IllegalArgumentException("Unsafe proposal cannot be applied: ${safety.reasons.joinToString()}"))
         return when (currentProposal.type) {
             PendingProposalType.USER_PROFILE,
-            PendingProposalType.WORKSPACE_FACT -> {
+            PendingProposalType.WORKSPACE_FACT,
+            PendingProposalType.DECISION -> {
                 val applied = memoryRepository.applyProposal(currentProposal.toMemoryProposal())
                 if (applied.isSuccess) {
                     // Scheme §4 confidence breaker: the user approved this proposal, which is

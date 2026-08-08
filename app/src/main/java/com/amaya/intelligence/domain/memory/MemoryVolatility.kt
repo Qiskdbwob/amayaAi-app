@@ -14,10 +14,13 @@ enum class MemoryVolatility(val decayMultiplier: Double) {
     PERISHABLE(0.75);
 
     companion object {
-        /** Automatic mapping: preference → stable, project fact → moderate, environment → perishable. */
+        /** Automatic mapping: preference → stable, project fact/decision → moderate, environment → perishable. */
         fun fromType(type: MemoryType): MemoryVolatility = when (type) {
             MemoryType.USER_PROFILE -> STABLE
             MemoryType.WORKSPACE_FACT -> MODERATE
+            // Decisions persist until explicitly superseded — they decay like project facts so a
+            // newer decision naturally outranks an older one in retrieval (Phase B supersededBy).
+            MemoryType.DECISION -> MODERATE
         }
     }
 }

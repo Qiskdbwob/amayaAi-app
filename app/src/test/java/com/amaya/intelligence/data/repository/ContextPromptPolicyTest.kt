@@ -73,13 +73,22 @@ class ContextPromptPolicyTest {
             override suspend fun setSkillSettings(settings: SkillBehaviorSettings) = Unit
             override suspend fun setContextRecallSettings(settings: ContextRecallSettings) = Unit
         }
+        val primedStateRepository = FilePrimedStateRepository(context, AiSettingsManager(context), EmbeddingClient())
+        val pendingProposalRepository = FilePendingProposalRepository(context, memory, skills, classifier)
+        val pipeline = SelfImprovementPipeline(
+            classifier, pendingProposalRepository, memory, primedStateRepository, skills,
+            FileProjectStateRepository(context), FileAndroidCapabilityRepository(context), context
+        )
         return ContextManager(
             settingsRepository,
-            MemorySnapshotProvider(memory),
+            MemorySnapshotProvider(memory, ContextBudgetManager()),
             SkillIndexProvider(skills),
+            PitfallIndexProvider(pipeline, primedStateRepository),
             SessionSummaryProvider(sessions),
             PromptBudgetManager(),
-            ContextRanker()
+            ContextRanker(),
+            ProjectStateProvider(FileProjectStateRepository(context)),
+            CapabilityMatrixProvider(FileAndroidCapabilityRepository(context))
         )
     }
 

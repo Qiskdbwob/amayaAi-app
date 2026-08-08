@@ -80,7 +80,11 @@ enum class ContextSource {
     SESSION_SUMMARY,
     WORKSPACE,
     TOOL_RULES,
-    TIME
+    TIME,
+    /** Project Intelligence System phase B: live per-workspace state (goal, blockers, build). */
+    PROJECT_STATE,
+    /** Project Intelligence System phase D: Android capability matrix. */
+    CAPABILITY
 }
 
 enum class ContextInclusionMode {
@@ -142,7 +146,9 @@ class ContextManager @Inject constructor(
     private val pitfallIndexProvider: PitfallIndexProvider,
     private val sessionSummaryProvider: SessionSummaryProvider,
     private val promptBudgetManager: PromptBudgetManager,
-    private val contextRanker: ContextRanker
+    private val contextRanker: ContextRanker,
+    private val projectStateProvider: ProjectStateProvider,
+    private val capabilityMatrixProvider: CapabilityMatrixProvider
 ) {
     suspend fun buildContext(request: ContextBuildRequest): ContextBuildResult {
         val settings = brainSettingsRepository.getBrainSettings()
@@ -161,6 +167,8 @@ class ContextManager @Inject constructor(
         var skillItem: ContextItem = ContextItem("skill_index", "skill_index", ContextSource.SKILL_INDEX, "Skill Index", "", 700, mode = ContextInclusionMode.DROP)
         var pitfallItem: ContextItem = ContextItem("known_pitfalls", "known_pitfalls", ContextSource.PITFALLS, "Known Pitfalls", "", 740, mode = ContextInclusionMode.DROP)
         var sessionItem: ContextItem = ContextItem("past_sessions", "past_sessions", ContextSource.SESSION_SUMMARY, "Past Sessions", "", 620, mode = ContextInclusionMode.DROP)
+        var projectStateItem: ContextItem = ContextItem("project_state", "project_state", ContextSource.PROJECT_STATE, "Project State", "", 900, mode = ContextInclusionMode.DROP)
+        var capabilityItem: ContextItem = ContextItem("android_capability", "android_capability", ContextSource.CAPABILITY, "Android Compatibility", "", 880, mode = ContextInclusionMode.DROP)
 
         val sections = defaultSections()
         // Memory, skills, and session recall are independent IO subsystems. Awaiting them one at a
@@ -174,10 +182,14 @@ class ContextManager @Inject constructor(
                     request.userMessage, settings, intent, request.workspacePath, request.assistantMode, request.ownerId
                 )
             }
+            val projectState = async { projectStateProvider.stateItem(request.workspacePath) }
+            val capability = async { capabilityMatrixProvider.capabilityItem(request.workspacePath) }
             memoryItems = memory.await()
             skillItem = skills.await()
             pitfallItem = pitfalls.await()
             sessionItem = session.await()
+            projectStateItem = projectState.await()
+            capabilityItem = capability.await()
         }
         val items = buildList {
             add(ContextItem("operating_rules", "operating_rules", ContextSource.OPERATING_RULES, "System", baseOperatingRules(request.assistantMode), 1000, mode = ContextInclusionMode.ALWAYS, alwaysInclude = true))
@@ -190,6 +202,8 @@ class ContextManager @Inject constructor(
             add(skillItem)
             add(pitfallItem)
             add(sessionItem)
+            add(projectStateItem)
+            add(capabilityItem)
             workspaceItem(request.workspacePath, settings, intent)?.let { add(it) }
             add(ContextItem("time", "time", ContextSource.TIME, "Current Time", clock, 100, mode = ContextInclusionMode.ALWAYS, alwaysInclude = true, maxTokens = 80))
         }
@@ -260,6 +274,8 @@ class ContextManager @Inject constructor(
         PromptSection("operating_rules", "SYSTEM", 1000, ContextInclusionMode.ALWAYS, true),
         PromptSection("owner_context", "MODE INSTRUCTIONS", 990, ContextInclusionMode.ALWAYS, true),
         PromptSection("project_context", "PROJECT CONTEXT", 980, ContextInclusionMode.ALWAYS, true),
+        PromptSection("project_state", "PROJECT STATE", 960, ContextInclusionMode.ALWAYS, true),
+        PromptSection("android_capability", "ANDROID COMPATIBILITY", 940, ContextInclusionMode.ALWAYS, true),
         // Volatile tail: re-ranked per turn against the current message.
         PromptSection("known_pitfalls", "KNOWN PITFALLS", 720, ContextInclusionMode.SEARCH_FIRST),
         PromptSection("skill_index", "SKILL INDEX", 700, ContextInclusionMode.INDEX_ONLY),
@@ -385,10 +401,15 @@ class ContextManager @Inject constructor(
 
 @Singleton
 class MemorySnapshotProvider @Inject constructor(
-    private val memoryRepository: MemoryRepository
+    private val memoryRepository: MemoryRepository,
+    private val contextBudgetManager: ContextBudgetManager
 ) {
     suspend fun snapshot(userMessage: String, settings: BrainSettings, intent: ContextIntent, workspacePath: String?): List<ContextItem> {
         val maxItems = 5
+        // Phase C: each memory section gets its own token allowance scaled to the model window.
+        // The budget manager's progressive disclosure turns overflow into "+N more via memory_manage"
+        // instead of silently losing the tail of retrieval.
+        val memoryBudget = contextBudgetManager.sectionBudget(intent.contextWindowHint(), sectionWeight = 0.035)
         return buildList {
             add(memoryItem(
                 id = "user_memory",
@@ -399,7 +420,8 @@ class MemorySnapshotProvider @Inject constructor(
                 limit = maxItems,
                 enabled = true,
                 fallbackToRecent = true,
-                priority = 860
+                priority = 860,
+                budgetTokens = memoryBudget
             ))
             add(memoryItem(
                 id = "project_memory",
@@ -417,10 +439,30 @@ class MemorySnapshotProvider @Inject constructor(
                 enabled = workspacePath != null,
                 fallbackToRecent = true,
                 priority = 830,
-                workspacePath = workspacePath
+                workspacePath = workspacePath,
+                budgetTokens = memoryBudget
+            ))
+            // Phase A: project design decisions (with rationale) surface with the project memory.
+            add(memoryItem(
+                id = "project_decisions",
+                sectionId = "project_memory",
+                title = "Project Decisions",
+                type = MemoryType.DECISION,
+                query = buildString {
+                    append(userMessage)
+                    workspacePath?.let { append(' ').append(it) }
+                },
+                limit = 3,
+                enabled = workspacePath != null,
+                fallbackToRecent = true,
+                priority = 800,
+                workspacePath = workspacePath,
+                budgetTokens = (memoryBudget * 2 / 3).coerceAtLeast(300)
             ))
         }
     }
+
+    private fun ContextIntent.contextWindowHint(): Int = DEFAULT_CONTEXT_WINDOW_HINT
 
     /** Hosts mentioned in the user message (https://github.com/… → github.com), for site recall. */
     private fun extractHosts(text: String): Set<String> = Regex("https?://([^/\\s]+)")
@@ -438,26 +480,46 @@ class MemorySnapshotProvider @Inject constructor(
         enabled: Boolean,
         fallbackToRecent: Boolean,
         priority: Int,
-        workspacePath: String? = null
+        workspacePath: String? = null,
+        budgetTokens: Int = 900
     ): ContextItem {
         if (!enabled) {
             return ContextItem(id, sectionId, ContextSource.MEMORY, title, disabledMessage(type), priority, mode = ContextInclusionMode.SEARCH_FIRST, score = 0.0, maxTokens = 120)
         }
         val ranked = memoryRepository.listMemoryRecords(type = type, query = query, limit = limit, workspacePath = workspacePath)
-        val selected = if (ranked.isNotEmpty()) ranked else if (fallbackToRecent) {
+        val fallback = if (ranked.isNotEmpty()) ranked else if (fallbackToRecent) {
             memoryRepository.listMemoryRecords(type = type, limit = limit, workspacePath = workspacePath)
         } else emptyList()
+        // Phase C: budget-aware selection by fused priority (relevance × decay × confidence), with
+        // progressive disclosure for whatever the per-section budget cannot carry.
+        val selection = contextBudgetManager.selectWithinBudget(
+            candidates = fallback,
+            budgetTokens = budgetTokens,
+            scoreOf = { it.confidence },
+            tokensOf = { record ->
+                TokenEstimator.text("${record.title} ${record.content} ${record.label}").coerceAtLeast(8)
+            }
+        )
+        val selected = selection.selected
         val content = if (selected.isEmpty()) "No strongly relevant saved items for this turn." else buildString {
             appendLine("# $title")
             selected.forEach { record -> appendLine("- [${record.id}] ${record.title}: ${record.content}") }
+            if (selection.deferredCount > 0) {
+                appendLine("- … and ${selection.deferredCount} more saved ${type.name.lowercase()} items; load them with memory_manage if needed.")
+            }
         }.trim()
         val score = selected.sumOf { it.confidence }.coerceAtLeast(if (selected.isEmpty()) 0.1 else 1.0)
-        return ContextItem(id, sectionId, ContextSource.MEMORY, title, content, priority, score = score, mode = ContextInclusionMode.FULL, maxTokens = 900)
+        return ContextItem(id, sectionId, ContextSource.MEMORY, title, content, priority, score = score, mode = ContextInclusionMode.FULL, maxTokens = budgetTokens)
     }
 
     private fun disabledMessage(type: MemoryType): String = when (type) {
         MemoryType.USER_PROFILE -> "Saved user memory is disabled or not relevant for this turn."
         MemoryType.WORKSPACE_FACT -> "Workspace memory is disabled or not relevant for this turn."
+        MemoryType.DECISION -> "Saved project decisions are disabled or not relevant for this turn."
+    }
+
+    companion object {
+        private const val DEFAULT_CONTEXT_WINDOW_HINT = TokenEstimator.DEFAULT_CONTEXT_WINDOW_TOKENS
     }
 }
 
@@ -624,6 +686,54 @@ class PitfallIndexProvider @Inject constructor(
             .firstOrNull()
 }
 
+/**
+ * Project Intelligence System phase B: inject the live per-workspace project state (current goal,
+ * active tasks, blockers, recent changes, last build outcome) as its own stable prompt section.
+ * Empty when no workspace is active or no state is recorded yet — costs nothing on irrelevant turns.
+ */
+@Singleton
+class ProjectStateProvider @Inject constructor(
+    private val projectStateRepository: ProjectStateRepository
+) {
+    suspend fun stateItem(workspacePath: String?): ContextItem {
+        if (workspacePath.isNullOrBlank()) {
+            return ContextItem("project_state", "project_state", ContextSource.PROJECT_STATE, "Project State", "", 900, mode = ContextInclusionMode.DROP)
+        }
+        val content = projectStateRepository.renderForContext(workspacePath)
+        if (content.isBlank()) {
+            return ContextItem("project_state", "project_state", ContextSource.PROJECT_STATE, "Project State", "", 900, mode = ContextInclusionMode.DROP)
+        }
+        return ContextItem(
+            "project_state", "project_state", ContextSource.PROJECT_STATE, "Project State",
+            content, 900, score = 1.5, mode = ContextInclusionMode.FULL, maxTokens = 400
+        )
+    }
+}
+
+/**
+ * Project Intelligence System phase D: inject the Android capability matrix as project-level
+ * context so the model reasons against ALL declared target ABIs (and 16 KB page-size) up front,
+ * not after a build fails. Only emitted when the workspace is an Android project.
+ */
+@Singleton
+class CapabilityMatrixProvider @Inject constructor(
+    private val androidCapabilityRepository: AndroidCapabilityRepository
+) {
+    suspend fun capabilityItem(workspacePath: String?): ContextItem {
+        if (workspacePath.isNullOrBlank()) {
+            return ContextItem("android_capability", "android_capability", ContextSource.CAPABILITY, "Android Compatibility", "", 880, mode = ContextInclusionMode.DROP)
+        }
+        val content = androidCapabilityRepository.renderForContext(workspacePath)
+        if (content.isBlank()) {
+            return ContextItem("android_capability", "android_capability", ContextSource.CAPABILITY, "Android Compatibility", "", 880, mode = ContextInclusionMode.DROP)
+        }
+        return ContextItem(
+            "android_capability", "android_capability", ContextSource.CAPABILITY, "Android Compatibility",
+            content, 880, score = 1.5, mode = ContextInclusionMode.FULL, maxTokens = 600
+        )
+    }
+}
+
 @Singleton
 class SessionSummaryProvider @Inject constructor(
     private val sessionMemoryRepository: SessionMemoryRepository
@@ -668,6 +778,8 @@ class ContextRanker @Inject constructor() {
     private fun adjustedScore(item: ContextItem, intent: ContextIntent): Double {
         var score = item.score + item.priority / 1000.0
         if (intent.needsWorkspace && item.source == ContextSource.WORKSPACE) score += 2.0
+        if (intent.needsWorkspace && item.source == ContextSource.PROJECT_STATE) score += 1.5
+        if (intent.needsWorkspace && item.source == ContextSource.CAPABILITY) score += 1.5
         if (intent.needsMemory && item.source == ContextSource.MEMORY) score += 1.0
         if (intent.needsSkillIndex && item.source == ContextSource.SKILL_INDEX) score += 1.0
         if (intent.needsSessionSearch && item.source == ContextSource.SESSION_SUMMARY) score += 1.0

@@ -42,7 +42,11 @@ data class MemoryRecord(
      * an approved proposal), never from usage or source reputation alone. */
     val verified: Boolean = false,
     val verifyCount: Int = 0,
-    val lastConfirmedAt: Long? = null
+    val lastConfirmedAt: Long? = null,
+    /** Provenance (project intelligence phase A): source, session, verification of each fact. */
+    val evidence: List<String> = emptyList(),
+    /** Phase B temporal validity: id of the memory that replaced this one (valid → superseded → archived). */
+    val supersededById: String? = null
 )
 
 /** Result of one batch end-of-session housekeeping run (decay, archiving, and cap enforcement). */

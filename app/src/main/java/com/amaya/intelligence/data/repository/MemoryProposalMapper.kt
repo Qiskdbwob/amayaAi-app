@@ -25,9 +25,11 @@ fun PendingProposal.toMemoryProposal(): MemoryProposal = MemoryProposal(
     subject = when (type) {
         PendingProposalType.WORKSPACE_FACT -> "workspace"
         PendingProposalType.USER_PROFILE -> "user"
+        PendingProposalType.DECISION -> "workspace"
         else -> "memory"
     },
-    attribute = inferProposalAttribute(title, content)
+    attribute = inferProposalAttribute(title, content),
+    evidence = evidence
 )
 
 private fun inferProposalAttribute(title: String, content: String): String = (title.ifBlank { content })
@@ -40,6 +42,7 @@ private fun inferProposalAttribute(title: String, content: String): String = (ti
 private fun PendingProposalType.toMemoryType(): MemoryType = when (this) {
     PendingProposalType.USER_PROFILE -> MemoryType.USER_PROFILE
     PendingProposalType.WORKSPACE_FACT -> MemoryType.WORKSPACE_FACT
+    PendingProposalType.DECISION -> MemoryType.DECISION
     PendingProposalType.SKILL_CREATE,
     PendingProposalType.SKILL_PATCH,
     PendingProposalType.SKILL_UPDATE -> throw IllegalArgumentException("Skill proposals are not memory proposals.")
@@ -57,6 +60,7 @@ private fun PendingProposalAction.toMemoryAction(): MemoryAction = when (this) {
 private fun PendingProposalType.toMemoryScope(): MemoryScope = when (this) {
     PendingProposalType.USER_PROFILE -> MemoryScope.USER
     PendingProposalType.WORKSPACE_FACT -> MemoryScope.WORKSPACE
+    PendingProposalType.DECISION -> MemoryScope.WORKSPACE
     PendingProposalType.SKILL_CREATE,
     PendingProposalType.SKILL_PATCH,
     PendingProposalType.SKILL_UPDATE -> throw IllegalArgumentException("Skill proposals have no memory scope.")

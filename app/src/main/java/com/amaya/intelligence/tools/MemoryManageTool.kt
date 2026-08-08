@@ -81,6 +81,7 @@ class MemoryManageTool @Inject constructor(
     private fun parseType(raw: String?): MemoryType? = when (raw?.lowercase()) {
         "user_profile", "user" -> MemoryType.USER_PROFILE
         "workspace_fact", "workspace", "project" -> MemoryType.WORKSPACE_FACT
+        "decision" -> MemoryType.DECISION
         else -> null
     }
 }

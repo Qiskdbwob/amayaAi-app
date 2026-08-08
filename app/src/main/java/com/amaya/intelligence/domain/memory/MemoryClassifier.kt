@@ -18,7 +18,8 @@ class MemoryClassifier @Inject constructor(
         confidence: Double = 0.8,
         workspacePath: String? = null,
         workspaceId: String? = null,
-        sourceConversationId: String? = null
+        sourceConversationId: String? = null,
+        evidence: List<String> = emptyList()
     ): MemoryProposal {
         val trimmed = content.trim()
         val safeConfidence = confidence.coerceIn(0.0, 1.0)
@@ -45,7 +46,8 @@ class MemoryClassifier @Inject constructor(
             confidence = safeConfidence,
             workspacePath = workspacePath,
             workspaceId = workspaceId,
-            sourceConversationId = sourceConversationId
+            sourceConversationId = sourceConversationId,
+            evidence = evidence
         )
     }
 
@@ -58,6 +60,10 @@ class MemoryClassifier @Inject constructor(
         return when {
             listOf("prefers", "preference", "call me", "nickname", "likes replies", "bahasa", "language").any { it in lower } -> MemoryType.USER_PROFILE
             listOf("workspace", "project", "repo", "repository", "environment").any { it in lower } -> MemoryType.WORKSPACE_FACT
+            // Design decisions with rationale (project intelligence phase A). Only workspace-anchored
+            // language qualifies — "I decided to always reply in Indonesian" stays a user preference.
+            (listOf("decided", "decision", "we chose", "we decided", "we picked", "keputusan", "memutuskan", "chose to use", "opted for").any { it in lower }) &&
+                (listOf("workspace", "project", "repo", "repository", "app", "library", "dependency", "build", "sdk", "architecture").any { it in lower }) -> MemoryType.DECISION
             else -> MemoryType.USER_PROFILE
         }
     }
@@ -79,6 +85,7 @@ class MemoryClassifier @Inject constructor(
     private fun defaultScope(type: MemoryType): MemoryScope = when (type) {
         MemoryType.USER_PROFILE -> MemoryScope.USER
         MemoryType.WORKSPACE_FACT -> MemoryScope.WORKSPACE
+        MemoryType.DECISION -> MemoryScope.WORKSPACE
     }
 
     companion object {

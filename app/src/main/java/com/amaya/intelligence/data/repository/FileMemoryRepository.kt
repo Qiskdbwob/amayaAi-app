@@ -60,6 +60,10 @@ class FileMemoryRepository @Inject constructor(
                         require(!proposal.workspacePath.isNullOrBlank()) { "Workspace memory requires an active workspace." }
                         applyStructuredMemory(proposal, "Project Memory")
                     }
+                    MemoryType.DECISION -> {
+                        require(!proposal.workspacePath.isNullOrBlank()) { "Project decisions require an active workspace." }
+                        applyStructuredMemory(proposal, "Project Decision")
+                    }
                 }
             }
         }
@@ -195,7 +199,7 @@ class FileMemoryRepository @Inject constructor(
             val canonicalWorkspace = workspacePath?.takeIf(String::isNotBlank)?.let(::canonicalWorkspacePath)
             activeMemoryRecords()
                 .filter { type == null || it.type == type }
-                .filter { it.type != MemoryType.WORKSPACE_FACT || it.workspacePath == canonicalWorkspace }
+                .filter { it.type !in WORKSPACE_SCOPED_TYPES || it.workspacePath == canonicalWorkspace }
         }
         val ranked = if (query.isNullOrBlank()) {
             scoped.sortedByDescending { it.updatedAt }.map { it to 0.0 }
@@ -286,7 +290,7 @@ class FileMemoryRepository @Inject constructor(
     private fun findActiveMemory(id: String, workspacePath: String?): MemoryRecord {
         val canonicalWorkspace = workspacePath?.takeIf(String::isNotBlank)?.let(::canonicalWorkspacePath)
         return activeMemoryRecords().firstOrNull {
-            it.id == id && (it.type != MemoryType.WORKSPACE_FACT || it.workspacePath == canonicalWorkspace)
+            it.id == id && (it.type !in WORKSPACE_SCOPED_TYPES || it.workspacePath == canonicalWorkspace)
         } ?: throw IllegalArgumentException("Memory not found: $id")
     }
 
@@ -314,13 +318,16 @@ class FileMemoryRepository @Inject constructor(
             subject = proposal.subject.ifBlank { defaultSubject(proposal.scope) },
             attribute = proposal.attribute.ifBlank { inferAttribute(finalContent, proposal.title, proposal.type) },
             sourceConversationId = proposal.sourceConversationId,
-            volatility = MemoryVolatility.fromType(proposal.type)
+            volatility = MemoryVolatility.fromType(proposal.type),
+            evidence = proposal.evidence
         ).withIdentity()
         val existing = activeMemoryRecords().firstOrNull { memoryIdentity(it) == memoryIdentity(candidate) }
         if (existing != null && deduper.isDuplicate(candidate.content, existing.content)) return "Skipped duplicate $label."
 
         val now = System.currentTimeMillis()
-        if (existing != null) supersedeMemoryRecord(existing, now)
+        // Phase B temporal validity: the previous revision is marked superseded and points at the
+        // replacing record (valid → superseded → archived), instead of silently vanishing.
+        if (existing != null) supersedeMemoryRecord(existing, now, supersededById = candidate.id)
         appendMemoryRecord(candidate.copy(
             id = existing?.id ?: candidate.id,
             version = existing?.version?.plus(1) ?: candidate.version,
@@ -374,15 +381,16 @@ class FileMemoryRepository @Inject constructor(
         file.appendText(normalized.toJson().toString() + "\n")
     }
 
-    private fun supersedeMemoryRecord(record: MemoryRecord, updatedAt: Long) {
+    private fun supersedeMemoryRecord(record: MemoryRecord, updatedAt: Long, supersededById: String? = null) {
         val file = recordFile(record)
         val records = readRecords(file).toMutableList()
         val index = records.indexOfLast { it.id == record.id && it.version == record.version && it.status == MemoryStatus.ACTIVE }
+        val superseded = record.copy(status = MemoryStatus.SUPERSEDED, updatedAt = updatedAt, supersededById = supersededById)
         if (index >= 0) {
-            records[index] = records[index].copy(status = MemoryStatus.SUPERSEDED, updatedAt = updatedAt)
+            records[index] = records[index].copy(status = MemoryStatus.SUPERSEDED, updatedAt = updatedAt, supersededById = supersededById)
             writeRecords(file, records)
         } else {
-            appendMemoryRecord(record.copy(status = MemoryStatus.SUPERSEDED, updatedAt = updatedAt))
+            appendMemoryRecord(superseded)
         }
     }
 
@@ -536,7 +544,8 @@ class FileMemoryRepository @Inject constructor(
 
     private fun targetFor(type: MemoryType, workspacePath: String?): String = when (type) {
         MemoryType.USER_PROFILE -> "records.jsonl#user"
-        MemoryType.WORKSPACE_FACT -> "workspaces/${workspacePath?.let(::workspaceId)}/records.jsonl"
+        MemoryType.WORKSPACE_FACT,
+        MemoryType.DECISION -> "workspaces/${workspacePath?.let(::workspaceId)}/records.jsonl"
     }
 
     private fun memoryIdentity(record: MemoryRecord): String {
@@ -561,6 +570,7 @@ class FileMemoryRepository @Inject constructor(
             listOf("concise", "ringkas", "detail", "verbose", "panjang", "singkat").any { it in lower } -> "response_detail"
             listOf("bahasa", "language", "respond in", "jawab saya", "indonesian", "english").any { it in lower } -> "response_language"
             type == MemoryType.WORKSPACE_FACT && listOf("build command", "assemble", "gradlew", "mvn ", "npm run build").any { it in lower } -> "build_command"
+            type == MemoryType.DECISION && listOf("decided", "decision", "chose", "memilih", "keputusan", "rather than", "instead of", "opted for").any { it in lower } -> "decision"
             type == MemoryType.WORKSPACE_FACT && listOf("test command", "test task", "npm test", "pytest").any { it in lower } -> "test_command"
             type == MemoryType.WORKSPACE_FACT && listOf("uses gradle", "uses maven", "build system").any { it in lower } -> "build_system"
             title.isNotBlank() && title !in GENERIC_TITLES -> normalizeMemoryText(title).take(80)
@@ -576,6 +586,7 @@ class FileMemoryRepository @Inject constructor(
             "works at" in lower -> "Workplace context"
             type == MemoryType.USER_PROFILE -> "User profile"
             type == MemoryType.WORKSPACE_FACT -> "Workspace fact"
+            type == MemoryType.DECISION -> "Project decision"
             else -> content.removeSuffix(".").take(80).ifBlank { "Memory" }
         }
     }
@@ -611,6 +622,8 @@ class FileMemoryRepository @Inject constructor(
         .put("verified", verified)
         .put("verifyCount", verifyCount)
         .put("lastConfirmedAt", lastConfirmedAt)
+        .put("evidence", JSONArray(evidence))
+        .put("supersededById", supersededById)
 
     private fun JSONObject.toMemoryRecordOrNull(): MemoryRecord? {
         val type = runCatching { MemoryType.valueOf(optString("type")) }.getOrNull() ?: return null
@@ -646,7 +659,11 @@ class FileMemoryRepository @Inject constructor(
                 .getOrDefault(MemoryVolatility.fromType(type)),
             verified = optBoolean("verified", false),
             verifyCount = optInt("verifyCount", 0).coerceAtLeast(0),
-            lastConfirmedAt = if (has("lastConfirmedAt") && !isNull("lastConfirmedAt")) optLong("lastConfirmedAt") else null
+            lastConfirmedAt = if (has("lastConfirmedAt") && !isNull("lastConfirmedAt")) optLong("lastConfirmedAt") else null,
+            evidence = optJSONArray("evidence")?.let { array ->
+                List(array.length()) { array.optString(it) }.filter(String::isNotBlank)
+            }.orEmpty(),
+            supersededById = optString("supersededById").takeIf(String::isNotBlank)
         ).withIdentity()
     }
 
@@ -822,7 +839,8 @@ class FileMemoryRepository @Inject constructor(
         /** Bounded memory cap per scope (user file and each workspace file). */
         private const val MEMORY_CAP_PER_SCOPE = 200
         private val UUID_REGEX = Regex("[0-9a-fA-F-]{36}")
-        private val DURABLE_TYPES = setOf(MemoryType.USER_PROFILE, MemoryType.WORKSPACE_FACT)
+        private val DURABLE_TYPES = setOf(MemoryType.USER_PROFILE, MemoryType.WORKSPACE_FACT, MemoryType.DECISION)
+        private val WORKSPACE_SCOPED_TYPES = setOf(MemoryType.WORKSPACE_FACT, MemoryType.DECISION)
         private val LEGACY_DAILY_FILE = Regex("\\d{4}-\\d{2}-\\d{2}\\.md")
         private val GENERIC_TITLES = setOf("User profile", "Workspace fact", "Memory")
         private val USER_FACT_TERMS = setOf(

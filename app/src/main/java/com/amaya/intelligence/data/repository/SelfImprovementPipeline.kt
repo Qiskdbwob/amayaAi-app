@@ -51,6 +51,9 @@ class SelfImprovementPipeline @Inject constructor(
     private val memoryRepository: MemoryRepository,
     private val primedStateRepository: PrimedStateRepository,
     private val skillRepository: SkillRepository,
+    // Project Intelligence System phase B/D: per-workspace live state and Android capability matrix.
+    private val projectStateRepository: ProjectStateRepository,
+    private val androidCapabilityRepository: AndroidCapabilityRepository,
     @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context
 ) {
     private val evidenceFile: File get() = File(context.filesDir, "skills/workflow-evidence.jsonl")
@@ -59,7 +62,9 @@ class SelfImprovementPipeline @Inject constructor(
     suspend fun analyzeAndImprove(context: CompletedInteractionContext): SelfImprovementResult {
         val skillProposals = extractSkillCandidates(context)
         val factProposals = extractDurableFacts(context)
-        (skillProposals + factProposals).forEach { pendingProposalRepository.addProposal(it) }
+        // Phase A: project design decisions with rationale (approval-gated, workspace-scoped).
+        val decisionProposals = extractDecisions(context)
+        (skillProposals + factProposals + decisionProposals).forEach { pendingProposalRepository.addProposal(it) }
         // Phase 3: persist primed states learned from repeated failures / user corrections.
         primedStatesFor(context).forEach { state ->
             runCatching { primedStateRepository.addOrReinforce(state) }
@@ -69,6 +74,15 @@ class SelfImprovementPipeline @Inject constructor(
         if (context.successful && context.toolCalls.isNotEmpty()) {
             runCatching { primedStateRepository.reinforce(workflowMeta(context).fingerprint, success = true) }
                 .onFailure { android.util.Log.w("AmayaMemory", "Primed state reinforce failed: ${it.message}") }
+        }
+        // Phase B: update the per-workspace project state (goal, blockers, changes, build outcome)
+        // from this turn's evidence, and Phase D: mark ABIs verified when a build succeeded.
+        if (!context.workspacePath.isNullOrBlank()) {
+            runCatching { projectStateRepository.recordTurn(context) }
+                .onFailure { android.util.Log.w("AmayaMemory", "Project state update failed: ${it.message}") }
+            runCatching {
+                androidCapabilityRepository.recordBuildOutcome(context.workspacePath, successful = context.successful)
+            }.onFailure { android.util.Log.w("AmayaMemory", "Capability outcome failed: ${it.message}") }
         }
         // End-of-turn batch housekeeping (scheme §5): recompute decay, archive memories that decayed
         // below the floor, and enforce the per-scope cap in one bounded pass. Any failure is
@@ -532,6 +546,69 @@ class SelfImprovementPipeline @Inject constructor(
         return proposals
     }
 
+    /**
+     * Phase A: extract durable design decisions (with rationale) from successful interactions, e.g.
+     * "we chose SQLite over X because...". Workspace-scoped, approval-gated like every other write.
+     * Returned so callers can surface them; the write still goes through the pending-proposal gate.
+     */
+    internal fun extractDecisions(context: CompletedInteractionContext): List<PendingProposal> {
+        if (!context.successful || context.userMessages.isEmpty()) return emptyList()
+        val workspace = context.workspacePath?.takeIf(String::isNotBlank) ?: return emptyList()
+        val proposals = mutableListOf<PendingProposal>()
+        val seen = mutableSetOf<String>()
+        for (message in context.userMessages) {
+            if (proposals.size >= MAX_DECISIONS_PER_TURN) break
+            val lower = message.lowercase()
+            val marker = DECISION_MARKERS.firstOrNull { it in lower } ?: continue
+            val sentence = extractDecisionSentence(message, lower.indexOf(marker)) ?: continue
+            val decision = cleanDecision(sentence) ?: continue
+            if (!seen.add(decision.lowercase())) continue
+            proposals += PendingProposal(
+                id = "decision_${java.util.UUID.randomUUID().toString().take(12)}",
+                sourceSessionId = context.sessionId,
+                type = PendingProposalType.DECISION,
+                target = "decision-" + decision.lowercase()
+                    .replace(Regex("[^a-z0-9]+"), "-")
+                    .trim('-')
+                    .take(40)
+                    .ifBlank { "project-decision" },
+                action = PendingProposalAction.ADD,
+                title = "Recorded project decision",
+                content = decision,
+                reason = "Detected a project design decision with rationale from a successful interaction (auto-consolidation).",
+                confidence = 0.72,
+                createdAt = context.timestamp,
+                status = PendingProposalStatus.PENDING,
+                workspacePath = workspace,
+                workspaceId = context.workspaceId,
+                sourceSessionIds = listOf(context.sessionId),
+                evidence = listOf("Detected from user message in session ${context.sessionId}")
+            )
+        }
+        return proposals
+    }
+
+    /** Sentence containing [index]; stops at sentence punctuation or the length cap. */
+    private fun extractDecisionSentence(message: String, index: Int): String? {
+        val sentenceEnd = message.indexOfAny(charArrayOf('.', '!', '\n', '?'), index)
+            .let { if (it < 0) message.length else it + 1 }
+        return message.substring(index, sentenceEnd.coerceAtMost(index + MAX_FACT_LENGTH)).trim()
+    }
+
+    /** Keep the decision's rationale; reject tasks, questions, URLs, and secrets. */
+    private fun cleanDecision(sentence: String): String? {
+        val text = sentence.trim()
+            .trimEnd('.', '!', '?')
+            .replace(Regex("(?i)^(we|i|the project|the app|kita|saya)\\s+(decided|chose|chose to use|memilih|memutuskan|pakai|gunakan)\\s+"), "The project decided to use ")
+            .trim()
+        if (text.length !in MIN_FACT_LENGTH..MAX_FACT_LENGTH) return null
+        val lower = text.lowercase()
+        if (lower.contains('?')) return null
+        if (lower.contains("http://") || lower.contains("https://")) return null
+        if (!classifier.checkSafety(text).safe) return null
+        return text
+    }
+
     /** Sentence containing [index]; stops at sentence punctuation or the length cap. */
     private fun extractFactSentence(message: String, index: Int): String? {
         val sentenceEnd = message.indexOfAny(charArrayOf('.', '!', '\n', '?'), index)
@@ -697,8 +774,14 @@ class SelfImprovementPipeline @Inject constructor(
         private const val PITFALL_MIN_MATCH_SCORE = 2.5
         private const val EVIDENCE_MAX_AGE_MS = 90L * 24L * 60L * 60L * 1000L
         private const val MAX_FACTS_PER_TURN = 2
+        private const val MAX_DECISIONS_PER_TURN = 1
         private const val MIN_FACT_LENGTH = 8
         private const val MAX_FACT_LENGTH = 180
+        private val DECISION_MARKERS = listOf(
+            "we decided", "we chose", "we picked", "decided to use", "chose to use", "opted for",
+            "memutuskan", "memilih", "kita pilih", "kita putuskan", "kami memilih", "better than",
+            "instead of", "rather than", "decision was"
+        )
         private val TEACH_TERMS = listOf("save this workflow", "remember this workflow", "teach this workflow", "simpan workflow", "pelajari workflow", "jadikan skill")
         private val FAILURE_TERMS = listOf("error", "failed", "timeout", "cancelled", "gagal")
         private val SELF_IMPROVEMENT_TOOLS = setOf("memory", "skill", "update_memory", "memory_manage", "skill_view", "skill_manage", "session_search", "update_todo")

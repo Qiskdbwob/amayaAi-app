@@ -24,7 +24,9 @@ enum class PendingProposalType {
     SKILL_CREATE,
     SKILL_PATCH,
     SKILL_UPDATE,
-    WORKSPACE_FACT
+    WORKSPACE_FACT,
+    /** Project Intelligence System phase A: a project design decision with rationale (approval-gated). */
+    DECISION
 }
 
 enum class PendingProposalAction {
