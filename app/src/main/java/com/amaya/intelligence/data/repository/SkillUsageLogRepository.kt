@@ -68,8 +68,10 @@ class FileSkillUsageLogRepository @Inject constructor(
                 notes = notes?.trim()?.take(200)?.takeIf(String::isNotEmpty)
             )
             // Bound the in-memory buffer so a pathological turn can't grow it unbounded.
+            // (subList().clear() instead of removeRange: the latter isn't resolved on this stdlib.)
             if (buffer.size > MAX_BUFFER_ENTRIES) {
-                buffer.removeRange(0, buffer.size - MAX_BUFFER_ENTRIES)
+                val excess = buffer.size - MAX_BUFFER_ENTRIES
+                buffer.subList(0, excess).clear()
             }
         }
     }

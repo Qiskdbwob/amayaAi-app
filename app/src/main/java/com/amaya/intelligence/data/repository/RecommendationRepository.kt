@@ -163,9 +163,11 @@ class FileRecommendationRepository @Inject constructor(
 
     override suspend fun verify(id: String, evidence: String): Result<Recommendation> =
         withContext(Dispatchers.IO) {
-            synchronized(fileLock) {
+            val cleanEvidence = evidence.trim()
+            // The read-modify-write is atomic under the file lock; the provenance linking is a
+            // suspend call, so it runs strictly AFTER the critical section is released.
+            val result = synchronized(fileLock) {
                 runCatching {
-                    val cleanEvidence = evidence.trim()
                     if (cleanEvidence.isBlank()) return@runCatching error("Verification evidence is required")
                     val records = readAll().toMutableList()
                     val index = records.indexOfFirst { it.id == id }
@@ -187,10 +189,13 @@ class FileRecommendationRepository @Inject constructor(
                     )
                     records[index] = next
                     writeAll(records)
-                    linkEvidenceToRelatedMemories(next, cleanEvidence)
                     next
                 }
             }
+            result.getOrNull()?.let { verified ->
+                linkEvidenceToRelatedMemories(verified, cleanEvidence)
+            }
+            result
         }
 
     override suspend fun archive(id: String): Result<Recommendation> = transition(id, RecommendationStatus.ARCHIVED)
