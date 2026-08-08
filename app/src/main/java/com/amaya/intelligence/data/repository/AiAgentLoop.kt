@@ -5,6 +5,7 @@ import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.domain.models.UiMessage
 import com.amaya.intelligence.domain.models.conversationEvent
 import com.amaya.intelligence.domain.models.conversationEventProviderContent
+import com.amaya.intelligence.tools.ClarificationRequest
 import com.amaya.intelligence.tools.ConfirmationRequest
 import com.amaya.intelligence.tools.ToolResult
 import com.amaya.intelligence.util.debugLog
@@ -20,6 +21,33 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.UUID
+
+/**
+ * Conservative detection of a user correction: the message says the previous outcome was wrong.
+ * Short and imperative only, so normal follow-ups ("jangan lupa…", "tolong buat…") never match.
+ */
+internal fun isUserCorrectionMessage(text: String): Boolean {
+    val trimmed = text.trim()
+    if (trimmed.length !in 2..220) return false
+    if ('?' in trimmed || '\n' in trimmed) return false
+    val lower = trimmed.lowercase()
+    if (CORRECTION_MARKERS.none { lower.startsWith(it) || it in lower }) return false
+    // A task request that merely contains a marker word is not a correction of past output.
+    return CORRECTION_TASK_VERBS.none { it in lower }
+}
+
+private val CORRECTION_MARKERS = listOf(
+    "bukan begitu", "bukan gitu", "bukan seperti itu", "bukan itu", "itu bukan", "tidak seperti itu",
+    "jangan begitu", "jangan gitu", "jangan seperti itu", "kamu salah", "anda salah", "itu salah",
+    "salah, ", "salah!", "salah.", "that's wrong", "that is wrong", "that was wrong", "not like that",
+    "wrong, ", "wrong!", "wrong.", "you got it wrong", "no, i meant", "no that's not", "no, that's not",
+    "that's not what", "that is not what", "salah besar", "salah total"
+)
+
+private val CORRECTION_TASK_VERBS = listOf(
+    "buat", "buatkan", "tulis", "perbaiki", "implement", "create", "add ", "write ", "fix ",
+    "refactor", "jangan lupa", "jangan lupa untuk", "please", "tolong"
+)
 
 internal fun queuedConversationEventMessage(event: UiMessage): ChatMessage? {
     if (event.role != MessageRole.SYSTEM) return null
@@ -44,6 +72,7 @@ internal fun AiRepository.chatImpl(
         effort: ThinkingEffort? = null,
         runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL,
         onConfirmation: suspend (ConfirmationRequest) -> Boolean = { false },
+        onClarification: suspend (ClarificationRequest) -> String? = { null },
         pendingConversationEvents: suspend () -> List<UiMessage> = { emptyList() },
         onConversationEventsInjected: suspend (List<UiMessage>) -> Unit = {},
         messageRole: MessageRole = MessageRole.USER
@@ -82,6 +111,15 @@ internal fun AiRepository.chatImpl(
         debugLog("AiRepository") { "chat() resolved connection=${connection.id}, model=$model" }
 
         val sessionId = conversationId?.toString() ?: "session_${UUID.randomUUID()}"
+        // Learn from user corrections: a follow-up that says the previous outcome was wrong marks
+        // the previous turn's workflow evidence as failed and proposes a correction lesson. Fired
+        // off the hot path — it never blocks the current turn.
+        if (runtimeTarget == AgentRuntimeTarget.LOCAL && isUserCorrectionMessage(message)) {
+            repoScope.launch {
+                runCatching { selfImprovementPipeline.recordUserCorrection(sessionId, message, workspacePath) }
+                    .onFailure { errorLog("AiRepository", "Failed to record user correction", it) }
+            }
+        }
         val workspaceId = workspacePath?.takeIf(String::isNotBlank)?.let { workspaceMemoryStore.resolve(it)?.id }
         val completedUserMessages = mutableListOf(message)
         val completedAssistantMessages = mutableListOf<String>()
@@ -240,8 +278,12 @@ internal fun AiRepository.chatImpl(
         val manualSummary = managedContext.manualSummary
         var autoSummary: String? = ledger?.render() ?: managedContext.autoSummary
         var persistedLedgerText: String? = managedContext.autoSummary
-        var systemPromptWithAutoContext =
-            composeSystemPrompt(basePrompt, manualSummary, autoSummary, ledgerBudgetTokens)
+        // Scheme E: pin the active plan into every system prompt so it survives compaction.
+        fun composeWithPlan(): String {
+            val composed = composeSystemPrompt(basePrompt, manualSummary, autoSummary, ledgerBudgetTokens)
+            return if (taskPlan.steps.isEmpty()) composed else "$composed\n\n${taskPlan.renderSection()}"
+        }
+        var systemPromptWithAutoContext = composeWithPlan()
 
         var continueLoop = true
         var iterations = 0
@@ -254,6 +296,12 @@ internal fun AiRepository.chatImpl(
         val lastToolErrorSignature = mutableMapOf<String, String>()
         val repeatedToolErrors = mutableMapOf<String, Int>()
         val invalidToolArgumentErrors = mutableMapOf<String, Throwable>()
+        // Scheme E: host-pinned plan mirroring the visible todo list (survives compaction).
+        var taskPlan: TaskPlan = TaskPlan(emptyList())
+        // Scheme C: how many tool calls actually executed this turn + how many verification
+        // passes have run (bounded by MAX_VERIFICATION_PASSES).
+        var executedToolCalls = 0
+        var verificationPasses = 0
 
         while (continueLoop) {
             iterations++
@@ -370,8 +418,7 @@ internal fun AiRepository.chatImpl(
                     }
                 }
 
-                systemPromptWithAutoContext =
-                    composeSystemPrompt(basePrompt, manualSummary, autoSummary, ledgerBudgetTokens)
+                systemPromptWithAutoContext = composeWithPlan()
                 systemPromptTokens = TokenEstimator.text(systemPromptWithAutoContext)
                 historyBudget = requestInputBudget - toolSchemaTokens - AiRepository.CONTEXT_SAFETY_RESERVE_TOKENS - systemPromptTokens
                 if (historyBudget <= 0) {
@@ -613,7 +660,30 @@ internal fun AiRepository.chatImpl(
                         send(AgentEvent.TextDelta(itemText))
                     }
                 }
-                continueLoop = false
+                // Scheme C: one bounded verification pass when a tool-using turn stops. The model
+                // must confirm the goal is fully done with evidence, or continue working. Never
+                // runs on plain Q&A (no tools), internal continuations, or bridge turns.
+                val shouldVerify = verificationPasses < MAX_VERIFICATION_PASSES &&
+                    messageRole == MessageRole.USER &&
+                    runtimeTarget == AgentRuntimeTarget.LOCAL &&
+                    (executedToolCalls > 0 || failedToolAttempts > 0 || taskPlan.steps.isNotEmpty())
+                if (shouldVerify) {
+                    verificationPasses++
+                    if (textBuffer.isNotBlank()) {
+                        messages = messages + ChatMessage(
+                            role = MessageRole.ASSISTANT,
+                            content = textBuffer.toString()
+                        )
+                    }
+                    messages = messages + ChatMessage(
+                        role = MessageRole.USER,
+                        content = verificationPrompt(conversationGoal)
+                    )
+                    StreamDebugLog.event(conversationId, null, "VERIFY_PASS", "goal=${conversationGoal.take(80)}")
+                    continueLoop = true
+                } else {
+                    continueLoop = false
+                }
             } else {
                 messages = messages + ChatMessage(
                     role = MessageRole.ASSISTANT,
@@ -635,6 +705,7 @@ internal fun AiRepository.chatImpl(
                     }
 
                     completedToolCalls.add("${toolCall.name}: ${toolCall.arguments}")
+                    executedToolCalls++
                     StreamDebugLog.event(conversationId, null, "TOOL_EXECUTE", "id=${toolCall.id} name=${toolCall.name}")
                     val result = invalidToolArgumentErrors.remove(toolCall.id)?.let { error ->
                         ToolResult.Error(
@@ -655,6 +726,7 @@ internal fun AiRepository.chatImpl(
                             toolCallId = toolCall.id,
                             onEvent = { event -> if (event is AgentEvent) channel.send(event) },
                             onConfirmationRequired = onConfirmation,
+                            onClarificationRequired = onClarification,
                             providerConnection = connection,
                             selectedModelId = model,
                             conversationId = sessionId,
@@ -683,6 +755,12 @@ internal fun AiRepository.chatImpl(
                         repeatedToolErrors[toolCall.name] = repeated
                         repeatedToolFailureWarning(toolCall.name, errorSignature, repeated)?.let { warning ->
                             resultContent += "\n\n$warning"
+                            // Scheme E: the same action keeps failing → steer the model back to its
+                            // plan instead of letting it burn the failure budget on identical calls.
+                            if (repeated >= REPLAN_AFTER_REPEATED_FAILURES && taskPlan.steps.isNotEmpty()) {
+                                resultContent += "\n\nPlan revision required: the same action has now failed $repeated times. " +
+                                    "Update your plan with update_todo (merge=false to revise it) or switch approach before retrying; do not repeat the identical call."
+                            }
                         }
                     } else {
                         lastToolErrorSignature.remove(toolCall.name)
@@ -730,6 +808,12 @@ internal fun AiRepository.chatImpl(
                     if (result is ToolResult.Success) {
                         (result.metadata["bridge_image_base64"] as? String)?.let { resultMetadata["bridge_image_base64"] = it }
                         (result.metadata["bridge_image_format"] as? String)?.let { resultMetadata["bridge_image_format"] = it }
+                    }
+
+                    // Scheme E: mirror the visible todo list into the pinned plan state after
+                    // every update_todo call, so the plan section stays current for the next request.
+                    if (toolCall.name == "update_todo") {
+                        taskPlan = TaskPlan.from(todoRepository.getItems())
                     }
 
                     messages = messages + ChatMessage(

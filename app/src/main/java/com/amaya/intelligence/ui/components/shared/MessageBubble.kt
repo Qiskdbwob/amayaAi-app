@@ -4,12 +4,16 @@ import com.amaya.intelligence.domain.models.*
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -39,6 +43,10 @@ fun MessageBubble(
     hideThinkingHeader: Boolean = false,
     onToolAccept: ((ToolExecution) -> Unit)? = null,
     onToolDecline: ((ToolExecution) -> Unit)? = null,
+    onClarify: ((ToolExecution, String?) -> Unit)? = null,
+    onCopyMessage: ((String) -> Unit)? = null,
+    onEditUserMessage: ((String) -> Unit)? = null,
+    onRegenerate: (() -> Unit)? = null,
     onLocalhostLinkClick: ((String) -> Unit)? = null
 ) {
     // Host continuations are provider input, never transcript content. Hide legacy persisted
@@ -56,8 +64,12 @@ fun MessageBubble(
         val hPad = 14.dp
         val vPad = 10.dp
 
+        var userMenuOpen by remember(message.id) { mutableStateOf(false) }
+        Box(modifier = Modifier.fillMaxWidth()) {
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = {}, onLongClick = { userMenuOpen = true }),
             horizontalAlignment = Alignment.End
         ) {
             // Display image attachments
@@ -125,10 +137,36 @@ fun MessageBubble(
                     )
                 }
             }
+            DropdownMenu(
+                expanded = userMenuOpen,
+                onDismissRequest = { userMenuOpen = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Copy") },
+                    leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
+                    onClick = {
+                        userMenuOpen = false
+                        onCopyMessage?.invoke(message.formattedContent ?: message.content)
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Edit") },
+                    leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                    onClick = {
+                        userMenuOpen = false
+                        onEditUserMessage?.invoke(message.formattedContent ?: message.content)
+                    }
+                )
+            }
+        }
         }
     } else {
+        var assistantMenuOpen by remember(message.id) { mutableStateOf(false) }
+        Box(modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = {}, onLongClick = { assistantMenuOpen = true })
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 if (message.steps.isNotEmpty()) {
@@ -154,6 +192,7 @@ fun MessageBubble(
                                     hideThinkingHeader = hideThinkingHeader,
                                     onToolAccept = onToolAccept,
                                     onToolDecline = onToolDecline,
+                                    onClarify = onClarify,
                                     onLocalhostLinkClick = onLocalhostLinkClick,
                                     insideCard = true
                                 )
@@ -195,6 +234,7 @@ fun MessageBubble(
                                 hideThinkingHeader = hideThinkingHeader,
                                 onToolAccept = onToolAccept,
                                 onToolDecline = onToolDecline,
+                                onClarify = onClarify,
                                 onLocalhostLinkClick = onLocalhostLinkClick
                             )
                         }
@@ -227,6 +267,7 @@ fun MessageBubble(
                                                     group = group,
                                                     onToolAccept = onToolAccept,
                                                     onToolDecline = onToolDecline,
+                                                    onClarify = onClarify,
                                                     onLocalhostLinkClick = onLocalhostLinkClick
                                                 )
                                             }
@@ -238,6 +279,7 @@ fun MessageBubble(
                                                     execution = execution,
                                                     onAccept = onToolAccept?.let { callback -> { callback(execution) } },
                                                     onDecline = onToolDecline?.let { callback -> { callback(execution) } },
+                                                    onClarify = onClarify?.let { callback -> { answer -> callback(execution, answer) } },
                                                     onLocalhostLinkClick = onLocalhostLinkClick
                                                 )
                                             }
@@ -268,8 +310,30 @@ fun MessageBubble(
                 }
             }
         }
-
-
+            DropdownMenu(
+                expanded = assistantMenuOpen,
+                onDismissRequest = { assistantMenuOpen = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Copy") },
+                    leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
+                    onClick = {
+                        assistantMenuOpen = false
+                        onCopyMessage?.invoke(message.formattedContent ?: message.content)
+                    }
+                )
+                if (message.content.isNotBlank()) {
+                    DropdownMenuItem(
+                        text = { Text("Regenerate response") },
+                        leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                        onClick = {
+                            assistantMenuOpen = false
+                            onRegenerate?.invoke()
+                        }
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -279,6 +343,7 @@ private fun StepTimeline(
     hideThinkingHeader: Boolean,
     onToolAccept: ((ToolExecution) -> Unit)?,
     onToolDecline: ((ToolExecution) -> Unit)?,
+    onClarify: ((ToolExecution, String?) -> Unit)?,
     onLocalhostLinkClick: ((String) -> Unit)?,
     /**
      * True when this timeline is rendered inside the work-summary card. Tool and
@@ -331,6 +396,7 @@ private fun StepTimeline(
                                         group = group,
                                         onToolAccept = onToolAccept,
                                         onToolDecline = onToolDecline,
+                                        onClarify = onClarify,
                                         onLocalhostLinkClick = onLocalhostLinkClick
                                     )
                                 }
@@ -342,6 +408,7 @@ private fun StepTimeline(
                                         execution = step.execution,
                                         onAccept = onToolAccept?.let { callback -> { callback(step.execution) } },
                                         onDecline = onToolDecline?.let { callback -> { callback(step.execution) } },
+                                        onClarify = onClarify?.let { callback -> { answer -> callback(step.execution, answer) } },
                                         onLocalhostLinkClick = onLocalhostLinkClick
                                     )
                                 }

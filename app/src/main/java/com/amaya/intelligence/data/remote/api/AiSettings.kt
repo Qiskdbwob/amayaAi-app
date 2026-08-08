@@ -96,6 +96,12 @@ class AiSettingsManager @Inject constructor(
         private val KEY_LAST_WORKSPACE = stringPreferencesKey("last_workspace_path")
         private val KEY_THINKING_EFFORT_PREFIX = "thinking_effort|"
         private val KEY_ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
+        private val KEY_EMBEDDING_ENABLED = booleanPreferencesKey("memory_embedding_enabled")
+        private val KEY_EMBEDDING_FORMAT = stringPreferencesKey("memory_embedding_format")
+        private val KEY_EMBEDDING_ENDPOINT = stringPreferencesKey("memory_embedding_endpoint")
+        private val KEY_EMBEDDING_MODEL = stringPreferencesKey("memory_embedding_model")
+
+        private const val ENC_EMBEDDING_API_KEY = "embedding_api_key"
 
         private val LEGACY_AGENT_CONFIGS = stringPreferencesKey("agent_configs")
         private val LEGACY_ACTIVE_AGENT_ID = stringPreferencesKey("active_agent_id")
@@ -156,7 +162,13 @@ class AiSettingsManager @Inject constructor(
             },
             mcpConfigJson = prefs[KEY_MCP_CONFIG_JSON].orEmpty(),
             lastWorkspacePath = prefs[KEY_LAST_WORKSPACE]?.ifBlank { null },
-            onboardingCompleted = prefs[KEY_ONBOARDING_COMPLETED] ?: false
+            onboardingCompleted = prefs[KEY_ONBOARDING_COMPLETED] ?: false,
+            memoryEmbedding = MemoryEmbeddingConfig(
+                enabled = prefs[KEY_EMBEDDING_ENABLED] ?: false,
+                format = prefs[KEY_EMBEDDING_FORMAT] ?: "openai_compatible",
+                endpoint = prefs[KEY_EMBEDDING_ENDPOINT].orEmpty(),
+                model = prefs[KEY_EMBEDDING_MODEL].orEmpty()
+            )
         )
     }
 
@@ -182,6 +194,25 @@ class AiSettingsManager @Inject constructor(
 
     fun getConnectionApiKey(connectionId: String): String =
         encryptedPrefs.getString("$ENC_CONNECTION_KEY_PREFIX$connectionId", "").orEmpty()
+
+    /** Embedding API key (Gemini/OpenAI-compatible/NVIDIA, etc.), stored encrypted. */
+    fun getMemoryEmbeddingApiKey(): String =
+        encryptedPrefs.getString(ENC_EMBEDDING_API_KEY, "").orEmpty()
+
+    suspend fun saveMemoryEmbedding(config: MemoryEmbeddingConfig, apiKey: String? = null) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_EMBEDDING_ENABLED] = config.enabled
+            prefs[KEY_EMBEDDING_FORMAT] = config.format
+            prefs[KEY_EMBEDDING_ENDPOINT] = config.endpoint.trim().trimEnd('/')
+            prefs[KEY_EMBEDDING_MODEL] = config.model.trim()
+        }
+        apiKey?.let { key ->
+            val editor = encryptedPrefs.edit()
+            if (key.isBlank()) editor.remove(ENC_EMBEDDING_API_KEY)
+            else editor.putString(ENC_EMBEDDING_API_KEY, key.trim())
+            if (!editor.commit()) error("Could not save the embedding credential securely")
+        }
+    }
 
     fun hasConnectionApiKey(connectionId: String): Boolean =
         getConnectionApiKey(connectionId).isNotBlank()
@@ -542,5 +573,7 @@ data class AiSettings(
     val activeSelection: ActiveModelSelection? = null,
     val mcpConfigJson: String = "",
     val lastWorkspacePath: String? = null,
-    val onboardingCompleted: Boolean = false
+    val onboardingCompleted: Boolean = false,
+    /** Semantic recall embedding endpoint (user-configured; API key stored encrypted). */
+    val memoryEmbedding: MemoryEmbeddingConfig = MemoryEmbeddingConfig()
 )

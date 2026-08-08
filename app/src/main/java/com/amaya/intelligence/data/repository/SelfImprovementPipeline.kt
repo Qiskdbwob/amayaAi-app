@@ -270,6 +270,114 @@ class SelfImprovementPipeline @Inject constructor(
     }
 
     // ====================================================================
+    // PROACTIVE PITFALL RECALL (the retrieval side of self-learning)
+    // ====================================================================
+
+    /**
+     * Turn-start retrieval: match the current user message against stored failed-workflow evidence
+     * and return short "known pitfall" lines so the model avoids repeating a sequence that already
+     * failed. Site-scoped: same-site evidence ranks highest, then workspace match, then overlapping
+     * tools, then recency. Conservative — only explicitly failed sessions with a failure hint count.
+     */
+    suspend fun matchingPitfalls(
+        userMessage: String,
+        siteHost: String?,
+        workspacePath: String?,
+        limit: Int = 3
+    ): List<String> {
+        if (userMessage.isBlank()) return emptyList()
+        val lower = userMessage.lowercase()
+        val matched = readEvidence()
+            .filter { !it.successful && !it.failureHint.isNullOrBlank() }
+            .mapNotNull { evidence ->
+                val toolOverlap = evidence.tools.count { tool -> tool.isNotBlank() && lower.contains(tool.lowercase()) }
+                var score = 0.0
+                if (siteHost != null && evidence.siteHost == siteHost) score += 3.0
+                else if (evidence.siteHost != null && lower.contains(evidence.siteHost)) score += 2.5
+                if (workspacePath != null && evidence.workspacePath == workspacePath) score += 1.5
+                score += toolOverlap * 1.5
+                val ageDays = (System.currentTimeMillis() - evidence.timestamp).coerceAtLeast(0L) / (24L * 60L * 60L * 1000L)
+                score += 1.0 / (1.0 + ageDays / 14.0)
+                if (score >= PITFALL_MIN_MATCH_SCORE) evidence to score else null
+            }
+            .sortedByDescending { it.second }
+            .take(limit)
+        return matched.map { (evidence, _) ->
+            val site = evidence.siteHost?.let { " on $it" }.orEmpty()
+            val tools = evidence.tools.take(4).joinToString(" → ").ifBlank { evidence.trigger.take(80) }
+            "- $tools$site failed with: ${evidence.failureHint.orEmpty().take(160)}"
+        }
+    }
+
+    /**
+     * Learn from user corrections. The user's follow-up says the previous outcome was wrong:
+     * mark the previous turn's evidence as failed (so `successful` reflects reality) and propose
+     * a correction lesson for approval. Approval-gated like every other durable write.
+     */
+    suspend fun recordUserCorrection(sessionId: String, correction: String, workspacePath: String?): SelfImprovementResult {
+        val hint = sanitizeEvidence(correction).take(160).ifBlank { "User corrected the outcome" }
+        val updated = synchronized(evidenceLock) {
+            val records = readEvidence()
+            var changed = false
+            val rewritten = records.map { record ->
+                if (record.sessionId == sessionId && record.successful) {
+                    changed = true
+                    record.copy(successful = false, failureHint = hint, timestamp = System.currentTimeMillis())
+                } else record
+            }
+            if (changed) writeEvidenceLines(rewritten)
+            rewritten
+        }
+        val failed = updated.filter { it.sessionId == sessionId }
+        if (failed.isEmpty()) return SelfImprovementResult()
+        val proposal = PendingProposal(
+            id = "corr_${sessionId}_${correction.hashCode()}".replace(Regex("[^A-Za-z0-9_-]"), "_").take(180),
+            sourceSessionId = sessionId,
+            type = PendingProposalType.SKILL_CREATE,
+            target = "avoid-user-corrected-outcome",
+            action = PendingProposalAction.CREATE,
+            title = "Outcome was corrected by the user",
+            content = buildString {
+                appendLine("---")
+                appendLine("name: avoid-user-corrected-outcome")
+                appendLine("description: Lesson from an outcome the user explicitly corrected.")
+                appendLine("version: 0.1.0")
+                appendLine("createdBy: self-improvement")
+                appendLine("---")
+                appendLine()
+                appendLine("# Pitfall")
+                appendLine()
+                appendLine("The previous result was wrong and the user corrected it:")
+                appendLine()
+                appendLine("> $hint")
+                appendLine()
+                appendLine("Re-verify the actual output/state before claiming success; re-read the request and the tool evidence.")
+            }.trim(),
+            reason = "The user corrected the previous outcome; treat that workflow as failed until proven otherwise.",
+            confidence = 0.65,
+            createdAt = System.currentTimeMillis(),
+            status = PendingProposalStatus.PENDING,
+            workspacePath = workspacePath,
+            workspaceId = null,
+            sourceSessionIds = failed.map { it.sessionId }.distinct(),
+            evidence = failed.map { "Corrected in session ${it.sessionId}: $hint" }
+        )
+        pendingProposalRepository.addProposal(proposal)
+        return SelfImprovementResult(listOf(proposal))
+    }
+
+    private fun writeEvidenceLines(records: List<WorkflowEvidence>) {
+        val content = records.joinToString("\n") { it.toJson().toString() } + if (records.isEmpty()) "" else "\n"
+        evidenceFile.parentFile?.mkdirs()
+        val tmp = File(evidenceFile.parentFile, "${evidenceFile.name}.tmp")
+        tmp.writeText(content)
+        if (!tmp.renameTo(evidenceFile)) {
+            evidenceFile.writeText(tmp.readText())
+            tmp.delete()
+        }
+    }
+
+    // ====================================================================
     // AUTO MEMORY CONSOLIDATION (Hermes-style self-learning)
     // ====================================================================
 
@@ -463,6 +571,8 @@ class SelfImprovementPipeline @Inject constructor(
         private const val REQUIRED_SUCCESSFUL_SESSIONS = 2
         private const val REQUIRED_FAILURE_SESSIONS = 2
         private const val MAX_EVIDENCE_RECORDS = 500
+        /** Minimum relevance for a pitfall to be injected at turn start (site match alone passes). */
+        private const val PITFALL_MIN_MATCH_SCORE = 2.5
         private const val EVIDENCE_MAX_AGE_MS = 90L * 24L * 60L * 60L * 1000L
         private const val MAX_FACTS_PER_TURN = 2
         private const val MIN_FACT_LENGTH = 8

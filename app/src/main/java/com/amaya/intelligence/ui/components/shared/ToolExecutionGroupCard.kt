@@ -148,6 +148,7 @@ internal fun ToolExecutionGroupCard(
     group: ToolExecutionGroup,
     onToolAccept: ((ToolExecution) -> Unit)? = null,
     onToolDecline: ((ToolExecution) -> Unit)? = null,
+    onClarify: ((ToolExecution, String?) -> Unit)? = null,
     onLocalhostLinkClick: ((String) -> Unit)? = null
 ) {
     val hasError = group.executions.any { it.status == ToolStatus.ERROR }
@@ -275,6 +276,7 @@ internal fun ToolExecutionGroupCard(
                                 } else execution,
                                 onAccept = if (isSyntheticGroup) null else onToolAccept?.let { callback -> { callback(execution) } },
                                 onDecline = if (isSyntheticGroup) null else onToolDecline?.let { callback -> { callback(execution) } },
+                                onClarify = if (isSyntheticGroup) null else onClarify?.let { callback -> { answer -> callback(execution, answer) } },
                                 onLocalhostLinkClick = onLocalhostLinkClick,
                                 // The first child is the one the wrapper appeared with, so
                                 // the wrapper's fade already covers it. Later siblings

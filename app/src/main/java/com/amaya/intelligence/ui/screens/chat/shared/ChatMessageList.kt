@@ -74,6 +74,10 @@ fun ChatMessageList(
     drawerOpen: Boolean,
     onToolAccept: ((ToolExecution) -> Unit)?,
     onToolDecline: ((ToolExecution) -> Unit)?,
+    onClarify: ((ToolExecution, String?) -> Unit)? = null,
+    onCopyMessage: ((String) -> Unit)? = null,
+    onEditUserMessage: ((String) -> Unit)? = null,
+    onRegenerate: (() -> Unit)? = null,
     onLocalhostLinkClick: ((String) -> Unit)?,
     onScrollToBottomClick: () -> Unit = {},
     shouldAutoScroll: Boolean = false
@@ -298,6 +302,10 @@ fun ChatMessageList(
                     hideThinkingHeader = hideThinking,
                     onToolAccept = onToolAccept,
                     onToolDecline = onToolDecline,
+                    onClarify = onClarify,
+                    onCopyMessage = onCopyMessage,
+                    onEditUserMessage = onEditUserMessage,
+                    onRegenerate = onRegenerate,
                     onLocalhostLinkClick = onLocalhostLinkClick
                 )
             }

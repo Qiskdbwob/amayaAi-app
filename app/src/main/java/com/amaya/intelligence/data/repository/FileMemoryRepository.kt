@@ -3,6 +3,8 @@ package com.amaya.intelligence.data.repository
 import android.content.Context
 import com.amaya.intelligence.data.local.files.FileWorkspaceMemoryStore
 import com.amaya.intelligence.data.local.files.canonicalWorkspacePath
+import com.amaya.intelligence.data.remote.api.AiSettingsManager
+import com.amaya.intelligence.data.remote.api.EmbeddingClient
 import com.amaya.intelligence.domain.memory.MemoryAction
 import com.amaya.intelligence.domain.memory.MemoryClassifier
 import com.amaya.intelligence.domain.memory.MemoryDeduper
@@ -24,9 +26,15 @@ class FileMemoryRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val classifier: MemoryClassifier,
     private val deduper: MemoryDeduper,
-    private val workspaceStore: FileWorkspaceMemoryStore
+    private val workspaceStore: FileWorkspaceMemoryStore,
+    private val settingsManager: AiSettingsManager,
+    private val embeddingClient: EmbeddingClient
 ) : MemoryRepository {
     private val fileLock = Any()
+    /** Small LRU of embedded text vectors, keyed by `endpoint|model|text-hash`. */
+    private val vectorCache = object : LinkedHashMap<String, List<Float>>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Float>>?): Boolean = size > VECTOR_CACHE_MAX
+    }
 
     private val memoryDir: File
         get() = File(context.filesDir, "memory").also { it.mkdirs() }
@@ -129,12 +137,12 @@ class FileMemoryRepository @Inject constructor(
             val ranked = if (query.isNullOrBlank()) {
                 scoped.sortedByDescending { it.updatedAt }
             } else {
-                scoped.map { it to scoreMemoryRecord(it, query) }
+                val lexical = scoped.map { it to scoreMemoryRecord(it, query) }
                     .filter { it.second >= MIN_SEARCH_SCORE }
                     .sortedByDescending { it.second }
-                    .map { it.first }
+                rerankWithEmbeddings(lexical, query) ?: lexical
             }
-            ranked.take(limit.coerceIn(1, MAX_LIST_LIMIT))
+            ranked.map { it.first }.take(limit.coerceIn(1, MAX_LIST_LIMIT))
         }
     }
 
@@ -581,6 +589,58 @@ class FileMemoryRepository @Inject constructor(
         return score
     }
 
+    /**
+     * Semantic rerank: when the user configured an embedding endpoint, re-score the top lexical
+     * candidates by cosine similarity to the query (batched in one API call) and blend the scores.
+     * Any failure (offline, bad key, unsupported model) falls back to the lexical ranking, so
+     * semantic recall is strictly an improvement, never a regression. Vectors are cached per
+     * (endpoint, model, text-hash) so repeated snapshots do not re-hit the API.
+     */
+    private suspend fun rerankWithEmbeddings(
+        lexical: List<Pair<MemoryRecord, Double>>,
+        query: String
+    ): List<Pair<MemoryRecord, Double>>? {
+        if (lexical.isEmpty()) return lexical
+        val settings = settingsManager.getSettings()
+        val config = settings.memoryEmbedding
+        if (!config.enabled || config.endpoint.isBlank() || config.model.isBlank()) return null
+        val apiKey = settingsManager.getMemoryEmbeddingApiKey()
+        if (apiKey.isBlank()) return null
+        val candidates = lexical.take(EMBEDDING_CANDIDATE_LIMIT)
+        return runCatching {
+            val texts = candidates.map { (record, _) ->
+                "${record.title} ${record.attribute} ${record.content} ${record.label}".take(EMBEDDING_TEXT_MAX_CHARS)
+            }
+            val cacheKey = "${config.format}|${config.model}|${config.endpoint}"
+            val queryVector = embeddingClient.embed(listOf(query.take(EMBEDDING_TEXT_MAX_CHARS)), config, apiKey).getOrThrow().first()
+            val vectors = embeddingClient.embed(texts, config, apiKey).getOrThrow()
+            val blended = candidates.mapIndexedNotNull { index, (record, lexicalScore) ->
+                val text = texts[index]
+                val cached = vectorCache["$cacheKey|${text.hashCode()}"]
+                val vector = cached ?: vectors.getOrNull(index)?.also { vectorCache["$cacheKey|${text.hashCode()}"] = it }
+                if (vector == null) return@mapIndexedNotNull null
+                val similarity = cosineSimilarity(queryVector, vector)
+                val combined = lexicalScore + EMBEDDING_SIMILARITY_WEIGHT * similarity
+                if (combined >= MIN_SEARCH_SCORE) record to combined else null
+            }
+            blended.sortedByDescending { it.second }.ifEmpty { lexical }
+        }.getOrNull() ?: lexical
+    }
+
+    private fun cosineSimilarity(a: List<Float>, b: List<Float>): Double {
+        if (a.isEmpty() || a.size != b.size) return 0.0
+        var dot = 0.0
+        var normA = 0.0
+        var normB = 0.0
+        for (i in a.indices) {
+            dot += a[i] * b[i]
+            normA += a[i] * a[i]
+            normB += b[i] * b[i]
+        }
+        if (normA == 0.0 || normB == 0.0) return 0.0
+        return dot / (kotlin.math.sqrt(normA) * kotlin.math.sqrt(normB))
+    }
+
     /** Fraction of the query's adjacent token pairs whose tokens both appear in [candidate]. */
     private fun bigramOverlap(query: String, candidate: String): Double {
         val queryTerms = expandTerms(query).toList()
@@ -632,6 +692,12 @@ class FileMemoryRepository @Inject constructor(
         private const val MIN_SEARCH_SCORE = 2.0
         private const val MAX_LIST_LIMIT = 200
         private const val MAX_REVISIONS_PER_MEMORY = 5
+        /** Top lexical candidates re-scored semantically; bounds API cost to ~13 texts per recall. */
+        private const val EMBEDDING_CANDIDATE_LIMIT = 12
+        private const val EMBEDDING_TEXT_MAX_CHARS = 512
+        /** Cosine (0..1) weight added on top of the lexical score. */
+        private const val EMBEDDING_SIMILARITY_WEIGHT = 3.0
+        private const val VECTOR_CACHE_MAX = 200
         private val UUID_REGEX = Regex("[0-9a-fA-F-]{36}")
         private val DURABLE_TYPES = setOf(MemoryType.USER_PROFILE, MemoryType.WORKSPACE_FACT)
         private val LEGACY_DAILY_FILE = Regex("\\d{4}-\\d{2}-\\d{2}\\.md")

@@ -258,6 +258,32 @@ fun ChatScreen(
             viewModel.respondToToolInteraction(execution.metadata["approvalId"] ?: execution.toolCallId, false)
         }
     }
+    val onClarify: ((ToolExecution, String?) -> Unit)? = remember(viewModel) {
+        { execution: ToolExecution, answer: String? ->
+            viewModel.respondToClarification(
+                execution.metadata["clarificationId"] ?: execution.toolCallId,
+                answer
+            )
+        }
+    }
+    // Message actions: long-press a bubble for copy (user + assistant), edit (user prompt →
+    // composer), or regenerate (assistant response → re-run the last user prompt).
+    val onCopyMessage: ((String) -> Unit)? = remember(context) {
+        { text: String ->
+            if (text.isNotBlank()) {
+                androidx.compose.ui.platform.LocalClipboardManager.current.setText(
+                    androidx.compose.ui.text.AnnotatedString(text)
+                )
+                android.widget.Toast.makeText(context, "Copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    val onEditUserMessage: ((String) -> Unit)? = remember {
+        { text: String -> inputText.value = text }
+    }
+    val onRegenerate: (() -> Unit)? = remember(viewModel) {
+        { viewModel.regenerateLastResponse() }
+    }
 
     val displayMessages by remember(uiState.messages) {
         derivedStateOf {
@@ -413,6 +439,10 @@ fun ChatScreen(
                     drawerOpen = drawerVisible,
                     onToolAccept = onToolAccept,
                     onToolDecline = onToolDecline,
+                    onClarify = onClarify,
+                    onCopyMessage = onCopyMessage,
+                    onEditUserMessage = onEditUserMessage,
+                    onRegenerate = onRegenerate,
                     onLocalhostLinkClick = { annotationItem ->
                         selectedLocalhostLink = LocalhostLinkInfoParser.parse(annotationItem, serverIp)
                         showLocalhostLinkSheet = true

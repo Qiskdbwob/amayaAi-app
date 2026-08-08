@@ -44,6 +44,7 @@ class ToolExecutor @Inject constructor(
     // Web search / browser tools
     private val webSearchTool: WebSearchTool,
     private val browserUseToolset: BrowserUseToolset,
+    private val askUserTool: AskUserTool,
     private val commandValidator: CommandValidator,
     private val terminalSettingsRepository: TerminalSettingsRepository
 ) {
@@ -68,7 +69,8 @@ class ToolExecutor @Inject constructor(
             updateTodoTool.name     to updateTodoTool,
             invokeSubagentsTool.name to invokeSubagentsTool,
             delegateAgentTool.name to delegateAgentTool,
-            webSearchTool.name      to webSearchTool
+            webSearchTool.name      to webSearchTool,
+            askUserTool.name        to askUserTool
         ) + browserUseToolset.tools.associateBy { it.name }
     }
 
@@ -88,6 +90,7 @@ class ToolExecutor @Inject constructor(
         toolCallId: String? = null,
         onEvent: (suspend (Any) -> Unit)? = null,
         onConfirmationRequired: suspend (ConfirmationRequest) -> Boolean = { false },
+        onClarificationRequired: suspend (ClarificationRequest) -> String? = { null },
         providerConnection: com.amaya.intelligence.data.remote.api.ProviderConnection? = null,
         selectedModelId: String? = null,
         readOnly: Boolean = false,
@@ -147,6 +150,7 @@ class ToolExecutor @Inject constructor(
             agentCapabilityProfile = agentCapabilityProfile,
             assistantMode = assistantMode,
             onConfirmationRequired = onConfirmationRequired,
+            onClarificationRequired = onClarificationRequired,
             readOnly = readOnly
         )
 
@@ -433,15 +437,17 @@ class ToolExecutor @Inject constructor(
                     ToolParameter("max_chars_per_page", "integer", "Maximum extracted text characters per page (default: ${WebSearchTool.DEFAULT_MAX_CHARS_PER_PAGE}, max: ${WebSearchTool.MAX_MAX_CHARS_PER_PAGE}).", required = false)
                 )
             ),
-            // ── Todo / Task list tool ──────────────────────────────────────────────
+            // ── Todo / Task list tool (the plan) ───────────────────────────────────
             ToolDefinition(
                 name = "update_todo",
-                description = "Update the live task list shown above the chat input. " +
-                    "Call at START of multi-step task with merge=false to set full plan, then merge=true to update progress. " +
+                description = "Maintain the plan/task list shown above the chat input. " +
+                    "For any multi-step task, first call with merge=false to set your full plan (steps as todo items), " +
+                    "then merge=true to update progress as you complete steps. " +
+                    "When a step keeps failing, revise the plan (merge=false) or switch approach before retrying. " +
                     "Status: 'pending', 'in_progress', 'completed'.",
                 parameters = listOf(
                     ToolParameter("merge", "boolean",
-                        "true=merge by id into existing list, false=replace all items.", required = true),
+                        "true=merge by id into existing list, false=replace all items (use this to set or revise the full plan).", required = true),
                     ToolParameter("todos", "array",
                         "Todo items. Each: {id: int, status: string, content: string, active_form: string (optional)}",
                         required = true, items = "object")
@@ -558,6 +564,16 @@ class ToolExecutor @Inject constructor(
                     ToolParameter("query", "string", "Search query", required = true),
                     ToolParameter("limit", "integer", "Max results, default 10", required = false)
                 )
+            ),
+            ToolDefinition(
+                name = "ask_user",
+                description = "Ask the user a short question when the request is ambiguous, choices conflict, or a prerequisite is missing. " +
+                    "The turn pauses and resumes with the user's answer. Use it instead of guessing; do not use it for approvals or " +
+                    "trivial questions you can resolve from context.",
+                parameters = listOf(
+                    ToolParameter("question", "string", "Short, specific question (one sentence, max ~200 chars)", required = true),
+                    ToolParameter("options", "array", "Optional answer choices the user can pick quickly", required = false, items = "string")
+                )
             )
         ) + browserUseToolset.getToolDefinitions()
         // Every definition below has a registered handler. Filtering this list to the old
@@ -584,8 +600,8 @@ internal fun exposeToolDefinition(definition: ToolDefinition, mode: AssistantMod
     )
 }
 
-private val CHAT_CAPABILITIES = setOf("web_search", "memory", "skill")
-private val PROJECT_DISABLED_CAPABILITIES = setOf("browser", "delegate_agent", "reminder", "create_reminder", "update_todo")
+private val CHAT_CAPABILITIES = setOf("web_search", "memory", "skill", "ask_user", "update_todo")
+private val PROJECT_DISABLED_CAPABILITIES = setOf("browser", "delegate_agent", "reminder", "create_reminder")
 
 internal fun assistantModeAllowsCapability(
     name: String,
@@ -594,7 +610,8 @@ internal fun assistantModeAllowsCapability(
 ): Boolean = when (mode) {
     AssistantMode.CHAT -> name in CHAT_CAPABILITIES
     AssistantMode.PROJECT -> name !in PROJECT_DISABLED_CAPABILITIES
-    AssistantMode.AGENT -> name == "agent_memory" || agentCapabilityProfile?.allows(name) ?: true
+    // ask_user is always host-safe (a question, never an action), so every mode may use it.
+    AssistantMode.AGENT -> name == "agent_memory" || name == "ask_user" || agentCapabilityProfile?.allows(name) ?: true
 }
 
 /**
@@ -609,6 +626,17 @@ data class ConfirmationRequest(
     val details: String,
     val riskLevel: RiskLevel,
     val toolCallId: String? = null
+)
+
+/**
+ * Host-gated clarification: the model asks the user a question mid-turn and waits for a free-text
+ * answer. Non-destructive — never triggers the approval flow. A null answer means the user
+ * dismissed the question; the model must proceed with its best assumption or state what is missing.
+ */
+data class ClarificationRequest(
+    val toolCallId: String,
+    val question: String,
+    val options: List<String> = emptyList()
 )
 
 /**

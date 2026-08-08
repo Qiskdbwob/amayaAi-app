@@ -130,6 +130,14 @@ class ChatViewModel @Inject constructor(
         intelligenceService.respondToToolInteraction(id, confirmed)
     }
 
+    fun respondToClarification(id: String, answer: String?) {
+        intelligenceService.respondToClarification(id, answer)
+    }
+
+    fun regenerateLastResponse() {
+        intelligenceService.regenerateLastResponse()
+    }
+
     fun selectModel(modelKey: String) {
         intelligenceService.selectModel(modelKey)
     }

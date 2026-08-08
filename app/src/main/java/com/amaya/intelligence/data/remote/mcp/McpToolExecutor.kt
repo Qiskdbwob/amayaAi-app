@@ -2,6 +2,7 @@ package com.amaya.intelligence.data.remote.mcp
 
 import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeToolProvider
+import com.amaya.intelligence.tools.ClarificationRequest
 import com.amaya.intelligence.tools.ConfirmationRequest
 import com.amaya.intelligence.tools.ToolExecutor
 import com.amaya.intelligence.tools.ToolResult
@@ -23,6 +24,7 @@ class McpToolExecutor @Inject constructor(
         toolCallId: String? = null,
         onEvent: (suspend (Any) -> Unit)? = null,
         onConfirmationRequired: suspend (ConfirmationRequest) -> Boolean,
+        onClarificationRequired: suspend (ClarificationRequest) -> String? = { null },
         providerConnection: com.amaya.intelligence.data.remote.api.ProviderConnection? = null,
         selectedModelId: String? = null,
         conversationId: String? = null,
@@ -76,6 +78,7 @@ class McpToolExecutor @Inject constructor(
                     toolCallId,
                     onEvent,
                     onConfirmationRequired,
+                    onClarificationRequired,
                     providerConnection,
                     selectedModelId,
                     conversationId = conversationId,

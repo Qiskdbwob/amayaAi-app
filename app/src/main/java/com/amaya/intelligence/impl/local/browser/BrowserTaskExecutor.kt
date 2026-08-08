@@ -101,12 +101,19 @@ private suspend fun BrowserConversationSession.executeNormalizedSubtool(
         val started = System.currentTimeMillis()
         val internalName = actionToInternalTool(action)
         _uiState.update { it.copy(progress = currentStep.toFloat() / totalSteps.toFloat(), currentAction = readableAction(action)) }
+        // Scheme G: capture a pre-action page fingerprint for mutation actions so a silent no-op
+        // (wrong selector, JS-blocked click, unsubmitted form) is reported to the model explicitly
+        // instead of being swallowed as a success.
+        val verifyMutation = internalName in VERIFY_MUTATION_TOOLS
+        val beforeFingerprint = if (verifyMutation) pageFingerprint() else null
         val rawResponse = when (action) {
             "get_status" -> BrowserToolResponse.Success("Browser status read", currentSessionMetadata())
             "analyze_page" -> execute("get_dom", params)
             else -> execute(internalName, params)
         }
-        val response = rawResponse
+        val response = if (verifyMutation && rawResponse is BrowserToolResponse.Success) {
+            attachActionVerification(rawResponse, beforeFingerprint)
+        } else rawResponse
         val duration = System.currentTimeMillis() - started
         return BrowserResponseFormatter.subToolResponse(
             id = BrowserResponseFormatter.newCallId(),
@@ -123,6 +130,43 @@ private suspend fun BrowserConversationSession.executeNormalizedSubtool(
             error = BrowserResponseFormatter.errorFor(action, response, _uiState.value.activeUrl, params)
         )
     }
+/** Scheme G: mutation actions whose silent no-op is worth detecting via page fingerprint. */
+private val VERIFY_MUTATION_TOOLS = setOf(
+    "click_element", "tap", "type_text", "press_key", "select_option", "clear_input", "search", "focus", "swipe"
+)
+
+/** Scheme G: cheap page fingerprint before/after a mutation action (see DomInspector.getFingerprintScript). */
+private suspend fun BrowserConversationSession.pageFingerprint(): String? = try {
+    when (val resp = execute("page_fingerprint", emptyMap())) {
+        is BrowserToolResponse.Success -> resp.output.take(400)
+        else -> null
+    }
+} catch (e: Exception) {
+    null
+}
+
+/**
+ * Scheme G: if the page fingerprint is unchanged after a successful mutation, the action very
+ * likely did not take effect — surface that explicitly instead of a bare success. A missing or
+ * unreadable fingerprint (page still loading, headless hiccup) skips verification rather than
+ * reporting a false positive.
+ */
+private suspend fun BrowserConversationSession.attachActionVerification(
+    response: BrowserToolResponse.Success,
+    before: String?
+): BrowserToolResponse {
+    if (before == null) return response
+    val after = pageFingerprint()
+    return if (after == null || after != before) {
+        response
+    } else {
+        BrowserToolResponse.Success(
+            output = response.output + "\n\n[verification] No observable page change after this action (URL, title, visible content, and focus state are all unchanged). The action may not have taken effect — verify the target selector/state and retry if needed.",
+            metadata = response.metadata + ("verification" to "no_observable_change")
+        )
+    }
+}
+
 private fun BrowserConversationSession.parentSnapshot(label: String, currentStep: Int, totalSteps: Int): JSONObject {
         val lastStatus = parentSubToolcalls.lastOrNull()?.optString("status") ?: "running"
         val parentStatus = when (lastStatus) {

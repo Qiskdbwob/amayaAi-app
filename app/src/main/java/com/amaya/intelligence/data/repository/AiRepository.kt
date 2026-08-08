@@ -7,7 +7,9 @@ import com.amaya.intelligence.data.remote.api.*
 import com.amaya.intelligence.data.remote.mcp.McpClientManager
 import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.domain.models.UiMessage
+import com.amaya.intelligence.tools.ClarificationRequest
 import com.amaya.intelligence.tools.ConfirmationRequest
+import com.amaya.intelligence.tools.TodoRepository
 import com.amaya.intelligence.tools.ToolExecutor
 import com.amaya.intelligence.tools.toAiToolDefinition
 import com.amaya.intelligence.util.debugLog
@@ -47,6 +49,14 @@ internal const val MAX_STREAM_BACKOFF_MS = 4_000L
  * self-correct; this bound prevents an infinite mis-call loop.
  */
 internal const val MAX_FAILED_TOOL_ATTEMPTS = 3
+/**
+ * Scheme C: how many extra verification passes a turn may run after the model first stops.
+ * One pass is enough to catch a premature "done" without dragging every tool-using turn
+ * through a second full loop.
+ */
+internal const val MAX_VERIFICATION_PASSES = 1
+/** Scheme E: identical tool failures before the host steers the model to revise its plan. */
+internal const val REPLAN_AFTER_REPEATED_FAILURES = 2
 internal const val STREAM_CONTINUATION_PROMPT = "Continue the previous response exactly where it stopped. Do not repeat any text. Use tools if needed to complete the request."
 internal const val TOOL_RESULT_TRUNCATION_MARKER = "\n… [tool result truncated by context budget]"
 internal const val AUTO_COMPACTION_MARKER = "[AUTO-COMPACTED ACTIVE CONTEXT]"
@@ -58,6 +68,15 @@ internal fun truncateToolResultForContext(content: String, maxChars: Int): Strin
     maxChars <= TOOL_RESULT_TRUNCATION_MARKER.length -> TOOL_RESULT_TRUNCATION_MARKER.take(maxChars)
     else -> content.take(maxChars - TOOL_RESULT_TRUNCATION_MARKER.length).trimEnd() + TOOL_RESULT_TRUNCATION_MARKER
 }
+
+internal fun verificationPrompt(goal: String): String = """
+        Host verification step: you just stopped and answered, but this turn used tools so the host
+        double-checks the result before finalizing. The user asked: "$goal"
+        Confirm the request is FULLY completed, citing the concrete evidence already in your tool results.
+        Do not redo completed work.
+        - If anything is missing, unverified, or only partially done: continue working — call the tools needed to finish it.
+        - If everything is truly complete: reply VERIFIED and one short line of evidence.
+    """.trimIndent()
 
 internal fun responseItemOutputText(items: List<String>): String? = items.asSequence()
     .mapNotNull { raw ->
@@ -187,6 +206,7 @@ class AiRepository @Inject constructor(
     internal val agentMemoryRepository: AgentMemoryRepository,
     internal val mcpClientManager: McpClientManager,
     internal val ledgerStore: ActiveContextLedgerStore,
+    internal val todoRepository: TodoRepository,
     // FIX 5.11: Inject application-scoped coroutine scope — no more manual SupervisorJob leak
     @ApplicationScope internal val repoScope: CoroutineScope
 ) {
@@ -271,8 +291,8 @@ class AiRepository @Inject constructor(
     // → IllegalStateException → FATAL EXCEPTION → app force close.
     // channelFlow uses a Channel internally which IS thread-safe for concurrent senders.
     fun chat(
-        message: String, userImages: List<ChatImage> = emptyList(), conversationHistory: List<ChatMessage> = emptyList(), projectId: Long? = null, workspacePath: String? = null, assistantMode: AssistantMode = AssistantMode.forWorkspace(workspacePath), ownerId: String? = null, agentId: Long? = null, conversationId: Long? = null, connectionId: String? = null, selectedModel: String? = null, effort: ThinkingEffort? = null, runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL, onConfirmation: suspend (ConfirmationRequest) -> Boolean = { false }, pendingConversationEvents: suspend () -> List<UiMessage> = { emptyList() }, onConversationEventsInjected: suspend (List<UiMessage>) -> Unit = {}, messageRole: MessageRole = MessageRole.USER
-    ): Flow<AgentEvent> = chatImpl(message, userImages, conversationHistory, projectId, workspacePath, assistantMode, ownerId, agentId, conversationId, connectionId, selectedModel, effort, runtimeTarget, onConfirmation, pendingConversationEvents, onConversationEventsInjected, messageRole)
+        message: String, userImages: List<ChatImage> = emptyList(), conversationHistory: List<ChatMessage> = emptyList(), projectId: Long? = null, workspacePath: String? = null, assistantMode: AssistantMode = AssistantMode.forWorkspace(workspacePath), ownerId: String? = null, agentId: Long? = null, conversationId: Long? = null, connectionId: String? = null, selectedModel: String? = null, effort: ThinkingEffort? = null, runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL, onConfirmation: suspend (ConfirmationRequest) -> Boolean = { false }, onClarification: suspend (ClarificationRequest) -> String? = { null }, pendingConversationEvents: suspend () -> List<UiMessage> = { emptyList() }, onConversationEventsInjected: suspend (List<UiMessage>) -> Unit = {}, messageRole: MessageRole = MessageRole.USER
+    ): Flow<AgentEvent> = chatImpl(message, userImages, conversationHistory, projectId, workspacePath, assistantMode, ownerId, agentId, conversationId, connectionId, selectedModel, effort, runtimeTarget, onConfirmation, onClarification, pendingConversationEvents, onConversationEventsInjected, messageRole)
 
     internal fun buildToolDefinitions(
         runtimeTarget: AgentRuntimeTarget = AgentRuntimeTarget.LOCAL,
