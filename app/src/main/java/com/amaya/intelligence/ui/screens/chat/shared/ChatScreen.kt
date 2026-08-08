@@ -72,6 +72,9 @@ fun ChatScreen(
     topOverlay: (@Composable () -> Unit)? = null
 ) {
     val context = LocalContext.current
+    // Hoisted to composable scope: LocalClipboardManager.current is @Composable and cannot be
+    // read inside the remember-lambda that builds the copy callback below.
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val uiState by viewModel.uiState.collectAsState()
     val todoItems by viewModel.todoItems.collectAsState()
     val localReminderCount by viewModel.activeReminderCount.collectAsState()
@@ -271,9 +274,7 @@ fun ChatScreen(
     val onCopyMessage: ((String) -> Unit)? = remember(context) {
         { text: String ->
             if (text.isNotBlank()) {
-                androidx.compose.ui.platform.LocalClipboardManager.current.setText(
-                    androidx.compose.ui.text.AnnotatedString(text)
-                )
+                clipboard.setText(androidx.compose.ui.text.AnnotatedString(text))
                 android.widget.Toast.makeText(context, "Copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
             }
         }

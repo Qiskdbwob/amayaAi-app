@@ -69,9 +69,10 @@ class ToolExecutor @Inject constructor(
             updateTodoTool.name     to updateTodoTool,
             invokeSubagentsTool.name to invokeSubagentsTool,
             delegateAgentTool.name to delegateAgentTool,
-            webSearchTool.name      to webSearchTool,
-            askUserTool.name        to askUserTool
+            webSearchTool.name      to webSearchTool
         ) + browserUseToolset.tools.associateBy { it.name }
+        // ask_user is intentionally NOT in this map: it implements ContextAwareTool (needs the
+        // execution context to suspend for an answer), not Tool. It is dispatched in execute().
     }
 
     /**
@@ -153,6 +154,12 @@ class ToolExecutor @Inject constructor(
             onClarificationRequired = onClarificationRequired,
             readOnly = readOnly
         )
+
+        // ask_user is host-gated (a question, never an action): route it straight to the
+        // context-aware tool, which suspends the turn until the user answers or dismisses it.
+        if (handlerName == "ask_user") {
+            return finish(askUserTool.execute(handlerArguments, executionContext))
+        }
 
         // Pre-validate model-owned arguments only. The workspace root is passed so shell
         // commands are contained inside the active workspace (the AI never leaves it).

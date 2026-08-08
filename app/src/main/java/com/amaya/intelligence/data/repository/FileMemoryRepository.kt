@@ -143,7 +143,7 @@ class FileMemoryRepository @Inject constructor(
                 .filter { it.type != MemoryType.WORKSPACE_FACT || it.workspacePath == canonicalWorkspace }
         }
         val ranked = if (query.isNullOrBlank()) {
-            scoped.sortedByDescending { it.updatedAt }
+            scoped.sortedByDescending { it.updatedAt }.map { it to 0.0 }
         } else {
             val lexical = scoped.map { it to scoreMemoryRecord(it, query) }
                 .filter { it.second >= MIN_SEARCH_SCORE }

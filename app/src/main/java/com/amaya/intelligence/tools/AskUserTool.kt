@@ -12,8 +12,8 @@ import javax.inject.Inject
  * recover from ("proceed with your best assumption or state what is missing").
  */
 class AskUserTool @Inject constructor() : ContextAwareTool {
-    override val name: String = "ask_user"
-    override val description: String =
+    val name: String = "ask_user"
+    val description: String =
         "Ask the user a short question when the request is ambiguous, choices conflict, or a prerequisite is missing. The turn pauses and resumes with the user's answer."
 
     override suspend fun execute(
