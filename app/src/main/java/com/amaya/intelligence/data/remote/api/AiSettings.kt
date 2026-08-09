@@ -100,6 +100,7 @@ class AiSettingsManager @Inject constructor(
         private val KEY_EMBEDDING_FORMAT = stringPreferencesKey("memory_embedding_format")
         private val KEY_EMBEDDING_ENDPOINT = stringPreferencesKey("memory_embedding_endpoint")
         private val KEY_EMBEDDING_MODEL = stringPreferencesKey("memory_embedding_model")
+        private val KEY_EMBEDDING_CONNECTION_ID = stringPreferencesKey("memory_embedding_connection_id")
 
         private const val ENC_EMBEDDING_API_KEY = "embedding_api_key"
 
@@ -168,7 +169,8 @@ class AiSettingsManager @Inject constructor(
                 enabled = prefs[KEY_EMBEDDING_ENABLED] ?: false,
                 format = prefs[KEY_EMBEDDING_FORMAT] ?: "openai_compatible",
                 endpoint = prefs[KEY_EMBEDDING_ENDPOINT].orEmpty(),
-                model = prefs[KEY_EMBEDDING_MODEL].orEmpty()
+                model = prefs[KEY_EMBEDDING_MODEL].orEmpty(),
+                connectionId = prefs[KEY_EMBEDDING_CONNECTION_ID]
             )
         )
     }
@@ -186,7 +188,11 @@ class AiSettingsManager @Inject constructor(
     }
 
     fun getSettings(): AiSettings =
-        cachedSettings ?: runBlocking { settingsFlow.first() }.also { cachedSettings = it }
+        cachedSettings ?: runCatching { runBlocking { settingsFlow.first() } }
+            .getOrElse { failure ->
+                Log.w("AiSettingsManager", "Failed to read settings; using defaults", failure)
+                AiSettings()
+            }.also { cachedSettings = it }
 
     fun getStartupTheme(): String =
         startupPrefs.getString(STARTUP_THEME_KEY, "system") ?: "system"
@@ -200,12 +206,26 @@ class AiSettingsManager @Inject constructor(
     fun getMemoryEmbeddingApiKey(): String =
         encryptedPrefs.getString(ENC_EMBEDDING_API_KEY, "").orEmpty()
 
+    /**
+     * Resolves the credential for semantic recall: prefers the referenced provider connection's
+     * key, falling back to the legacy standalone embedding key for older configurations.
+     */
+    fun getEmbeddingApiKey(config: MemoryEmbeddingConfig): String {
+        val connectionKey = config.connectionId?.let { getConnectionApiKey(it) }.orEmpty()
+        return connectionKey.ifBlank { getMemoryEmbeddingApiKey() }
+    }
+
     suspend fun saveMemoryEmbedding(config: MemoryEmbeddingConfig, apiKey: String? = null) {
         context.dataStore.edit { prefs ->
             prefs[KEY_EMBEDDING_ENABLED] = config.enabled
             prefs[KEY_EMBEDDING_FORMAT] = config.format
             prefs[KEY_EMBEDDING_ENDPOINT] = config.endpoint.trim().trimEnd('/')
             prefs[KEY_EMBEDDING_MODEL] = config.model.trim()
+            if (config.connectionId.isNullOrBlank()) {
+                prefs.remove(KEY_EMBEDDING_CONNECTION_ID)
+            } else {
+                prefs[KEY_EMBEDDING_CONNECTION_ID] = config.connectionId
+            }
         }
         apiKey?.let { key ->
             val editor = encryptedPrefs.edit()

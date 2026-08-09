@@ -74,7 +74,6 @@ fun LocalSettingsScreen(
     onNavigateToTerminal: () -> Unit,
     onNavigateToAboutYou: () -> Unit,
     onNavigateToSkills: () -> Unit,
-    onNavigateToEmbedding: () -> Unit,
     updateStatus: String?,
     updateInfo: UpdateInfo?,
     onCheckForUpdate: () -> Unit,
@@ -126,7 +125,6 @@ fun LocalSettingsScreen(
                             onAboutYou = onNavigateToAboutYou,
                             onMcp = onNavigateToMcp,
                             onSkills = onNavigateToSkills,
-                            onEmbedding = onNavigateToEmbedding,
                             onTerminal = onNavigateToTerminal,
                             updateStatus = updateStatus,
                             updateInfo = updateInfo,
@@ -389,7 +387,6 @@ private fun GlobalSettings(
     onAboutYou: () -> Unit,
     onMcp: () -> Unit,
     onSkills: () -> Unit,
-    onEmbedding: () -> Unit,
     onTerminal: () -> Unit,
     updateStatus: String?,
     updateInfo: UpdateInfo?,
@@ -414,7 +411,6 @@ private fun GlobalSettings(
         IosSettingsDivider()
         IosSettingsRow(Icons.Default.Psychology, "Skills", "Universal reusable workflows", true, true, onSkills)
         IosSettingsDivider()
-        IosSettingsRow(Icons.Default.Grain, "Semantic Memory", "Optional embedding API for smarter recall", false, true, onEmbedding)
     }
     com.amaya.intelligence.ui.screens.amaya.AmayaSection("Execution") {
         IosSettingsRow(Icons.Default.Terminal, "Terminal Policy", "Global trusted and declined commands", true, true, onTerminal)

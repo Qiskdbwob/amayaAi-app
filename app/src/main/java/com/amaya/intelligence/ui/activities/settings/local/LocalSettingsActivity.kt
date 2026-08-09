@@ -86,7 +86,6 @@ class LocalSettingsActivity : AppCompatActivity() {
                     onNavigateToTerminal = { LocalTerminalSettingsActivity.start(this) },
                     onNavigateToAboutYou = { LocalMemoryAreaActivity.start(this, MemoryArea.USER) },
                     onNavigateToSkills = { LocalSkillsActivity.start(this) },
-                    onNavigateToEmbedding = { LocalEmbeddingSettingsActivity.start(this) },
                     updateStatus = updateStatus,
                     updateInfo = updateInfo,
                     onCheckForUpdate = ::checkForUpdate,

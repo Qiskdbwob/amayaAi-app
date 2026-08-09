@@ -7,6 +7,8 @@ import com.amaya.intelligence.data.remote.api.AiSettingsManager
 import com.amaya.intelligence.data.remote.api.AmayaProviderRegistry
 import com.amaya.intelligence.data.remote.api.CodexAuthManager
 import com.amaya.intelligence.data.remote.api.ConfiguredModel
+import com.amaya.intelligence.data.remote.api.MemoryEmbeddingConfig
+import com.amaya.intelligence.data.remote.api.ProviderAdapter
 import com.amaya.intelligence.data.remote.api.ProviderConfig
 import com.amaya.intelligence.data.remote.api.ProviderConnection
 import com.amaya.intelligence.data.remote.api.ProviderModelService
@@ -304,6 +306,42 @@ class ManageModelsViewModel @Inject constructor(
                 .onFailure { failure ->
                     _operation.update { it.copy(error = failure.message ?: "Could not delete provider") }
                 }
+        }
+    }
+
+    /**
+     * Saves the semantic memory (embedding recall) configuration, reusing an existing provider
+     * connection for the endpoint + credential. `connection` may be null only when disabling.
+     */
+    fun saveSemanticMemory(
+        enabled: Boolean,
+        connection: ProviderConnection?,
+        modelId: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            _operation.update { it.copy(loading = true, error = null) }
+            runCatching {
+                if (enabled) {
+                    require(connection != null) { "Choose a provider connection for embeddings" }
+                    require(connection.baseUrl.isNotBlank()) { "Provider has no base URL" }
+                    require(modelId.isNotBlank()) { "Choose an embedding model" }
+                }
+                val provider = connection?.let { AmayaProviderRegistry.find(it.providerId) }
+                val config = MemoryEmbeddingConfig(
+                    enabled = enabled,
+                    format = if (provider?.adapter == ProviderAdapter.GEMINI) "gemini" else "openai_compatible",
+                    endpoint = connection?.baseUrl.orEmpty().trim().trimEnd('/'),
+                    model = modelId.trim(),
+                    connectionId = connection?.id
+                )
+                settingsManager.saveMemoryEmbedding(config)
+            }.onSuccess {
+                _operation.value = OperationState()
+                onSuccess()
+            }.onFailure { failure ->
+                _operation.update { it.copy(loading = false, error = failure.message ?: "Could not save semantic memory settings") }
+            }
         }
     }
 

@@ -28,7 +28,9 @@ data class MemoryEmbeddingConfig(
     val format: String = "openai_compatible",
     /** Base URL; for OpenAI-compatible providers this usually ends with /v1. */
     val endpoint: String = "",
-    val model: String = ""
+    val model: String = "",
+    /** Provider connection that supplies the endpoint and credential for semantic recall. */
+    val connectionId: String? = null
 )
 
 @Singleton

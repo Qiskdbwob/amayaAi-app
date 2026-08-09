@@ -106,12 +106,11 @@ class FilePrimedStateRepository @Inject constructor(
             synchronized(fileLock) { readAll().filter { it.status != PrimedStateStatus.CLEARED } }
         }.take(FUZZY_CANDIDATE_LIMIT)
         if (candidates.isEmpty() || userMessage.isBlank()) return emptyList()
-        val settings = settingsManager.getSettings()
+        // Settings and credential reads can throw on broken stores; matching must never crash.
+        val settings = runCatching { settingsManager.getSettings() }.getOrNull() ?: return emptyList()
         val config = settings.memoryEmbedding
         if (!config.enabled || config.endpoint.isBlank() || config.model.isBlank()) return emptyList()
-        // The key read can throw on devices where the secure store is broken; it must never
-        // take down fuzzy matching — fall back to no fuzzy candidates instead.
-        val apiKey = runCatching { settingsManager.getMemoryEmbeddingApiKey() }.getOrNull()
+        val apiKey = runCatching { settingsManager.getEmbeddingApiKey(config) }.getOrNull()
         if (apiKey.isNullOrBlank()) return emptyList()
         // Embedding is a network call and must run outside the file lock.
         return runCatching {
