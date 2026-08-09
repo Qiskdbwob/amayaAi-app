@@ -153,6 +153,8 @@ fun ChatScreen(
         withContext(Dispatchers.IO) { localIp = NetworkUtils.getLocalIpAddress() }
     }
     val inputText = remember(composerKey) { mutableStateOf("") }
+    // Bumped by the edit-bubble action so the composer refocuses and raises the keyboard.
+    var composerEditRequest by remember { mutableIntStateOf(0) }
 
     val serverIp = uiState.serverIp ?: localIp
 
@@ -280,7 +282,10 @@ fun ChatScreen(
         }
     }
     val onEditUserMessage: ((String) -> Unit)? = remember {
-        { text: String -> inputText.value = text }
+        { text: String ->
+            inputText.value = text
+            composerEditRequest++
+        }
     }
     val onRegenerate: (() -> Unit)? = remember(viewModel) {
         { viewModel.regenerateLastResponse() }
@@ -526,6 +531,7 @@ fun ChatScreen(
             ChatBottomSection(
                 modifier = Modifier.align(Alignment.BottomStart),
                 inputText = inputText,
+                editRequest = composerEditRequest,
                 isRemoteMode = isRemoteMode,
                 uiState = uiState,
                 connectionState = connectionState,

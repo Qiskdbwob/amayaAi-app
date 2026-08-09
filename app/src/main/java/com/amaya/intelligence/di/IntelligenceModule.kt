@@ -135,6 +135,9 @@ object IntelligenceModule {
             override fun loadMoreConversations() = active.loadMoreConversations()
             override fun hasMoreConversations() = active.hasMoreConversations()
             override fun respondToToolInteraction(executionId: String, confirmed: Boolean) = active.respondToToolInteraction(executionId, confirmed)
+            override fun respondToClarification(executionId: String, answer: String?) =
+                active.respondToClarification(executionId, answer)
+            override fun regenerateLastResponse() = active.regenerateLastResponse()
 
             override fun connect(ip: String, port: Int) = active.connect(ip, port)
             override fun resync() = active.resync()

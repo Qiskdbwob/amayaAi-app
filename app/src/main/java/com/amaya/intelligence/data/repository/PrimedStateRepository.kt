@@ -109,8 +109,10 @@ class FilePrimedStateRepository @Inject constructor(
         val settings = settingsManager.getSettings()
         val config = settings.memoryEmbedding
         if (!config.enabled || config.endpoint.isBlank() || config.model.isBlank()) return emptyList()
-        val apiKey = settingsManager.getMemoryEmbeddingApiKey()
-        if (apiKey.isBlank()) return emptyList()
+        // The key read can throw on devices where the secure store is broken; it must never
+        // take down fuzzy matching — fall back to no fuzzy candidates instead.
+        val apiKey = runCatching { settingsManager.getMemoryEmbeddingApiKey() }.getOrNull()
+        if (apiKey.isNullOrBlank()) return emptyList()
         // Embedding is a network call and must run outside the file lock.
         return runCatching {
             val queryVector = embeddingClient.embed(listOf(userMessage.take(MAX_TRIGGER_CHARS)), config, apiKey)

@@ -761,8 +761,10 @@ class FileMemoryRepository @Inject constructor(
         val settings = settingsManager.getSettings()
         val config = settings.memoryEmbedding
         if (!config.enabled || config.endpoint.isBlank() || config.model.isBlank()) return null
-        val apiKey = settingsManager.getMemoryEmbeddingApiKey()
-        if (apiKey.isBlank()) return null
+        // The key read can throw on devices where the secure store is broken; it must never
+        // take down a memory search — fall back to lexical ranking instead.
+        val apiKey = runCatching { settingsManager.getMemoryEmbeddingApiKey() }.getOrNull()
+        if (apiKey.isNullOrBlank()) return null
         val candidates = lexical.take(EMBEDDING_CANDIDATE_LIMIT)
         return runCatching {
             val texts = candidates.map { (record, _) ->

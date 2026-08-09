@@ -38,6 +38,7 @@ internal fun presentChatError(raw: String): ChatErrorPresentation =
 fun ChatBottomSection(
     modifier: Modifier = Modifier,
     inputText: MutableState<String>,
+    editRequest: Int = 0,
     isRemoteMode: Boolean,
     uiState: ChatUiState,
     connectionState: ConnectionState,
@@ -175,6 +176,7 @@ fun ChatBottomSection(
             ChatInput(
                 text = inputText.value,
                 onTextChange = { inputText.value = it },
+                editRequest = editRequest,
                 resetKey = uiState.conversationId,
                 isStreaming = uiState.isStreaming,
                 isCompressing = uiState.isCompressing,

@@ -79,12 +79,21 @@ fun ChatInput(
     onCompactConversation: (String) -> Unit = {},
     onCancelCompactConversation: () -> Unit = {},
     onSendMessage: (String) -> Unit,
-    onStopGeneration: () -> Unit
+    onStopGeneration: () -> Unit,
+    /** Increment to request focus on the composer (e.g. tapping "Edit" on a user bubble). */
+    editRequest: Int = 0
 ) {
     val isDark = isSystemInDarkTheme()
     val hasAttachment = attachedFilePath != null || attachedImageBase64 != null
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    // Token-based external focus request (edit bubble → refill + focus + keyboard).
+    LaunchedEffect(editRequest) {
+        if (editRequest > 0) {
+            focusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
     val referenceColor = MaterialTheme.colorScheme.primary
     val referenceTransformation = remember(referenceColor) { ComposerReferenceTransformation(referenceColor) }
     val expansion = imeAnimationProgress()

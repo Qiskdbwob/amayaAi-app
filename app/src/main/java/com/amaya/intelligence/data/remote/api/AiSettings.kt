@@ -133,11 +133,12 @@ class AiSettingsManager @Inject constructor(
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
         }.getOrElse { failure ->
-            Log.e("AiSettingsManager", "Secure credential storage unavailable", failure)
-            throw IllegalStateException(
-                "Secure credential storage is unavailable. Reinstall the app only if credential recovery is impossible.",
-                failure
-            )
+            // Degraded mode: never crash the app over credential storage. Devices with a broken
+            // Android Keystore (failed provisioning, restored backups, some emulators) would
+            // otherwise force-close on the first credential read — including the semantic
+            // embedding settings screen. Keys fall back to plain preferences with a warning.
+            Log.e("AiSettingsManager", "Secure credential storage unavailable; falling back to plain preferences", failure)
+            context.getSharedPreferences(SECURE_PREFS_NAME + "_fallback", Context.MODE_PRIVATE)
         }
     }
 

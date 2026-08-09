@@ -333,29 +333,31 @@ fun MessageBubble(
                         }
                     }
                 }
-            }
-        }
-            // Quick actions for assistant responses (same callbacks as the long-press menu).
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp, end = 2.dp),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                MessageQuickAction(
-                    icon = Icons.Default.ContentCopy,
-                    label = "Copy response",
-                    onClick = onCopyMessage?.let { callback ->
-                        { callback(message.formattedContent ?: message.content) }
-                    }
-                )
-                if (message.content.isNotBlank()) {
+                // Quick actions for assistant responses (same callbacks as the long-press menu).
+                // Rendered inside the content column so they flow below the message instead of
+                // overlaying it (a Box sibling would sit on top of the first card).
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp, end = 2.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     MessageQuickAction(
-                        icon = Icons.Default.Refresh,
-                        label = "Regenerate response",
-                        onClick = onRegenerate
+                        icon = Icons.Default.ContentCopy,
+                        label = "Copy response",
+                        onClick = onCopyMessage?.let { callback ->
+                            { callback(message.formattedContent ?: message.content) }
+                        }
                     )
+                    if (message.content.isNotBlank()) {
+                        MessageQuickAction(
+                            icon = Icons.Default.Refresh,
+                            label = "Regenerate response",
+                            onClick = onRegenerate
+                        )
+                    }
                 }
             }
+        }
             DropdownMenu(
                 expanded = assistantMenuOpen,
                 onDismissRequest = { assistantMenuOpen = false }

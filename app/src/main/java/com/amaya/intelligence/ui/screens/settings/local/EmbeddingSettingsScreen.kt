@@ -46,12 +46,17 @@ fun EmbeddingSettingsScreen(
     var loaded by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        val current = settingsManager.getSettings().memoryEmbedding
-        enabled = current.enabled
-        format = current.format
-        endpoint = current.endpoint
-        model = current.model
-        apiKey = settingsManager.getMemoryEmbeddingApiKey()
+        // Never crash the screen over settings storage — surface the failure instead.
+        runCatching {
+            val current = settingsManager.getSettings().memoryEmbedding
+            enabled = current.enabled
+            format = current.format
+            endpoint = current.endpoint
+            model = current.model
+            apiKey = settingsManager.getMemoryEmbeddingApiKey()
+        }.onFailure { failure ->
+            snackbar.showSnackbar("Could not load semantic settings: ${failure.message}")
+        }
         loaded = true
     }
 
@@ -152,16 +157,21 @@ fun EmbeddingSettingsScreen(
                 Button(
                     onClick = {
                         scope.launch {
-                            settingsManager.saveMemoryEmbedding(
-                                MemoryEmbeddingConfig(
-                                    enabled = enabled,
-                                    format = format,
-                                    endpoint = endpoint,
-                                    model = model
-                                ),
-                                apiKey = apiKey.ifBlank { null }
-                            )
-                            snackbar.showSnackbar("Semantic memory settings saved")
+                            runCatching {
+                                settingsManager.saveMemoryEmbedding(
+                                    MemoryEmbeddingConfig(
+                                        enabled = enabled,
+                                        format = format,
+                                        endpoint = endpoint,
+                                        model = model
+                                    ),
+                                    apiKey = apiKey.ifBlank { null }
+                                )
+                            }.onSuccess {
+                                snackbar.showSnackbar("Semantic memory settings saved")
+                            }.onFailure { failure ->
+                                snackbar.showSnackbar("Failed to save: ${failure.message}")
+                            }
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
