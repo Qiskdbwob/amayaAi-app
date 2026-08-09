@@ -678,10 +678,15 @@ internal fun AiRepository.chatImpl(
                 // Scheme C: one bounded verification pass when a tool-using turn stops. The model
                 // must confirm the goal is fully done with evidence, or continue working. Never
                 // runs on plain Q&A (no tools), internal continuations, or bridge turns.
-                val shouldVerify = verificationPasses < MAX_VERIFICATION_PASSES &&
-                    messageRole == MessageRole.USER &&
-                    runtimeTarget == AgentRuntimeTarget.LOCAL &&
-                    (executedToolCalls > 0 || failedToolAttempts > 0 || taskPlan.steps.isNotEmpty())
+                val shouldVerify = shouldRunVerificationPass(
+                    verificationPasses = verificationPasses,
+                    maxPasses = MAX_VERIFICATION_PASSES,
+                    messageRole = messageRole,
+                    runtimeTarget = runtimeTarget,
+                    executedToolCalls = executedToolCalls,
+                    failedToolAttempts = failedToolAttempts,
+                    hasPlanSteps = taskPlan.steps.isNotEmpty()
+                )
                 if (shouldVerify) {
                     verificationPasses++
                     if (textBuffer.isNotBlank()) {
@@ -920,7 +925,7 @@ internal fun AiRepository.chatImpl(
         // The model may pack its whole answer into a tool call (e.g. saving it to memory) and end
         // the turn without emitting text. Surface the last successful tool result so the final
         // bubble is never empty and the user still reads the substance of the answer.
-        if (completedAssistantMessages.isEmpty() && executedToolCalls > 0 && !lastToolResultContent.isNullOrBlank()) {
+        if (needsFinalAnswerFallback(completedAssistantMessages.isEmpty(), executedToolCalls, lastToolResultContent)) {
             val fallback = extractAnswerLikeText(lastToolResultContent!!)
             send(AgentEvent.TextDelta(fallback))
             StreamDebugLog.event(conversationId, null, "FINAL_TEXT_FALLBACK", "chars=${fallback.length}")
@@ -929,6 +934,31 @@ internal fun AiRepository.chatImpl(
         StreamDebugLog.event(conversationId, null, "TURN_DONE", "iterations=$iterations")
         send(AgentEvent.Done)
     }
+
+/**
+ * Scheme C: whether a tool-using turn gets one extra verification pass before finalizing. The
+ * model must confirm the goal is fully done with evidence, or continue working. Never runs on
+ * plain Q&A (no tools), internal continuations, or bridge turns.
+ */
+internal fun shouldRunVerificationPass(
+    verificationPasses: Int,
+    maxPasses: Int,
+    messageRole: MessageRole,
+    runtimeTarget: AgentRuntimeTarget,
+    executedToolCalls: Int,
+    failedToolAttempts: Int,
+    hasPlanSteps: Boolean
+): Boolean = verificationPasses < maxPasses &&
+    messageRole == MessageRole.USER &&
+    runtimeTarget == AgentRuntimeTarget.LOCAL &&
+    (executedToolCalls > 0 || failedToolAttempts > 0 || hasPlanSteps)
+
+/**
+ * Whether a tool-using turn that produced no assistant text should surface the last tool result
+ * as the final answer (the model packed its reply into a tool call instead of writing it).
+ */
+internal fun needsFinalAnswerFallback(hasAssistantText: Boolean, executedToolCalls: Int, lastToolResult: String?): Boolean =
+    !hasAssistantText && executedToolCalls > 0 && !lastToolResult.isNullOrBlank()
 
 /**
  * Best-effort extraction of the human-readable substance from a tool result before it is shown as
