@@ -302,6 +302,13 @@ internal fun AiRepository.chatImpl(
         // passes have run (bounded by MAX_VERIFICATION_PASSES).
         var executedToolCalls = 0
         var verificationPasses = 0
+        /** Scheme C: the verification pass is host-internal meta-commentary ("VERIFIED — evidence: …").
+         *  While true, the next provider reply is not streamed to the user nor persisted as the
+         *  answer, so the model's real final text stays the visible output. */
+        var verificationActive = false
+        /** Last successful tool result of the turn, surfaced as the final answer when the model
+         *  packs its whole reply into a tool call (e.g. saving it to memory) and emits no text. */
+        var lastToolResultContent: String? = null
 
         while (continueLoop) {
             iterations++
@@ -467,6 +474,10 @@ internal fun AiRepository.chatImpl(
             var providerParseFailure: String? = null
             /** Tool calls rejected in this request that still need failure feedback to the model. */
             val rejectedToolCalls = mutableListOf<ToolCallMessage>()
+            // A verification reply is host meta-commentary, not the answer. Capture the flag for
+            // this request only, then clear it so the next real answer streams normally.
+            val suppressUserStreaming = verificationActive
+            verificationActive = false
 
             provider.chat(request).collect { response ->
                 if (providerTerminal) {
@@ -480,7 +491,9 @@ internal fun AiRepository.chatImpl(
                     is ChatResponse.TextDelta -> {
                         textBuffer.append(response.text)
                         StreamDebugLog.event(conversationId, null, "TEXT_DELTA", "chars=${response.text.length} total=${textBuffer.length}")
-                        send(AgentEvent.TextDelta(response.text))
+                        if (!suppressUserStreaming) {
+                            send(AgentEvent.TextDelta(response.text))
+                        }
                     }
 
                     is ChatResponse.ThinkingDelta -> {
@@ -644,12 +657,14 @@ internal fun AiRepository.chatImpl(
 
             if (textBuffer.isNotBlank()) {
                 val assistantText = textBuffer.toString()
-                completedAssistantMessages.add(assistantText)
-                if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
-                    repoScope.launch {
-                        runCatching {
-                            sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "assistant", content = assistantText, workspacePath = workspacePath, workspaceId = workspaceId, assistantMode = assistantMode.name, ownerId = ownerId))
-                        }.onFailure { errorLog("AiRepository", "Failed to save assistant session message", it) }
+                if (!suppressUserStreaming) {
+                    completedAssistantMessages.add(assistantText)
+                    if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
+                        repoScope.launch {
+                            runCatching {
+                                sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "assistant", content = assistantText, workspacePath = workspacePath, workspaceId = workspaceId, assistantMode = assistantMode.name, ownerId = ownerId))
+                            }.onFailure { errorLog("AiRepository", "Failed to save assistant session message", it) }
+                        }
                     }
                 }
             }
@@ -657,7 +672,7 @@ internal fun AiRepository.chatImpl(
             if (!hasToolCalls) {
                 if (textBuffer.isBlank()) {
                     responseItemOutputText(responseItems)?.let { itemText ->
-                        send(AgentEvent.TextDelta(itemText))
+                        if (!suppressUserStreaming) send(AgentEvent.TextDelta(itemText))
                     }
                 }
                 // Scheme C: one bounded verification pass when a tool-using turn stops. The model
@@ -679,6 +694,7 @@ internal fun AiRepository.chatImpl(
                         role = MessageRole.USER,
                         content = verificationPrompt(conversationGoal)
                     )
+                    verificationActive = true
                     StreamDebugLog.event(conversationId, null, "VERIFY_PASS", "goal=${conversationGoal.take(80)}")
                     continueLoop = true
                 } else {
@@ -794,6 +810,7 @@ internal fun AiRepository.chatImpl(
                     }
 
                     val toolFailed = result is ToolResult.Error || result is ToolResult.RequiresConfirmation
+                    if (!toolFailed) lastToolResultContent = resultContent
                     StreamDebugLog.event(conversationId, null, "TOOL_RESULT", "id=${toolCall.id} name=${toolCall.name} error=$toolFailed deferred=${result is ToolResult.Deferred} chars=${resultContent.length}")
                     send(AgentEvent.ToolCallResult(
                         toolCallId = toolCall.id,
@@ -900,7 +917,33 @@ internal fun AiRepository.chatImpl(
         }
         if (terminalError) return@channelFlow
 
+        // The model may pack its whole answer into a tool call (e.g. saving it to memory) and end
+        // the turn without emitting text. Surface the last successful tool result so the final
+        // bubble is never empty and the user still reads the substance of the answer.
+        if (completedAssistantMessages.isEmpty() && executedToolCalls > 0 && !lastToolResultContent.isNullOrBlank()) {
+            val fallback = extractAnswerLikeText(lastToolResultContent!!)
+            send(AgentEvent.TextDelta(fallback))
+            StreamDebugLog.event(conversationId, null, "FINAL_TEXT_FALLBACK", "chars=${fallback.length}")
+        }
+
         StreamDebugLog.event(conversationId, null, "TURN_DONE", "iterations=$iterations")
         send(AgentEvent.Done)
     }
+
+/**
+ * Best-effort extraction of the human-readable substance from a tool result before it is shown as
+ * the final-answer fallback. Memory tools echo a JSON document with a `content` field; plain text
+ * results are returned unchanged.
+ */
+internal fun extractAnswerLikeText(result: String): String {
+    val trimmed = result.trim()
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+        return runCatching { JSONObject(trimmed) }
+            .getOrNull()
+            ?.optString("content")
+            ?.takeIf(String::isNotBlank)
+            ?: trimmed
+    }
+    return trimmed
+}
 
