@@ -49,10 +49,10 @@ class ChatViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val uiState: StateFlow<ChatUiState> = intelligenceService.uiState
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState())
     /** Live `ask_user` question the model is waiting on; the chat screen shows it as a dialog. */
     val pendingClarification: StateFlow<com.amaya.intelligence.domain.ai.PendingClarification?> =
         intelligenceService.pendingClarification
-        .stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState())
 
     // Scroll events emitted from ViewModel — UI collects and scrolls only if at bottom.
     enum class ScrollReason { NEW_MESSAGE, NEW_TOOL }
