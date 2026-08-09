@@ -55,18 +55,29 @@ class McpToolExecutor @Inject constructor(
                     "MCP tool call is missing a call ID; approval cannot be bound safely.",
                     com.amaya.intelligence.tools.ErrorType.VALIDATION_ERROR
                 )
-                // Terminal policy treats MCP invocations as non-destructive (see
+                // Terminal policy treats MCP invocations as non-destructive by default (see
                 // TerminalSettings.autoApproveNonDestructive), so an enabled auto-approve toggle
-                // lets the model call external MCP tools without prompting for every call. Only
-                // when auto-approve is disabled do we require explicit user confirmation.
+                // lets the model call external MCP tools without prompting. The exception is a
+                // server that explicitly annotates a tool as destructive (destructiveHint): that
+                // call always requires explicit confirmation — auto-approve is never blanket for
+                // tools the server itself flags as destructive.
+                val annotations = mcpClientManager.getToolAnnotations(wireName)
                 val autoApprove = terminalSettingsRepository.getSettings().autoApproveNonDestructive
-                if (!autoApprove) {
+                if (mcpConfirmationRequired(autoApprove, annotations.destructiveHint)) {
                     val approved = onConfirmationRequired(
                         ConfirmationRequest(
                             toolName = wireName,
-                            reason = "External MCP servers are untrusted and may access or modify data",
+                            reason = if (annotations.destructiveHint) {
+                                "External MCP server marked this tool as potentially destructive"
+                            } else {
+                                "External MCP servers are untrusted and may access or modify data"
+                            },
                             details = safeArguments.toString(),
-                            riskLevel = com.amaya.intelligence.domain.security.RiskLevel.MEDIUM,
+                            riskLevel = if (annotations.destructiveHint) {
+                                com.amaya.intelligence.domain.security.RiskLevel.HIGH
+                            } else {
+                                com.amaya.intelligence.domain.security.RiskLevel.MEDIUM
+                            },
                             toolCallId = identity
                         )
                     )
@@ -99,3 +110,12 @@ class McpToolExecutor @Inject constructor(
         }
     }
 }
+
+/**
+ * Whether an external MCP tool call needs explicit user confirmation. The terminal auto-approve
+ * toggle ([TerminalSettings.autoApproveNonDestructive]) covers non-destructive MCP invocations,
+ * but a server that explicitly annotates a tool as destructive (destructiveHint) always requires
+ * confirmation — auto-approve is never blanket for tools the server itself flags as destructive.
+ */
+internal fun mcpConfirmationRequired(autoApproveNonDestructive: Boolean, destructiveHint: Boolean): Boolean =
+    destructiveHint || !autoApproveNonDestructive

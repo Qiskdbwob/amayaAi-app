@@ -46,6 +46,19 @@ class McpClientManager @Inject constructor(
         val handles: Map<String, McpToolHandle>,
         val definitions: List<AiToolDefinition>
     )
+    /**
+     * Per-tool risk metadata announced by the MCP server via the `annotations` field of
+     * tools/list (MCP spec). `destructiveHint` is the authoritative signal that a tool can
+     * make irreversible changes; such calls always require explicit user confirmation, even
+     * when terminal auto-approve is enabled (auto-approve is never blanket for tools the
+     * server itself flags as destructive).
+     */
+    data class McpToolAnnotations(
+        val readOnlyHint: Boolean = false,
+        val destructiveHint: Boolean = false,
+        val idempotentHint: Boolean = false
+    )
+
     @Volatile private var mcpState = McpState(emptyMap(), emptyList())
 
     suspend fun refreshTools(): List<AiToolDefinition> {
@@ -76,7 +89,7 @@ class McpClientManager @Inject constructor(
                     continue
                 }
                 tools.add(tool.toAiToolDefinition(fullName))
-                handles[fullName] = McpToolHandle(server, tool.name)
+                handles[fullName] = McpToolHandle(server, tool.name, tool.annotations)
                 debugLog("MCP") { "Registered tool: $fullName" }
             }
         }
@@ -88,6 +101,10 @@ class McpClientManager @Inject constructor(
     }
 
     fun getCachedToolDefinitions(): List<AiToolDefinition> = mcpState.definitions
+
+    /** Risk metadata for a cached MCP tool; empty (all hints off) when unknown or not annotated. */
+    fun getToolAnnotations(toolName: String): McpToolAnnotations =
+        mcpState.handles[toolName]?.annotations ?: McpToolAnnotations()
 
     suspend fun callTool(toolName: String, arguments: Map<String, Any?>): ToolResult {
         val handle = mcpState.handles[toolName]
@@ -182,7 +199,14 @@ class McpClientManager @Inject constructor(
                 McpTool(
                     name = name,
                     description = toolObj.optString("description"),
-                    inputSchema = toolObj.optJSONObject("inputSchema") ?: JSONObject()
+                    inputSchema = toolObj.optJSONObject("inputSchema") ?: JSONObject(),
+                    annotations = toolObj.optJSONObject("annotations")?.let { obj ->
+                        McpToolAnnotations(
+                            readOnlyHint = obj.optBoolean("readOnlyHint", false),
+                            destructiveHint = obj.optBoolean("destructiveHint", false),
+                            idempotentHint = obj.optBoolean("idempotentHint", false)
+                        )
+                    } ?: McpToolAnnotations()
                 )
             )
         }
@@ -278,13 +302,15 @@ class McpClientManager @Inject constructor(
 
     private data class McpToolHandle(
         val server: McpServerConfig,
-        val toolName: String
+        val toolName: String,
+        val annotations: McpToolAnnotations = McpToolAnnotations()
     )
 
     private data class McpTool(
         val name: String,
         val description: String,
-        val inputSchema: JSONObject
+        val inputSchema: JSONObject,
+        val annotations: McpToolAnnotations = McpToolAnnotations()
     ) {
         fun toAiToolDefinition(fullName: String): AiToolDefinition {
             val schemaType = inputSchema.optString("type", "object")
@@ -316,7 +342,8 @@ class McpClientManager @Inject constructor(
             }
             return AiToolDefinition(
                 name = fullName,
-                description = description.ifBlank { "MCP tool" },
+                description = (description.ifBlank { "MCP tool" }
+                    + if (annotations.destructiveHint) " (requires user approval)" else ""),
                 parameters = AiToolParameters(
                     type = schemaType,
                     properties = properties,

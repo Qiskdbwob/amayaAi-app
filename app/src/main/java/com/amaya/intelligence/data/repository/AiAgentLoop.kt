@@ -943,6 +943,15 @@ internal fun AiRepository.chatImpl(
             val fallback = extractAnswerLikeText(lastToolResultContent!!)
             send(AgentEvent.TextDelta(fallback))
             StreamDebugLog.event(conversationId, null, "FINAL_TEXT_FALLBACK", "chars=${fallback.length}")
+            // Persist the surfaced answer like any other assistant text so semantic recall finds
+            // it verbatim (the underlying tool call is stored separately). Off the hot path.
+            if (runtimeTarget == AgentRuntimeTarget.LOCAL) {
+                repoScope.launch {
+                    runCatching {
+                        sessionMemoryRepository.saveMessage(SessionMessage(sessionId = sessionId, role = "assistant", content = fallback, workspacePath = workspacePath, workspaceId = workspaceId, assistantMode = assistantMode.name, ownerId = ownerId))
+                    }.onFailure { errorLog("AiRepository", "Failed to save fallback assistant message", it) }
+                }
+            }
         }
 
         StreamDebugLog.event(conversationId, null, "TURN_DONE", "iterations=$iterations")
