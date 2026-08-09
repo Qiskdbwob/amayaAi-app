@@ -1,5 +1,6 @@
 package com.amaya.intelligence.data.remote.mcp
 
+import com.amaya.intelligence.data.repository.TerminalSettingsRepository
 import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.impl.bridge.windows.tools.WindowsBridgeToolProvider
 import com.amaya.intelligence.tools.ClarificationRequest
@@ -15,7 +16,8 @@ import javax.inject.Singleton
 class McpToolExecutor @Inject constructor(
     private val toolExecutor: ToolExecutor,
     private val mcpClientManager: McpClientManager,
-    private val windowsBridgeToolProvider: WindowsBridgeToolProvider
+    private val windowsBridgeToolProvider: WindowsBridgeToolProvider,
+    private val terminalSettingsRepository: TerminalSettingsRepository
 ) {
     suspend fun execute(
         toolName: String,
@@ -53,19 +55,26 @@ class McpToolExecutor @Inject constructor(
                     "MCP tool call is missing a call ID; approval cannot be bound safely.",
                     com.amaya.intelligence.tools.ErrorType.VALIDATION_ERROR
                 )
-                val approved = onConfirmationRequired(
-                    ConfirmationRequest(
-                        toolName = wireName,
-                        reason = "External MCP servers are untrusted and may access or modify data",
-                        details = safeArguments.toString(),
-                        riskLevel = com.amaya.intelligence.domain.security.RiskLevel.MEDIUM,
-                        toolCallId = identity
+                // Terminal policy treats MCP invocations as non-destructive (see
+                // TerminalSettings.autoApproveNonDestructive), so an enabled auto-approve toggle
+                // lets the model call external MCP tools without prompting for every call. Only
+                // when auto-approve is disabled do we require explicit user confirmation.
+                val autoApprove = terminalSettingsRepository.getSettings().autoApproveNonDestructive
+                if (!autoApprove) {
+                    val approved = onConfirmationRequired(
+                        ConfirmationRequest(
+                            toolName = wireName,
+                            reason = "External MCP servers are untrusted and may access or modify data",
+                            details = safeArguments.toString(),
+                            riskLevel = com.amaya.intelligence.domain.security.RiskLevel.MEDIUM,
+                            toolCallId = identity
+                        )
                     )
-                )
-                if (!approved) return ToolResult.Error(
-                    "User declined external MCP tool call",
-                    com.amaya.intelligence.tools.ErrorType.PERMISSION_ERROR
-                )
+                    if (!approved) return ToolResult.Error(
+                        "User declined external MCP tool call",
+                        com.amaya.intelligence.tools.ErrorType.PERMISSION_ERROR
+                    )
+                }
                 mcpClientManager.callTool(wireName, safeArguments)
             }
             windowsBridgeToolProvider.isBridgeTool(wireName) ->

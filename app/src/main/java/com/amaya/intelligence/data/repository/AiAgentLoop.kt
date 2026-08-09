@@ -849,6 +849,20 @@ internal fun AiRepository.chatImpl(
                     )
 
                 }
+                // Mixed-response recovery: the model also emitted tool calls the host rejected
+                // (blank ID, unadvertised name, duplicate ID). The rejection could not be fed back
+                // before the tool results without breaking the provider's required tool-result
+                // ordering, so append it after them — otherwise the model never learns the call
+                // was invalid and can repeat it until MAX_FAILED_TOOL_ATTEMPTS errors the turn.
+                if (rejectedToolCalls.isNotEmpty()) {
+                    val lastRejected = rejectedToolCalls.last()
+                    val available = allowedToolNames.take(16).joinToString()
+                    messages = messages + ChatMessage(
+                        role = MessageRole.USER,
+                        content = "Host tool-loop feedback: the previous response also called '${lastRejected.name}' but the host rejected it (blank call ID, unadvertised tool, or duplicate ID). Available tools: $available. Fix the call if you retry it. (Failure $failedToolAttempts/$MAX_FAILED_TOOL_ATTEMPTS.)"
+                    )
+                    StreamDebugLog.event(conversationId, null, "TOOL_CALL_REJECTED_FEEDBACK", "attempts=$failedToolAttempts name=${lastRejected.name} mixed=true")
+                }
             }
         }
 
