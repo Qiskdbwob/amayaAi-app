@@ -27,6 +27,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
 import com.amaya.intelligence.domain.ai.displayName
 import com.amaya.intelligence.domain.models.ToolExecution
+import com.amaya.intelligence.ui.components.shared.AskUserClarificationDialog
 import com.amaya.intelligence.ui.components.shared.ConversationModeSheet
 import com.amaya.intelligence.ui.components.shared.LocalhostLinkBottomSheet
 import com.amaya.intelligence.ui.components.shared.LocalhostLinkInfo
@@ -76,6 +77,7 @@ fun ChatScreen(
     // read inside the remember-lambda that builds the copy callback below.
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val uiState by viewModel.uiState.collectAsState()
+    val pendingClarification by viewModel.pendingClarification.collectAsState()
     val todoItems by viewModel.todoItems.collectAsState()
     val localReminderCount by viewModel.activeReminderCount.collectAsState()
     val effectiveReminderCount = if (activeReminderCount >= 0) activeReminderCount else localReminderCount
@@ -710,6 +712,16 @@ fun ChatScreen(
                 onExit()
             },
             onDismiss = { showDisconnectDialog = false }
+        )
+    }
+
+    // Live ask_user question: the tool loop is suspended until the user answers or dismisses.
+    pendingClarification?.let { pending ->
+        AskUserClarificationDialog(
+            question = pending.question,
+            options = pending.options,
+            onAnswer = { answer -> viewModel.respondToClarification(pending.toolCallId, answer) },
+            onDismiss = { viewModel.respondToClarification(pending.toolCallId, null) }
         )
     }
 }

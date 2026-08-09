@@ -831,11 +831,14 @@ class LocalIntelligenceService @Inject constructor(
     }
 
     override fun respondToClarification(executionId: String, answer: String?) {
-        val turnId = executionId.substringBefore(':', "").toLongOrNull() ?: return
+        // Both id forms are accepted: the full "$turnId:$toolCallId" id from the inline tool-card
+        // metadata, or a bare toolCallId (used by the pendingClarification dialog).
         val toolCallId = executionId.substringAfter(':', executionId)
-        pendingClarifications.resolve(executionId, turnId, answer) {
+        val fullId = if (':' in executionId) executionId else pendingClarificationIds[toolCallId]
+        val turnId = fullId?.substringBefore(':')?.toLongOrNull() ?: return
+        pendingClarifications.resolve(fullId, turnId, answer) {
             pendingClarificationUi.remove(toolCallId)
-            pendingClarificationIds.remove(toolCallId, executionId)
+            pendingClarificationIds.remove(toolCallId, fullId)
             _pendingClarification.value = null
             turnsById[turnId]?.let { turn ->
                 val dismissed = answer.isNullOrBlank()

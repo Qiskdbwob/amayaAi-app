@@ -2,6 +2,7 @@ package com.amaya.intelligence.di
 
 import com.amaya.intelligence.domain.ai.IntelligenceService
 import com.amaya.intelligence.domain.ai.IntelligenceSessionManager
+import com.amaya.intelligence.domain.ai.PendingClarification
 import com.amaya.intelligence.domain.models.ConversationMode
 import com.amaya.intelligence.domain.models.AssistantMode
 import com.amaya.intelligence.domain.models.ChatUiState
@@ -93,6 +94,10 @@ object IntelligenceModule {
             override val uiState = switchedFlow(
                 selector = { it.uiState },
                 initial = ChatUiState(sessionMode = sessionManager.currentMode.value)
+            )
+            override val pendingClarification: StateFlow<PendingClarification?> = switchedFlow(
+                selector = { it.pendingClarification },
+                initial = null
             )
             override val conversations = switchedFlow(
                 selector = { it.conversations },
