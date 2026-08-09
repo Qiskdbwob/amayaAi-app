@@ -79,7 +79,6 @@ class StressSimulationTest {
 
     @Test
     fun `answer extraction fuzz never throws and preserves content`() {
-        val random = Random(7)
         val inputs = buildList {
             // Structured memory-style documents (the common real case).
             add("""{"id":"mem_1","content":"Halo! Ada yang bisa saya bantu hari ini?","version":1}""")
@@ -105,20 +104,21 @@ class StressSimulationTest {
             add(JSONObject().put("outer", JSONObject().put("content", "deep")).toString())
             // Large-ish payloads.
             add(JSONObject().put("content", "x".repeat(10_000)).toString())
-        }
-        repeat(300) { i ->
-            add(
-                when (i % 4) {
-                    0 -> JSONObject().apply {
-                        put("id", "mem_$i")
-                        put("content", "random content $i \u00e9\u4f60")
-                        put("version", i)
-                    }.toString()
-                    1 -> "Some plain text result $i"
-                    2 -> "{truncated json $i"
-                    else -> ""
-                }
-            )
+            // Generated fuzz cases (inside the builder so `add` resolves to the MutableList receiver).
+            repeat(300) { i ->
+                add(
+                    when (i % 4) {
+                        0 -> JSONObject().apply {
+                            put("id", "mem_$i")
+                            put("content", "random content $i \u00e9\u4f60")
+                            put("version", i)
+                        }.toString()
+                        1 -> "Some plain text result $i"
+                        2 -> "{truncated json $i"
+                        else -> ""
+                    }
+                )
+            }
         }
         inputs.forEach { input ->
             val output = extractAnswerLikeText(input)
