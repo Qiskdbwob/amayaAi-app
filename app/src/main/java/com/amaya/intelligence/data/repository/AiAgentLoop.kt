@@ -938,8 +938,10 @@ internal fun AiRepository.chatImpl(
 
         // The model may pack its whole answer into a tool call (e.g. saving it to memory) and end
         // the turn without emitting text. Surface the last successful tool result so the final
-        // bubble is never empty and the user still reads the substance of the answer.
-        if (needsFinalAnswerFallback(completedAssistantMessages.isEmpty(), executedToolCalls, lastToolResultContent)) {
+        // bubble is never empty and the user still reads the substance of the answer. The first
+        // argument is `hasAssistantText` (isNotEmpty): the fallback must fire only when NO visible
+        // assistant text exists, so a normal answered turn never gets tool-result text appended.
+        if (needsFinalAnswerFallback(completedAssistantMessages.isNotEmpty(), executedToolCalls, lastToolResultContent)) {
             val fallback = extractAnswerLikeText(lastToolResultContent!!)
             send(AgentEvent.TextDelta(fallback))
             StreamDebugLog.event(conversationId, null, "FINAL_TEXT_FALLBACK", "chars=${fallback.length}")

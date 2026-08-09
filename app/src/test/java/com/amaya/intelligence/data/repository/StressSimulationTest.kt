@@ -187,7 +187,8 @@ class StressSimulationTest {
 
         fun finalAnswer(): String? {
             if (terminalError) return null
-            if (!needsFinalAnswerFallback(completedAssistantTexts.isEmpty(), executedToolCalls, lastToolResult)) return null
+            // Mirrors the fixed call site: hasAssistantText = completedAssistantTexts.isNotEmpty().
+            if (!needsFinalAnswerFallback(completedAssistantTexts.isNotEmpty(), executedToolCalls, lastToolResult)) return null
             return extractAnswerLikeText(lastToolResult!!)
         }
     }
@@ -254,9 +255,10 @@ class StressSimulationTest {
             rejected = 0,
             resultContent = """{"id":"mem_1","content":"— Greeting \"halo jai\" was acknowledged with reply \"Halo! Ada yang bisa saya bantu hari ini?\"","version":1}"""
         )
-        // 2) verification pass fires (tool-using LOCAL user turn) and the model replies VERIFIED
+        // 2) model stops with no text -> the verification gate fires (host double-checks the turn)
+        sim.providerReply(text = null, toolCalls = 0, rejected = 0, resultContent = null)
+        // 3) the verification reply arrives and must be suppressed (not counted as visible text)
         sim.providerReply(text = "VERIFIED — memory saved", toolCalls = 0, rejected = 0, resultContent = null)
-        // verification reply must be suppressed (not counted as visible text)
         assertEquals(0, sim.completedAssistantTexts.size)
         assertEquals(1, sim.verificationPasses)
         val answer = sim.finalAnswer()
@@ -267,10 +269,11 @@ class StressSimulationTest {
     fun `replay normal text answer - no verification leak and no fallback`() {
         val sim = TurnSimulator(MessageRole.USER, AgentRuntimeTarget.LOCAL)
         sim.providerReply(text = "Halo! Ada yang bisa saya bantu hari ini?", toolCalls = 1, rejected = 0, resultContent = "ok")
-        sim.providerReply(text = null, toolCalls = 0, rejected = 0, resultContent = null)
+        sim.providerReply(text = null, toolCalls = 0, rejected = 0, resultContent = null) // stop -> verification gate
+        sim.providerReply(text = "VERIFIED — complete", toolCalls = 0, rejected = 0, resultContent = null) // suppressed
         assertEquals(1, sim.verificationPasses)
         assertEquals(listOf("Halo! Ada yang bisa saya bantu hari ini?"), sim.completedAssistantTexts)
-        assertEquals(null, sim.finalAnswer()) // real text exists -> no fallback
+        assertEquals(null, sim.finalAnswer()) // real text exists -> no fallback, no tool-result tail
     }
 
     @Test
