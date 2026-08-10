@@ -345,7 +345,7 @@ private fun FloatingPillTabBar(
                                             }
                                         },
                                     maxLines = 1,
-                                    overflow = TextOverflow.Clip
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }

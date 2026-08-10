@@ -31,8 +31,15 @@ internal data class ChatErrorPresentation(
     val message: String
 )
 
-internal fun presentChatError(raw: String): ChatErrorPresentation =
-    ChatErrorPresentation(title = raw.substringBefore(":"), message = raw)
+internal fun presentChatError(raw: String): ChatErrorPresentation {
+    val trimmed = raw.trim()
+    val title = trimmed.substringBefore(":").trim().ifBlank { "Something went wrong" }
+    val detail = trimmed.substringAfter(":", "").trim()
+    // Never echo the same raw string twice (title + body). Errors without a colon
+    // get a friendly hint instead of a verbatim duplicate.
+    val message = if (detail.isNotBlank()) detail else "Check your connection and try again."
+    return ChatErrorPresentation(title = title, message = message)
+}
 
 @Composable
 fun ChatBottomSection(
@@ -143,8 +150,8 @@ fun ChatBottomSection(
                                 style = MaterialTheme.typography.bodyMedium
                             )
                         }
-                        IconButton(onClick = onClearError, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Close, null, modifier = Modifier.size(18.dp),
+                        IconButton(onClick = onClearError) {
+                            Icon(Icons.Default.Close, contentDescription = "Dismiss error", modifier = Modifier.size(18.dp),
                                 tint = MaterialTheme.colorScheme.onErrorContainer)
                         }
                     }

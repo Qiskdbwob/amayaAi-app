@@ -227,13 +227,15 @@ fun ChatInput(
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.widthIn(max = 200.dp))
                     Box(
-                        modifier = Modifier.size(14.dp).clip(CircleShape)
+                        // 24dp tap target (was 14dp): small enough to stay a compact
+                        // chip, large enough to hit reliably on a touchscreen.
+                        modifier = Modifier.size(24.dp).clip(CircleShape)
                             .background(MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.15f))
                             .clickable { onClearAttachment() },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(Icons.Default.Close, contentDescription = "Remove",
-                            modifier = Modifier.size(9.dp),
+                            modifier = Modifier.size(12.dp),
                             tint = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                 }
@@ -261,13 +263,15 @@ fun ChatInput(
                         maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.widthIn(max = 200.dp))
                     Box(
-                        modifier = Modifier.size(14.dp).clip(CircleShape)
+                        // 24dp tap target (was 14dp): small enough to stay a compact
+                        // chip, large enough to hit reliably on a touchscreen.
+                        modifier = Modifier.size(24.dp).clip(CircleShape)
                             .background(MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.15f))
                             .clickable { onClearImageAttachment() },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(Icons.Default.Close, contentDescription = "Remove",
-                            modifier = Modifier.size(9.dp),
+                            modifier = Modifier.size(12.dp),
                             tint = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                 }

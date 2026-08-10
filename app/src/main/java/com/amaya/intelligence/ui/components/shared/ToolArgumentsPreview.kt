@@ -182,7 +182,7 @@ fun ToolArgumentsPreview(
                                     color = metaColor,
                                     softWrap = false,
                                     maxLines = 1,
-                                    overflow = TextOverflow.Clip
+                                    overflow = TextOverflow.Ellipsis
                                 )
                                 if (command.isNotBlank()) {
                                     Text(

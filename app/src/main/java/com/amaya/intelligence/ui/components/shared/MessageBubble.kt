@@ -598,7 +598,7 @@ private fun WorkSummaryCard(
                     fontWeight = FontWeight.Normal,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
-                    overflow = TextOverflow.Clip,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .weight(1f)
                         .toolHeaderShimmer(isLive, shimmerProgress)
@@ -664,22 +664,14 @@ private fun splitAssistantTurn(message: UiMessage): AssistantTurnSplit {
     val isRemote = message.metadata["source"].equals("remote", ignoreCase = true)
     val browserRanges = browserToolRanges(steps)
 
-    val answerIndex = if (isRemote) {
-        // Antigravity state snapshots carry cumulative/duplicated text fragments, so the
-        // answer is the last non-blank Text step wherever it sits, not necessarily last.
-        steps.indices.lastOrNull { index ->
-            val text = steps[index] as? MessageStep.Text ?: return@lastOrNull false
-            (text.formattedContent ?: text.content).isNotBlank()
-        }
-    } else {
-        steps.indices.lastOrNull { index ->
-            val text = steps[index] as? MessageStep.Text
-            val onlyPostAnswerMarkers = steps.drop(index + 1).all { it is MessageStep.Event }
-            text != null &&
-                (text.formattedContent ?: text.content).isNotBlank() &&
-                browserRanges.none { index in it } &&
-                (index == steps.lastIndex || onlyPostAnswerMarkers)
-        }
+    // The answer is the last non-blank Text step wherever it sits. It deliberately is NOT tied to
+    // being the final step: a turn that ends with a trailing tool call (the model saving its answer
+    // to memory, a skill/learning write) or a mid-turn compaction marker used to bury the real reply
+    // inside the folded work card — the user saw a collapsed "tool card" instead of their response.
+    // Trailing tools still render inside the card; the answer always surfaces below it.
+    val answerIndex = steps.indices.lastOrNull { index ->
+        val text = steps[index] as? MessageStep.Text ?: return@lastOrNull false
+        (text.formattedContent ?: text.content).isNotBlank() && browserRanges.none { index in it }
     }
     val answerStep = answerIndex?.let { steps[it] as? MessageStep.Text }
     val trailingEvents = answerIndex?.let { answer ->

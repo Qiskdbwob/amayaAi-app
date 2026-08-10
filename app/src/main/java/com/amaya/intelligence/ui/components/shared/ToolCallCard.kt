@@ -273,7 +273,7 @@ internal fun ToolCardContent(
                     fontWeight = FontWeight.Normal,
                     color      = MaterialTheme.colorScheme.onSurface,
                     maxLines   = 1,
-                    overflow   = TextOverflow.Clip,
+                    overflow   = TextOverflow.Ellipsis,
                     modifier   = Modifier
                         .weight(1f)
                         .toolHeaderShimmer(execution.status == ToolStatus.RUNNING, shimmerProgress)
@@ -702,7 +702,7 @@ internal fun SubagentChildCard(
                                      MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
                                  else MaterialTheme.colorScheme.onSurface,
                     maxLines   = 1,
-                    overflow   = TextOverflow.Clip,
+                    overflow   = TextOverflow.Ellipsis,
                     modifier   = Modifier
                         .weight(1f)
                         .toolHeaderShimmer(child.status == ToolStatus.RUNNING, shimmerProgress)
