@@ -62,19 +62,25 @@ android {
                 else -> {
                     generatedKeystore.parentFile.mkdirs()
                     if (!generatedKeystore.exists()) {
-                        exec {
-                            commandLine(
-                                (System.getenv("JAVA_HOME")?.let { "$it/bin/keytool" } ?: "keytool"),
-                                "-genkeypair", "-v",
-                                "-keystore", generatedKeystore.absolutePath,
-                                "-storepass", "android",
-                                "-keypass", "android",
-                                "-alias", "androiddebugkey",
-                                "-keyalg", "RSA",
-                                "-keysize", "2048",
-                                "-validity", "10950",
-                                "-dname", "CN=Android Debug, OU=Debug, O=Android, L=Unknown, ST=Unknown, C=US"
-                            )
+                        // Gradle melarang DSL exec {} pada configuration time,
+                        // jadi pakai ProcessBuilder langsung.
+                        val keytool = System.getenv("JAVA_HOME")?.let { "$it/bin/keytool" } ?: "keytool"
+                        val proc = ProcessBuilder(
+                            keytool,
+                            "-genkeypair", "-v",
+                            "-keystore", generatedKeystore.absolutePath,
+                            "-storepass", "android",
+                            "-keypass", "android",
+                            "-alias", "androiddebugkey",
+                            "-keyalg", "RSA",
+                            "-keysize", "2048",
+                            "-validity", "10950",
+                            "-dname", "CN=Android Debug, OU=Debug, O=Android, L=Unknown, ST=Unknown, C=US"
+                        ).redirectErrorStream(true).start()
+                        val out = proc.inputStream.bufferedReader().readText()
+                        val code = proc.waitFor()
+                        if (code != 0) {
+                            throw GradleException("Gagal membuat debug keystore:\n$out")
                         }
                     }
                     generatedKeystore
