@@ -222,23 +222,33 @@ fun MessageBubble(
                                     insideCard = true
                                 )
                             }
-                            val answerStep = split.answerStep
-                            if (answerStep != null) {
-                                val answerText = if (
-                                    message.metadata["source"].equals("remote", ignoreCase = true) &&
-                                    message.content.isNotBlank()
-                                ) {
-                                    message.formattedContent ?: message.content
-                                } else {
-                                    answerStep.formattedContent ?: answerStep.content
-                                }
-                                if (answerText.isNotBlank()) {
-                                    key(answerStep.id) {
-                                        AssistantTextWithThinking(
-                                            text = answerText,
-                                            onLocalhostLinkClick = onLocalhostLinkClick
-                                        )
+                            if (split.answerSteps.isNotEmpty()) {
+                                split.answerSteps.forEach { answerStep ->
+                                    val answerText = if (
+                                        message.metadata["source"].equals("remote", ignoreCase = true) &&
+                                        message.content.isNotBlank() &&
+                                        split.answerSteps.size == 1
+                                    ) {
+                                        message.formattedContent ?: message.content
+                                    } else {
+                                        answerStep.formattedContent ?: answerStep.content
                                     }
+                                    if (answerText.isNotBlank()) {
+                                        key(answerStep.id) {
+                                            AssistantTextWithThinking(
+                                                text = answerText,
+                                                onLocalhostLinkClick = onLocalhostLinkClick
+                                            )
+                                        }
+                                    }
+                                }
+                            } else if (message.content.isNotBlank()) {
+                                val fallbackText = message.formattedContent ?: message.content
+                                if (fallbackText.isNotBlank()) {
+                                    AssistantTextWithThinking(
+                                        text = fallbackText,
+                                        onLocalhostLinkClick = onLocalhostLinkClick
+                                    )
                                 }
                             }
                             split.trailingEvents.forEach { eventStep ->
@@ -652,39 +662,64 @@ private fun WorkSummaryCard(
  * The rule is the same during and after the turn, which is what lets completion be a
  * pure state change rather than a re-layout.
  */
-private data class AssistantTurnSplit(
+internal data class AssistantTurnSplit(
     val workSteps: List<MessageStep>,
-    val answerStep: MessageStep.Text?,
+    val answerSteps: List<MessageStep.Text>,
     val trailingEvents: List<MessageStep.Event>,
     val wrapInSummary: Boolean
 )
 
-private fun splitAssistantTurn(message: UiMessage): AssistantTurnSplit {
+internal fun isHousekeepingTool(name: String): Boolean {
+    return name in setOf("memory_manage", "update_memory", "skill_manage", "skill_view", "update_todo")
+}
+
+internal fun splitAssistantTurn(message: UiMessage): AssistantTurnSplit {
     val steps = message.steps
     val isRemote = message.metadata["source"].equals("remote", ignoreCase = true)
     val browserRanges = browserToolRanges(steps)
 
-    // The answer is the last non-blank Text step wherever it sits. It deliberately is NOT tied to
-    // being the final step: a turn that ends with a trailing tool call (the model saving its answer
-    // to memory, a skill/learning write) or a mid-turn compaction marker used to bury the real reply
-    // inside the folded work card — the user saw a collapsed "tool card" instead of their response.
-    // Trailing tools still render inside the card; the answer always surfaces below it.
-    val answerIndex = steps.indices.lastOrNull { index ->
-        val text = steps[index] as? MessageStep.Text ?: return@lastOrNull false
+    // All valid non-blank Text steps outside browser ranges
+    val candidateTextIndices = steps.indices.filter { index ->
+        val text = steps[index] as? MessageStep.Text ?: return@filter false
         (text.formattedContent ?: text.content).isNotBlank() && browserRanges.none { index in it }
     }
-    val answerStep = answerIndex?.let { steps[it] as? MessageStep.Text }
-    val trailingEvents = answerIndex?.let { answer ->
-        steps.drop(answer + 1).filterIsInstance<MessageStep.Event>()
-    }.orEmpty()
+
+    // Index of the last substantive (non-housekeeping) work tool
+    val lastActionToolIndex = steps.indexOfLast { step ->
+        step is MessageStep.ToolCall && !isThinkingExecution(step.execution) && !isHousekeepingTool(step.execution.name)
+    }
+
+    // Determine which text steps constitute the final answer:
+    // 1. Text steps that occur AFTER the last substantive work tool are post-work answer steps.
+    // 2. If there are multiple post-work text steps (e.g. substantive answer + trailing memory/note),
+    //    all post-work text steps are surfaced in answerSteps so no substantive text is hidden in the work card.
+    // 3. If there are no text steps after the last action tool, fall back to the last candidate text step.
+    val answerIndices: Set<Int> = if (candidateTextIndices.isEmpty()) {
+        emptySet()
+    } else if (lastActionToolIndex < 0) {
+        candidateTextIndices.toSet()
+    } else {
+        val postWorkTextIndices = candidateTextIndices.filter { it > lastActionToolIndex }
+        if (postWorkTextIndices.isNotEmpty()) {
+            postWorkTextIndices.toSet()
+        } else {
+            setOf(candidateTextIndices.last())
+        }
+    }
+
+    val answerSteps = answerIndices.sorted().mapNotNull { steps[it] as? MessageStep.Text }
+    val firstAnswerIndex = answerIndices.minOrNull()
+    val trailingEvents = if (firstAnswerIndex != null) {
+        steps.drop(firstAnswerIndex + 1).filterIsInstance<MessageStep.Event>()
+    } else emptyList()
 
     val workSteps = steps.filterIndexed { index, step ->
-        index != answerIndex && when (step) {
+        index !in answerIndices && when (step) {
             is MessageStep.Thinking -> true
             is MessageStep.ToolCall -> step.execution.name != "update_todo"
             // An event after the answer is a conversation-level update, not work belonging
             // to the completed answer. Keeping it outside avoids a one-event work card.
-            is MessageStep.Event -> answerIndex == null || index < answerIndex
+            is MessageStep.Event -> firstAnswerIndex == null || index < firstAnswerIndex
             // Remote keeps only tools and reasoning inside the card; local preserves its
             // interleaved intermediate text so the timeline still reads in order.
             is MessageStep.Text -> !isRemote && (step.formattedContent ?: step.content).isNotBlank()
@@ -696,7 +731,7 @@ private fun splitAssistantTurn(message: UiMessage): AssistantTurnSplit {
     val wrapInSummary = workSteps.any {
         it is MessageStep.Thinking || it is MessageStep.ToolCall
     }
-    return AssistantTurnSplit(workSteps, answerStep, trailingEvents, wrapInSummary)
+    return AssistantTurnSplit(workSteps, answerSteps, trailingEvents, wrapInSummary)
 }
 
 private fun browserToolRanges(steps: List<MessageStep>): List<IntRange> {

@@ -44,6 +44,12 @@ android {
     }
 
     signingConfigs {
+        create("debugConfig") {
+            storeFile = file("${rootDir}/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         create("release") {
             if (keystoreProperties.containsKey("AMAYA_KEYSTORE_PASSWORD")) {
                 storeFile = file("../release.keystore")
@@ -68,7 +74,7 @@ android {
         }
         debug {
             isMinifyEnabled = false
-            applicationIdSuffix = ".debug"
+            signingConfig = signingConfigs.getByName("debugConfig")
         }
         // Profileable production-like build for daily performance testing. It uses
         // release code/resources, debug signing, and deliberately skips R8/shrinking.

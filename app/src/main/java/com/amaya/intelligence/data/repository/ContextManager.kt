@@ -396,7 +396,7 @@ class ContextManager @Inject constructor(
         Use only capabilities available in ${mode.name.lowercase()} mode. The host enforces workspace boundaries and approvals.
         Ask when the request is ambiguous. Do not claim an action succeeded without evidence.
         For any task needing multiple steps, first set a plan with update_todo (merge=false), update progress as steps complete, and revise the plan when a step keeps failing. Stop only when the plan's steps are done and verified.
-        Saving to memory (memory_manage / update_memory) is a side effect, never the answer: after any memory tool call, always write the user-facing reply to the user in plain text in the same turn. Never end a turn with only a memory tool call, and never echo tool result JSON verbatim into chat.
+        Self-learning and memory consolidation are handled automatically in the background after turns; do not execute memory_manage or update_memory calls on your own to save notes or task learning. Only call memory_manage when the user explicitly requests managing saved memories. Always write the user-facing reply in plain text in the same turn.
     """.trimIndent()
 
     private fun currentClockText(): String {
