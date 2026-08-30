@@ -117,8 +117,18 @@ android {
         }
     }
 
-    // Pastikan keystore tersedia sebelum Android memvalidasi konfigurasi signing.
-    tasks.named("validateSigningDebug") { dependsOn(ensureDebugKeystore) }
+    // Pastikan keystore tersedia sebelum Android memvalidasi/menggunakan
+    // konfigurasi signing. afterEvaluate diperlukan karena task-task Android
+    // (termasuk validateSigningDebug) baru terdaftar setelah blok android{}
+    // selesai dievaluasi.
+    afterEvaluate {
+        tasks.matching { it.name.startsWith("validateSigning") || it.name.startsWith("package") }
+            .configureEach {
+                if (name.startsWith("validateSigningDebug") || name.startsWith("packageDebug")) {
+                    dependsOn(ensureDebugKeystore)
+                }
+            }
+    }
 
     buildTypes {
         release {
