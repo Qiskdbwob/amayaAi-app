@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.amaya.intelligence.util.errorLog
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -179,10 +180,19 @@ class AiSettingsManager @Inject constructor(
     private var cachedSettings: AiSettings? = null
 
     init {
+        // Cache warm-up is an optimization: on-device the Context is always present, but local JVM
+        // unit tests run without a mocked Android runtime, so Context-backed access here
+        // (startupPrefs -> getSharedPreferences) throws "not mocked" on this background coroutine.
+        // Guard it so the failure never escapes as an uncaught exception and poisons later
+        // runTest-based tests; reads then fall back to the on-demand guarded path in getSettings().
         CoroutineScope(Dispatchers.IO).launch {
-            settingsFlow.collect {
-                cachedSettings = it
-                startupPrefs.edit().putString(STARTUP_THEME_KEY, it.theme).apply()
+            runCatching {
+                settingsFlow.collect {
+                    cachedSettings = it
+                    startupPrefs.edit().putString(STARTUP_THEME_KEY, it.theme).apply()
+                }
+            }.onFailure { failure ->
+                errorLog("AiSettingsManager", "Settings cache warm-up failed; reads will use the on-demand path", failure)
             }
         }
     }
