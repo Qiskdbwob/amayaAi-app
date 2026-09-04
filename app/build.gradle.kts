@@ -108,10 +108,12 @@ android {
 
     // Task Android baru terdaftar setelah blok android{} dievaluasi.
     afterEvaluate {
-        tasks.matching { it.name.startsWith("validateSigning") || it.name.startsWith("packageDebug") }
-            .configureEach {
-                dependsOn(ensureDebugKeystore)
-            }
+        tasks.matching {
+            it.name.startsWith("validateSigning") ||
+                it.name.startsWith("packageDebug") || it.name.startsWith("packagePerf")
+        }.configureEach {
+            dependsOn(ensureDebugKeystore)
+        }
     }
 
     splits {
@@ -139,6 +141,17 @@ android {
         debug {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("debugConfig")
+        }
+
+        // Varian installable mirip-produksi untuk pengujian performa di setiap push CI:
+        // jalur kode release + R8, tapi debug signing (dan applicationId `.perf`) sehingga
+        // bisa di-sideload tanpa secrets release keystore dan terpasang berdampingan
+        // dengan build debug/release. Bukan untuk distribusi.
+        create("perf") {
+            initWith(buildTypes.getByName("release"))
+            applicationIdSuffix = ".perf"
+            signingConfig = signingConfigs.getByName("debugConfig")
+            matchingFallbacks += listOf("release")
         }
     }
 

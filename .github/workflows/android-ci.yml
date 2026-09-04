@@ -16,8 +16,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-debug:
-    name: Build debug APK
+  build-perf:
+    name: Build perf APK
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -47,11 +47,12 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace
+      # Hanya hasilkan APK versi perf (R8-optimized, debug-signed, applicationId .perf).
+      - name: Build perf APK
+        run: ./gradlew :app:assemblePerf --stacktrace
 
-      - name: Run unit tests (debug)
-        run: ./gradlew :app:testDebugUnitTest --stacktrace
+      - name: Run unit tests (perf)
+        run: ./gradlew :app:testPerfUnitTest --stacktrace
 
       - name: Upload unit test results
         if: always()
@@ -59,8 +60,8 @@ jobs:
         with:
           name: unit-test-results
           path: |
-            app/build/test-results/testDebugUnitTest/*.xml
-            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testPerfUnitTest/*.xml
+            app/build/reports/tests/testPerfUnitTest/
           if-no-files-found: ignore
           retention-days: 7
 
@@ -68,18 +69,18 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          for f in app/build/test-results/testDebugUnitTest/*.xml; do
+          for f in app/build/test-results/testPerfUnitTest/*.xml; do
             if grep -q "<failure" "$f"; then
               echo "===== $f ====="
               sed 's/&quot;/"/g; s/&lt;/</g; s/&gt;/>/g; s/&amp;/\&/g' "$f"
             fi
           done
 
-      - name: Upload debug APK(s)
+      - name: Upload perf APK(s)
         uses: actions/upload-artifact@v4
         with:
-          name: amaya-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: amaya-perf-apk
+          path: app/build/outputs/apk/perf/*.apk
           if-no-files-found: error
 
   build-release:
