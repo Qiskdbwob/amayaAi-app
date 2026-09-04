@@ -35,7 +35,25 @@ android {
 
     signingConfigs {
         create("debugConfig") {
-            storeFile = file("${rootDir}/debug.keystore")
+            // debug.keystore sengaja TIDAK di-commit (.gitignore: *.keystore),
+            // sehingga CI tidak memilikinya. Urutan fallback:
+            //   1. debug.keystore milik proyek (jika developer memilikinya)
+            //   2. debug keystore bawaan Android SDK (~/.android/debug.keystore)
+            //   3. keystore di build/, dibuat task ensureDebugKeystore pada
+            //      execution time (bukan configuration time)
+            val projectKeystore = file("${rootDir}/debug.keystore")
+            val androidHome = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+            val defaultKeystore = androidHome?.let { file("$it/.android/debug.keystore") }
+                ?: file("${System.getProperty("user.home")}/.android/debug.keystore")
+            val generatedKeystore = layout.buildDirectory.file("generated/debug.keystore").get().asFile
+
+            val resolved = when {
+                projectKeystore.exists() -> projectKeystore
+                defaultKeystore.exists() -> defaultKeystore
+                else -> generatedKeystore
+            }
+
+            storeFile = resolved
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
@@ -48,6 +66,61 @@ android {
                 keyAlias = keystoreProperties["AMAYA_KEY_ALIAS"] as String
                 keyPassword = keystoreProperties["AMAYA_KEYSTORE_PASSWORD"] as String
             }
+        }
+    }
+
+    // Fallback terakhir: hasilkan debug keystore bila runner tidak punya
+    // ~/.android/debug.keystore. Dijalankan pada execution time karena Gradle
+    // melarang proses eksternal saat configuration time.
+    val ensureDebugKeystore = tasks.register("ensureDebugKeystore") {
+        val androidHome = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+        val defaultKeystore = androidHome?.let { file("$it/.android/debug.keystore") }
+            ?: file("${System.getProperty("user.home")}/.android/debug.keystore")
+        val projectKeystore = file("${rootDir}/debug.keystore")
+        val generatedKeystore = layout.buildDirectory.file("generated/debug.keystore").get().asFile
+
+        onlyIf {
+            !projectKeystore.exists() && !defaultKeystore.exists() && !generatedKeystore.exists()
+        }
+
+        doLast {
+            generatedKeystore.parentFile.mkdirs()
+            val keytool = System.getenv("JAVA_HOME")?.let { "$it/bin/keytool" } ?: "keytool"
+            val proc = ProcessBuilder(
+                keytool,
+                "-genkeypair", "-v",
+                "-keystore", generatedKeystore.absolutePath,
+                "-storepass", "android",
+                "-keypass", "android",
+                "-alias", "androiddebugkey",
+                "-keyalg", "RSA",
+                "-keysize", "2048",
+                "-validity", "10950",
+                "-dname", "CN=Android Debug, OU=Debug, O=Android, L=Unknown, ST=Unknown, C=US"
+            ).redirectErrorStream(true).start()
+            val out = proc.inputStream.bufferedReader().readText()
+            if (proc.waitFor() != 0) {
+                throw GradleException("Gagal membuat debug keystore:\n$out")
+            }
+            println("debug keystore dibuat di " + generatedKeystore.absolutePath)
+        }
+    }
+
+    // Task Android baru terdaftar setelah blok android{} dievaluasi.
+    afterEvaluate {
+        tasks.matching { it.name.startsWith("validateSigning") || it.name.startsWith("packageDebug") }
+            .configureEach {
+                dependsOn(ensureDebugKeystore)
+            }
+    }
+
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("armeabi-v7a", "arm64-v8a")
+            // Tetap hasilkan APK universal agar bisa dipasang di perangkat apa pun.
+            isUniversalApk = true
         }
     }
 
