@@ -53,6 +53,28 @@ jobs:
       - name: Run unit tests (debug)
         run: ./gradlew :app:testDebugUnitTest --stacktrace
 
+      - name: Upload unit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: |
+            app/build/test-results/testDebugUnitTest/*.xml
+            app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Print failing unit test XML
+        if: failure()
+        shell: bash
+        run: |
+          for f in app/build/test-results/testDebugUnitTest/*.xml; do
+            if grep -q "<failure" "$f"; then
+              echo "===== $f ====="
+              sed 's/&quot;/"/g; s/&lt;/</g; s/&gt;/>/g; s/&amp;/\&/g' "$f"
+            fi
+          done
+
       - name: Build perf APK (R8-optimized, debug-signed, for performance testing)
         run: ./gradlew :app:assemblePerf --stacktrace
 
