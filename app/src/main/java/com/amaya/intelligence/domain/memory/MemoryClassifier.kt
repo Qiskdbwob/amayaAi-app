@@ -19,7 +19,10 @@ class MemoryClassifier @Inject constructor(
         workspacePath: String? = null,
         workspaceId: String? = null,
         sourceConversationId: String? = null,
-        evidence: List<String> = emptyList()
+        evidence: List<String> = emptyList(),
+        ttlMillis: Long? = null,
+        expiresAt: Long? = null,
+        requestedVolatility: MemoryVolatility? = null
     ): MemoryProposal {
         val trimmed = content.trim()
         val safeConfidence = confidence.coerceIn(0.0, 1.0)
@@ -29,6 +32,14 @@ class MemoryClassifier @Inject constructor(
         val type = requestedType ?: inferType(safeContent)
         val action = if (unsafe) MemoryAction.IGNORE else normalizeAction(requestedAction, safeContent)
         val scope = requestedScope ?: defaultScope(type)
+        val volatility = requestedVolatility ?: MemoryVolatility.fromType(type)
+        val now = System.currentTimeMillis()
+        val computedExpiresAt = when {
+            expiresAt != null -> expiresAt
+            ttlMillis != null && ttlMillis > 0L -> now + ttlMillis
+            volatility.defaultTTLMillis != null -> now + volatility.defaultTTLMillis
+            else -> null
+        }
         val normalized = if (unsafe) {
             NormalizedMemoryText("Rejected memory", safeContent, if (!safety.safe) "Rejected by memory safety rules: ${safety.reasons.joinToString()}" else "Rejected by memory safety/classification rules")
         } else {
@@ -44,6 +55,9 @@ class MemoryClassifier @Inject constructor(
             content = normalized.content,
             reason = if (instructionLike) "Rejected because memory must be a declarative fact, not an instruction." else normalized.reason,
             confidence = safeConfidence,
+            createdAt = now,
+            expiresAt = computedExpiresAt,
+            volatility = volatility,
             workspacePath = workspacePath,
             workspaceId = workspaceId,
             sourceConversationId = sourceConversationId,

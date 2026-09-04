@@ -297,6 +297,8 @@ internal fun AiRepository.chatImpl(
         // Per-tool repeated-failure tracking for self-correction warnings (browser + any tool).
         val lastToolErrorSignature = mutableMapOf<String, String>()
         val repeatedToolErrors = mutableMapOf<String, Int>()
+        val lastExecutedCallSignature = mutableMapOf<String, String>()
+        val repeatedIdenticalCallCount = mutableMapOf<String, Int>()
         val invalidToolArgumentErrors = mutableMapOf<String, Throwable>()
         // Scheme C: how many tool calls actually executed this turn + how many verification
         // passes have run (bounded by MAX_VERIFICATION_PASSES).
@@ -758,6 +760,13 @@ internal fun AiRepository.chatImpl(
                         )
                     }
 
+                    val currentCallSig = "${toolCall.name}:${JSONObject(toolCall.arguments)}"
+                    val identicalCallCount = if (lastExecutedCallSignature[toolCall.name] == currentCallSig) {
+                        (repeatedIdenticalCallCount[toolCall.name] ?: 0) + 1
+                    } else 1
+                    lastExecutedCallSignature[toolCall.name] = currentCallSig
+                    repeatedIdenticalCallCount[toolCall.name] = identicalCallCount
+
                     val rawResultContent = when (result) {
                         is ToolResult.Success -> result.output
                         is ToolResult.Deferred -> result.output
@@ -765,6 +774,9 @@ internal fun AiRepository.chatImpl(
                         is ToolResult.RequiresConfirmation -> "Error: Approval could not be completed: ${result.reason}"
                     }
                     var resultContent = rawResultContent
+                    if (identicalCallCount >= 2) {
+                        resultContent += "\n\n[Circuit Breaker Notice]: Tool '${toolCall.name}' was executed with identical arguments $identicalCallCount times consecutively. If you are stuck in a loop or receiving the same outcome, do not repeat this exact call again. Alter your strategy, verify required prerequisites, or proceed with available evidence."
+                    }
                     // Repeated identical tool failures get a self-correction hint appended to the
                     // result, for browser and every other tool (Hermes-style in-loop recovery).
                     val errorSignature = toolErrorSignature(resultContent)

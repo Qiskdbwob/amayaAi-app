@@ -70,12 +70,14 @@ internal fun truncateToolResultForContext(content: String, maxChars: Int): Strin
 }
 
 internal fun verificationPrompt(goal: String): String = """
-        Host verification step: you just stopped and answered, but this turn used tools so the host
-        double-checks the result before finalizing. The user asked: "$goal"
-        Confirm the request is FULLY completed, citing the concrete evidence already in your tool results.
-        Do not redo completed work.
-        - If anything is missing, unverified, or only partially done: continue working — call the tools needed to finish it.
-        - If everything is truly complete: reply VERIFIED and one short line of evidence.
+        Host verification step: You are attempting to finalize this turn after tool operations.
+        The user's original goal is: "$goal"
+        
+        Sanity Check Requirements:
+        1. Verify every explicit requirement and constraint requested in the goal has been addressed.
+        2. Cite concrete file paths, symbols, or tool outputs from your execution evidence.
+        3. If any task component remains incomplete, unverified, or failed: DO NOT STOP — continue executing the necessary tools immediately.
+        4. If and only if all deliverables are complete and verified: reply 'VERIFIED' followed by a concise 1-2 sentence evidence summary.
     """.trimIndent()
 
 internal fun responseItemOutputText(items: List<String>): String? = items.asSequence()

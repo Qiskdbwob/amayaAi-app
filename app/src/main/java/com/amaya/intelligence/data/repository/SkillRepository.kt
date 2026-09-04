@@ -32,6 +32,12 @@ interface SkillRepository {
      * 0.6×SuccessRate + 0.4×FrequencyNorm (no cost term) and persist it once per session.
      */
     suspend fun computeDynamicReputations(): Result<Unit>
+
+    /**
+     * Consolidates two or more micro-skills into a unified target skill, combining their usage
+     * telemetry and tags, then archiving the source skills.
+     */
+    suspend fun mergeSkills(sourceNames: List<String>, targetSkill: Skill): Result<Unit>
 }
 
 @Singleton
@@ -162,6 +168,56 @@ class FileSkillRepository @Inject constructor(
                     val frequencyNorm = if (maxUsage <= 0) 0.0 else metadata.usageCount.toDouble() / maxUsage.toDouble()
                     val reputation = REPUTATION_SUCCESS_WEIGHT * successRate + REPUTATION_FREQUENCY_WEIGHT * frequencyNorm
                     atomicWrite(file, metadata.copy(dynamicReputation = reputation.coerceIn(0.0, 1.0)).toJson().toString(2))
+                }
+            }
+        }
+    }
+
+    override suspend fun mergeSkills(sourceNames: List<String>, targetSkill: Skill): Result<Unit> = withContext(Dispatchers.IO) {
+        fileMutex.withLock {
+            runCatching {
+                require(!memoryClassifier.containsSecret(targetSkill.content)) { "Merged skill content appears to contain a secret." }
+                val targetSafeName = store.sanitizeName(targetSkill.metadata.name)
+                val now = System.currentTimeMillis()
+
+                // Collect sources
+                val sourceSkills = sourceNames.mapNotNull { readSkillLocked(it) }
+                val totalUsage = sourceSkills.sumOf { it.metadata.usageCount } + targetSkill.metadata.usageCount
+                val totalSuccess = sourceSkills.sumOf { it.metadata.successCount } + targetSkill.metadata.successCount
+                val totalFailure = sourceSkills.sumOf { it.metadata.failureCount } + targetSkill.metadata.failureCount
+                val mergedTags = (sourceSkills.flatMap { it.metadata.tags } + targetSkill.metadata.tags).distinct()
+                val earliestCreated = (sourceSkills.map { it.metadata.createdAt } + targetSkill.metadata.createdAt).filter { it > 0 }.minOrNull() ?: now
+
+                val mergedMetadata = targetSkill.metadata.copy(
+                    name = targetSafeName,
+                    usageCount = totalUsage,
+                    successCount = totalSuccess,
+                    failureCount = totalFailure,
+                    tags = mergedTags,
+                    createdAt = earliestCreated,
+                    updatedAt = now,
+                    status = SkillStatus.ACTIVE,
+                    enabled = true
+                )
+
+                // Write/update the target skill
+                writeSkillLocked(targetSafeName, mergedMetadata, targetSkill.content)
+
+                // Archive the sources (except if source is the target itself)
+                sourceNames.forEach { sourceName ->
+                    val sourceSafe = store.sanitizeName(sourceName)
+                    if (sourceSafe != targetSafeName) {
+                        val sourceMeta = readMetadata(store.metadataFile(sourceSafe))
+                        if (sourceMeta != null) {
+                            val archived = sourceMeta.copy(
+                                status = SkillStatus.ARCHIVED,
+                                enabled = false,
+                                updatedAt = now,
+                                reviewReason = "Merged into skill '$targetSafeName'"
+                            )
+                            atomicWrite(store.metadataFile(sourceSafe), archived.toJson().toString(2))
+                        }
+                    }
                 }
             }
         }

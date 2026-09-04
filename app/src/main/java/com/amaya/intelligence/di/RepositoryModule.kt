@@ -86,4 +86,8 @@ abstract class RepositoryModule {
     @Binds
     @Singleton
     abstract fun bindMaintenanceScheduler(impl: ManualMaintenanceScheduler): MaintenanceScheduler
+
+    @Binds
+    @Singleton
+    abstract fun bindAgentToolRegistry(impl: com.amaya.intelligence.tools.DefaultAgentToolRegistry): com.amaya.intelligence.tools.AgentToolRegistry
 }

@@ -140,6 +140,7 @@ class FileMemoryRepository @Inject constructor(
                 var archivedCount = 0
                 var cappedCount = 0
                 var decayedCount = 0
+                var expiredCount = 0
                 val now = System.currentTimeMillis()
                 recordFiles().forEach { file ->
                     val records = readRecords(file)
@@ -147,6 +148,12 @@ class FileMemoryRepository @Inject constructor(
                     var changed = false
                     val decayed = records.map { record ->
                         if (record.status != MemoryStatus.ACTIVE) return@map record
+                        // Explicit TTL expiration check
+                        if (record.expiresAt != null && record.expiresAt <= now) {
+                            expiredCount++
+                            changed = true
+                            return@map record.copy(status = MemoryStatus.SUPERSEDED, updatedAt = now)
+                        }
                         val factor = decayFactor(record)
                         when {
                             factor < ARCHIVE_DECAY_FLOOR -> {
@@ -180,7 +187,8 @@ class FileMemoryRepository @Inject constructor(
                 MemoryHousekeepingReport(
                     archivedCount = archivedCount,
                     cappedCount = cappedCount,
-                    decayedCount = decayedCount
+                    decayedCount = decayedCount,
+                    expiredCount = expiredCount
                 )
             }
         }
@@ -343,11 +351,33 @@ class FileMemoryRepository @Inject constructor(
             subject = proposal.subject.ifBlank { defaultSubject(proposal.scope) },
             attribute = proposal.attribute.ifBlank { inferAttribute(finalContent, proposal.title, proposal.type) },
             sourceConversationId = proposal.sourceConversationId,
-            volatility = MemoryVolatility.fromType(proposal.type),
+            volatility = proposal.volatility ?: MemoryVolatility.fromType(proposal.type),
             evidence = proposal.evidence
         ).withIdentity()
-        val existing = activeMemoryRecords().firstOrNull { memoryIdentity(it) == memoryIdentity(candidate) }
-        if (existing != null && deduper.isDuplicate(candidate.content, existing.content)) return "Skipped duplicate $label."
+        val allActive = activeMemoryRecords()
+        val existing = allActive.firstOrNull { memoryIdentity(it) == memoryIdentity(candidate) }
+            ?: allActive.firstOrNull {
+                it.type == candidate.type &&
+                it.scope == candidate.scope &&
+                (candidate.scope != MemoryScope.WORKSPACE || it.workspacePath == candidate.workspacePath) &&
+                (it.attribute.isNotBlank() && it.attribute == candidate.attribute || deduper.isContradictionOrUpdate(candidate.content, it.content))
+            }
+
+        if (existing != null && deduper.isDuplicate(candidate.content, existing.content)) {
+            if (candidate.confidence > existing.confidence && !existing.verified) {
+                val now = System.currentTimeMillis()
+                supersedeMemoryRecord(existing, now, supersededById = candidate.id)
+                appendMemoryRecord(existing.copy(
+                    confidence = candidate.confidence,
+                    updatedAt = now,
+                    expiresAt = candidate.expiresAt ?: existing.expiresAt,
+                    version = existing.version + 1,
+                    evidence = (existing.evidence + candidate.evidence).distinct().take(MAX_EVIDENCE_LINES)
+                ))
+                return "Refreshed confidence for $label."
+            }
+            return "Skipped duplicate $label."
+        }
 
         val now = System.currentTimeMillis()
         // Phase B temporal validity: the previous revision is marked superseded and points at the
@@ -359,7 +389,7 @@ class FileMemoryRepository @Inject constructor(
             createdAt = existing?.createdAt ?: candidate.createdAt,
             updatedAt = now
         ))
-        return if (existing == null) "Saved to $label." else "Updated $label."
+        return if (existing == null) "Saved to $label." else "Updated $label (resolved update/contradiction)."
     }
 
     private fun activeMemoryRecords(): List<MemoryRecord> {

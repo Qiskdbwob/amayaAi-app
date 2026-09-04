@@ -21,6 +21,9 @@ class FindFilesTool @Inject constructor(
     companion object {
         const val MAX_RESULTS = 100
         const val MAX_DEPTH = 20
+        private val IGNORED_DIRECTORIES = setOf(
+            ".git", ".gradle", "build", ".idea", "node_modules", ".aistudio", ".cxx", "bin", "obj", ".dart_tool"
+        )
     }
 
     override val name = "find_files"
@@ -59,7 +62,7 @@ class FindFilesTool @Inject constructor(
             dir.walkTopDown()
                 .maxDepth(maxDepth)
                 .onEnter { directory ->
-                    matches.size < maxResults && !java.nio.file.Files.isSymbolicLink(directory.toPath())
+                    directory.name !in IGNORED_DIRECTORIES && matches.size < maxResults && !java.nio.file.Files.isSymbolicLink(directory.toPath())
                 }
                 .filter { !java.nio.file.Files.isSymbolicLink(it.toPath()) && it.isFile && it.length() < 5 * 1024 * 1024 }
                 .takeWhile { matches.size < maxResults }
@@ -209,7 +212,7 @@ class FindFilesTool @Inject constructor(
             }
 
             // Recurse into subdirectories
-            if (file.isDirectory && currentDepth < maxDepth) {
+            if (file.isDirectory && file.name !in IGNORED_DIRECTORIES && currentDepth < maxDepth) {
                 walkDirectory(baseDir, file, maxDepth, currentDepth + 1, results, pattern, typeFilter, maxResults, onSkipped)
             }
         }

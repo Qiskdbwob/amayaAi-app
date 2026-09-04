@@ -16,6 +16,7 @@ data class MemoryProposal(
     val confidence: Double,
     val createdAt: Long = System.currentTimeMillis(),
     val expiresAt: Long? = null,
+    val volatility: MemoryVolatility? = null,
     /** Host-owned canonical root for workspace-scoped memory. */
     val workspacePath: String? = null,
     val workspaceId: String? = null,

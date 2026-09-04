@@ -4,7 +4,6 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
-    alias(libs.plugins.android.baselineprofile)
 }
 
 import java.util.Properties
@@ -34,37 +33,9 @@ android {
         }
     }
 
-    splits {
-        abi {
-            isEnable = true
-            reset()
-            include("armeabi-v7a", "arm64-v8a")
-            isUniversalApk = false
-        }
-    }
-
     signingConfigs {
         create("debugConfig") {
-            // debug.keystore sengaja TIDAK di-commit (.gitignore: *.keystore),
-            // sehingga tidak tersedia di CI. Urutan fallback:
-            //   1. debug.keystore milik proyek (jika developer memilikinya)
-            //   2. debug keystore bawaan Android SDK (~/.android/debug.keystore)
-            //      -> selalu tersedia di runner GitHub Actions.
-            //   3. keystore di direktori build (dibuat task ensureDebugKeystore
-            //      sebelum proses signing berjalan, bukan saat configuration time).
-            val projectKeystore = file("${rootDir}/debug.keystore")
-            val androidHome = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
-            val defaultKeystore = androidHome?.let { file("$it/.android/debug.keystore") }
-                ?: file("${System.getProperty("user.home")}/.android/debug.keystore")
-            val generatedKeystore = layout.buildDirectory.file("generated/debug.keystore").get().asFile
-
-            val resolved = when {
-                projectKeystore.exists() -> projectKeystore
-                defaultKeystore.exists() -> defaultKeystore
-                else -> generatedKeystore
-            }
-
-            storeFile = resolved
+            storeFile = file("${rootDir}/debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
@@ -78,56 +49,6 @@ android {
                 keyPassword = keystoreProperties["AMAYA_KEYSTORE_PASSWORD"] as String
             }
         }
-    }
-
-    // Fallback terakhir: hasilkan debug keystore bila runner tidak punya
-    // ~/.android/debug.keystore. Dijalankan pada execution time (bukan
-    // configuration time) karena Gradle melarang proses eksternal saat konfigurasi.
-    val ensureDebugKeystore = tasks.register("ensureDebugKeystore") {
-        val androidHome = System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
-        val defaultKeystore = androidHome?.let { file("$it/.android/debug.keystore") }
-            ?: file("${System.getProperty("user.home")}/.android/debug.keystore")
-        val projectKeystore = file("${rootDir}/debug.keystore")
-        val generatedKeystore = layout.buildDirectory.file("generated/debug.keystore").get().asFile
-
-        onlyIf {
-            !projectKeystore.exists() && !defaultKeystore.exists() && !generatedKeystore.exists()
-        }
-
-        doLast {
-            generatedKeystore.parentFile.mkdirs()
-            val keytool = System.getenv("JAVA_HOME")?.let { "$it/bin/keytool" } ?: "keytool"
-            val proc = ProcessBuilder(
-                keytool,
-                "-genkeypair", "-v",
-                "-keystore", generatedKeystore.absolutePath,
-                "-storepass", "android",
-                "-keypass", "android",
-                "-alias", "androiddebugkey",
-                "-keyalg", "RSA",
-                "-keysize", "2048",
-                "-validity", "10950",
-                "-dname", "CN=Android Debug, OU=Debug, O=Android, L=Unknown, ST=Unknown, C=US"
-            ).redirectErrorStream(true).start()
-            val out = proc.inputStream.bufferedReader().readText()
-            if (proc.waitFor() != 0) {
-                throw GradleException("Gagal membuat debug keystore:\n$out")
-            }
-            println("debug keystore dibuat di ${generatedKeystore.absolutePath}")
-        }
-    }
-
-    // Pastikan keystore tersedia sebelum Android memvalidasi/menggunakan
-    // konfigurasi signing. afterEvaluate diperlukan karena task-task Android
-    // (termasuk validateSigningDebug) baru terdaftar setelah blok android{}
-    // selesai dievaluasi.
-    afterEvaluate {
-        tasks.matching { it.name.startsWith("validateSigning") || it.name.startsWith("package") }
-            .configureEach {
-                if (name.startsWith("validateSigningDebug") || name.startsWith("packageDebug")) {
-                    dependsOn(ensureDebugKeystore)
-                }
-            }
     }
 
     buildTypes {
@@ -145,26 +66,6 @@ android {
         debug {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("debugConfig")
-        }
-        // Profileable production-like build for daily performance testing. It uses
-        // release code/resources, debug signing, and deliberately skips R8/shrinking.
-        // Final distribution validation must still use the signed release build.
-        create("benchmark") {
-            initWith(buildTypes.getByName("release"))
-            isMinifyEnabled = false
-            isShrinkResources = false
-            signingConfig = signingConfigs.getByName("debug")
-            matchingFallbacks += listOf("release")
-        }
-        // Installable production-like build for performance testing on every CI push:
-        // release code paths + R8 + baseline profile, but debug signing (and a `.perf`
-        // applicationId) so it can be sideloaded without release keystore secrets and
-        // installed side-by-side with debug/release builds. Not for distribution.
-        create("perf") {
-            initWith(buildTypes.getByName("release"))
-            applicationIdSuffix = ".perf"
-            signingConfig = signingConfigs.getByName("debug")
-            matchingFallbacks += listOf("release")
         }
     }
 
@@ -231,7 +132,6 @@ dependencies {
 
     // Moshi JSON
     implementation(libs.moshi.core)
-
     ksp(libs.moshi.codegen)
 
     // Coroutines
@@ -262,9 +162,6 @@ dependencies {
     implementation("org.apache.commons:commons-compress:1.26.0")
     // XZ compression library for .tar.xz (required by Commons Compress)
     implementation("org.tukaani:xz:1.9")
-
-    // PDF support disabled - requires PDFBox-Android which is not available in public repos
-    // Office/OpenDocument formats (DOCX, XLSX, PPTX, ODT, ODS, RTF) fully supported with zero dependencies
 
     // WebSocket client for Remote Session (Antigravity IDE bridge)
     implementation("org.java-websocket:Java-WebSocket:1.5.7")
@@ -297,8 +194,4 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
-
-    // Baseline profile producer module; the androidx.baselineprofile plugin wires
-    // its generated baseline-prof.txt into assets/dexopt/baseline-prof.
-    baselineProfile(project(":baselineprofile"))
 }

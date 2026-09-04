@@ -70,7 +70,8 @@ class SelfImprovementPipeline @Inject constructor(
         val factProposals = extractDurableFacts(context)
         // Phase A: project design decisions with rationale (approval-gated, workspace-scoped).
         val decisionProposals = extractDecisions(context)
-        (skillProposals + factProposals + decisionProposals).forEach { pendingProposalRepository.addProposal(it) }
+        val recoveryProposals = extractRecoveryLessons(context)
+        (skillProposals + factProposals + decisionProposals + recoveryProposals).forEach { pendingProposalRepository.addProposal(it) }
         // Phase 3: persist primed states learned from repeated failures / user corrections.
         primedStatesFor(context).forEach { state ->
             runCatching { primedStateRepository.addOrReinforce(state) }
@@ -647,6 +648,70 @@ class SelfImprovementPipeline @Inject constructor(
             )
         }
         return proposals
+    }
+
+    /**
+     * Extracts learned lessons when a task encountered tool/execution errors during the turn
+     * but successfully recovered and achieved the goal. Distills the exact recovery into a high-value lesson.
+     */
+    internal fun extractRecoveryLessons(context: CompletedInteractionContext): List<PendingProposal> {
+        if (!context.successful || context.toolCalls.isEmpty() || context.toolResults.isEmpty()) return emptyList()
+        val errorIndices = context.toolResults.mapIndexedNotNull { index, res ->
+            if (res.startsWith("Error:") || res.contains("Error: ") || res.contains("failed with:")) index else null
+        }
+        if (errorIndices.isEmpty()) return emptyList()
+
+        val lastErrorIdx = errorIndices.last()
+        // If the error was at the very end, there was no recovery
+        if (lastErrorIdx >= context.toolCalls.size - 1) return emptyList()
+
+        val failedTool = context.toolCalls.getOrNull(lastErrorIdx)?.substringBefore(':')?.trim().orEmpty()
+        val failedErrorSnippet = context.toolResults.getOrNull(lastErrorIdx)?.take(140)?.trim().orEmpty()
+        val recoveryTools = context.toolCalls.drop(lastErrorIdx + 1).map { it.substringBefore(':').trim() }.distinct()
+
+        if (failedTool.isBlank() || recoveryTools.isEmpty()) return emptyList()
+
+        val trigger = context.userMessages.firstOrNull()?.take(80)?.trim().orEmpty()
+        val proposalId = "recovery_${context.sessionId}_${failedTool.hashCode()}".replace(Regex("[^A-Za-z0-9_-]"), "_").take(180)
+        val lessonContent = buildString {
+            appendLine("---")
+            appendLine("name: recovery-${failedTool.lowercase()}-workflow")
+            appendLine("description: Automated recovery pattern distilled from successful error resolution.")
+            appendLine("version: 0.1.0")
+            appendLine("createdBy: self-improvement-distiller")
+            appendLine("---")
+            appendLine()
+            appendLine("# Error Recovery Lesson")
+            appendLine()
+            appendLine("## Initial Problem")
+            appendLine("- Tool `$failedTool` failed with: $failedErrorSnippet")
+            appendLine()
+            appendLine("## Successful Resolution")
+            appendLine("- Recovered using workflow: ${recoveryTools.joinToString(" → ")}")
+            appendLine()
+            appendLine("## Recommendation")
+            appendLine("- When executing similar tasks ('$trigger'), verify tool preconditions or use the recovery sequence (${recoveryTools.joinToString(", ")}) directly.")
+        }.trim()
+
+        return listOf(
+            PendingProposal(
+                id = proposalId,
+                sourceSessionId = context.sessionId,
+                type = PendingProposalType.SKILL_CREATE,
+                target = "recovery-${failedTool.lowercase()}",
+                action = PendingProposalAction.CREATE,
+                title = "Learned recovery for $failedTool error",
+                content = lessonContent,
+                reason = "Agent successfully recovered from an error in '$failedTool' using '${recoveryTools.joinToString(" → ")}'.",
+                confidence = 0.85,
+                createdAt = context.timestamp,
+                status = PendingProposalStatus.PENDING,
+                workspacePath = context.workspacePath,
+                workspaceId = context.workspaceId,
+                sourceSessionIds = listOf(context.sessionId),
+                evidence = listOf("Initial error: $failedErrorSnippet", "Recovery steps: ${recoveryTools.joinToString(" → ")}")
+            )
+        )
     }
 
     /** Sentence containing [index]; stops at sentence punctuation or the length cap. */

@@ -53,7 +53,8 @@ data class MemoryRecord(
 data class MemoryHousekeepingReport(
     val archivedCount: Int = 0,
     val cappedCount: Int = 0,
-    val decayedCount: Int = 0
+    val decayedCount: Int = 0,
+    val expiredCount: Int = 0
 )
 
 interface MemoryRepository {

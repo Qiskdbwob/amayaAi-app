@@ -243,17 +243,18 @@ class RunShellTool @Inject constructor(
         }
 
         val exitCode = process.exitValue()
+        val cleanedOutput = output.toString().replace(Regex("\u001B\\[[;?0-9]*[a-zA-Z]"), "")
 
         if (exitCode != 0) {
             return@withContext ToolResult.Error(
-                "Command exited with code $exitCode:\n${output}",
+                "Command exited with code $exitCode:\n${cleanedOutput}",
                 ErrorType.EXECUTION_ERROR,
                 recoverable = true
             )
         }
 
         ToolResult.Success(
-            output = output.toString(),
+            output = cleanedOutput,
             metadata = mapOf(
                 "exit_code" to exitCode,
                 "truncated" to truncated,

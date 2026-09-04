@@ -230,6 +230,7 @@ REMOTE_SYNC_STRATEGY.md
 secrets/
 private/
 credentials/
+.env
 .env.local
 .env.local.*
 amaya-remote-extension/amaya-remote-0.2.0.vsix

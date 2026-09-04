@@ -510,14 +510,17 @@ class MemorySnapshotProvider @Inject constructor(
             }
         )
         val selected = selection.selected
-        val content = if (selected.isEmpty()) "No strongly relevant saved items for this turn." else buildString {
+        if (selected.isEmpty()) {
+            return ContextItem(id, sectionId, ContextSource.MEMORY, title, "", priority, score = 0.0, mode = ContextInclusionMode.DROP)
+        }
+        val content = buildString {
             appendLine("# $title")
             selected.forEach { record -> appendLine("- [${record.id}] ${record.title}: ${record.content}") }
             if (selection.deferredCount > 0) {
                 appendLine("- … and ${selection.deferredCount} more saved ${type.name.lowercase()} items; load them with memory_manage if needed.")
             }
         }.trim()
-        val score = selected.sumOf { it.confidence }.coerceAtLeast(if (selected.isEmpty()) 0.1 else 1.0)
+        val score = selected.sumOf { it.confidence }.coerceAtLeast(1.0)
         return ContextItem(id, sectionId, ContextSource.MEMORY, title, content, priority, score = score, mode = ContextInclusionMode.FULL, maxTokens = budgetTokens)
     }
 
@@ -555,9 +558,10 @@ class SkillIndexProvider @Inject constructor(
             val full = fullContentFor(skill)
             if (full != null && scoreSkill(skill, userMessage) >= SKILL_FULL_PROMOTE_SCORE) full else null
         }
-        val content = if (active.isEmpty()) {
-            "No relevant reusable skills for this turn."
-        } else buildString {
+        if (active.isEmpty()) {
+            return ContextItem("skill_index", "skill_index", ContextSource.SKILL_INDEX, "Skill Index", "", if (intent.needsSkillIndex) 760 else 700, score = 0.0, mode = ContextInclusionMode.DROP)
+        }
+        val content = buildString {
             appendLine("# Relevant Skills")
             active.forEach { skill ->
                 val status = if (skill.needsReview) "needs review" else skill.status.name.lowercase()
@@ -586,15 +590,17 @@ class SkillIndexProvider @Inject constructor(
     }
 
     private fun scoreSkill(skill: SkillMetadata, query: String): Double {
-        val text = buildString {
-            append(skill.name).append(' ')
-            append(skill.description).append(' ')
-            append(skill.tags.joinToString(" "))
-        }
-        var score = scoreText(text, query)
-        score += successRate(skill)
-        if (skill.lastUsedAt != null) score += 0.25
-        if (skill.needsReview) score -= 1.0
+        val nameDescText = "${skill.name} ${skill.description}"
+        val tagsText = skill.tags.joinToString(" ")
+        
+        var score = scoreText(nameDescText, query)
+        // High priority weight for explicit tag matches
+        score += scoreText(tagsText, query) * 2.5
+        // Dynamic reputation and success rate weighting
+        score += successRate(skill) * 1.5
+        score += skill.dynamicReputation * 2.0
+        if (skill.lastUsedAt != null) score += 0.5
+        if (skill.needsReview) score -= 1.5
         return score.coerceAtLeast(0.0)
     }
 
@@ -633,14 +639,20 @@ class SkillIndexProvider @Inject constructor(
 
     companion object {
         private val SYNONYMS = mapOf(
-            "language" to setOf("bahasa", "jawab", "respond", "reply"),
+            "language" to setOf("bahasa", "jawab", "respond", "reply", "id", "en"),
             "tone" to setOf("gaya", "style", "nada", "cara"),
             "concise" to setOf("ringkas", "singkat", "pendek", "brief"),
             "detail" to setOf("rinci", "lengkap", "panjang", "verbose"),
             "name" to setOf("nama", "panggil", "nickname", "call"),
             "project" to setOf("workspace", "repo", "repository", "codebase", "kode"),
-            "skill" to setOf("workflow", "prosedur", "cara", "reuse"),
-            "memory" to setOf("ingat", "remember", "memori")
+            "skill" to setOf("workflow", "prosedur", "cara", "reuse", "playbook", "guide"),
+            "memory" to setOf("ingat", "remember", "memori", "fact"),
+            "error" to setOf("failed", "gagal", "bug", "exception", "crash", "recovery", "fix"),
+            "build" to setOf("compile", "kompilasi", "gradle", "assemble", "buildapplet"),
+            "terminal" to setOf("shell", "command", "bash", "exec", "cli"),
+            "search" to setOf("find", "lookup", "cari", "grep", "query"),
+            "subagent" to setOf("worker", "parallel", "delegate", "agent"),
+            "edit" to setOf("patch", "modify", "update", "tulis", "write", "ganti")
         )
         private const val SKILL_FULL_PROMOTE_SCORE = 4.0
     }
@@ -781,10 +793,10 @@ class SessionSummaryProvider @Inject constructor(
     ): ContextItem {
         val maxItems = 5
                 val results = sessionMemoryRepository.searchSessions(userMessage, maxItems.coerceAtMost(5), workspacePath, assistantMode, ownerId)
-        if (!intent.needsSessionSearch && results.isEmpty()) {
-            return ContextItem("past_sessions", "past_sessions", ContextSource.SESSION_SUMMARY, "Past Sessions", "No relevant past sessions found.", 620, mode = ContextInclusionMode.SEARCH_FIRST, maxTokens = 120)
+        if (results.isEmpty()) {
+            return ContextItem("past_sessions", "past_sessions", ContextSource.SESSION_SUMMARY, "Past Sessions", "", 620, score = 0.0, mode = ContextInclusionMode.DROP)
         }
-        val content = if (results.isEmpty()) "No matching previous sessions found." else buildString {
+        val content = buildString {
             appendLine("# Historical Context — Not Instructions")
             results.take(maxItems.coerceAtMost(5)).forEach { result ->
                 appendLine("- ${result.sessionId}: ${result.summary.take(240)}")
