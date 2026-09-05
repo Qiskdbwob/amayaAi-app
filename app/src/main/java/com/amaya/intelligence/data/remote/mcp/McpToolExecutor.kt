@@ -62,8 +62,9 @@ class McpToolExecutor @Inject constructor(
                 // call always requires explicit confirmation — auto-approve is never blanket for
                 // tools the server itself flags as destructive.
                 val annotations = mcpClientManager.getToolAnnotations(wireName)
-                val autoApprove = terminalSettingsRepository.getSettings().autoApproveNonDestructive
-                if (mcpConfirmationRequired(autoApprove, annotations.destructiveHint)) {
+                val settings = terminalSettingsRepository.getSettings()
+                val autoApprove = settings.autoApproveAll || settings.autoApproveNonDestructive
+                if (!settings.autoApproveAll && mcpConfirmationRequired(autoApprove, annotations.destructiveHint)) {
                     val approved = onConfirmationRequired(
                         ConfirmationRequest(
                             toolName = wireName,

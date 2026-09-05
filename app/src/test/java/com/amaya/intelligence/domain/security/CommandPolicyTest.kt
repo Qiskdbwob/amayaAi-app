@@ -65,6 +65,32 @@ class CommandPolicyTest {
         }
     }
 
+    @Test
+    fun `autoApproveAll allows commands without confirmation but preserves hard blocks and declined`() {
+        val allSettings = TerminalSettings(
+            autoApproveAll = true,
+            declinedCommands = listOf("git push*")
+        )
+        // Commands that normally require confirmation should now be Allowed
+        assertTrue(validator().validateCommand("rm test.txt", allSettings) is ValidationResult.Allowed)
+        assertTrue(validator().validateCommand("git commit -m 'wip'", allSettings) is ValidationResult.Allowed)
+        assertTrue(validator().validateCommand("curl https://api.example.com", allSettings) is ValidationResult.Allowed)
+
+        // Declined pattern is still Denied
+        assertTrue(validator().validateCommand("git push origin main", allSettings) is ValidationResult.Denied)
+
+        // Hard blocks are still Denied
+        assertTrue(validator().validateCommand("rm -rf /", allSettings) is ValidationResult.Denied)
+    }
+
+    @Test
+    fun `git branch and check-ignore are non-destructive`() {
+        val safeSettings = TerminalSettings(autoApproveNonDestructive = true)
+        assertTrue(validator().validateCommand("git branch", safeSettings) is ValidationResult.Allowed)
+        assertTrue(validator().validateCommand("git branch -a", safeSettings) is ValidationResult.Allowed)
+        assertTrue(validator().validateCommand("git status", safeSettings) is ValidationResult.Allowed)
+    }
+
     private fun validator(): CommandValidator = CommandValidator(
         object : android.content.ContextWrapper(null) {
             override fun getFilesDir(): java.io.File = java.nio.file.Files.createTempDirectory("command-policy").toFile()

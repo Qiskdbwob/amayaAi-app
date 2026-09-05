@@ -35,6 +35,7 @@ fun TerminalSettingsScreen(
     var trusted by remember { mutableStateOf("") }
     var declined by remember { mutableStateOf("") }
     var autoApproveNonDestructive by remember { mutableStateOf(true) }
+    var autoApproveAll by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -42,6 +43,7 @@ fun TerminalSettingsScreen(
         trusted = settings.trustedCommands.joinToString("\n")
         declined = settings.declinedCommands.joinToString("\n")
         autoApproveNonDestructive = settings.autoApproveNonDestructive
+        autoApproveAll = settings.autoApproveAll
         loaded = true
     }
 
@@ -52,7 +54,7 @@ fun TerminalSettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
-                    "One wildcard pattern per line. Trusted commands run automatically without approval. Declined commands are blocked. Other non-destructive commands are auto-approved (see toggle below); destructive commands require review.",
+                    "One wildcard pattern per line. Trusted commands run automatically without approval. Declined commands are blocked. Toggle Auto-Approve below to run commands without manual confirmation.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -61,8 +63,8 @@ fun TerminalSettingsScreen(
                     onValueChange = { trusted = it },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Trusted Commands") },
-                    supportingText = { Text("Examples: npm * or npm run *") },
-                    minLines = 6,
+                    supportingText = { Text("Examples: npm * or python * or * (for all)") },
+                    minLines = 5,
                     enabled = loaded,
                     colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                         unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
@@ -77,7 +79,7 @@ fun TerminalSettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Declined Commands") },
                     supportingText = { Text("Matched commands are rejected without review") },
-                    minLines = 4,
+                    minLines = 3,
                     enabled = loaded,
                     colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                         unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
@@ -87,20 +89,33 @@ fun TerminalSettingsScreen(
                     )
                 )
                 AmayaSwitchRow(
-                    title = "Auto-approve safe commands",
-                    subtitle = "Trusted commands always run. Auto-approve other non-destructive commands (MCP, gradle, python, git status, …); only destructive commands (deletion, overwrite, chmod, sudo, git push, …) require approval",
-                    checked = autoApproveNonDestructive,
-                    onCheckedChange = { autoApproveNonDestructive = it },
+                    title = "Auto-approve all commands (Full Auto)",
+                    subtitle = "Automatically run all workspace commands and tool actions without confirmation dialogs. Critical system boundaries (e.g. root/system format) and declined patterns are still enforced.",
+                    checked = autoApproveAll,
+                    onCheckedChange = {
+                        autoApproveAll = it
+                        if (it) autoApproveNonDestructive = true
+                    },
                     enabled = loaded
+                )
+                AmayaSwitchRow(
+                    title = "Auto-approve safe commands",
+                    subtitle = "Auto-approve non-destructive commands (MCP, python, gradle, git status, reads); destructive commands (deletion, overwrite, chmod, sudo, git push) still require manual confirmation.",
+                    checked = autoApproveNonDestructive || autoApproveAll,
+                    onCheckedChange = { autoApproveNonDestructive = it },
+                    enabled = loaded && !autoApproveAll
                 )
                 Button(
                     onClick = {
                         scope.launch {
+                            val cleanTrusted = trusted.lines().map { it.trim() }.filter { it.isNotBlank() }
+                            val cleanDeclined = declined.lines().map { it.trim() }.filter { it.isNotBlank() }
                             repository.setSettings(
                                 TerminalSettings(
-                                    trustedCommands = trusted.lines(),
-                                    declinedCommands = declined.lines(),
-                                    autoApproveNonDestructive = autoApproveNonDestructive
+                                    trustedCommands = cleanTrusted,
+                                    declinedCommands = cleanDeclined,
+                                    autoApproveNonDestructive = autoApproveNonDestructive,
+                                    autoApproveAll = autoApproveAll
                                 )
                             )
                             snackbar.showSnackbar("Terminal settings saved")

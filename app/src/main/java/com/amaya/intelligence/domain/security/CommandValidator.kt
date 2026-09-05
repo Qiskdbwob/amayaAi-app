@@ -73,8 +73,8 @@ class CommandValidator @Inject constructor(
             "git var", "git reflog", "git help", "git --version", "git -h", "git --help",
             "git stash list", "git stash show",
             "git tag -l", "git tag --list", "git tag -n",
-            "git branch -a", "git branch -r", "git branch --list", "git branch -v", "git branch --show-current",
-            "git config -l", "git config --list", "git config --get"
+            "git branch", "git branch -a", "git branch -r", "git branch --list", "git branch -v", "git branch --show-current",
+            "git config -l", "git config --list", "git config --get", "git check-ignore"
         )
 
         /** Redirection/appends are writes — they require review even when the verb itself is safe. */
@@ -113,6 +113,9 @@ class CommandValidator @Inject constructor(
         }
         if (settings.declinedCommands.any { commandMatchesWildcard(normalized, it) }) {
             return ValidationResult.Denied("Command matches a declined terminal pattern", command)
+        }
+        if (settings.autoApproveAll) {
+            return ValidationResult.Allowed
         }
         if (settings.trustedCommands.any { commandMatchesWildcard(normalized, it) }) {
             return ValidationResult.Allowed
@@ -244,13 +247,17 @@ class CommandValidator @Inject constructor(
                 val path = arguments["path"] as? String ?: ""
                 val result = validatePath(path, isWrite = true)
 
-                // Deletion always requires confirmation
+                // Deletion requires confirmation unless autoApproveAll is active
                 if (result is ValidationResult.Allowed) {
-                    ValidationResult.RequiresConfirmation(
-                        "Confirm file deletion",
-                        path,
-                        RiskLevel.MEDIUM
-                    )
+                    if (terminalSettings.autoApproveAll) {
+                        ValidationResult.Allowed
+                    } else {
+                        ValidationResult.RequiresConfirmation(
+                            "Confirm file deletion",
+                            path,
+                            RiskLevel.MEDIUM
+                        )
+                    }
                 } else result
             }
 

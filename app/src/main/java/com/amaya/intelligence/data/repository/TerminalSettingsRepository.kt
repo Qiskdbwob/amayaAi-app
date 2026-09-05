@@ -22,11 +22,18 @@ data class TerminalSettings(
      * prompted repeatedly. Destructive commands (deletion, overwrite, permission changes,
      * effectful git subcommands, …) always require review.
      */
-    val autoApproveNonDestructive: Boolean = true
+    val autoApproveNonDestructive: Boolean = true,
+    /**
+     * Fully auto-approve all workspace commands without confirmation prompts.
+     * When enabled, the user is not prompted for any shell command or file deletion
+     * within the workspace boundaries. Hard system safety boundaries (e.g. rm -rf /)
+     * and declined patterns still remain enforced.
+     */
+    val autoApproveAll: Boolean = false
 ) {
     companion object {
         val DEFAULT_TRUSTED_COMMANDS = listOf(
-            "pwd", "date", "uptime", "which *", "ls *", "cat *", "head *", "tail *", "grep *", "diff *"
+            "pwd", "date", "uptime", "which *", "where *", "ls *", "cat *", "head *", "tail *", "grep *", "diff *", "find *"
         )
     }
 }
@@ -44,7 +51,8 @@ class DataStoreTerminalSettingsRepository @Inject constructor(
         TerminalSettings(
             trustedCommands = prefs[KEY_TRUSTED]?.sorted() ?: TerminalSettings.DEFAULT_TRUSTED_COMMANDS,
             declinedCommands = prefs[KEY_DECLINED]?.sorted().orEmpty(),
-            autoApproveNonDestructive = prefs[KEY_AUTO_APPROVE_NON_DESTRUCTIVE] ?: true
+            autoApproveNonDestructive = prefs[KEY_AUTO_APPROVE_NON_DESTRUCTIVE] ?: true,
+            autoApproveAll = prefs[KEY_AUTO_APPROVE_ALL] ?: false
         )
     }.first()
 
@@ -53,6 +61,7 @@ class DataStoreTerminalSettingsRepository @Inject constructor(
             prefs[KEY_TRUSTED] = normalizePatterns(settings.trustedCommands).toSet()
             prefs[KEY_DECLINED] = normalizePatterns(settings.declinedCommands).toSet()
             prefs[KEY_AUTO_APPROVE_NON_DESTRUCTIVE] = settings.autoApproveNonDestructive
+            prefs[KEY_AUTO_APPROVE_ALL] = settings.autoApproveAll
         }
     }
 
@@ -65,6 +74,7 @@ class DataStoreTerminalSettingsRepository @Inject constructor(
         val KEY_TRUSTED = stringSetPreferencesKey("trusted_commands")
         val KEY_DECLINED = stringSetPreferencesKey("declined_commands")
         val KEY_AUTO_APPROVE_NON_DESTRUCTIVE = booleanPreferencesKey("auto_approve_non_destructive")
+        val KEY_AUTO_APPROVE_ALL = booleanPreferencesKey("auto_approve_all")
     }
 }
 
