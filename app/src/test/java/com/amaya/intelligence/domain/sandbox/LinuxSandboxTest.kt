@@ -1,11 +1,13 @@
 package com.amaya.intelligence.domain.sandbox
 
+import kotlin.io.path.createTempDirectory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.util.UUID
 
 class LinuxSandboxTest {
 
@@ -49,15 +51,20 @@ class LinuxSandboxTest {
 
     @Test
     fun `materializeSh replaces dangling bin sh symlink with busybox copy`() {
-        val rootfs = createTempDir("alpine-rootfs-")
+        val rootfs = createTempDirectory("alpine-rootfs-").toFile()
         try {
             val binDir = File(rootfs, "bin").apply { mkdirs() }
             val busybox = File(binDir, "busybox").apply { writeText("# fake busybox payload") }
-            // Simulate the minirootfs layout: absolute symlink to the host /bin/busybox.
-            // On the test host it dangles just like it does on an Android device.
+            // Simulate the minirootfs layout: bin/sh is an absolute symlink to a host
+            // path that does not exist here. On Android `/bin/busybox` never exists on
+            // the host root, so the link dangles; use a random absolute target so the
+            // test also dangles on CI runners that happen to ship busybox in /bin.
             val sh = File(binDir, "sh")
-            java.nio.file.Files.createSymbolicLink(sh.toPath(), java.nio.file.Paths.get("/bin/busybox"))
-            assertFalse(sh.exists()) // dangling on the host, exactly the production symptom
+            java.nio.file.Files.createSymbolicLink(
+                sh.toPath(),
+                java.nio.file.Paths.get("/bin/busybox-does-not-exist-${UUID.randomUUID()}")
+            )
+            assertFalse(sh.exists()) // dangling, exactly the production symptom
 
             val healed = LinuxSandboxManager.materializeSh(rootfs)
 
@@ -73,7 +80,7 @@ class LinuxSandboxTest {
 
     @Test
     fun `materializeSh fails cleanly without busybox`() {
-        val rootfs = createTempDir("alpine-rootfs-empty-")
+        val rootfs = createTempDirectory("alpine-rootfs-empty-").toFile()
         try {
             assertFalse(LinuxSandboxManager.materializeSh(rootfs))
             assertFalse(File(rootfs, "bin/sh").exists())
