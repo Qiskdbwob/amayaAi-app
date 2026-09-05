@@ -196,6 +196,7 @@ simple.txt
 *.exe
 *.dll
 *.so
+!app/src/main/jniLibs/**/libproot.so
 *.dylib
 *.lib
 *.a

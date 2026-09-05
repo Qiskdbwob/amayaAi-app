@@ -40,6 +40,31 @@ class LinuxSandboxManager @Inject constructor(
         private const val SANDBOX_DIR_NAME = "linux_sandbox"
         private const val ALPINE_DIR_NAME = "alpine"
         private const val BIN_DIR_NAME = "bin"
+
+        /**
+         * Re-create `<rootfs>/bin/sh` as a plain copy of `<rootfs>/bin/busybox`.
+         * The minirootfs ships `bin/sh` as a symlink to the absolute host path
+         * `/bin/busybox`, which dangles once extracted into app-private storage
+         * (there is no `/bin` at the Android host root). Busybox dispatches on
+         * argv[0], so a copy named `sh` behaves exactly like the ash shell.
+         *
+         * Returns true when `bin/sh` exists (or was healed) and is executable.
+         * Visible for testing.
+         */
+        internal fun materializeSh(rootfsDir: File): Boolean {
+            val busybox = File(rootfsDir, "bin/busybox")
+            val sh = File(rootfsDir, "bin/sh")
+            if (!busybox.exists()) return false
+            try {
+                sh.delete() // remove dangling (or valid) symlink
+                busybox.copyTo(sh, overwrite = true)
+                sh.setExecutable(true, false)
+                sh.setReadable(true, false)
+            } catch (e: Exception) {
+                return false
+            }
+            return sh.exists()
+        }
     }
 
     private val sandboxBaseDir: File
@@ -54,6 +79,19 @@ class LinuxSandboxManager @Inject constructor(
     val prootFile: File
         get() = File(binDir, "proot")
 
+    /**
+     * The PRoot binary bundled inside the APK as a jniLib (`libproot.so`).
+     * Android 10+ (W^X) forbids executing binaries from app-private storage,
+     * but files in [ApplicationInfo.nativeLibraryDir] are still executable, so
+     * we prefer the bundled copy and keep the downloaded `bin/proot` as fallback
+     * (e.g. for x86 debug builds that carry no bundled `libproot.so`).
+     */
+    private val bundledProotFile: File?
+        get() {
+            val f = File(context.applicationInfo.nativeLibraryDir, "libproot.so")
+            return if (f.exists() && f.canExecute()) f else null
+        }
+
     private val _status = MutableStateFlow<SandboxStatus>(SandboxStatus.NotInstalled)
     val status: StateFlow<SandboxStatus> = _status.asStateFlow()
 
@@ -66,9 +104,8 @@ class LinuxSandboxManager @Inject constructor(
      */
     fun checkStatus(): SandboxStatus {
         val arch = LinuxArchitecture.detect()
-        val alpineSh = File(rootfsDir, "bin/sh")
-        val isRootfsReady = rootfsDir.exists() && alpineSh.exists()
-        val isProotReady = prootFile.exists() && prootFile.canExecute()
+        val isRootfsReady = isReady()
+        val isProotReady = bundledProotFile != null || (prootFile.exists() && prootFile.canExecute())
 
         val newStatus = if (isRootfsReady) {
             SandboxStatus.Ready(
@@ -85,8 +122,21 @@ class LinuxSandboxManager @Inject constructor(
         return newStatus
     }
 
+    /**
+     * The minirootfs ships `bin/sh` as a symlink to the absolute host path
+     * `/bin/busybox`, which dangles once extracted into app-private storage
+     * (there is no `/bin` on the Android host root). `busybox` itself is a
+     * regular file inside the rootfs, so it is the reliable readiness marker.
+     */
     fun isReady(): Boolean {
-        return rootfsDir.exists() && File(rootfsDir, "bin/sh").exists()
+        val busybox = File(rootfsDir, "bin/busybox")
+        if (!rootfsDir.exists() || !busybox.exists()) return false
+        val sh = File(rootfsDir, "bin/sh")
+        if (!sh.exists()) {
+            // Heal installs where the shipped absolute /bin/sh symlink dangles.
+            if (!materializeSh(rootfsDir)) return false
+        }
+        return true
     }
 
     /**
@@ -150,13 +200,14 @@ class LinuxSandboxManager @Inject constructor(
             onProgress("Configuring PRoot binary...", 0.92f)
             setupProotBinary(architecture)
 
-            // 5. Make system binaries executable
+            // 5. Make system binaries executable and heal the /bin/sh symlink
             fixExecutablePermissions(rootfsDir)
+            materializeSh(rootfsDir)
 
             val readyStatus = SandboxStatus.Ready(
                 architecture = architecture,
                 rootfsPath = rootfsDir.absolutePath,
-                prootAvailable = prootFile.exists() && prootFile.canExecute(),
+                prootAvailable = bundledProotFile != null || (prootFile.exists() && prootFile.canExecute()),
                 details = "Alpine Linux 3.20 (${architecture.displayName})"
             )
             _status.value = readyStatus
@@ -193,11 +244,13 @@ class LinuxSandboxManager @Inject constructor(
         command: String,
         workspaceDir: String?
     ): Pair<List<String>, Map<String, String>> {
-        val hasProot = prootFile.exists() && prootFile.canExecute()
+        val prootPath = bundledProotFile?.absolutePath
+            ?: prootFile.takeIf { it.exists() && it.canExecute() }?.absolutePath
+        val hasProot = prootPath != null
 
         val cmdList = if (hasProot) {
             val list = mutableListOf(
-                prootFile.absolutePath,
+                prootPath!!,
                 "-0", // simulate root UID (0)
                 "-r", rootfsDir.absolutePath,
                 "-b", "/dev",
@@ -219,14 +272,24 @@ class LinuxSandboxManager @Inject constructor(
             listOf("/system/bin/sh", "-c", command)
         }
 
-        val envMap = mapOf(
-            "HOME" to "/root",
-            "USER" to "root",
-            "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "TERM" to "xterm-256color",
-            "LANG" to "C.UTF-8",
-            "SHELL" to "/bin/sh"
-        )
+        val prootTmpDir = File(sandboxBaseDir, "tmp")
+        prootTmpDir.mkdirs() // writable host dir for PRoot's loader extraction
+
+        val envMap = buildMap {
+            put("HOME", "/root")
+            put("USER", "root")
+            put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+            put("TERM", "xterm-256color")
+            put("LANG", "C.UTF-8")
+            put("SHELL", "/bin/sh")
+            if (hasProot) {
+                // Bionic runs from app data needs writable loader temp dirs.
+                put("TMPDIR", "/tmp")
+                put("PROOT_TMP_DIR", prootTmpDir.absolutePath)
+                put("PROOT_LOADER_TMP_DIR", prootTmpDir.absolutePath)
+                put("LD_PRELOAD", "")
+            }
+        }
 
         return Pair(cmdList, envMap)
     }
@@ -235,6 +298,7 @@ class LinuxSandboxManager @Inject constructor(
      * Helper to run an `apk` package installation command (e.g. `apk add --no-cache python3 py3-pip`).
      */
     suspend fun runApkAdd(packageName: String): Result<String> = withContext(Dispatchers.IO) {
+        checkStatus()
         if (!isReady()) {
             return@withContext Result.failure(IllegalStateException("Alpine Linux sandbox is not installed"))
         }
@@ -282,7 +346,10 @@ class LinuxSandboxManager @Inject constructor(
     }
 
     private suspend fun setupProotBinary(architecture: LinuxArchitecture) {
-        if (prootFile.exists() && prootFile.canExecute()) {
+        if (bundledProotFile != null || (prootFile.exists() && prootFile.canExecute())) {
+            if (bundledProotFile != null) {
+                debugLog(TAG, "Using bundled PRoot native library: ${bundledProotFile?.absolutePath}")
+            }
             return
         }
 

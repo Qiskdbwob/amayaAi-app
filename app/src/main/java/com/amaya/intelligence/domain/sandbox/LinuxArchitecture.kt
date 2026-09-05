@@ -57,9 +57,13 @@ enum class LinuxArchitecture(
 
     /**
      * Static PRoot binary URL for non-root execution inside Android sandbox.
+     *
+     * Upstream publishes `-static` builds only for v5.3.0 in aarch64/arm/x86_64
+     * flavors; the i686 variant does not exist and 32-bit x86 devices gracefully
+     * fall back to the host shell (see LinuxSandboxManager.buildExecution).
      */
     val prootBinaryUrl: String
-        get() = "https://github.com/proot-me/proot/releases/download/v5.4.0/proot-v5.4.0-$prootArch"
+        get() = "https://github.com/proot-me/proot/releases/download/v5.3.0/proot-v5.3.0-$prootArch-static"
 
     companion object {
         /**
