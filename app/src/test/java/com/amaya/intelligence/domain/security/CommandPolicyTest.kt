@@ -91,6 +91,31 @@ class CommandPolicyTest {
         assertTrue(validator().validateCommand("git status", safeSettings) is ValidationResult.Allowed)
     }
 
+    @Test
+    fun `useLinuxSandbox bypasses host workspace boundary for container paths`() {
+        val hostSettings = TerminalSettings(useLinuxSandbox = false, autoApproveAll = true)
+        val sandboxSettings = TerminalSettings(useLinuxSandbox = true, autoApproveAll = true)
+        val tempWorkspace = java.nio.file.Files.createTempDirectory("workspace").toFile().absolutePath
+
+        val hostResult = validator().validateToolCall(
+            toolName = "run_shell",
+            arguments = mapOf("command" to "cat /etc/apk/repositories"),
+            terminalSettings = hostSettings,
+            workspacePath = tempWorkspace
+        )
+        // On host shell, accessing /etc outside workspace is blocked
+        assertTrue(hostResult is ValidationResult.Denied)
+
+        val sandboxResult = validator().validateToolCall(
+            toolName = "run_shell",
+            arguments = mapOf("command" to "cat /etc/apk/repositories"),
+            terminalSettings = sandboxSettings,
+            workspacePath = tempWorkspace
+        )
+        // In Linux sandbox, container internal paths are allowed
+        assertTrue(sandboxResult is ValidationResult.Allowed)
+    }
+
     private fun validator(): CommandValidator = CommandValidator(
         object : android.content.ContextWrapper(null) {
             override fun getFilesDir(): java.io.File = java.nio.file.Files.createTempDirectory("command-policy").toFile()

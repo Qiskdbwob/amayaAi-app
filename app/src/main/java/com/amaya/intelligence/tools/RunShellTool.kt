@@ -2,6 +2,7 @@ package com.amaya.intelligence.tools
 
 import android.content.Context
 import com.amaya.intelligence.data.repository.TerminalSettingsRepository
+import com.amaya.intelligence.domain.sandbox.LinuxSandboxManager
 import com.amaya.intelligence.domain.security.CommandValidator
 import com.amaya.intelligence.domain.security.ValidationResult
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -53,7 +54,8 @@ import javax.inject.Singleton
 class RunShellTool @Inject constructor(
     @ApplicationContext private val context: Context,
     private val commandValidator: CommandValidator,
-    private val terminalSettingsRepository: TerminalSettingsRepository
+    private val terminalSettingsRepository: TerminalSettingsRepository,
+    private val linuxSandboxManager: LinuxSandboxManager
 ) : Tool, ContextAwareTool {
 
     companion object {
@@ -161,10 +163,20 @@ class RunShellTool @Inject constructor(
         timeoutMs: Long
     ): ToolResult = withContext(Dispatchers.IO) {
 
-        val processBuilder = ProcessBuilder("/system/bin/sh", "-c", command)
+        val settings = terminalSettingsRepository.getSettings()
+        val isSandboxActive = settings.useLinuxSandbox && linuxSandboxManager.isReady()
 
-        // Set working directory if specified
-        if (workingDir != null) {
+        val processBuilder = if (isSandboxActive) {
+            val (cmdList, envMap) = linuxSandboxManager.buildExecution(command, workingDir)
+            ProcessBuilder(cmdList).apply {
+                environment().putAll(envMap)
+            }
+        } else {
+            ProcessBuilder("/system/bin/sh", "-c", command)
+        }
+
+        // Set working directory if specified and not in sandbox (sandbox mounts workingDir directly)
+        if (!isSandboxActive && workingDir != null) {
             val dir = java.io.File(workingDir)
             if (!dir.exists() || !dir.isDirectory) {
                 return@withContext ToolResult.Error(

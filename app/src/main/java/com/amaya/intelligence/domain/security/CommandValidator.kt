@@ -222,10 +222,13 @@ class CommandValidator @Inject constructor(
                     else validatePath(workingDir, isWrite = false)
                 val combined = combineValidation(commandResult, pathResult)
                 // Host-enforced workspace containment: the AI must never leave the active
-                // workspace through the shell, even for commands the user marked trusted.
-                workspacePath?.takeIf { it.isNotBlank() }?.let { root ->
-                    shellWorkspaceViolation(command, root)?.let { violation ->
-                        return ValidationResult.Denied(violation, command)
+                // workspace through the host shell. Inside the Linux sandbox, the filesystem is
+                // already contained within the Alpine PRoot jail.
+                if (!terminalSettings.useLinuxSandbox) {
+                    workspacePath?.takeIf { it.isNotBlank() }?.let { root ->
+                        shellWorkspaceViolation(command, root)?.let { violation ->
+                            return ValidationResult.Denied(violation, command)
+                        }
                     }
                 }
                 combined

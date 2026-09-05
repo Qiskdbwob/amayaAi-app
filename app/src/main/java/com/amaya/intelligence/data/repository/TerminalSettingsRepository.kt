@@ -29,7 +29,12 @@ data class TerminalSettings(
      * within the workspace boundaries. Hard system safety boundaries (e.g. rm -rf /)
      * and declined patterns still remain enforced.
      */
-    val autoApproveAll: Boolean = false
+    val autoApproveAll: Boolean = false,
+    /**
+     * Route terminal execution through PRoot + Alpine Linux sandbox container
+     * instead of standard /system/bin/sh Toybox shell.
+     */
+    val useLinuxSandbox: Boolean = false
 ) {
     companion object {
         val DEFAULT_TRUSTED_COMMANDS = listOf(
@@ -52,7 +57,8 @@ class DataStoreTerminalSettingsRepository @Inject constructor(
             trustedCommands = prefs[KEY_TRUSTED]?.sorted() ?: TerminalSettings.DEFAULT_TRUSTED_COMMANDS,
             declinedCommands = prefs[KEY_DECLINED]?.sorted().orEmpty(),
             autoApproveNonDestructive = prefs[KEY_AUTO_APPROVE_NON_DESTRUCTIVE] ?: true,
-            autoApproveAll = prefs[KEY_AUTO_APPROVE_ALL] ?: false
+            autoApproveAll = prefs[KEY_AUTO_APPROVE_ALL] ?: false,
+            useLinuxSandbox = prefs[KEY_USE_LINUX_SANDBOX] ?: false
         )
     }.first()
 
@@ -62,6 +68,7 @@ class DataStoreTerminalSettingsRepository @Inject constructor(
             prefs[KEY_DECLINED] = normalizePatterns(settings.declinedCommands).toSet()
             prefs[KEY_AUTO_APPROVE_NON_DESTRUCTIVE] = settings.autoApproveNonDestructive
             prefs[KEY_AUTO_APPROVE_ALL] = settings.autoApproveAll
+            prefs[KEY_USE_LINUX_SANDBOX] = settings.useLinuxSandbox
         }
     }
 
@@ -75,6 +82,7 @@ class DataStoreTerminalSettingsRepository @Inject constructor(
         val KEY_DECLINED = stringSetPreferencesKey("declined_commands")
         val KEY_AUTO_APPROVE_NON_DESTRUCTIVE = booleanPreferencesKey("auto_approve_non_destructive")
         val KEY_AUTO_APPROVE_ALL = booleanPreferencesKey("auto_approve_all")
+        val KEY_USE_LINUX_SANDBOX = booleanPreferencesKey("use_linux_sandbox")
     }
 }
 

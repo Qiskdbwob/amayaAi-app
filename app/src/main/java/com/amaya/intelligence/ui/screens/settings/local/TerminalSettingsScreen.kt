@@ -2,24 +2,37 @@ package com.amaya.intelligence.ui.screens.settings.local
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.repository.TerminalSettings
 import com.amaya.intelligence.data.repository.TerminalSettingsRepository
+import com.amaya.intelligence.domain.sandbox.LinuxArchitecture
+import com.amaya.intelligence.domain.sandbox.LinuxSandboxManager
+import com.amaya.intelligence.domain.sandbox.SandboxStatus
 import com.amaya.intelligence.ui.screens.amaya.AmayaScaffold
 import com.amaya.intelligence.ui.screens.amaya.AmayaSection
 import com.amaya.intelligence.ui.screens.amaya.AmayaSwitchRow
@@ -28,6 +41,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun TerminalSettingsScreen(
     repository: TerminalSettingsRepository,
+    sandboxManager: LinuxSandboxManager? = null,
     onNavigateBack: () -> Unit
 ) {
     val snackbar = remember { SnackbarHostState() }
@@ -36,7 +50,16 @@ fun TerminalSettingsScreen(
     var declined by remember { mutableStateOf("") }
     var autoApproveNonDestructive by remember { mutableStateOf(true) }
     var autoApproveAll by remember { mutableStateOf(false) }
+    var useLinuxSandbox by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
+    var packageActionStatus by remember { mutableStateOf<String?>(null) }
+
+    val detectedArch = remember { LinuxArchitecture.detect() }
+    val sandboxStatus by (sandboxManager?.status?.collectAsState()
+        ?: remember { mutableStateOf(SandboxStatus.NotInstalled) })
+
+    val isSandboxReady = sandboxStatus is SandboxStatus.Ready
+    val isInstalling = sandboxStatus is SandboxStatus.Installing
 
     LaunchedEffect(Unit) {
         val settings = repository.getSettings()
@@ -44,10 +67,208 @@ fun TerminalSettingsScreen(
         declined = settings.declinedCommands.joinToString("\n")
         autoApproveNonDestructive = settings.autoApproveNonDestructive
         autoApproveAll = settings.autoApproveAll
+        useLinuxSandbox = settings.useLinuxSandbox
         loaded = true
+        sandboxManager?.checkStatus()
     }
 
     AmayaScaffold("Terminal", snackbar, onNavigateBack) {
+        AmayaSection("Linux Sandbox (Alpine + PRoot)") {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "Target ABI: ${detectedArch.displayName}",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            val statusBadge = when (sandboxStatus) {
+                                is SandboxStatus.Ready -> "Siap / Ready"
+                                is SandboxStatus.Installing -> "Memasang..."
+                                is SandboxStatus.Error -> "Gagal"
+                                is SandboxStatus.NotInstalled -> "Belum Dipasang"
+                            }
+                            Text(
+                                statusBadge,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = when (sandboxStatus) {
+                                    is SandboxStatus.Ready -> MaterialTheme.colorScheme.primary
+                                    is SandboxStatus.Installing -> MaterialTheme.colorScheme.tertiary
+                                    is SandboxStatus.Error -> MaterialTheme.colorScheme.error
+                                    is SandboxStatus.NotInstalled -> MaterialTheme.colorScheme.outline
+                                }
+                            )
+                        }
+
+                        when (val status = sandboxStatus) {
+                            is SandboxStatus.Installing -> {
+                                Text(
+                                    status.stage,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                LinearProgressIndicator(
+                                    progress = { status.progress.coerceIn(0f, 1f) },
+                                    modifier = Modifier.fillMaxWidth().height(6.dp)
+                                )
+                            }
+                            is SandboxStatus.Ready -> {
+                                Text(
+                                    "Alpine Linux 3.20 aktif di internal storage. Mendukung pemasangan paket (apk), runtime Python, Node.js, Git, GCC, dan toolchain lainnya.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            is SandboxStatus.Error -> {
+                                Text(
+                                    "Error: ${status.message}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                            is SandboxStatus.NotInstalled -> {
+                                Text(
+                                    "Minirootfs (~4MB unduhan) memungkinkan eksekusi perintah Linux lengkap terisolasi tanpa memerlukan root di perangkat 32-bit & 64-bit.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                AmayaSwitchRow(
+                    title = "Gunakan Linux Sandbox untuk Terminal",
+                    subtitle = "Arahkan perintah terminal dan eksekusi AI ke dalam container Alpine Linux (PRoot) terisolasi.",
+                    checked = useLinuxSandbox && isSandboxReady,
+                    onCheckedChange = { useLinuxSandbox = it },
+                    enabled = loaded && isSandboxReady && !isInstalling
+                )
+
+                if (!isSandboxReady && !isInstalling) {
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                snackbar.showSnackbar("Memulai unduhan Alpine Linux...")
+                                val result = sandboxManager?.install { stage, _ ->
+                                    // Progress handled via StateFlow
+                                }
+                                if (result?.isSuccess == true) {
+                                    useLinuxSandbox = true
+                                    snackbar.showSnackbar("Alpine Linux Sandbox berhasil dipasang!")
+                                } else {
+                                    snackbar.showSnackbar("Pemasangan gagal: ${result?.exceptionOrNull()?.message}")
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Pasang Alpine Linux Sandbox (~4 MB)")
+                    }
+                }
+
+                if (isSandboxReady) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Paket Cepat (Quick Packages):",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        packageActionStatus = "Memasang Python 3 & Pip..."
+                                        snackbar.showSnackbar("Memasang Python 3 & Pip...")
+                                        val res = sandboxManager?.runApkAdd("python3 py3-pip")
+                                        packageActionStatus = null
+                                        if (res?.isSuccess == true) {
+                                            snackbar.showSnackbar("Python 3 & Pip siap digunakan!")
+                                        } else {
+                                            snackbar.showSnackbar("Gagal: ${res?.exceptionOrNull()?.message}")
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                enabled = packageActionStatus == null
+                            ) {
+                                Text("Python 3")
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        packageActionStatus = "Memasang Node.js & NPM..."
+                                        snackbar.showSnackbar("Memasang Node.js & NPM...")
+                                        val res = sandboxManager?.runApkAdd("nodejs npm")
+                                        packageActionStatus = null
+                                        if (res?.isSuccess == true) {
+                                            snackbar.showSnackbar("Node.js & NPM siap digunakan!")
+                                        } else {
+                                            snackbar.showSnackbar("Gagal: ${res?.exceptionOrNull()?.message}")
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                enabled = packageActionStatus == null
+                            ) {
+                                Text("Node.js")
+                            }
+                        }
+
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        packageActionStatus = "Memasang Git & Curl..."
+                                        snackbar.showSnackbar("Memasang Git & Curl...")
+                                        val res = sandboxManager?.runApkAdd("git curl")
+                                        packageActionStatus = null
+                                        if (res?.isSuccess == true) {
+                                            snackbar.showSnackbar("Git & Curl siap digunakan!")
+                                        } else {
+                                            snackbar.showSnackbar("Gagal: ${res?.exceptionOrNull()?.message}")
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                enabled = packageActionStatus == null
+                            ) {
+                                Text("Git / Curl")
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        sandboxManager?.uninstall()
+                                        useLinuxSandbox = false
+                                        snackbar.showSnackbar("Alpine Linux Sandbox dihapus.")
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                enabled = packageActionStatus == null
+                            ) {
+                                Text("Hapus Sandbox")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         AmayaSection("Command Policy") {
             Column(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
@@ -115,7 +336,8 @@ fun TerminalSettingsScreen(
                                     trustedCommands = cleanTrusted,
                                     declinedCommands = cleanDeclined,
                                     autoApproveNonDestructive = autoApproveNonDestructive,
-                                    autoApproveAll = autoApproveAll
+                                    autoApproveAll = autoApproveAll,
+                                    useLinuxSandbox = useLinuxSandbox
                                 )
                             )
                             snackbar.showSnackbar("Terminal settings saved")
@@ -128,3 +350,4 @@ fun TerminalSettingsScreen(
         }
     }
 }
+
