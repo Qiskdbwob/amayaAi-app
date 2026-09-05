@@ -165,7 +165,7 @@ internal fun ToolCardContent(
         (execution.metadata["syntheticBrowserStep"] == "true" && (!execution.result.isNullOrBlank() || execution.arguments.isNotEmpty())) ||
         when (execution.name) {
             "read_file" -> false
-            "list_files", "find_files", "run_shell", "web_search", "update_memory",
+            "list_files", "find_files", "run_shell", "web_search", "update_memory", "agent_memory", "agent_memory_internal",
             "memory_manage", "skill_view", "skill_manage", "session_search", "invoke_subagents", "delegate_agent" ->
                 !execution.result.isNullOrBlank()
             "edit_file" -> execution.hasCanonicalFileDiff() || !execution.result.isNullOrBlank()

@@ -827,7 +827,10 @@ internal fun AiRepository.chatImpl(
                     }
 
                     val toolFailed = result is ToolResult.Error || result is ToolResult.RequiresConfirmation
-                    if (!toolFailed) lastToolResultContent = resultContent
+                    val isHousekeeping = isInternalOrHousekeepingTool(toolCall.name)
+                    if (!toolFailed && (!isHousekeeping || lastToolResultContent == null)) {
+                        lastToolResultContent = resultContent
+                    }
                     StreamDebugLog.event(conversationId, null, "TOOL_RESULT", "id=${toolCall.id} name=${toolCall.name} error=$toolFailed deferred=${result is ToolResult.Deferred} chars=${resultContent.length}")
                     send(AgentEvent.ToolCallResult(
                         toolCallId = toolCall.id,
@@ -989,6 +992,11 @@ internal fun shouldRunVerificationPass(
     messageRole == MessageRole.USER &&
     runtimeTarget == AgentRuntimeTarget.LOCAL &&
     (executedToolCalls > 0 || failedToolAttempts > 0 || hasPlanSteps)
+
+internal fun isInternalOrHousekeepingTool(name: String): Boolean = name in setOf(
+    "memory_manage", "update_memory", "agent_memory", "agent_memory_internal",
+    "skill_manage", "skill_view", "update_todo", "recommendation_manage", "session_search"
+)
 
 /**
  * Whether a tool-using turn that produced no assistant text should surface the last tool result

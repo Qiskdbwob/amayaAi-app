@@ -104,7 +104,7 @@ class RunShellTool @Inject constructor(
     override suspend fun execute(arguments: Map<String, Any?>, context: ToolExecutionContext): ToolResult =
         withContext(Dispatchers.IO) {
 
-            val command = (arguments["command"] as? String)?.trim()
+            val command = ((arguments["command"] ?: arguments["cmd"]) as? String)?.trim()
             if (command.isNullOrBlank()) {
                 return@withContext ToolResult.Error(
                     "Missing or empty 'command' argument. You must provide a non-empty shell command to run. " +
@@ -132,7 +132,9 @@ class RunShellTool @Inject constructor(
             }
 
             val workingDir = arguments["working_dir"] as? String
-            val timeoutMs = (arguments["timeout_ms"] as? Number)?.toLong()
+            val timeoutMs = ((arguments["timeout_ms"] as? Number)?.toLong()
+                ?: (arguments["timeout_seconds"] as? Number)?.let { it.toLong() * 1000L }
+                ?: (arguments["timeout"] as? Number)?.let { it.toLong() * 1000L })
                 ?.coerceIn(1000, MAX_TIMEOUT_MS)
                 ?: DEFAULT_TIMEOUT_MS
 

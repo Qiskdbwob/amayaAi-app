@@ -670,7 +670,10 @@ internal data class AssistantTurnSplit(
 )
 
 internal fun isHousekeepingTool(name: String): Boolean {
-    return name in setOf("memory_manage", "update_memory", "skill_manage", "skill_view", "update_todo")
+    return name in setOf(
+        "memory_manage", "update_memory", "agent_memory", "agent_memory_internal",
+        "skill_manage", "skill_view", "update_todo", "recommendation_manage", "session_search"
+    )
 }
 
 internal fun splitAssistantTurn(message: UiMessage): AssistantTurnSplit {

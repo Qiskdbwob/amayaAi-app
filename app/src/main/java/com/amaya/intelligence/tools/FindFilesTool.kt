@@ -39,9 +39,9 @@ class FindFilesTool @Inject constructor(
     ): ToolResult = withContext(Dispatchers.IO) {
 
         // ── Content search mode (replaces search_files) ──────────────────
-        val contentQuery = arguments["content"] as? String
+        val contentQuery = (arguments["content"] ?: arguments["query"] ?: arguments["text"]) as? String
         if (contentQuery != null) {
-            val searchPath = arguments["path"] as? String ?: return@withContext ToolResult.Error(
+            val searchPath = (arguments["path"] ?: arguments["dir"] ?: arguments["directory"]) as? String ?: return@withContext ToolResult.Error(
                 "Missing required argument: path", ErrorType.VALIDATION_ERROR)
             // FIX #12: Validate path before content search to prevent scanning protected dirs
             when (val v = commandValidator.validatePath(searchPath, isWrite = false)) {
@@ -84,13 +84,13 @@ class FindFilesTool @Inject constructor(
                 "query" to contentQuery, "matches" to matches.size, "path" to searchPath))
         }
 
-        val pathStr = arguments["path"] as? String
+        val pathStr = (arguments["path"] ?: arguments["dir"] ?: arguments["directory"]) as? String
             ?: return@withContext ToolResult.Error(
                 "Missing required argument: path",
                 ErrorType.VALIDATION_ERROR
             )
 
-        val pattern = arguments["pattern"] as? String
+        val pattern = (arguments["pattern"] ?: arguments["query"] ?: arguments["glob"]) as? String
             ?: return@withContext ToolResult.Error(
                 "Missing required argument: pattern",
                 ErrorType.VALIDATION_ERROR

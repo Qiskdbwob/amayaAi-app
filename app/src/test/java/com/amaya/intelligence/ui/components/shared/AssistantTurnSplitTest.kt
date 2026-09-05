@@ -105,5 +105,34 @@ class AssistantTurnSplitTest {
         assertEquals(1, split.answerSteps.size)
         assertEquals("Everything passes.", split.answerSteps.first().content)
     }
+
+    @Test
+    fun `turn with trailing agent_memory housekeeping tool preserves substantive answer and does not bury it in work card`() {
+        val substantiveOutput = "I have reviewed and updated the code as requested."
+        val message = UiMessage(
+            id = "5",
+            role = MessageRole.ASSISTANT,
+            content = substantiveOutput,
+            steps = listOf(
+                MessageStep.ToolCall(
+                    execution = ToolExecution(toolCallId = "call_1", name = "write_file", arguments = emptyMap())
+                ),
+                MessageStep.Text(content = substantiveOutput),
+                MessageStep.ToolCall(
+                    execution = ToolExecution(toolCallId = "call_2", name = "agent_memory", arguments = mapOf("operation" to "save"))
+                )
+            )
+        )
+        val split = splitAssistantTurn(message)
+        assertTrue(split.wrapInSummary)
+        // Work steps contain write_file and agent_memory
+        assertEquals(2, split.workSteps.size)
+        assertEquals("write_file", (split.workSteps[0] as MessageStep.ToolCall).execution.name)
+        assertEquals("agent_memory", (split.workSteps[1] as MessageStep.ToolCall).execution.name)
+
+        // Substantive answer remains in answerSteps, not buried in work card
+        assertEquals(1, split.answerSteps.size)
+        assertEquals(substantiveOutput, split.answerSteps.first().content)
+    }
 }
 

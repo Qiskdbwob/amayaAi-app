@@ -67,7 +67,7 @@ class ReadFileTool @Inject constructor(
             return@withContext executeBatch(pathsList, arguments, executionContext)
         }
 
-        val pathStr = arguments["path"] as? String
+        val pathStr = (arguments["path"] ?: arguments["file_path"] ?: arguments["filePath"] ?: arguments["file"]) as? String
             ?: return@withContext ToolResult.Error(
                 "Missing required argument: path or paths",
                 ErrorType.VALIDATION_ERROR
@@ -113,8 +113,13 @@ class ReadFileTool @Inject constructor(
         }
 
         if (!file.isFile) {
+            val message = if (file.isDirectory) {
+                "Path is a directory, not a file: $pathStr. Use list_files to inspect directory contents."
+            } else {
+                "Path is not a regular file: $pathStr"
+            }
             return@withContext ToolResult.Error(
-                "Path is not a regular file: $pathStr",
+                message,
                 ErrorType.VALIDATION_ERROR
             )
         }
@@ -170,6 +175,18 @@ class ReadFileTool @Inject constructor(
             val allLines = content.lines()
             val totalLines = allLines.size
 
+            val lineCountOnly = arguments["line_count"] as? Boolean ?: false
+            if (lineCountOnly) {
+                return@withContext ToolResult.Success(
+                    output = "Total lines: $totalLines",
+                    metadata = mapOf(
+                        "path" to pathStr,
+                        "size" to fileSize,
+                        "total_lines" to totalLines
+                    )
+                )
+            }
+
             if (outline) {
                 val outlineText = extractOutline(allLines)
                 return@withContext ToolResult.Success(
@@ -188,12 +205,24 @@ class ReadFileTool @Inject constructor(
 
             // Handle line range if specified
             val (output, displayedRange) = if (startLine != null || endLine != null) {
+                if (startLine != null && endLine != null && endLine < startLine) {
+                    return@withContext ToolResult.Error(
+                        "end_line ($endLine) must be greater than or equal to start_line ($startLine)",
+                        ErrorType.VALIDATION_ERROR
+                    )
+                }
                 val start = (startLine ?: 1) - 1
                 val end = (endLine ?: totalLines).coerceAtMost(totalLines)
 
                 if (start >= totalLines) {
                     return@withContext ToolResult.Error(
                         "start_line ($startLine) exceeds file length ($totalLines lines)",
+                        ErrorType.VALIDATION_ERROR
+                    )
+                }
+                if (end < start) {
+                    return@withContext ToolResult.Error(
+                        "end_line ($endLine) resolved before start_line ($startLine)",
                         ErrorType.VALIDATION_ERROR
                     )
                 }

@@ -331,8 +331,9 @@ private fun groupIcon(key: String): ToolInfoIcon = when {
         "find_files", "session_search" -> ToolInfoIcon.SEARCH
         "run_shell" -> ToolInfoIcon.RUN
         "web_search" -> ToolInfoIcon.WORLD
+        "ask_user", "notify_user" -> ToolInfoIcon.MESSAGE
         "create_reminder" -> ToolInfoIcon.TASK
-        "update_memory", "memory_manage" -> ToolInfoIcon.BRAIN
+        "update_memory", "memory_manage", "agent_memory", "agent_memory_internal" -> ToolInfoIcon.BRAIN
         "skill_view", "skill_manage" -> ToolInfoIcon.BOOK
         "browser" -> ToolInfoIcon.BROWSER
         else -> ToolInfoIcon.TASK

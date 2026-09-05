@@ -46,7 +46,7 @@ class EditFileTool @Inject constructor(
         executionContext: ToolExecutionContext
     ): ToolResult = withContext(Dispatchers.IO) {
 
-        val pathStr = arguments["path"] as? String
+        val pathStr = (arguments["path"] ?: arguments["file_path"] ?: arguments["filePath"] ?: arguments["file"]) as? String
             ?: return@withContext ToolResult.Error("Missing required argument: path", ErrorType.VALIDATION_ERROR)
 
         // ── Diff/patch mode (replaces apply_diff) ────────────────────────
@@ -66,13 +66,13 @@ class EditFileTool @Inject constructor(
             return@withContext applyUnifiedDiff(file, content, diffStr)
         }
 
-        val oldContent = arguments["old_content"] as? String
+        val oldContent = (arguments["old_content"] ?: arguments["old_text"] ?: arguments["target_content"] ?: arguments["TargetContent"]) as? String
             ?: return@withContext ToolResult.Error(
                 "Missing required argument: old_content",
                 ErrorType.VALIDATION_ERROR
             )
 
-        val newContent = arguments["new_content"] as? String
+        val newContent = (arguments["new_content"] ?: arguments["new_text"] ?: arguments["replacement_content"] ?: arguments["ReplacementContent"]) as? String
             ?: return@withContext ToolResult.Error(
                 "Missing required argument: new_content",
                 ErrorType.VALIDATION_ERROR
