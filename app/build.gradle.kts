@@ -164,6 +164,13 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    // targetSdk 28 di atas adalah keputusan disengaja (kebijakan exec W^X sandbox
+    // Linux, pola UserLAnd/Termux) dan aplikasi didistribusikan di luar Google Play
+    // (sideload / GitHub Releases), jadi cek lint ketat-Play ini dinonaktifkan.
+    lint {
+        disable += "ExpiredTargetSdkVersion"
+    }
+
     kotlinOptions {
         jvmTarget = "17"
     }
