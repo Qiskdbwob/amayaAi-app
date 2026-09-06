@@ -21,9 +21,13 @@ android {
     defaultConfig {
         applicationId = "com.amaya.intelligence"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 4
-        versionName = "1.0.3"
+        // Sengaja 28: Android 10+ (API >= 29) menegakkan kebijakan W^X yang melarang
+        // exec() biner dari direktori data aplikasi. PRoot + shell Alpine (busybox)
+        // dieksekusi dari filesDir, jadi targetSdk harus tetap di bawah 29 agar
+        // sandbox Linux tetap berfungsi (pola yang sama dipakai UserLAnd/Termux).
+        targetSdk = 28
+        versionCode = 5
+        versionName = "1.0.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

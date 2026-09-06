@@ -90,6 +90,29 @@ class LinuxSandboxTest {
     }
 
     @Test
+    fun `provisionGuestDns installs resolver only when missing or empty`() {
+        val rootfs = createTempDirectory("alpine-dns-").toFile()
+        try {
+            assertTrue(LinuxSandboxManager.provisionGuestDns(rootfs))
+            val conf = File(rootfs, "etc/resolv.conf")
+            assertTrue(conf.exists())
+            assertTrue(conf.readText().contains("nameserver 8.8.8.8"))
+
+            // Empty file (what the minirootfs ships) must be provisioned too.
+            conf.writeText("")
+            assertTrue(LinuxSandboxManager.provisionGuestDns(rootfs))
+            assertTrue(conf.readText().contains("nameserver 1.1.1.1"))
+
+            // A user-provided non-empty resolver config is never overwritten.
+            conf.writeText("nameserver 10.0.0.1\n")
+            assertTrue(LinuxSandboxManager.provisionGuestDns(rootfs))
+            assertEquals("nameserver 10.0.0.1\n", conf.readText())
+        } finally {
+            rootfs.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `architecture detect returns a valid supported architecture`() {
         val detected = LinuxArchitecture.detect()
         assertNotNull(detected)

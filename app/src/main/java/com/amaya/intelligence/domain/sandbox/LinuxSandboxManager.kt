@@ -40,6 +40,7 @@ class LinuxSandboxManager @Inject constructor(
         private const val SANDBOX_DIR_NAME = "linux_sandbox"
         private const val ALPINE_DIR_NAME = "alpine"
         private const val BIN_DIR_NAME = "bin"
+        private const val DEFAULT_RESOLV_CONF = "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"
 
         /**
          * Re-create `<rootfs>/bin/sh` as a plain copy of `<rootfs>/bin/busybox`.
@@ -64,6 +65,24 @@ class LinuxSandboxManager @Inject constructor(
                 return false
             }
             return sh.exists()
+        }
+
+        /**
+         * Guarantees the guest can resolve DNS: installs `etc/resolv.conf` with
+         * public resolvers when missing or empty. The minirootfs ships an empty
+         * resolv.conf, and without it `apk update` fails every download.
+         * Existing non-empty files are left untouched. Visible for testing.
+         */
+        internal fun provisionGuestDns(rootfsDir: File): Boolean {
+            return try {
+                val resolvConf = File(rootfsDir, "etc/resolv.conf")
+                if (resolvConf.exists() && resolvConf.length() > 0L) return true
+                resolvConf.parentFile?.mkdirs()
+                resolvConf.writeText(DEFAULT_RESOLV_CONF)
+                resolvConf.exists() && resolvConf.length() > 0L
+            } catch (e: Exception) {
+                false
+            }
         }
     }
 
@@ -244,6 +263,14 @@ class LinuxSandboxManager @Inject constructor(
         command: String,
         workspaceDir: String?
     ): Pair<List<String>, Map<String, String>> {
+        // Idempotent pre-exec provisioning (only when a rootfs is really installed):
+        // guest tmp dir + DNS resolver. Also keeps rootfs installs created before
+        // these steps existed fully working.
+        if (File(rootfsDir, "bin/busybox").exists()) {
+            File(rootfsDir, "tmp").mkdirs()
+            ensureGuestDns()
+        }
+
         val prootPath = bundledProotFile?.absolutePath
             ?: prootFile.takeIf { it.exists() && it.canExecute() }?.absolutePath
         val hasProot = prootPath != null
@@ -283,11 +310,13 @@ class LinuxSandboxManager @Inject constructor(
             put("LANG", "C.UTF-8")
             put("SHELL", "/bin/sh")
             if (hasProot) {
-                // Bionic runs from app data needs writable loader temp dirs.
+                // PROOT_TMP_DIR must be a writable host dir for PRoot's loader;
+                // TMPDIR stays a guest path so tool temp files land in rootfs /tmp.
+                // NOTE: no LD_PRELOAD override — with targetSdk <= 28 exec() from
+                // app data is permitted directly, and an empty value is redundant.
                 put("TMPDIR", "/tmp")
                 put("PROOT_TMP_DIR", prootTmpDir.absolutePath)
                 put("PROOT_LOADER_TMP_DIR", prootTmpDir.absolutePath)
-                put("LD_PRELOAD", "")
             }
         }
 
@@ -326,11 +355,21 @@ class LinuxSandboxManager @Inject constructor(
         }
     }
 
+    /**
+     * Ensures the guest can resolve DNS before executing commands in the rootfs.
+     * Cheap and idempotent; safe to call before every exec.
+     */
+    private fun ensureGuestDns() {
+        if (!provisionGuestDns(rootfsDir)) {
+            debugLog(TAG, "Guest DNS provisioning skipped (rootfs not writable?)")
+        }
+    }
+
     private fun setupDnsResolver() {
         val etcDir = File(rootfsDir, "etc")
         etcDir.mkdirs()
         val resolvConf = File(etcDir, "resolv.conf")
-        resolvConf.writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+        resolvConf.writeText(DEFAULT_RESOLV_CONF)
     }
 
     private fun setupApkRepositories() {
