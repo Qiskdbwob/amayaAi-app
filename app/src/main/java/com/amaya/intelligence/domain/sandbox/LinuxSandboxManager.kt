@@ -1,10 +1,12 @@
 package com.amaya.intelligence.domain.sandbox
 
 import android.content.Context
+import android.net.ConnectivityManager
 import com.amaya.intelligence.util.debugLog
 import com.amaya.intelligence.util.errorLog
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -68,20 +70,144 @@ class LinuxSandboxManager @Inject constructor(
         }
 
         /**
-         * Guarantees the guest can resolve DNS: installs `etc/resolv.conf` with
-         * public resolvers when missing or empty. The minirootfs ships an empty
-         * resolv.conf, and without it `apk update` fails every download.
-         * Existing non-empty files are left untouched. Visible for testing.
+         * Builds a robust resolv.conf content. Combines device active network DNS servers
+         * (e.g. Wi-Fi router / cellular carrier DNS) with reliable public DNS fallbacks
+         * and options to prevent DNS hang on restricted networks.
          */
-        internal fun provisionGuestDns(rootfsDir: File): Boolean {
+        internal fun buildResolvConf(context: Context? = null): String {
+            val dnsList = mutableListOf<String>()
+            if (context != null) {
+                try {
+                    val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                    val activeNetwork = cm?.activeNetwork
+                    if (activeNetwork != null) {
+                        val lp = cm.getLinkProperties(activeNetwork)
+                        lp?.dnsServers?.forEach { addr ->
+                            val host = addr.hostAddress
+                            if (!host.isNullOrBlank() && !host.contains(":")) {
+                                dnsList.add(host)
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+            dnsList.add("8.8.8.8")
+            dnsList.add("1.1.1.1")
+            dnsList.add("9.9.9.9")
+            dnsList.add("8.8.4.4")
+
+            return buildString {
+                dnsList.distinct().forEach { ip ->
+                    appendLine("nameserver $ip")
+                }
+                appendLine("options timeout:2 attempts:2")
+            }
+        }
+
+        /**
+         * Guarantees the guest can resolve DNS: installs `etc/resolv.conf` with
+         * active network and public resolvers when missing or empty. The minirootfs ships an empty
+         * resolv.conf, and without it `apk update` fails every download.
+         * Existing non-empty custom configurations are left untouched. Visible for testing.
+         */
+        internal fun provisionGuestDns(rootfsDir: File, context: Context? = null): Boolean {
             return try {
                 val resolvConf = File(rootfsDir, "etc/resolv.conf")
-                if (resolvConf.exists() && resolvConf.length() > 0L) return true
+                if (resolvConf.exists() && resolvConf.length() > 0L) {
+                    val currentContent = resolvConf.readText()
+                    // If it was the legacy default (8.8.8.8 and 1.1.1.1 only with no carrier DNS),
+                    // upgrade it with active network DNS if available.
+                    if (currentContent == DEFAULT_RESOLV_CONF && context != null) {
+                        resolvConf.writeText(buildResolvConf(context))
+                    }
+                    return true
+                }
                 resolvConf.parentFile?.mkdirs()
-                resolvConf.writeText(DEFAULT_RESOLV_CONF)
+                resolvConf.writeText(buildResolvConf(context))
                 resolvConf.exists() && resolvConf.length() > 0L
             } catch (e: Exception) {
                 false
+            }
+        }
+
+        /**
+         * Ensures HTTP repositories are configured in etc/apk/repositories to prevent
+         * TLS handshake failures during bootstrap before ca-certificates is installed.
+         */
+        internal fun configureApkRepositories(rootfsDir: File) {
+            val apkDir = File(rootfsDir, "etc/apk")
+            apkDir.mkdirs()
+            val repos = File(apkDir, "repositories")
+            val httpRepos = """
+                http://dl-cdn.alpinelinux.org/alpine/v3.20/main
+                http://dl-cdn.alpinelinux.org/alpine/v3.20/community
+            """.trimIndent() + "\n"
+
+            if (!repos.exists() || repos.readText().contains("https://dl-cdn.alpinelinux.org")) {
+                repos.writeText(httpRepos)
+            }
+        }
+
+        /**
+         * Builds the command arguments for PRoot or direct shell execution.
+         */
+        internal fun buildExecutionArgs(
+            prootPath: String?,
+            rootfsDir: File,
+            command: String,
+            workspaceDir: String?
+        ): List<String> {
+            return if (prootPath != null) {
+                val list = mutableListOf(
+                    prootPath,
+                    "--link2symlink",
+                    "-0",
+                    "-r", rootfsDir.absolutePath,
+                    "-b", "/dev",
+                    "-b", "/proc",
+                    "-b", "/sys"
+                )
+                if (workspaceDir != null && File(workspaceDir).exists()) {
+                    list.add("-b")
+                    list.add("$workspaceDir:/workspace")
+                    list.add("-w")
+                    list.add("/workspace")
+                } else {
+                    list.add("-w")
+                    list.add("/root")
+                }
+                list.add("/bin/sh")
+                list.add("-c")
+                list.add(command)
+                list
+            } else {
+                listOf("/system/bin/sh", "-c", command)
+            }
+        }
+
+        /**
+         * Builds the environment variables for command execution.
+         */
+        internal fun buildExecutionEnv(
+            hasProot: Boolean,
+            prootTmpDir: File
+        ): Map<String, String> {
+            return buildMap {
+                put("HOME", "/root")
+                put("USER", "root")
+                put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+                put("TERM", "xterm-256color")
+                put("LANG", "C.UTF-8")
+                put("SHELL", "/bin/sh")
+                if (hasProot) {
+                    put("TMPDIR", "/tmp")
+                    put("PROOT_TMP_DIR", prootTmpDir.absolutePath)
+                    put("PROOT_LOADER_TMP_DIR", prootTmpDir.absolutePath)
+                    put("PROOT_NO_SECCOMP", "1")
+                    put("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
+                    put("GIT_SSL_CAINFO", "/etc/ssl/certs/ca-certificates.crt")
+                    put("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt")
+                }
             }
         }
     }
@@ -268,6 +394,7 @@ class LinuxSandboxManager @Inject constructor(
         // these steps existed fully working.
         if (File(rootfsDir, "bin/busybox").exists()) {
             File(rootfsDir, "tmp").mkdirs()
+            File(rootfsDir, "root").mkdirs()
             ensureGuestDns()
         }
 
@@ -275,56 +402,18 @@ class LinuxSandboxManager @Inject constructor(
             ?: prootFile.takeIf { it.exists() && it.canExecute() }?.absolutePath
         val hasProot = prootPath != null
 
-        val cmdList = if (hasProot) {
-            val list = mutableListOf(
-                prootPath!!,
-                "-0", // simulate root UID (0)
-                "-r", rootfsDir.absolutePath,
-                "-b", "/dev",
-                "-b", "/proc",
-                "-b", "/sys"
-            )
-            if (workspaceDir != null && File(workspaceDir).exists()) {
-                list.add("-b")
-                list.add("$workspaceDir:/workspace")
-                list.add("-w")
-                list.add("/workspace")
-            }
-            list.add("/bin/sh")
-            list.add("-c")
-            list.add(command)
-            list
-        } else {
-            // Fallback: If PRoot binary is not yet available, execute shell directly
-            listOf("/system/bin/sh", "-c", command)
-        }
+        val cmdList = buildExecutionArgs(prootPath, rootfsDir, command, workspaceDir)
 
         val prootTmpDir = File(sandboxBaseDir, "tmp")
         prootTmpDir.mkdirs() // writable host dir for PRoot's loader extraction
 
-        val envMap = buildMap {
-            put("HOME", "/root")
-            put("USER", "root")
-            put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-            put("TERM", "xterm-256color")
-            put("LANG", "C.UTF-8")
-            put("SHELL", "/bin/sh")
-            if (hasProot) {
-                // PROOT_TMP_DIR must be a writable host dir for PRoot's loader;
-                // TMPDIR stays a guest path so tool temp files land in rootfs /tmp.
-                // NOTE: no LD_PRELOAD override — with targetSdk <= 28 exec() from
-                // app data is permitted directly, and an empty value is redundant.
-                put("TMPDIR", "/tmp")
-                put("PROOT_TMP_DIR", prootTmpDir.absolutePath)
-                put("PROOT_LOADER_TMP_DIR", prootTmpDir.absolutePath)
-            }
-        }
+        val envMap = buildExecutionEnv(hasProot, prootTmpDir)
 
         return Pair(cmdList, envMap)
     }
 
     /**
-     * Helper to run an `apk` package installation command (e.g. `apk add --no-cache python3 py3-pip`).
+     * Helper to run an `apk` package installation command (e.g. `apk add --no-cache git curl`).
      */
     suspend fun runApkAdd(packageName: String): Result<String> = withContext(Dispatchers.IO) {
         checkStatus()
@@ -332,7 +421,35 @@ class LinuxSandboxManager @Inject constructor(
             return@withContext Result.failure(IllegalStateException("Alpine Linux sandbox is not installed"))
         }
 
-        val cmd = "apk update && apk add --no-cache $packageName"
+        // 1. Ensure repositories use HTTP to avoid chicken-and-egg SSL bootstrap before ca-certificates is installed
+        ensureApkRepositories()
+
+        // 2. Ensure guest DNS is configured with active network DNS
+        ensureGuestDns()
+
+        // 3. Clear stale apk lock if any from previously interrupted operations
+        val lockFile = File(rootfsDir, "lib/apk/db/lock")
+        if (lockFile.exists()) {
+            lockFile.delete()
+        }
+
+        // 4. For git / curl, ensure ca-certificates is installed alongside them so HTTPS operations work immediately
+        val targetPackages = if (packageName.contains("git") || packageName.contains("curl")) {
+            if (!packageName.contains("ca-certificates")) {
+                "$packageName ca-certificates"
+            } else {
+                packageName
+            }
+        } else {
+            packageName
+        }
+
+        val cmd = if (targetPackages.contains("ca-certificates")) {
+            "apk update && apk add --no-cache $targetPackages && (which update-ca-certificates >/dev/null 2>&1 && update-ca-certificates || true)"
+        } else {
+            "apk update && apk add --no-cache $targetPackages"
+        }
+
         val (execCmd, envMap) = buildExecution(cmd, null)
 
         try {
@@ -341,8 +458,23 @@ class LinuxSandboxManager @Inject constructor(
             processBuilder.redirectErrorStream(true)
 
             val process = processBuilder.start()
-            val output = process.inputStream.bufferedReader().readText()
-            val exitCode = process.waitFor()
+            // Close stdin immediately to prevent blocking on any interactive prompt
+            process.outputStream.close()
+
+            val outputDeferred = async(Dispatchers.IO) {
+                process.inputStream.bufferedReader().use { it.readText() }
+            }
+
+            val exited = process.waitFor(180, TimeUnit.SECONDS)
+            if (!exited) {
+                process.destroyForcibly()
+                return@withContext Result.failure(
+                    IOException("Package installation timed out after 3 minutes. Network may be unreachable.")
+                )
+            }
+
+            val output = outputDeferred.await()
+            val exitCode = process.exitValue()
 
             if (exitCode == 0) {
                 checkStatus()
@@ -360,7 +492,7 @@ class LinuxSandboxManager @Inject constructor(
      * Cheap and idempotent; safe to call before every exec.
      */
     private fun ensureGuestDns() {
-        if (!provisionGuestDns(rootfsDir)) {
+        if (!provisionGuestDns(rootfsDir, context)) {
             debugLog(TAG, "Guest DNS provisioning skipped (rootfs not writable?)")
         }
     }
@@ -369,19 +501,15 @@ class LinuxSandboxManager @Inject constructor(
         val etcDir = File(rootfsDir, "etc")
         etcDir.mkdirs()
         val resolvConf = File(etcDir, "resolv.conf")
-        resolvConf.writeText(DEFAULT_RESOLV_CONF)
+        resolvConf.writeText(buildResolvConf(context))
+    }
+
+    internal fun ensureApkRepositories() {
+        configureApkRepositories(rootfsDir)
     }
 
     private fun setupApkRepositories() {
-        val apkDir = File(rootfsDir, "etc/apk")
-        apkDir.mkdirs()
-        val repos = File(apkDir, "repositories")
-        repos.writeText(
-            """
-            https://dl-cdn.alpinelinux.org/alpine/v3.20/main
-            https://dl-cdn.alpinelinux.org/alpine/v3.20/community
-            """.trimIndent() + "\n"
-        )
+        ensureApkRepositories()
     }
 
     private suspend fun setupProotBinary(architecture: LinuxArchitecture) {

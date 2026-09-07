@@ -15,6 +15,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -192,13 +193,13 @@ fun TerminalSettingsScreen(
                                 onClick = {
                                     scope.launch {
                                         packageActionStatus = "Memasang Python 3 & Pip..."
-                                        snackbar.showSnackbar("Memasang Python 3 & Pip...")
                                         val res = sandboxManager?.runApkAdd("python3 py3-pip")
                                         packageActionStatus = null
                                         if (res?.isSuccess == true) {
                                             snackbar.showSnackbar("Python 3 & Pip siap digunakan!")
                                         } else {
-                                            snackbar.showSnackbar("Gagal: ${res?.exceptionOrNull()?.message}")
+                                            val err = res?.exceptionOrNull()?.message ?: "Gagal memasang Python 3"
+                                            snackbar.showSnackbar("Gagal: $err", duration = SnackbarDuration.Long)
                                         }
                                     }
                                 },
@@ -212,13 +213,13 @@ fun TerminalSettingsScreen(
                                 onClick = {
                                     scope.launch {
                                         packageActionStatus = "Memasang Node.js & NPM..."
-                                        snackbar.showSnackbar("Memasang Node.js & NPM...")
                                         val res = sandboxManager?.runApkAdd("nodejs npm")
                                         packageActionStatus = null
                                         if (res?.isSuccess == true) {
                                             snackbar.showSnackbar("Node.js & NPM siap digunakan!")
                                         } else {
-                                            snackbar.showSnackbar("Gagal: ${res?.exceptionOrNull()?.message}")
+                                            val err = res?.exceptionOrNull()?.message ?: "Gagal memasang Node.js"
+                                            snackbar.showSnackbar("Gagal: $err", duration = SnackbarDuration.Long)
                                         }
                                     }
                                 },
@@ -234,13 +235,13 @@ fun TerminalSettingsScreen(
                                 onClick = {
                                     scope.launch {
                                         packageActionStatus = "Memasang Git & Curl..."
-                                        snackbar.showSnackbar("Memasang Git & Curl...")
                                         val res = sandboxManager?.runApkAdd("git curl")
                                         packageActionStatus = null
                                         if (res?.isSuccess == true) {
                                             snackbar.showSnackbar("Git & Curl siap digunakan!")
                                         } else {
-                                            snackbar.showSnackbar("Gagal: ${res?.exceptionOrNull()?.message}")
+                                            val err = res?.exceptionOrNull()?.message ?: "Gagal memasang Git & Curl"
+                                            snackbar.showSnackbar("Gagal: $err", duration = SnackbarDuration.Long)
                                         }
                                     }
                                 },
