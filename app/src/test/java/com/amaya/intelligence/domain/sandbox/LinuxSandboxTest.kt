@@ -182,17 +182,50 @@ class LinuxSandboxTest {
     }
 
     @Test
-    fun `buildExecutionEnv sets PROOT_NO_SECCOMP and SSL certificates`() {
+    fun `buildExecutionEnv sets PROOT_NO_SECCOMP, PROOT_LOADER, and SSL certificates`() {
         val tmpDir = File("/tmp/proot_tmp")
-        val env = LinuxSandboxManager.buildExecutionEnv(hasProot = true, prootTmpDir = tmpDir)
+        val env = LinuxSandboxManager.buildExecutionEnv(
+            hasProot = true,
+            prootTmpDir = tmpDir,
+            prootLoaderPath = "/data/app/lib/arm64/libproot_loader.so"
+        )
 
         assertEquals("/root", env["HOME"])
         assertEquals("1", env["PROOT_NO_SECCOMP"])
+        assertEquals("1", env["PROOT_IGNORE_MISSING_BINDINGS"])
         assertEquals("/tmp", env["TMPDIR"])
         assertEquals(tmpDir.absolutePath, env["PROOT_TMP_DIR"])
+        assertEquals("/data/app/lib/arm64/libproot_loader.so", env["PROOT_LOADER"])
+        assertEquals("/data/app/lib/arm64/libproot_loader.so", env["PROOT_LOADER_32"])
+        assertEquals("/data/app/lib/arm64/libproot_loader.so", env["PROOT_LOADER_64"])
         assertEquals("/etc/ssl/certs/ca-certificates.crt", env["SSL_CERT_FILE"])
         assertEquals("/etc/ssl/certs/ca-certificates.crt", env["GIT_SSL_CAINFO"])
         assertEquals("/etc/ssl/certs/ca-certificates.crt", env["CURL_CA_BUNDLE"])
+    }
+
+    @Test
+    fun `extractEmbeddedLoader extracts ELF loader from arm64 and armv7 libproot`() {
+        val arm64Proot = File("src/main/jniLibs/arm64-v8a/libproot.so")
+        val arm7Proot = File("src/main/jniLibs/armeabi-v7a/libproot.so")
+        val destDir = createTempDirectory("loader-test-").toFile()
+        try {
+            if (arm64Proot.exists()) {
+                val dest64 = File(destDir, "arm64_loader")
+                val res = LinuxSandboxManager.extractEmbeddedLoader(arm64Proot, dest64)
+                assertTrue(res)
+                assertTrue(dest64.exists())
+                assertTrue(dest64.length() > 50000L)
+            }
+            if (arm7Proot.exists()) {
+                val dest7 = File(destDir, "arm7_loader")
+                val res = LinuxSandboxManager.extractEmbeddedLoader(arm7Proot, dest7)
+                assertTrue(res)
+                assertTrue(dest7.exists())
+                assertTrue(dest7.length() > 50000L)
+            }
+        } finally {
+            destDir.deleteRecursively()
+        }
     }
 
     @Test

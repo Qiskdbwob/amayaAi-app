@@ -172,6 +172,7 @@ class RunShellTool @Inject constructor(
             val (cmdList, envMap) = linuxSandboxManager.buildExecution(command, workingDir)
             ProcessBuilder(cmdList).apply {
                 environment().putAll(envMap)
+                environment().remove("LD_PRELOAD")
             }
         } else {
             ProcessBuilder("/system/bin/sh", "-c", command)

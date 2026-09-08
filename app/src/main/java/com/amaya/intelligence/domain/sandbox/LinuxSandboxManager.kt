@@ -17,10 +17,14 @@ import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import java.io.BufferedInputStream
+import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStreamReader
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.concurrent.TimeUnit
@@ -190,7 +194,8 @@ class LinuxSandboxManager @Inject constructor(
          */
         internal fun buildExecutionEnv(
             hasProot: Boolean,
-            prootTmpDir: File
+            prootTmpDir: File,
+            prootLoaderPath: String? = null
         ): Map<String, String> {
             return buildMap {
                 put("HOME", "/root")
@@ -202,12 +207,67 @@ class LinuxSandboxManager @Inject constructor(
                 if (hasProot) {
                     put("TMPDIR", "/tmp")
                     put("PROOT_TMP_DIR", prootTmpDir.absolutePath)
-                    put("PROOT_LOADER_TMP_DIR", prootTmpDir.absolutePath)
                     put("PROOT_NO_SECCOMP", "1")
+                    put("PROOT_IGNORE_MISSING_BINDINGS", "1")
+                    if (!prootLoaderPath.isNullOrBlank()) {
+                        put("PROOT_LOADER", prootLoaderPath)
+                        put("PROOT_LOADER_32", prootLoaderPath)
+                        put("PROOT_LOADER_64", prootLoaderPath)
+                    }
                     put("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
                     put("GIT_SSL_CAINFO", "/etc/ssl/certs/ca-certificates.crt")
                     put("CURL_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt")
                 }
+            }
+        }
+
+        /**
+         * Extracts the embedded ELF loader from a PRoot binary into a target file.
+         * Used when the loader is bundled inside PRoot and needs to be placed in an
+         * executable location. Visible for testing.
+         */
+        internal fun extractEmbeddedLoader(sourceProot: File, destFile: File): Boolean {
+            return try {
+                if (!sourceProot.exists()) return false
+                val bytes = sourceProot.readBytes()
+                val elfMagic = byteArrayOf(0x7f, 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte())
+                var loaderOffset = -1
+                for (i in 4 until bytes.size - 64) {
+                    if (bytes[i] == elfMagic[0] &&
+                        bytes[i + 1] == elfMagic[1] &&
+                        bytes[i + 2] == elfMagic[2] &&
+                        bytes[i + 3] == elfMagic[3]
+                    ) {
+                        loaderOffset = i
+                        break
+                    }
+                }
+                if (loaderOffset == -1) return false
+
+                val is64Bit = bytes[loaderOffset + 4] == 2.toByte()
+                val totalSize: Long = if (is64Bit) {
+                    val shOff = ByteBuffer.wrap(bytes, loaderOffset + 40, 8).order(ByteOrder.LITTLE_ENDIAN).long
+                    val shEntSize = (ByteBuffer.wrap(bytes, loaderOffset + 58, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
+                    val shNum = (ByteBuffer.wrap(bytes, loaderOffset + 60, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
+                    shOff + (shEntSize * shNum)
+                } else {
+                    val shOff = (ByteBuffer.wrap(bytes, loaderOffset + 32, 4).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xFFFFFFFFL)
+                    val shEntSize = (ByteBuffer.wrap(bytes, loaderOffset + 46, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
+                    val shNum = (ByteBuffer.wrap(bytes, loaderOffset + 48, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
+                    shOff + (shEntSize * shNum)
+                }
+
+                if (totalSize <= 0 || loaderOffset + totalSize > bytes.size) return false
+
+                destFile.parentFile?.mkdirs()
+                FileOutputStream(destFile).use { out ->
+                    out.write(bytes, loaderOffset, totalSize.toInt())
+                }
+                destFile.setExecutable(true, false)
+                destFile.setReadable(true, false)
+                destFile.exists() && destFile.length() > 0L
+            } catch (e: Exception) {
+                false
             }
         }
     }
@@ -236,6 +296,39 @@ class LinuxSandboxManager @Inject constructor(
             val f = File(context.applicationInfo.nativeLibraryDir, "libproot.so")
             return if (f.exists() && f.canExecute()) f else null
         }
+
+    /**
+     * The PRoot loader binary bundled inside the APK as a jniLib (`libproot_loader.so`).
+     * Bundling the loader directly in `nativeLibraryDir` eliminates W^X / SELinux
+     * execution failures when PRoot attempts to extract and run its loader in temporary directories.
+     */
+    val bundledProotLoaderFile: File?
+        get() {
+            val f = File(context.applicationInfo.nativeLibraryDir, "libproot_loader.so")
+            return if (f.exists() && f.canExecute()) f else null
+        }
+
+    /**
+     * Returns the effective PRoot loader executable, preferring the bundled native library
+     * and falling back to an on-demand extracted loader binary if necessary.
+     */
+    fun getOrExtractProotLoader(): File? {
+        val bundled = bundledProotLoaderFile
+        if (bundled != null) return bundled
+
+        val fallback = File(binDir, "libproot_loader.so")
+        if (fallback.exists() && fallback.canExecute() && fallback.length() > 1000L) {
+            return fallback
+        }
+
+        val sourceProot = bundledProotFile ?: prootFile.takeIf { it.exists() }
+        if (sourceProot != null) {
+            if (extractEmbeddedLoader(sourceProot, fallback)) {
+                return fallback
+            }
+        }
+        return null
+    }
 
     private val _status = MutableStateFlow<SandboxStatus>(SandboxStatus.NotInstalled)
     val status: StateFlow<SandboxStatus> = _status.asStateFlow()
@@ -396,6 +489,8 @@ class LinuxSandboxManager @Inject constructor(
             File(rootfsDir, "tmp").mkdirs()
             File(rootfsDir, "root").mkdirs()
             ensureGuestDns()
+            materializeSh(rootfsDir)
+            healGuestLibraries(rootfsDir)
         }
 
         val prootPath = bundledProotFile?.absolutePath
@@ -406,8 +501,14 @@ class LinuxSandboxManager @Inject constructor(
 
         val prootTmpDir = File(sandboxBaseDir, "tmp")
         prootTmpDir.mkdirs() // writable host dir for PRoot's loader extraction
+        try {
+            prootTmpDir.setReadable(true, false)
+            prootTmpDir.setWritable(true, false)
+            prootTmpDir.setExecutable(true, false)
+        } catch (_: Exception) {}
 
-        val envMap = buildExecutionEnv(hasProot, prootTmpDir)
+        val loaderFile = getOrExtractProotLoader()
+        val envMap = buildExecutionEnv(hasProot, prootTmpDir, loaderFile?.absolutePath)
 
         return Pair(cmdList, envMap)
     }
@@ -454,33 +555,51 @@ class LinuxSandboxManager @Inject constructor(
 
         try {
             val processBuilder = ProcessBuilder(execCmd)
-            processBuilder.environment().putAll(envMap)
+            processBuilder.environment().apply {
+                putAll(envMap)
+                remove("LD_PRELOAD")
+            }
             processBuilder.redirectErrorStream(true)
 
             val process = processBuilder.start()
-            // Close stdin immediately to prevent blocking on any interactive prompt
-            process.outputStream.close()
 
-            val outputDeferred = async(Dispatchers.IO) {
-                process.inputStream.bufferedReader().use { it.readText() }
+            val output = StringBuilder()
+            val readerJob = async(Dispatchers.IO) {
+                try {
+                    BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
+                        var line = reader.readLine()
+                        while (line != null) {
+                            if (output.isNotEmpty()) output.append('\n')
+                            output.append(line)
+                            line = reader.readLine()
+                        }
+                    }
+                } catch (_: Exception) {}
             }
 
             val exited = process.waitFor(180, TimeUnit.SECONDS)
             if (!exited) {
                 process.destroyForcibly()
+                readerJob.cancel()
                 return@withContext Result.failure(
                     IOException("Package installation timed out after 3 minutes. Network may be unreachable.")
                 )
             }
 
-            val output = outputDeferred.await()
+            readerJob.await()
             val exitCode = process.exitValue()
+            val outputStr = output.toString().trim()
 
             if (exitCode == 0) {
                 checkStatus()
-                Result.success(output)
+                Result.success(outputStr)
             } else {
-                Result.failure(IOException("Package installation failed with exit code $exitCode:\n$output"))
+                val errorMsg = if (outputStr.isNotEmpty()) {
+                    "Package installation failed with exit code $exitCode:\n$outputStr"
+                } else {
+                    "Package installation failed with exit code $exitCode"
+                }
+                Result.failure(IOException(errorMsg))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -541,17 +660,40 @@ class LinuxSandboxManager @Inject constructor(
         }
     }
 
+    /**
+     * Ensures all musl runtime dynamic linkers and shared libraries have execute permissions.
+     * Guarantees that dynamically-linked guest binaries (like busybox and apk) can be loaded.
+     */
+    internal fun healGuestLibraries(rootfsDir: File) {
+        val libDirs = listOf(File(rootfsDir, "lib"), File(rootfsDir, "usr/lib"))
+        for (dir in libDirs) {
+            if (dir.exists() && dir.isDirectory) {
+                dir.listFiles()?.forEach { f ->
+                    if (f.isFile && (f.name.startsWith("ld-musl") || f.name.startsWith("libc.musl") || f.name.endsWith(".so") || f.name.contains(".so."))) {
+                        f.setExecutable(true, false)
+                        f.setReadable(true, false)
+                    }
+                }
+            }
+        }
+    }
+
     private fun fixExecutablePermissions(dir: File) {
         val execDirs = listOf(
             File(dir, "bin"),
             File(dir, "sbin"),
             File(dir, "usr/bin"),
-            File(dir, "usr/sbin")
+            File(dir, "usr/sbin"),
+            File(dir, "lib"),
+            File(dir, "usr/lib")
         )
         for (d in execDirs) {
             if (d.exists() && d.isDirectory) {
                 d.listFiles()?.forEach { file ->
-                    file.setExecutable(true, false)
+                    if (file.isFile) {
+                        file.setExecutable(true, false)
+                        file.setReadable(true, false)
+                    }
                 }
             }
         }
@@ -648,9 +790,13 @@ class LinuxSandboxManager @Inject constructor(
                                 if (entry.name.startsWith("bin/") ||
                                     entry.name.startsWith("sbin/") ||
                                     entry.name.startsWith("usr/bin/") ||
-                                    entry.name.startsWith("usr/sbin/")
+                                    entry.name.startsWith("usr/sbin/") ||
+                                    entry.name.startsWith("lib/") ||
+                                    entry.name.startsWith("usr/lib/") ||
+                                    (entry.mode and 0b001_001_001) != 0
                                 ) {
                                     targetFile.setExecutable(true, false)
+                                    targetFile.setReadable(true, false)
                                 }
                             }
 
