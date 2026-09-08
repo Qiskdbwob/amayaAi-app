@@ -233,6 +233,16 @@ class LinuxSandboxManager @Inject constructor(
         }
 
         /**
+         * e_machine values of the Linux architectures this sandbox supports.
+         * An embedded loader candidate must carry one of these; incidental `ELF`
+         * byte sequences inside a static binary carry garbage values (e.g. 50307)
+         * or EM_NONE (0) and are rejected. The device's own architecture is always
+         * in this set, but accepting the other known values also lets unit tests
+         * extract an arm64 loader on an x86_64 CI runner.
+         */
+        private val KNOWN_LINUX_MACHINES = setOf(3, 40, 62, 183)
+
+        /**
          * Returns true when the file starts with an ELF magic number.
          * Used to reject stale/corrupt loader files before handing them to PRoot.
          */
@@ -267,7 +277,6 @@ class LinuxSandboxManager @Inject constructor(
                 if (!sourceProot.exists()) return false
                 val bytes = sourceProot.readBytes()
                 val elfMagic = byteArrayOf(0x7f, 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte())
-                val targetMachine = elfMachine(LinuxArchitecture.detect())
                 var loaderOffset = -1
                 var totalSize = 0L
                 var i = 4
@@ -291,7 +300,7 @@ class LinuxSandboxManager @Inject constructor(
                             val shNum = (ByteBuffer.wrap(bytes, i + 48, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
                             shOff + (shEntSize * shNum)
                         }
-                        if (machine == targetMachine && eType == 2 /* ET_EXEC */ && size > 0 && i + size <= bytes.size) {
+                        if (machine in KNOWN_LINUX_MACHINES && eType == 2 /* ET_EXEC */ && size > 0 && i + size <= bytes.size) {
                             loaderOffset = i
                             totalSize = size
                             break

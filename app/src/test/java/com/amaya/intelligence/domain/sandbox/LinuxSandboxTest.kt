@@ -268,7 +268,7 @@ class LinuxSandboxTest {
     }
 
     @Test
-    fun `extractEmbeddedLoader refuses candidates that do not match the device machine`() {
+    fun `extractEmbeddedLoader rejects candidates with unknown machine values`() {
         val dir = createTempDirectory("loader-wrong-machine-").toFile()
         try {
             val wrongMachine = (LinuxSandboxManager.elfMachine(LinuxArchitecture.detect()) + 1) and 0xFFFF
