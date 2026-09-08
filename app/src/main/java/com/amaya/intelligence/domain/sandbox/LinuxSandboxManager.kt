@@ -222,42 +222,84 @@ class LinuxSandboxManager @Inject constructor(
         }
 
         /**
+         * Maps a [LinuxArchitecture] to its ELF `e_machine` value so embedded loader
+         * candidates can be validated before extraction. Visible for testing.
+         */
+        internal fun elfMachine(arch: LinuxArchitecture): Int = when (arch) {
+            LinuxArchitecture.AARCH64 -> 183 // EM_AARCH64
+            LinuxArchitecture.ARMV7 -> 40 // EM_ARM
+            LinuxArchitecture.X86_64 -> 62 // EM_X86_64
+            LinuxArchitecture.X86 -> 3 // EM_386
+        }
+
+        /**
+         * Returns true when the file starts with an ELF magic number.
+         * Used to reject stale/corrupt loader files before handing them to PRoot.
+         */
+        internal fun isElfFile(file: File): Boolean {
+            return try {
+                if (!file.exists() || file.length() < 16L) return false
+                val bytes = ByteArray(4)
+                FileInputStream(file).use { input ->
+                    if (input.read(bytes) != 4) return false
+                }
+                bytes[0] == 0x7f.toByte() && bytes[1] == 'E'.code.toByte() &&
+                    bytes[2] == 'L'.code.toByte() && bytes[3] == 'F'.code.toByte()
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        /**
          * Extracts the embedded ELF loader from a PRoot binary into a target file.
          * Used when the loader is bundled inside PRoot and needs to be placed in an
          * executable location. Visible for testing.
+         *
+         * The scan validates every ELF candidate instead of trusting the first magic
+         * number: static binaries can contain incidental `ELF` byte sequences that
+         * are not loaders (e.g. the official x86_64 build has a false positive near
+         * the start), and handing PRoot a garbage loader makes it silently fall back
+         * to extracting its own loader and exec'ing it via `/proc/self/fd/N` — which
+         * Android denies with EACCES.
          */
         internal fun extractEmbeddedLoader(sourceProot: File, destFile: File): Boolean {
             return try {
                 if (!sourceProot.exists()) return false
                 val bytes = sourceProot.readBytes()
                 val elfMagic = byteArrayOf(0x7f, 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte())
+                val targetMachine = elfMachine(LinuxArchitecture.detect())
                 var loaderOffset = -1
-                for (i in 4 until bytes.size - 64) {
+                var totalSize = 0L
+                var i = 4
+                while (i < bytes.size - 64) {
                     if (bytes[i] == elfMagic[0] &&
                         bytes[i + 1] == elfMagic[1] &&
                         bytes[i + 2] == elfMagic[2] &&
                         bytes[i + 3] == elfMagic[3]
                     ) {
-                        loaderOffset = i
-                        break
+                        val is64Bit = bytes[i + 4] == 2.toByte()
+                        val machine = (ByteBuffer.wrap(bytes, i + 18, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF)
+                        val eType = (ByteBuffer.wrap(bytes, i + 16, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF)
+                        val size: Long = if (is64Bit) {
+                            val shOff = ByteBuffer.wrap(bytes, i + 40, 8).order(ByteOrder.LITTLE_ENDIAN).long
+                            val shEntSize = (ByteBuffer.wrap(bytes, i + 58, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
+                            val shNum = (ByteBuffer.wrap(bytes, i + 60, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
+                            shOff + (shEntSize * shNum)
+                        } else {
+                            val shOff = (ByteBuffer.wrap(bytes, i + 32, 4).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xFFFFFFFFL)
+                            val shEntSize = (ByteBuffer.wrap(bytes, i + 46, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
+                            val shNum = (ByteBuffer.wrap(bytes, i + 48, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
+                            shOff + (shEntSize * shNum)
+                        }
+                        if (machine == targetMachine && eType == 2 /* ET_EXEC */ && size > 0 && i + size <= bytes.size) {
+                            loaderOffset = i
+                            totalSize = size
+                            break
+                        }
                     }
+                    i++
                 }
                 if (loaderOffset == -1) return false
-
-                val is64Bit = bytes[loaderOffset + 4] == 2.toByte()
-                val totalSize: Long = if (is64Bit) {
-                    val shOff = ByteBuffer.wrap(bytes, loaderOffset + 40, 8).order(ByteOrder.LITTLE_ENDIAN).long
-                    val shEntSize = (ByteBuffer.wrap(bytes, loaderOffset + 58, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
-                    val shNum = (ByteBuffer.wrap(bytes, loaderOffset + 60, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
-                    shOff + (shEntSize * shNum)
-                } else {
-                    val shOff = (ByteBuffer.wrap(bytes, loaderOffset + 32, 4).order(ByteOrder.LITTLE_ENDIAN).int.toLong() and 0xFFFFFFFFL)
-                    val shEntSize = (ByteBuffer.wrap(bytes, loaderOffset + 46, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
-                    val shNum = (ByteBuffer.wrap(bytes, loaderOffset + 48, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF).toLong()
-                    shOff + (shEntSize * shNum)
-                }
-
-                if (totalSize <= 0 || loaderOffset + totalSize > bytes.size) return false
 
                 destFile.parentFile?.mkdirs()
                 FileOutputStream(destFile).use { out ->
@@ -317,8 +359,13 @@ class LinuxSandboxManager @Inject constructor(
         if (bundled != null) return bundled
 
         val fallback = File(binDir, "libproot_loader.so")
-        if (fallback.exists() && fallback.canExecute() && fallback.length() > 1000L) {
+        if (fallback.exists() && fallback.canExecute() && isElfFile(fallback)) {
             return fallback
+        }
+        // Stale or corrupt extraction from an earlier run: remove it so a fresh
+        // extraction never has to overwrite a file that `exists()` blocks.
+        if (fallback.exists() && !isElfFile(fallback)) {
+            fallback.delete()
         }
 
         val sourceProot = bundledProotFile ?: prootFile.takeIf { it.exists() }

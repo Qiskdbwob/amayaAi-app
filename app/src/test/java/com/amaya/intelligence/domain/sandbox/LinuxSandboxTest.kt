@@ -204,6 +204,86 @@ class LinuxSandboxTest {
     }
 
     @Test
+    fun `isElfFile recognizes ELF magic and rejects plain files`() {
+        val dir = createTempDirectory("elf-check-").toFile()
+        try {
+            val elf = File(dir, "elf")
+            elf.writeBytes(byteArrayOf(0x7f, 'E'.code.toByte(), 'L'.code.toByte(), 'F'.code.toByte(), 2, 1, 1) + ByteArray(20))
+            assertTrue(LinuxSandboxManager.isElfFile(elf))
+
+            val plain = File(dir, "plain")
+            plain.writeText("# not an elf")
+            assertFalse(LinuxSandboxManager.isElfFile(plain))
+            assertFalse(LinuxSandboxManager.isElfFile(File(dir, "missing")))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    /**
+     * Builds a minimal valid ELF64 header whose section-header math yields a
+     * 128-byte "file": e_type=ET_EXEC(2), e_shoff=64, e_shentsize=64, e_shnum=1.
+     */
+    private fun fakeElfExecutable(machine: Int): ByteArray {
+        val b = ByteArray(128)
+        b[0] = 0x7f; b[1] = 'E'.code.toByte(); b[2] = 'L'.code.toByte(); b[3] = 'F'.code.toByte()
+        b[4] = 2 // ELFCLASS64
+        b[5] = 1 // little endian
+        b[6] = 1 // EI_VERSION
+        b[16] = 2; b[17] = 0 // e_type = ET_EXEC
+        b[18] = (machine and 0xFF).toByte(); b[19] = ((machine shr 8) and 0xFF).toByte() // e_machine
+        b[40] = 64 // e_shoff (u64)
+        b[58] = 64; b[59] = 0 // e_shentsize (u16)
+        b[60] = 1; b[61] = 0 // e_shnum (u16)
+        return b
+    }
+
+    @Test
+    fun `extractEmbeddedLoader skips false-positive ELF magic and extracts the matching machine`() {
+        val dir = createTempDirectory("loader-false-positive-").toFile()
+        try {
+            val targetMachine = LinuxSandboxManager.elfMachine(LinuxArchitecture.detect())
+            val wrongMachine = (targetMachine + 1) and 0xFFFF
+            val wrongElf = fakeElfExecutable(wrongMachine)
+            val rightElf = fakeElfExecutable(targetMachine)
+
+            // A static binary may contain incidental `ELF` sequences (false
+            // positives); the scanner must skip them and find the real loader.
+            val source = File(dir, "libproot_fake.so")
+            source.writeBytes(
+                ByteArray(50) { 0x41 } + wrongElf + ByteArray(20) { 0x42 } + rightElf
+            )
+
+            val dest = File(dir, "loader")
+            val result = LinuxSandboxManager.extractEmbeddedLoader(source, dest)
+
+            assertTrue("expected the matching-machine loader to be extracted", result)
+            assertTrue(dest.exists())
+            assertTrue(dest.canExecute())
+            assertTrue(dest.length() == rightElf.size.toLong())
+            assertTrue(dest.readBytes().contentEquals(rightElf))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `extractEmbeddedLoader refuses candidates that do not match the device machine`() {
+        val dir = createTempDirectory("loader-wrong-machine-").toFile()
+        try {
+            val wrongMachine = (LinuxSandboxManager.elfMachine(LinuxArchitecture.detect()) + 1) and 0xFFFF
+            val source = File(dir, "libproot_fake.so")
+            source.writeBytes(ByteArray(40) { 0x41 } + fakeElfExecutable(wrongMachine))
+
+            val dest = File(dir, "loader")
+            assertFalse(LinuxSandboxManager.extractEmbeddedLoader(source, dest))
+            assertFalse(dest.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun `extractEmbeddedLoader extracts ELF loader from arm64 and armv7 libproot`() {
         val arm64Proot = File("src/main/jniLibs/arm64-v8a/libproot.so")
         val arm7Proot = File("src/main/jniLibs/armeabi-v7a/libproot.so")
