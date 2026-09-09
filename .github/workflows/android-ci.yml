@@ -47,9 +47,29 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
-      # Hanya hasilkan APK versi perf (R8-optimized, debug-signed, applicationId .perf).
       - name: Build perf APK
         run: ./gradlew :app:assemblePerf --stacktrace
+
+      - name: Verify ARMv7 PRoot binaries in source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y file
+          test -s app/src/main/jniLibs/armeabi-v7a/libproot.so
+          test -s app/src/main/jniLibs/armeabi-v7a/libproot_loader.so
+          file app/src/main/jniLibs/armeabi-v7a/libproot.so | grep -E "ELF 32-bit.*ARM"
+          file app/src/main/jniLibs/armeabi-v7a/libproot_loader.so | grep -E "ELF 32-bit.*ARM"
+
+      - name: Verify PRoot binaries inside perf APK
+        run: |
+          found=0
+          for apk in app/build/outputs/apk/perf/*.apk; do
+            [ -f "$apk" ] || continue
+            echo "Checking $apk"
+            unzip -l "$apk" | grep -q "lib/armeabi-v7a/libproot.so" || { echo "::error::ARMv7 libproot.so missing from $apk"; exit 1; }
+            unzip -l "$apk" | grep -q "lib/armeabi-v7a/libproot_loader.so" || { echo "::error::ARMv7 libproot_loader.so missing from $apk"; exit 1; }
+            found=1
+          done
+          [ "$found" -eq 1 ] || { echo "::error::No perf APK found"; exit 1; }
 
       - name: Run unit tests (perf)
         run: ./gradlew :app:testPerfUnitTest --stacktrace
@@ -115,8 +135,6 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
-      # The build reads rootProject/.env.local for signing (see app/build.gradle.kts).
-      # Secrets cannot be referenced directly in `if:` conditions, so they are checked here.
       - name: Configure release signing
         env:
           KEYSTORE_BASE64: ${{ secrets.AMAYA_KEYSTORE_BASE64 }}
@@ -133,6 +151,18 @@ jobs:
 
       - name: Build signed release APK
         run: ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Verify ARMv7 PRoot binaries inside release APK
+        run: |
+          found=0
+          for apk in app/build/outputs/apk/release/*.apk; do
+            [ -f "$apk" ] || continue
+            echo "Checking $apk"
+            unzip -l "$apk" | grep -q "lib/armeabi-v7a/libproot.so" || { echo "::error::ARMv7 libproot.so missing from $apk"; exit 1; }
+            unzip -l "$apk" | grep -q "lib/armeabi-v7a/libproot_loader.so" || { echo "::error::ARMv7 libproot_loader.so missing from $apk"; exit 1; }
+            found=1
+          done
+          [ "$found" -eq 1 ] || { echo "::error::No release APK found"; exit 1; }
 
       - name: Upload release APK(s)
         uses: actions/upload-artifact@v4
