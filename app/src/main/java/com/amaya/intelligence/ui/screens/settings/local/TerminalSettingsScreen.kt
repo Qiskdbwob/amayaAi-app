@@ -55,6 +55,9 @@ fun TerminalSettingsScreen(
     var useLinuxSandbox by remember { mutableStateOf(false) }
     var loaded by remember { mutableStateOf(false) }
     var packageActionStatus by remember { mutableStateOf<String?>(null) }
+    // Last-loaded settings snapshot so a single-field change (sandbox toggle) can be
+    // persisted immediately without clobbering unrelated fields the user has not saved.
+    var loadedSettings by remember { mutableStateOf<TerminalSettings?>(null) }
 
     val detectedArch = remember { LinuxArchitecture.detect() }
     val sandboxStatus by (sandboxManager?.status?.collectAsState()
@@ -63,8 +66,23 @@ fun TerminalSettingsScreen(
     val isSandboxReady = sandboxStatus is SandboxStatus.Ready
     val isInstalling = sandboxStatus is SandboxStatus.Installing
 
+    // Persist the sandbox preference right away so the choice survives leaving the
+    // screen (previously it only applied after pressing Save, so re-opening the
+    // settings — or the app — showed the sandbox as disabled even when enabled).
+    val persistSandbox = { enabled: Boolean ->
+        useLinuxSandbox = enabled
+        scope.launch {
+            loadedSettings?.let { base ->
+                val updated = base.copy(useLinuxSandbox = enabled)
+                loadedSettings = updated
+                repository.setSettings(updated)
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         val settings = repository.getSettings()
+        loadedSettings = settings
         trusted = settings.trustedCommands.joinToString("\n")
         declined = settings.declinedCommands.joinToString("\n")
         autoApproveNonDestructive = settings.autoApproveNonDestructive
@@ -156,7 +174,7 @@ fun TerminalSettingsScreen(
                     title = "Gunakan Linux Sandbox untuk Terminal",
                     subtitle = "Arahkan perintah terminal dan eksekusi AI ke dalam container Alpine Linux (PRoot) terisolasi.",
                     checked = useLinuxSandbox && isSandboxReady,
-                    onCheckedChange = { useLinuxSandbox = it },
+                    onCheckedChange = { persistSandbox(it) },
                     enabled = loaded && isSandboxReady && !isInstalling
                 )
 
@@ -169,7 +187,7 @@ fun TerminalSettingsScreen(
                                     // Progress handled via StateFlow
                                 }
                                 if (result?.isSuccess == true) {
-                                    useLinuxSandbox = true
+                                    persistSandbox(true)
                                     snackbar.showSnackbar("Alpine Linux Sandbox berhasil dipasang!")
                                 } else {
                                     snackbar.showSnackbar("Pemasangan gagal: ${result?.exceptionOrNull()?.message}")
@@ -256,7 +274,7 @@ fun TerminalSettingsScreen(
                                 onClick = {
                                     scope.launch {
                                         sandboxManager?.uninstall()
-                                        useLinuxSandbox = false
+                                        persistSandbox(false)
                                         snackbar.showSnackbar("Alpine Linux Sandbox dihapus.")
                                     }
                                 },
@@ -333,15 +351,15 @@ fun TerminalSettingsScreen(
                         scope.launch {
                             val cleanTrusted = trusted.lines().map { it.trim() }.filter { it.isNotBlank() }
                             val cleanDeclined = declined.lines().map { it.trim() }.filter { it.isNotBlank() }
-                            repository.setSettings(
-                                TerminalSettings(
-                                    trustedCommands = cleanTrusted,
-                                    declinedCommands = cleanDeclined,
-                                    autoApproveNonDestructive = autoApproveNonDestructive,
-                                    autoApproveAll = autoApproveAll,
-                                    useLinuxSandbox = useLinuxSandbox
-                                )
+                            val saved = TerminalSettings(
+                                trustedCommands = cleanTrusted,
+                                declinedCommands = cleanDeclined,
+                                autoApproveNonDestructive = autoApproveNonDestructive,
+                                autoApproveAll = autoApproveAll,
+                                useLinuxSandbox = useLinuxSandbox
                             )
+                            loadedSettings = saved
+                            repository.setSettings(saved)
                             snackbar.showSnackbar("Terminal settings saved")
                         }
                     },
