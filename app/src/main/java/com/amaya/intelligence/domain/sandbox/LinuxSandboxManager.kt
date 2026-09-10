@@ -5,8 +5,11 @@ import android.net.ConnectivityManager
 import com.amaya.intelligence.util.debugLog
 import com.amaya.intelligence.util.errorLog
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -135,21 +138,24 @@ class LinuxSandboxManager @Inject constructor(
         }
 
         /**
-         * Ensures HTTP repositories are configured in etc/apk/repositories to prevent
-         * TLS handshake failures during bootstrap before ca-certificates is installed.
+         * Builds the APK repositories file from a specific mirror base. Visible for testing.
          */
-        internal fun configureApkRepositories(rootfsDir: File) {
+        internal fun writeApkRepositories(rootfsDir: File, mirrorBase: String) {
             val apkDir = File(rootfsDir, "etc/apk")
             apkDir.mkdirs()
             val repos = File(apkDir, "repositories")
-            val httpRepos = """
-                http://dl-cdn.alpinelinux.org/alpine/v3.20/main
-                http://dl-cdn.alpinelinux.org/alpine/v3.20/community
-            """.trimIndent() + "\n"
+            repos.writeText(
+                "$mirrorBase/$ALPINE_BRANCH/main\n$mirrorBase/$ALPINE_BRANCH/community\n"
+            )
+        }
 
-            if (!repos.exists() || repos.readText().contains("https://dl-cdn.alpinelinux.org")) {
-                repos.writeText(httpRepos)
-            }
+        /**
+         * Provisions the repositories file with the preferred mirror. Kept for
+         * install bootstrap; package installs additionally walk [ALPINE_MIRRORS]
+         * when a mirror is unreachable. Visible for testing.
+         */
+        internal fun configureApkRepositories(rootfsDir: File) {
+            writeApkRepositories(rootfsDir, ALPINE_MIRRORS.first())
         }
 
         /**
@@ -259,6 +265,14 @@ class LinuxSandboxManager @Inject constructor(
                 false
             }
         }
+
+        /**
+         * Extracts the `ERROR:` lines from an apk transcript so mirror-walk failure
+         * messages stay readable instead of dumping the whole retry log.
+         */
+        internal fun apkFailureLines(output: String): List<String> = output.lineSequence()
+            .filter { it.startsWith("ERROR:") }
+            .toList()
 
         /**
          * Extracts the embedded ELF loader from a PRoot binary into a target file.
@@ -406,7 +420,7 @@ class LinuxSandboxManager @Inject constructor(
                 architecture = arch,
                 rootfsPath = rootfsDir.absolutePath,
                 prootAvailable = isProotReady,
-                details = "Alpine Linux 3.20 (${arch.displayName})"
+                details = "Alpine Linux $ALPINE_VERSION (${arch.displayName})"
             )
         } else {
             SandboxStatus.NotInstalled
@@ -457,8 +471,7 @@ class LinuxSandboxManager @Inject constructor(
             onProgress("Downloading Alpine Linux rootfs...", 0.15f)
 
             val downloadSuccess = downloadFileWithProgress(
-                url = architecture.minirootfsUrl,
-                backupUrl = architecture.minirootfsBackupUrl,
+                urls = architecture.minirootfsUrls,
                 destination = rootfsTarGz,
                 progressStart = 0.15f,
                 progressEnd = 0.55f,
@@ -502,7 +515,7 @@ class LinuxSandboxManager @Inject constructor(
                 architecture = architecture,
                 rootfsPath = rootfsDir.absolutePath,
                 prootAvailable = bundledProotFile != null || (prootFile.exists() && prootFile.canExecute()),
-                details = "Alpine Linux 3.20 (${architecture.displayName})"
+                details = "Alpine Linux $ALPINE_VERSION (${architecture.displayName})"
             )
             _status.value = readyStatus
             onProgress("Installation complete!", 1.0f)
@@ -571,6 +584,10 @@ class LinuxSandboxManager @Inject constructor(
 
     /**
      * Helper to run an `apk` package installation command (e.g. `apk add --no-cache git curl`).
+     *
+     * Alpine mirrors go down independently of the one that served the rootfs, so the
+     * install walks [ALPINE_MIRRORS], rewriting `etc/apk/repositories` before each
+     * attempt until one answers (the pattern Kai's LinuxInstaller uses).
      */
     suspend fun runApkAdd(packageName: String): Result<String> = withContext(Dispatchers.IO) {
         checkStatus()
@@ -578,19 +595,16 @@ class LinuxSandboxManager @Inject constructor(
             return@withContext Result.failure(IllegalStateException("Alpine Linux sandbox is not installed"))
         }
 
-        // 1. Ensure repositories use HTTP to avoid chicken-and-egg SSL bootstrap before ca-certificates is installed
-        ensureApkRepositories()
-
-        // 2. Ensure guest DNS is configured with active network DNS
+        // 1. Ensure guest DNS is configured with active network DNS
         ensureGuestDns()
 
-        // 3. Clear stale apk lock if any from previously interrupted operations
+        // 2. Clear stale apk lock if any from previously interrupted operations
         val lockFile = File(rootfsDir, "lib/apk/db/lock")
         if (lockFile.exists()) {
             lockFile.delete()
         }
 
-        // 4. For git / curl, ensure ca-certificates is installed alongside them so HTTPS operations work immediately
+        // 3. For git / curl, ensure ca-certificates is installed alongside them so HTTPS operations work immediately
         val targetPackages = if (packageName.contains("git") || packageName.contains("curl")) {
             if (!packageName.contains("ca-certificates")) {
                 "$packageName ca-certificates"
@@ -610,56 +624,83 @@ class LinuxSandboxManager @Inject constructor(
         val (execCmd, envMap) = buildExecution(cmd, null)
 
         try {
-            val processBuilder = ProcessBuilder(execCmd)
-            processBuilder.environment().apply {
-                putAll(envMap)
-                remove("LD_PRELOAD")
-            }
-            processBuilder.redirectErrorStream(true)
-
-            val process = processBuilder.start()
-
-            val output = StringBuilder()
-            val readerJob = async(Dispatchers.IO) {
-                try {
-                    BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
-                        var line = reader.readLine()
-                        while (line != null) {
-                            if (output.isNotEmpty()) output.append('\n')
-                            output.append(line)
-                            line = reader.readLine()
-                        }
-                    }
-                } catch (_: Exception) {}
+            // Mirrors go down independently of the one that served the rootfs
+            // (and of each other), so rewrite etc/apk/repositories per attempt
+            // and walk the list until one answers — the Kai installer pattern.
+            var lastOutput = ""
+            var succeeded = false
+            for (mirror in ALPINE_MIRRORS) {
+                currentCoroutineContext().ensureActive()
+                writeApkRepositories(rootfsDir, mirror)
+                val (exitCode, outputStr) = execSandboxCommand(execCmd, envMap, timeoutSeconds = 180)
+                lastOutput = outputStr
+                if (exitCode == 0) {
+                    succeeded = true
+                    break
+                }
+                debugLog(TAG, "apk failed on mirror $mirror (exit $exitCode); trying next mirror")
             }
 
-            val exited = process.waitFor(180, TimeUnit.SECONDS)
-            if (!exited) {
-                process.destroyForcibly()
-                readerJob.cancel()
-                return@withContext Result.failure(
-                    IOException("Package installation timed out after 3 minutes. Network may be unreachable.")
+            if (succeeded) {
+                checkStatus()
+                Result.success(lastOutput)
+            } else {
+                val failureDetail = apkFailureLines(lastOutput).joinToString("\n")
+                    .ifBlank { lastOutput.takeLast(600).ifBlank { "no output captured" } }
+                Result.failure(
+                    IOException(
+                        "Package installation failed on all ${ALPINE_MIRRORS.size} Alpine mirrors:\n$failureDetail"
+                    )
                 )
             }
-
-            readerJob.await()
-            val exitCode = process.exitValue()
-            val outputStr = output.toString().trim()
-
-            if (exitCode == 0) {
-                checkStatus()
-                Result.success(outputStr)
-            } else {
-                val errorMsg = if (outputStr.isNotEmpty()) {
-                    "Package installation failed with exit code $exitCode:\n$outputStr"
-                } else {
-                    "Package installation failed with exit code $exitCode"
-                }
-                Result.failure(IOException(errorMsg))
-            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /**
+     * Runs a prepared sandbox command, returning its exit code and merged
+     * stdout/stderr output. Called once per mirror attempt by [runApkAdd].
+     */
+    private suspend fun execSandboxCommand(
+        execCmd: List<String>,
+        envMap: Map<String, String>,
+        timeoutSeconds: Long
+    ): Pair<Int, String> = withContext(Dispatchers.IO) {
+        val processBuilder = ProcessBuilder(execCmd)
+        processBuilder.environment().apply {
+            putAll(envMap)
+            remove("LD_PRELOAD")
+        }
+        processBuilder.redirectErrorStream(true)
+
+        val process = processBuilder.start()
+
+        val output = StringBuilder()
+        val readerJob = async(Dispatchers.IO) {
+            try {
+                BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
+                    var line = reader.readLine()
+                    while (line != null) {
+                        if (output.isNotEmpty()) output.append('\n')
+                        output.append(line)
+                        line = reader.readLine()
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        val exited = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+        if (!exited) {
+            process.destroyForcibly()
+            readerJob.cancel()
+            return@withContext Pair(-1, "Command timed out after $timeoutSeconds seconds. Network may be unreachable.")
+        }
+
+        readerJob.await()
+        Pair(process.exitValue(), output.toString().trim())
     }
 
     /**
@@ -756,15 +797,13 @@ class LinuxSandboxManager @Inject constructor(
     }
 
     private fun downloadFileWithProgress(
-        url: String,
-        backupUrl: String,
+        urls: List<String>,
         destination: File,
         progressStart: Float,
         progressEnd: Float,
         stageName: String,
         onProgress: (String, Float) -> Unit
     ): Boolean {
-        val urls = listOf(url, backupUrl)
         for (targetUrl in urls) {
             try {
                 val request = Request.Builder().url(targetUrl).build()

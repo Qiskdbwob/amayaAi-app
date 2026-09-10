@@ -2,6 +2,27 @@ package com.amaya.intelligence.domain.sandbox
 
 import android.os.Build
 
+// Pin the Alpine release the sandbox was validated against. Kai (the reference
+// implementation) caps its Alpine version at 3.22 because 3.23+ ships apk-tools 3,
+// which uses execveat() in a way proot does not support — `apk update` fails under
+// the sandbox runtime. See termux/proot-distro#532 / #595.
+const val ALPINE_VERSION = "3.22.5"
+const val ALPINE_BRANCH = "v3.22"
+
+/**
+ * Official Alpine mirrors, best first. Mirrors go down independently of the one
+ * that served the rootfs, so package installation walks this list, rewriting
+ * `etc/apk/repositories` until one answers.
+ */
+val ALPINE_MIRRORS = listOf(
+    "https://dl-cdn.alpinelinux.org/alpine",
+    "https://mirrors.edge.kernel.org/alpine",
+    "https://ftp.halifax.rwth-aachen.de/alpine",
+    "https://alpine.ethz.ch/alpine",
+    "https://mirror.csclub.uwaterloo.ca/alpine",
+    "https://mirrors.tuna.tsinghua.edu.cn/alpine",
+)
+
 /**
  * Supported Linux architectures for Alpine Linux rootfs and PRoot binary.
  * Supports both 64-bit (aarch64, x86_64) and 32-bit (armv7, x86) Android devices.
@@ -43,17 +64,13 @@ enum class LinuxArchitecture(
     );
 
     /**
-     * Primary official Alpine Linux minirootfs download URL.
+     * All Alpine minirootfs download URLs, best mirror first.
      * Ultra-lightweight (~3-5MB compressed, ~15MB uncompressed).
      */
-    val minirootfsUrl: String
-        get() = "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/$alpineArch/alpine-minirootfs-3.20.0-$alpineArch.tar.gz"
-
-    /**
-     * Mirror URL in case the primary CDN is unreachable.
-     */
-    val minirootfsBackupUrl: String
-        get() = "https://mirrors.edge.kernel.org/alpine/v3.20/releases/$alpineArch/alpine-minirootfs-3.20.0-$alpineArch.tar.gz"
+    val minirootfsUrls: List<String>
+        get() = ALPINE_MIRRORS.map { base ->
+            "$base/$ALPINE_BRANCH/releases/$alpineArch/alpine-minirootfs-$ALPINE_VERSION-$alpineArch.tar.gz"
+        }
 
     /**
      * Static PRoot binary URL for non-root execution inside Android sandbox.

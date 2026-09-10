@@ -31,10 +31,29 @@ class LinuxSandboxTest {
     }
 
     @Test
-    fun `minirootfs URLs point to valid Alpine 3_20 endpoints`() {
+    fun `alpine version is pinned to 3_22 to avoid apk-tools 3 breaking under proot`() {
+        // Alpine 3.23+ ships apk-tools 3, which uses execveat() in a way proot does
+        // not support — `apk update` fails (often as exit code 255 under the sandbox
+        // runtime). See termux/proot-distro#532 / #595. Bumping the pin requires a
+        // proot version that supports apk-tools 3.
+        assertTrue(
+            "ALPINE_VERSION=$ALPINE_VERSION must stay on 3.22.x until proot supports apk-tools 3",
+            ALPINE_VERSION.startsWith("3.22.")
+        )
+        assertEquals("v3.22", ALPINE_BRANCH)
+    }
+
+    @Test
+    fun `minirootfs URLs point to valid pinned Alpine endpoints across mirrors`() {
         for (arch in LinuxArchitecture.entries) {
-            assertTrue(arch.minirootfsUrl.contains("alpine/v3.20/releases/${arch.alpineArch}/alpine-minirootfs-3.20.0-${arch.alpineArch}.tar.gz"))
-            assertTrue(arch.minirootfsBackupUrl.contains(arch.alpineArch))
+            val urls = arch.minirootfsUrls
+            assertEquals(ALPINE_MIRRORS.size, urls.size)
+            for (mirror in ALPINE_MIRRORS) {
+                assertTrue(
+                    "$mirror must serve the pinned v3.22 minirootfs",
+                    urls.contains("$mirror/$ALPINE_BRANCH/releases/${arch.alpineArch}/alpine-minirootfs-$ALPINE_VERSION-${arch.alpineArch}.tar.gz")
+                )
+            }
             assertTrue(arch.prootBinaryUrl.contains(arch.prootArch))
         }
     }
@@ -309,25 +328,51 @@ class LinuxSandboxTest {
     }
 
     @Test
-    fun `configureApkRepositories provisions http mirrors and rewrites legacy https`() {
+    fun `configureApkRepositories provisions the primary mirror`() {
         val rootfs = createTempDirectory("alpine-repo-").toFile()
         try {
             LinuxSandboxManager.configureApkRepositories(rootfs)
             val repoFile = File(rootfs, "etc/apk/repositories")
             assertTrue(repoFile.exists())
-            val initialContent = repoFile.readText()
-            assertTrue(initialContent.contains("http://dl-cdn.alpinelinux.org/alpine/v3.20/main"))
-            assertTrue(initialContent.contains("http://dl-cdn.alpinelinux.org/alpine/v3.20/community"))
-            assertFalse(initialContent.contains("https://"))
-
-            // Rewrite legacy https repos to avoid SSL bootstrap failures
-            repoFile.writeText("https://dl-cdn.alpinelinux.org/alpine/v3.20/main\n")
-            LinuxSandboxManager.configureApkRepositories(rootfs)
-            val updatedContent = repoFile.readText()
-            assertTrue(updatedContent.contains("http://dl-cdn.alpinelinux.org/alpine/v3.20/main"))
-            assertFalse(updatedContent.contains("https://"))
+            val content = repoFile.readText()
+            val primary = ALPINE_MIRRORS.first()
+            assertEquals("$primary/$ALPINE_BRANCH/main\n$primary/$ALPINE_BRANCH/community\n", content)
+            // The pinned minirootfs ships ca-certificates-bundle, so HTTPS is safe
+            // from first install; regression to the old HTTP rewrite is a downgrade.
+            assertTrue("repositories must use HTTPS mirrors", content.startsWith("https://"))
         } finally {
             rootfs.deleteRecursively()
         }
+    }
+
+    @Test
+    fun `writeApkRepositories rewrites repositories per mirror base`() {
+        val rootfs = createTempDirectory("alpine-repo-rewrite-").toFile()
+        try {
+            LinuxSandboxManager.writeApkRepositories(rootfs, ALPINE_MIRRORS.first())
+            val repoFile = File(rootfs, "etc/apk/repositories")
+            assertTrue(repoFile.readText().contains("${ALPINE_MIRRORS.first()}/$ALPINE_BRANCH/main"))
+
+            // Walking the mirror list must fully replace the previous attempt's URL.
+            LinuxSandboxManager.writeApkRepositories(rootfs, ALPINE_MIRRORS.last())
+            val updated = repoFile.readText()
+            assertTrue(updated.contains("${ALPINE_MIRRORS.last()}/$ALPINE_BRANCH/main"))
+            assertFalse(updated.contains(ALPINE_MIRRORS.first()))
+        } finally {
+            rootfs.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `apkFailureLines extracts apk error diagnostics`() {
+        val output = """
+            fetch https://dl-cdn.alpinelinux.org/alpine/v3.22/main/x86_64/APKINDEX.tar.gz
+            ERROR: unable to select packages:
+            ERROR: unsatisfiable constraints:
+        """.trimIndent()
+        val lines = LinuxSandboxManager.apkFailureLines(output)
+        assertEquals(2, lines.size)
+        assertTrue(lines.all { it.startsWith("ERROR:") })
+        assertTrue(LinuxSandboxManager.apkFailureLines("").isEmpty())
     }
 }

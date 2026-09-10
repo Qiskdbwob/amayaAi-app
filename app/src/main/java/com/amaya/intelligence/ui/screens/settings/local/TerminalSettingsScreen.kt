@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.amaya.intelligence.data.repository.TerminalSettings
 import com.amaya.intelligence.data.repository.TerminalSettingsRepository
+import com.amaya.intelligence.domain.sandbox.ALPINE_VERSION
 import com.amaya.intelligence.domain.sandbox.LinuxArchitecture
 import com.amaya.intelligence.domain.sandbox.LinuxSandboxManager
 import com.amaya.intelligence.domain.sandbox.SandboxStatus
@@ -128,7 +129,7 @@ fun TerminalSettingsScreen(
                             }
                             is SandboxStatus.Ready -> {
                                 Text(
-                                    "Alpine Linux 3.20 aktif di internal storage. Mendukung pemasangan paket (apk), runtime Python, Node.js, Git, GCC, dan toolchain lainnya.",
+                                    "Alpine Linux $ALPINE_VERSION aktif di internal storage. Mendukung pemasangan paket (apk), runtime Python, Node.js, Git, GCC, dan toolchain lainnya.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
