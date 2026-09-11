@@ -88,13 +88,19 @@ enum class LinuxArchitecture(
          */
         fun detect(): LinuxArchitecture {
             val supported = Build.SUPPORTED_ABIS ?: emptyArray()
+            // 1. First prioritize 64-bit ABIs so 64-bit devices use native 64-bit rootfs (preventing 32-bit time64 seccomp traps)
             for (abi in supported) {
                 when {
                     abi.equals("arm64-v8a", ignoreCase = true) -> return AARCH64
                     abi.startsWith("arm64", ignoreCase = true) -> return AARCH64
+                    abi.equals("x86_64", ignoreCase = true) -> return X86_64
+                }
+            }
+            // 2. Fall back to 32-bit ABIs on 32-bit hardware
+            for (abi in supported) {
+                when {
                     abi.equals("armeabi-v7a", ignoreCase = true) -> return ARMV7
                     abi.startsWith("armeabi", ignoreCase = true) -> return ARMV7
-                    abi.equals("x86_64", ignoreCase = true) -> return X86_64
                     abi.equals("x86", ignoreCase = true) -> return X86
                 }
             }

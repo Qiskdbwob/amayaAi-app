@@ -132,11 +132,13 @@ class RunShellTool @Inject constructor(
             }
 
             val workingDir = arguments["working_dir"] as? String
+            val isApkCommand = command.contains("apk add") || command.contains("apk update") || command.contains("apk upgrade")
+            val baseTimeoutMs = if (isApkCommand) 180_000L else DEFAULT_TIMEOUT_MS
             val timeoutMs = ((arguments["timeout_ms"] as? Number)?.toLong()
                 ?: (arguments["timeout_seconds"] as? Number)?.let { it.toLong() * 1000L }
                 ?: (arguments["timeout"] as? Number)?.let { it.toLong() * 1000L })
                 ?.coerceIn(1000, MAX_TIMEOUT_MS)
-                ?: DEFAULT_TIMEOUT_MS
+                ?: baseTimeoutMs
 
             try {
                 // FIX 4.6: Removed outer withTimeout() — double timeout was redundant and caused
@@ -171,8 +173,11 @@ class RunShellTool @Inject constructor(
         val processBuilder = if (isSandboxActive) {
             val (cmdList, envMap) = linuxSandboxManager.buildExecution(command, workingDir)
             ProcessBuilder(cmdList).apply {
-                environment().putAll(envMap)
-                environment().remove("LD_PRELOAD")
+                val env = environment()
+                env.putAll(envMap)
+                com.amaya.intelligence.domain.sandbox.LinuxSandboxManager.HOST_LEAK_ENV_VARS.forEach {
+                    env.remove(it)
+                }
             }
         } else {
             ProcessBuilder("/system/bin/sh", "-c", command)

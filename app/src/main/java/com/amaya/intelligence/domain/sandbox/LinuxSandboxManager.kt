@@ -52,6 +52,21 @@ class LinuxSandboxManager @Inject constructor(
         private const val DEFAULT_RESOLV_CONF = "nameserver 8.8.8.8\nnameserver 1.1.1.1\n"
 
         /**
+         * Host environment variables that can mislead or contaminate guest Linux binaries
+         * when PRoot inherits Android process environment.
+         */
+        val HOST_LEAK_ENV_VARS = listOf(
+            "ANDROID_ROOT",
+            "ANDROID_DATA",
+            "ANDROID_STORAGE",
+            "BOOTCLASSPATH",
+            "DEX2OATBOOTCLASSPATH",
+            "EXTERNAL_STORAGE",
+            "ASEC_MOUNTPOINT",
+            "LD_PRELOAD"
+        )
+
+        /**
          * Re-create `<rootfs>/bin/sh` as a plain copy of `<rootfs>/bin/busybox`.
          * The minirootfs ships `bin/sh` as a symlink to the absolute host path
          * `/bin/busybox`, which dangles once extracted into app-private storage
@@ -112,6 +127,89 @@ class LinuxSandboxManager @Inject constructor(
         }
 
         /**
+         * Pre-populates the guest `/etc/hosts` file with localhost entries and resolved/fallback
+         * IP addresses for Alpine mirrors.
+         *
+         * Reason: On Android mobile networks (4G/5G) and enterprise Wi-Fi, direct UDP queries
+         * to external DNS servers (port 53) are commonly blocked by ISP firewalls.
+         * In Alpine Linux, musl libc always queries `/etc/hosts` before attempting UDP DNS.
+         * By pre-populating `/etc/hosts`, `apk`, `git`, and other guest binaries connect directly
+         * over TCP 443/80 without triggering blocked port 53 UDP queries.
+         */
+        internal fun populateGuestHostsFile(rootfsDir: File, resolveRemote: Boolean = false): Boolean {
+            return try {
+                val etcDir = File(rootfsDir, "etc")
+                etcDir.mkdirs()
+                val hostsFile = File(etcDir, "hosts")
+
+                val lines = mutableListOf(
+                    "127.0.0.1\tlocalhost",
+                    "::1\tlocalhost"
+                )
+
+                // Known reliable Fastly Anycast and mirror IPs for Alpine
+                val staticFallbackIps = mapOf(
+                    "dl-cdn.alpinelinux.org" to listOf(
+                        "151.101.2.132",
+                        "151.101.66.132",
+                        "151.101.130.132",
+                        "151.101.194.132"
+                    ),
+                    "mirrors.edge.kernel.org" to listOf("213.196.21.55"),
+                    "ftp.halifax.rwth-aachen.de" to listOf("137.226.34.46"),
+                    "alpine.ethz.ch" to listOf("129.132.89.152"),
+                    "mirror.csclub.uwaterloo.ca" to listOf("129.97.134.71"),
+                    "mirrors.tuna.tsinghua.edu.cn" to listOf("101.6.15.130")
+                )
+
+                val mirrorDomains = listOf(
+                    "dl-cdn.alpinelinux.org",
+                    "mirrors.edge.kernel.org",
+                    "ftp.halifax.rwth-aachen.de",
+                    "alpine.ethz.ch",
+                    "mirror.csclub.uwaterloo.ca",
+                    "mirrors.tuna.tsinghua.edu.cn"
+                )
+
+                val resolved = mutableMapOf<String, MutableList<String>>()
+
+                if (resolveRemote) {
+                    for (domain in mirrorDomains) {
+                        try {
+                            val addresses = java.net.InetAddress.getAllByName(domain)
+                            for (addr in addresses) {
+                                val ip = addr.hostAddress
+                                if (!ip.isNullOrBlank() && !ip.contains(":")) {
+                                    resolved.getOrPut(domain) { mutableListOf() }.add(ip)
+                                }
+                            }
+                        } catch (_: Exception) {
+                            // Offline or network error; fall back to static list below
+                        }
+                    }
+                }
+
+                // Add static fallback IPs if remote resolution did not resolve the domain
+                staticFallbackIps.forEach { (domain, ips) ->
+                    if (resolved[domain].isNullOrEmpty()) {
+                        resolved[domain] = ips.toMutableList()
+                    }
+                }
+
+                resolved.forEach { (domain, ips) ->
+                    ips.distinct().forEach { ip ->
+                        lines.add("$ip\t$domain")
+                    }
+                }
+
+                hostsFile.writeText(lines.joinToString("\n") + "\n")
+                hostsFile.exists() && hostsFile.length() > 0L
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        /**
          * Guarantees the guest can resolve DNS: installs `etc/resolv.conf` with
          * active network and public resolvers when missing or empty. The minirootfs ships an empty
          * resolv.conf, and without it `apk update` fails every download.
@@ -119,6 +217,7 @@ class LinuxSandboxManager @Inject constructor(
          */
         internal fun provisionGuestDns(rootfsDir: File, context: Context? = null): Boolean {
             return try {
+                populateGuestHostsFile(rootfsDir, resolveRemote = false)
                 val resolvConf = File(rootfsDir, "etc/resolv.conf")
                 if (resolvConf.exists() && resolvConf.length() > 0L) {
                     val currentContent = resolvConf.readText()
@@ -595,8 +694,9 @@ class LinuxSandboxManager @Inject constructor(
             return@withContext Result.failure(IllegalStateException("Alpine Linux sandbox is not installed"))
         }
 
-        // 1. Ensure guest DNS is configured with active network DNS
+        // 1. Ensure guest DNS is configured with active network DNS and pre-resolved hosts
         ensureGuestDns()
+        populateGuestHostsFile(rootfsDir, resolveRemote = true)
 
         // 2. Clear stale apk lock if any from previously interrupted operations
         val lockFile = File(rootfsDir, "lib/apk/db/lock")
@@ -627,9 +727,16 @@ class LinuxSandboxManager @Inject constructor(
             // Mirrors go down independently of the one that served the rootfs
             // (and of each other), so rewrite etc/apk/repositories per attempt
             // and walk the list until one answers — the Kai installer pattern.
+            // Also include HTTP mirror fallbacks if HTTPS handshake fails due to clock mismatch.
+            val candidateMirrors = buildList {
+                addAll(ALPINE_MIRRORS)
+                add("http://dl-cdn.alpinelinux.org/alpine")
+                add("http://mirrors.edge.kernel.org/alpine")
+            }
+
             var lastOutput = ""
             var succeeded = false
-            for (mirror in ALPINE_MIRRORS) {
+            for (mirror in candidateMirrors) {
                 currentCoroutineContext().ensureActive()
                 writeApkRepositories(rootfsDir, mirror)
                 val (exitCode, outputStr) = execSandboxCommand(execCmd, envMap, timeoutSeconds = 180)
@@ -649,7 +756,7 @@ class LinuxSandboxManager @Inject constructor(
                     .ifBlank { lastOutput.takeLast(600).ifBlank { "no output captured" } }
                 Result.failure(
                     IOException(
-                        "Package installation failed on all ${ALPINE_MIRRORS.size} Alpine mirrors:\n$failureDetail"
+                        "Package installation failed on all ${candidateMirrors.size} Alpine mirrors:\n$failureDetail"
                     )
                 )
             }
@@ -672,7 +779,7 @@ class LinuxSandboxManager @Inject constructor(
         val processBuilder = ProcessBuilder(execCmd)
         processBuilder.environment().apply {
             putAll(envMap)
-            remove("LD_PRELOAD")
+            HOST_LEAK_ENV_VARS.forEach { remove(it) }
         }
         processBuilder.redirectErrorStream(true)
 
@@ -718,6 +825,7 @@ class LinuxSandboxManager @Inject constructor(
         etcDir.mkdirs()
         val resolvConf = File(etcDir, "resolv.conf")
         resolvConf.writeText(buildResolvConf(context))
+        populateGuestHostsFile(rootfsDir, resolveRemote = true)
     }
 
     internal fun ensureApkRepositories() {

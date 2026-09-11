@@ -132,6 +132,31 @@ class LinuxSandboxTest {
     }
 
     @Test
+    fun `populateGuestHostsFile creates hosts file with localhost and alpine mirror mappings`() {
+        val rootfs = createTempDirectory("alpine-hosts-").toFile()
+        try {
+            assertTrue(LinuxSandboxManager.populateGuestHostsFile(rootfs, resolveRemote = false))
+            val hosts = File(rootfs, "etc/hosts")
+            assertTrue(hosts.exists())
+            val text = hosts.readText()
+            assertTrue(text.contains("127.0.0.1\tlocalhost"))
+            assertTrue(text.contains("dl-cdn.alpinelinux.org"))
+            assertTrue(text.contains("151.101.2.132"))
+        } finally {
+            rootfs.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `HOST_LEAK_ENV_VARS contains critical Android runtime variables`() {
+        val leakVars = LinuxSandboxManager.HOST_LEAK_ENV_VARS
+        assertTrue(leakVars.contains("ANDROID_ROOT"))
+        assertTrue(leakVars.contains("ANDROID_DATA"))
+        assertTrue(leakVars.contains("BOOTCLASSPATH"))
+        assertTrue(leakVars.contains("LD_PRELOAD"))
+    }
+
+    @Test
     fun `architecture detect returns a valid supported architecture`() {
         val detected = LinuxArchitecture.detect()
         assertNotNull(detected)
