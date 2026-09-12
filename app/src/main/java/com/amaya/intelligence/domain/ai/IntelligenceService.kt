@@ -65,6 +65,10 @@ interface IntelligenceService {
 
     /** Trim the trailing assistant turn and re-run the last user prompt with a fresh response. */
     fun regenerateLastResponse() {}
+    /** Edit an existing user message, update persistence, truncate subsequent turns, and regenerate. */
+    fun editMessage(messageId: String, newContent: String) {}
+    /** Resend an existing user message without retyping. */
+    fun resendMessage(messageId: String) {}
     fun setConversationMode(mode: ConversationMode) {}
 
     /** Set the global reasoning effort shown by the chat bulb. */

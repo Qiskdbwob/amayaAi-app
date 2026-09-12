@@ -100,7 +100,20 @@ fun ChatScreen(
     val connectionState = uiState.connectionState
     val workspaces by viewModel.workspaces.collectAsState()
 
-    val doSendMessage: (String) -> Unit = remember(viewModel) { { viewModel.sendMessage(it) } }
+    val composerKey = "${uiState.assistantMode}:${uiState.ownerId}:${uiState.agentId}:${uiState.conversationId}"
+    var editingMessageId by remember(composerKey) { mutableStateOf<String?>(null) }
+
+    val doSendMessage: (String) -> Unit = remember(viewModel, editingMessageId) {
+        { text ->
+            val targetEditId = editingMessageId
+            if (targetEditId != null) {
+                editingMessageId = null
+                viewModel.editMessage(targetEditId, text)
+            } else {
+                viewModel.sendMessage(text)
+            }
+        }
+    }
     val doSendMessageWithImage: (String, String, String, String) -> Unit = remember(viewModel) {
         { content, base64, mime, name -> viewModel.sendMessageWithImage(content, base64, mime, name) }
     }
@@ -138,7 +151,6 @@ fun ChatScreen(
 
     val inputBarHeight = remember { mutableIntStateOf(0) }
     val conversationKey = uiState.conversationId.orEmpty()
-    val composerKey = "${uiState.assistantMode}:${uiState.ownerId}:${uiState.agentId}:${uiState.conversationId}"
     var attachedFilePath by remember(composerKey) { mutableStateOf<String?>(null) }
     var attachedImageBase64 by remember(composerKey) { mutableStateOf<String?>(null) }
     var attachedImageMimeType by remember(composerKey) { mutableStateOf<String?>(null) }
@@ -283,10 +295,16 @@ fun ChatScreen(
             }
         }
     }
-    val onEditUserMessage: ((String) -> Unit)? = remember {
-        { text: String ->
+    val onEditUserMessage: ((String, String) -> Unit)? = remember {
+        { id: String, text: String ->
+            editingMessageId = id
             inputText.value = text
             composerEditRequest++
+        }
+    }
+    val onResendUserMessage: ((String) -> Unit)? = remember(viewModel) {
+        { id: String ->
+            viewModel.resendMessage(id)
         }
     }
     val onRegenerate: (() -> Unit)? = remember(viewModel) {
@@ -450,6 +468,7 @@ fun ChatScreen(
                     onClarify = onClarify,
                     onCopyMessage = onCopyMessage,
                     onEditUserMessage = onEditUserMessage,
+                    onResendUserMessage = onResendUserMessage,
                     onRegenerate = onRegenerate,
                     onLocalhostLinkClick = { annotationItem ->
                         selectedLocalhostLink = LocalhostLinkInfoParser.parse(annotationItem, serverIp)
@@ -578,6 +597,11 @@ fun ChatScreen(
                 onSelectModel = {
                     keyboardController?.hide()
                     showModelSelector = true
+                },
+                editingMessageId = editingMessageId,
+                onCancelEdit = {
+                    editingMessageId = null
+                    inputText.value = ""
                 },
                 onInputBarHeightChange = { inputBarHeight.intValue = it }
             )

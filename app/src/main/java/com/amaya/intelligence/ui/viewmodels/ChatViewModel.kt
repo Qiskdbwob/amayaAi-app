@@ -141,6 +141,16 @@ class ChatViewModel @Inject constructor(
         intelligenceService.regenerateLastResponse()
     }
 
+    fun editMessage(messageId: String, newContent: String) {
+        _scrollEvent.tryEmit(ScrollReason.NEW_MESSAGE)
+        intelligenceService.editMessage(messageId, newContent)
+    }
+
+    fun resendMessage(messageId: String) {
+        _scrollEvent.tryEmit(ScrollReason.NEW_MESSAGE)
+        intelligenceService.resendMessage(messageId)
+    }
+
     fun selectModel(modelKey: String) {
         intelligenceService.selectModel(modelKey)
     }

@@ -48,7 +48,8 @@ fun MessageBubble(
     onToolDecline: ((ToolExecution) -> Unit)? = null,
     onClarify: ((ToolExecution, String?) -> Unit)? = null,
     onCopyMessage: ((String) -> Unit)? = null,
-    onEditUserMessage: ((String) -> Unit)? = null,
+    onEditUserMessage: ((id: String, content: String) -> Unit)? = null,
+    onResendUserMessage: ((id: String) -> Unit)? = null,
     onRegenerate: (() -> Unit)? = null,
     onLocalhostLinkClick: ((String) -> Unit)? = null
 ) {
@@ -133,14 +134,24 @@ fun MessageBubble(
                             start = hPad,
                             top = if (delegationSource == null) vPad else 9.dp,
                             end = hPad,
-                            bottom = vPad
+                            bottom = if (message.isEdited) 2.dp else vPad
                         ),
                         fontSize = 16.sp,
                         lineHeight = 24.sp
                     )
+                    if (message.isEdited) {
+                        Text(
+                            text = "edited",
+                            color = Color.White.copy(alpha = 0.72f),
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier
+                                .align(Alignment.End)
+                                .padding(end = hPad, bottom = 6.dp)
+                        )
+                    }
                 }
             }
-            // Quick actions: always-visible icons, so copy/edit don't depend on discovering the
+            // Quick actions: always-visible icons, so copy/edit/resend don't depend on discovering the
             // long-press menu. Both entry points invoke the same callbacks wired by the chat host.
             Row(
                 modifier = Modifier.padding(top = 4.dp, end = 2.dp),
@@ -158,7 +169,14 @@ fun MessageBubble(
                     icon = Icons.Default.Edit,
                     label = "Edit message",
                     onClick = onEditUserMessage?.let { callback ->
-                        { callback(message.formattedContent ?: message.content) }
+                        { callback(message.id, message.formattedContent ?: message.content) }
+                    }
+                )
+                MessageQuickAction(
+                    icon = Icons.Default.Refresh,
+                    label = "Resend message",
+                    onClick = onResendUserMessage?.let { callback ->
+                        { callback(message.id) }
                     }
                 )
             }
@@ -179,7 +197,15 @@ fun MessageBubble(
                     leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
                     onClick = {
                         userMenuOpen = false
-                        onEditUserMessage?.invoke(message.formattedContent ?: message.content)
+                        onEditUserMessage?.invoke(message.id, message.formattedContent ?: message.content)
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Resend") },
+                    leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) },
+                    onClick = {
+                        userMenuOpen = false
+                        onResendUserMessage?.invoke(message.id)
                     }
                 )
             }

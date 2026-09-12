@@ -451,6 +451,87 @@ class LocalIntelligenceService @Inject constructor(
         }
     }
 
+    override fun editMessage(messageId: String, newContent: String) {
+        val trimmed = newContent.trim()
+        if (trimmed.isBlank()) return
+        val currentState = _uiState.value
+        if (currentState.isStreaming) {
+            stopGeneration()
+        }
+        val targetIdx = currentState.messages.indexOfFirst { it.id == messageId }
+        if (targetIdx < 0) return
+        val targetMsg = currentState.messages[targetIdx]
+        if (targetMsg.role != MessageRole.USER) return
+
+        val updatedUserMsg = targetMsg.copy(
+            content = trimmed,
+            metadata = targetMsg.metadata + mapOf(
+                "isEdited" to "true",
+                "editedAt" to System.currentTimeMillis().toString()
+            )
+        )
+        val truncatedMessages = currentState.messages.take(targetIdx) + updatedUserMsg
+        val contextIdx = currentState.contextMessages.indexOfFirst { it.id == messageId }
+        val truncatedContext = if (contextIdx >= 0) {
+            currentState.contextMessages.take(contextIdx) + updatedUserMsg
+        } else {
+            truncatedMessages
+        }
+        val updatedState = currentState.copy(
+            messages = truncatedMessages,
+            contextMessages = truncatedContext,
+            error = null,
+            isLoading = true,
+            isStreaming = true
+        )
+        _uiState.value = updatedState
+        saveCurrentConversation()
+        scope.launch {
+            startTurn(
+                content = trimmed,
+                images = updatedUserMsg.attachments.map { com.amaya.intelligence.data.remote.api.ChatImage(it.dataBase64, it.mimeType, it.fileName) },
+                initialState = updatedState,
+                projectVisible = true,
+                preexistingUserMessage = true
+            )
+        }
+    }
+
+    override fun resendMessage(messageId: String) {
+        val currentState = _uiState.value
+        if (currentState.isStreaming) return
+        val targetIdx = currentState.messages.indexOfFirst { it.id == messageId }
+        if (targetIdx < 0) return
+        val targetMsg = currentState.messages[targetIdx]
+        if (targetMsg.role != MessageRole.USER) return
+
+        val truncatedMessages = currentState.messages.take(targetIdx + 1)
+        val contextIdx = currentState.contextMessages.indexOfFirst { it.id == messageId }
+        val truncatedContext = if (contextIdx >= 0) {
+            currentState.contextMessages.take(contextIdx + 1)
+        } else {
+            truncatedMessages
+        }
+        val updatedState = currentState.copy(
+            messages = truncatedMessages,
+            contextMessages = truncatedContext,
+            error = null,
+            isLoading = true,
+            isStreaming = true
+        )
+        _uiState.value = updatedState
+        saveCurrentConversation()
+        scope.launch {
+            startTurn(
+                content = targetMsg.content,
+                images = targetMsg.attachments.map { com.amaya.intelligence.data.remote.api.ChatImage(it.dataBase64, it.mimeType, it.fileName) },
+                initialState = updatedState,
+                projectVisible = true,
+                preexistingUserMessage = true
+            )
+        }
+    }
+
     override fun stopGeneration() {
         currentConversationId?.let { conversationId ->
             activeTurns[conversationId]?.let { turn ->

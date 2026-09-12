@@ -143,6 +143,8 @@ object IntelligenceModule {
             override fun respondToClarification(executionId: String, answer: String?) =
                 active.respondToClarification(executionId, answer)
             override fun regenerateLastResponse() = active.regenerateLastResponse()
+            override fun editMessage(messageId: String, newContent: String) = active.editMessage(messageId, newContent)
+            override fun resendMessage(messageId: String) = active.resendMessage(messageId)
 
             override fun connect(ip: String, port: Int) = active.connect(ip, port)
             override fun resync() = active.resync()

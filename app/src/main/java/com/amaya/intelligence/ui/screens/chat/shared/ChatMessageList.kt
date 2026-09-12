@@ -76,7 +76,8 @@ fun ChatMessageList(
     onToolDecline: ((ToolExecution) -> Unit)?,
     onClarify: ((ToolExecution, String?) -> Unit)? = null,
     onCopyMessage: ((String) -> Unit)? = null,
-    onEditUserMessage: ((String) -> Unit)? = null,
+    onEditUserMessage: ((id: String, content: String) -> Unit)? = null,
+    onResendUserMessage: ((id: String) -> Unit)? = null,
     onRegenerate: (() -> Unit)? = null,
     onLocalhostLinkClick: ((String) -> Unit)?,
     onScrollToBottomClick: () -> Unit = {},
@@ -305,6 +306,7 @@ fun ChatMessageList(
                     onClarify = onClarify,
                     onCopyMessage = onCopyMessage,
                     onEditUserMessage = onEditUserMessage,
+                    onResendUserMessage = onResendUserMessage,
                     onRegenerate = onRegenerate,
                     onLocalhostLinkClick = onLocalhostLinkClick
                 )

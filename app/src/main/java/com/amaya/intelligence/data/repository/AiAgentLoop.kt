@@ -503,43 +503,57 @@ internal fun AiRepository.chatImpl(
                     }
 
                     is ChatResponse.ToolCall -> {
-                        StreamDebugLog.event(conversationId, null, "TOOL_CALL", "id=${response.id} name=${response.name}")
-                        if (!isValidToolCall(response.id, response.name, allowedToolNames, toolCalls.map { it.id }.toSet())) {
-                            // Mis-called tool: do not terminate the turn. Record the rejection and
-                            // feed a failure back so the model can self-correct (Hermes-style
-                            // recovery). Bounded by MAX_FAILED_TOOL_ATTEMPTS to stop an infinite
-                            // mis-call loop.
+                        val sanitizedName = sanitizeToolName(response.name, allowedToolNames)
+                        StreamDebugLog.event(conversationId, null, "TOOL_CALL", "id=${response.id} rawName=${response.name} name=$sanitizedName")
+                        val rawId = response.id.ifBlank { "synth_call_${System.currentTimeMillis()}" }
+                        val isDuplicateId = rawId in toolCalls.map { it.id }.toSet()
+                        val callId = if (isDuplicateId) "${rawId}_dup_${System.currentTimeMillis()}" else rawId
+                        val isRecognized = sanitizedName in allowedToolNames
+
+                        if (!isRecognized) {
                             failedToolAttempts++
-                            rejectedToolCalls.add(ToolCallMessage(
-                                id = response.id.ifBlank { "rejected_$failedToolAttempts" },
-                                name = response.name,
-                                arguments = response.arguments,
-                                metadata = response.metadata
-                            ))
-                            StreamDebugLog.event(conversationId, null, "TOOL_CALL_REJECTED", "id=${response.id} name=${response.name} attempts=$failedToolAttempts")
-                            if (failedToolAttempts >= MAX_FAILED_TOOL_ATTEMPTS) {
-                                send(AgentEvent.Error(
-                                    "The model issued $failedToolAttempts invalid or duplicate tool calls (last: ${response.name}); stopping the tool loop after $MAX_FAILED_TOOL_ATTEMPTS failures.",
-                                    retryable = false
-                                ))
-                                terminalError = true
-                                providerTerminal = true
-                                continueLoop = false
+                            val available = allowedToolNames.take(16).joinToString()
+                            invalidToolArgumentErrors[callId] = IllegalArgumentException(
+                                "Tool '${response.name}' is not recognized or available in this environment. Available tools: $available. Please select from available tools or answer the user directly."
+                            )
+                            StreamDebugLog.event(conversationId, null, "TOOL_CALL_UNRECOGNIZED", "name=${response.name} attempts=$failedToolAttempts")
+                        } else if (isDuplicateId) {
+                            failedToolAttempts++
+                            invalidToolArgumentErrors[callId] = IllegalArgumentException(
+                                "Duplicate tool call ID detected for '$sanitizedName'. Each tool invocation must provide a unique call ID."
+                            )
+                            StreamDebugLog.event(conversationId, null, "TOOL_CALL_DUPLICATE_ID", "name=$sanitizedName attempts=$failedToolAttempts")
+                        } else {
+                            val validation = validateToolArguments(sanitizedName, response.arguments, tools)
+                            validation.onFailure { error ->
+                                invalidToolArgumentErrors[callId] = error
                             }
+                        }
+
+                        if (failedToolAttempts >= MAX_FAILED_TOOL_ATTEMPTS) {
+                            send(AgentEvent.Error(
+                                "The model issued $failedToolAttempts consecutive invalid tool calls (last: ${response.name}); stopping the tool loop after $MAX_FAILED_TOOL_ATTEMPTS failures.",
+                                retryable = false
+                            ))
+                            terminalError = true
+                            providerTerminal = true
+                            continueLoop = false
                             return@collect
                         }
-                        val validation = validateToolArguments(response.name, response.arguments, tools)
-                        val toolArguments = validation.getOrElse { error ->
-                            invalidToolArgumentErrors[response.id] = error
+
+                        val resolvedArguments = if (!isRecognized || isDuplicateId) {
                             response.arguments
+                        } else {
+                            validateToolArguments(sanitizedName, response.arguments, tools).getOrElse { response.arguments }
                         }
+
                         hasToolCalls = true
-                        send(AgentEvent.ToolCallStart(response.id, response.name, toolArguments, response.metadata))
+                        send(AgentEvent.ToolCallStart(callId, sanitizedName, resolvedArguments, response.metadata))
 
                         toolCalls.add(ToolCallMessage(
-                            id = response.id,
-                            name = response.name,
-                            arguments = toolArguments,
+                            id = callId,
+                            name = sanitizedName,
+                            arguments = resolvedArguments,
                             metadata = response.metadata
                         ))
                     }
@@ -715,6 +729,8 @@ internal fun AiRepository.chatImpl(
                     responseItems = responseItems
                 )
 
+                val executedBatchSignatures = mutableMapOf<String, String>()
+
                 for (toolCall in toolCalls) {
                     val channel = this
                     val executionArguments = if (toolCall.name == "browser") {
@@ -730,42 +746,72 @@ internal fun AiRepository.chatImpl(
                     completedToolCalls.add("${toolCall.name}: ${toolCall.arguments}")
                     executedToolCalls++
                     StreamDebugLog.event(conversationId, null, "TOOL_EXECUTE", "id=${toolCall.id} name=${toolCall.name}")
-                    val result = invalidToolArgumentErrors.remove(toolCall.id)?.let { error ->
-                        ToolResult.Error(
-                            message = "Invalid arguments for ${toolCall.name}: ${error.message.orEmpty()}",
-                            errorType = com.amaya.intelligence.tools.ErrorType.VALIDATION_ERROR
-                        )
-                    } ?: if (runtimeTarget == AgentRuntimeTarget.WINDOWS_BRIDGE && toolCall.name !in allowedToolNames) {
-                        ToolResult.Error(
-                            message = "Tool '${toolCall.name}' is not available in Windows Bridge chat.",
-                            errorType = com.amaya.intelligence.tools.ErrorType.PERMISSION_ERROR,
-                            recoverable = false
-                        )
-                    } else {
-                        mcpToolExecutor.execute(
-                            toolName = toolCall.name,
-                            arguments = executionArguments,
-                            workspacePath = workspacePath,
-                            toolCallId = toolCall.id,
-                            onEvent = { event -> if (event is AgentEvent) channel.send(event) },
-                            onConfirmationRequired = onConfirmation,
-                            onClarificationRequired = onClarification,
-                            providerConnection = connection,
-                            selectedModelId = model,
-                            conversationId = sessionId,
-                            ownerId = ownerId,
-                            agentId = activeAgent?.id,
-                            assistantMode = assistantMode,
-                            agentCapabilityProfile = agentCapabilityProfile
-                        )
-                    }
 
                     val currentCallSig = "${toolCall.name}:${JSONObject(toolCall.arguments)}"
-                    val identicalCallCount = if (lastExecutedCallSignature[toolCall.name] == currentCallSig) {
-                        (repeatedIdenticalCallCount[toolCall.name] ?: 0) + 1
-                    } else 1
-                    lastExecutedCallSignature[toolCall.name] = currentCallSig
-                    repeatedIdenticalCallCount[toolCall.name] = identicalCallCount
+                    val batchCachedResult = executedBatchSignatures[currentCallSig]
+
+                    val result = invalidToolArgumentErrors.remove(toolCall.id)?.let { error ->
+                        ToolResult.Error(
+                            message = error.message.orEmpty().ifBlank { "Invalid arguments for ${toolCall.name}" },
+                            errorType = com.amaya.intelligence.tools.ErrorType.VALIDATION_ERROR,
+                            recoverable = true
+                        )
+                    } ?: if (batchCachedResult != null) {
+                        StreamDebugLog.event(conversationId, null, "TOOL_DEDUP_BATCH", "tool=${toolCall.name}")
+                        ToolResult.Success(
+                            "[Duplicate Call Deduplicated]: Tool '${toolCall.name}' with identical arguments was already executed in this batch. Reusing previous output:\n$batchCachedResult"
+                        )
+                    } else {
+                        val identicalCallCount = if (lastExecutedCallSignature[toolCall.name] == currentCallSig) {
+                            (repeatedIdenticalCallCount[toolCall.name] ?: 0) + 1
+                        } else 1
+                        lastExecutedCallSignature[toolCall.name] = currentCallSig
+                        repeatedIdenticalCallCount[toolCall.name] = identicalCallCount
+
+                        if (identicalCallCount >= 3) {
+                            StreamDebugLog.event(conversationId, null, "TOOL_CIRCUIT_BREAKER", "tool=${toolCall.name} count=$identicalCallCount")
+                            ToolResult.Error(
+                                message = "[Circuit Breaker Triggered]: Tool '${toolCall.name}' has been invoked $identicalCallCount times consecutively with identical arguments without strategy change. Invocation suppressed to prevent an infinite loop. Please analyze existing data, alter parameters, or conclude your answer directly.",
+                                errorType = com.amaya.intelligence.tools.ErrorType.VALIDATION_ERROR,
+                                recoverable = true
+                            )
+                        } else if (runtimeTarget == AgentRuntimeTarget.WINDOWS_BRIDGE && toolCall.name !in allowedToolNames) {
+                            ToolResult.Error(
+                                message = "Tool '${toolCall.name}' is not available in Windows Bridge chat.",
+                                errorType = com.amaya.intelligence.tools.ErrorType.PERMISSION_ERROR,
+                                recoverable = false
+                            )
+                        } else {
+                            try {
+                                mcpToolExecutor.execute(
+                                    toolName = toolCall.name,
+                                    arguments = executionArguments,
+                                    workspacePath = workspacePath,
+                                    toolCallId = toolCall.id,
+                                    onEvent = { event -> if (event is AgentEvent) channel.send(event) },
+                                    onConfirmationRequired = onConfirmation,
+                                    onClarificationRequired = onClarification,
+                                    providerConnection = connection,
+                                    selectedModelId = model,
+                                    conversationId = sessionId,
+                                    ownerId = ownerId,
+                                    agentId = activeAgent?.id,
+                                    assistantMode = assistantMode,
+                                    agentCapabilityProfile = agentCapabilityProfile
+                                )
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                throw cancelled
+                            } catch (e: Throwable) {
+                                errorLog("AiAgentLoop", "Tool execution threw exception: ${toolCall.name}", e)
+                                StreamDebugLog.event(conversationId, null, "TOOL_EXEC_EXCEPTION", "tool=${toolCall.name} error=${e.message}")
+                                ToolResult.Error(
+                                    message = "Tool execution exception in '${toolCall.name}': ${e.message ?: e.javaClass.simpleName}. You may check parameters or try an alternative method.",
+                                    errorType = com.amaya.intelligence.tools.ErrorType.EXECUTION_ERROR,
+                                    recoverable = true
+                                )
+                            }
+                        }
+                    }
 
                     val rawResultContent = when (result) {
                         is ToolResult.Success -> result.output
@@ -774,7 +820,11 @@ internal fun AiRepository.chatImpl(
                         is ToolResult.RequiresConfirmation -> "Error: Approval could not be completed: ${result.reason}"
                     }
                     var resultContent = rawResultContent
-                    if (identicalCallCount >= 2) {
+                    if (result is ToolResult.Success || result is ToolResult.Deferred) {
+                        executedBatchSignatures[currentCallSig] = rawResultContent
+                    }
+                    val identicalCallCount = repeatedIdenticalCallCount[toolCall.name] ?: 1
+                    if (identicalCallCount == 2) {
                         resultContent += "\n\n[Circuit Breaker Notice]: Tool '${toolCall.name}' was executed with identical arguments $identicalCallCount times consecutively. If you are stuck in a loop or receiving the same outcome, do not repeat this exact call again. Alter your strategy, verify required prerequisites, or proceed with available evidence."
                     }
                     // Repeated identical tool failures get a self-correction hint appended to the
@@ -1019,6 +1069,29 @@ internal fun extractAnswerLikeText(result: String): String {
             ?.takeIf(String::isNotBlank)
             ?: trimmed
     }
+    return trimmed
+}
+
+internal fun shouldCircuitBreakConsecutiveCalls(consecutiveCount: Int): Boolean = consecutiveCount >= 3
+
+internal fun computeToolCallSignature(toolName: String, arguments: Map<String, Any?>): String =
+    "$toolName:${JSONObject(arguments)}"
+
+internal fun sanitizeToolName(name: String, allowedToolNames: Set<String>): String {
+    val trimmed = name.trim()
+    if (trimmed in allowedToolNames) return trimmed
+    // Strip special tokens e.g. <|channel|>commentary, <|call:...|>, <|thought|>, etc.
+    val strippedTokens = trimmed.substringBefore("<|").substringBefore("[:").substringBefore("(").trim()
+    if (strippedTokens in allowedToolNames) return strippedTokens
+    // Strip namespace prefix e.g. tools.browser, functions.browser, tool:browser
+    val afterNamespace = strippedTokens.substringAfterLast('.').substringAfterLast(':').trim()
+    if (afterNamespace in allowedToolNames) return afterNamespace
+    // Match prefix against allowed tool names (e.g. browser_xxx or browser...)
+    val prefixMatch = allowedToolNames.firstOrNull { allowed ->
+        strippedTokens.startsWith(allowed, ignoreCase = true) &&
+            (strippedTokens.length == allowed.length || !strippedTokens[allowed.length].isLetterOrDigit())
+    }
+    if (prefixMatch != null) return prefixMatch
     return trimmed
 }
 
