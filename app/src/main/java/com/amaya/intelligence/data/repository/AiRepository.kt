@@ -317,17 +317,28 @@ class AiRepository @Inject constructor(
         val localTools = toolExecutor.getToolDefinitions(assistantMode, agentCapabilityProfile, delegationAgentIds)
             .filterNot { !hasWorkspace && it.name in setOf("workspace_search", "workspace_change", "read_file", "run_shell", "invoke_subagents") }
             .map { it.toAiToolDefinition(truncateDesc = true) }
-        // MCP tools come from external servers — truncate their descriptions too
-        val mcpTools = mcpClientManager.getCachedToolDefinitions().map { tool ->
-            tool.copy(
-                description = tool.description.let { if (it.length > 1023) it.take(1023) + "…" else it },
-                parameters = tool.parameters.copy(
-                    properties = tool.parameters.properties.mapValues { (_, prop) ->
-                        prop.copy(description = prop.description.let { if (it.length > 1023) it.take(1023) + "…" else it })
-                    }
+        // MCP tools come from external servers — truncate their descriptions too.
+        // CHAT mode excludes MCP by design (strict tool surface); AGENT mode defers to the
+        // agent's capability profile (mcp=..., default true for legacy profiles); PROJECT
+        // mode keeps today's behavior of advertising enabled servers.
+        val mcpTools = mcpClientManager.getCachedToolDefinitions()
+            .filter { tool ->
+                when (assistantMode) {
+                    AssistantMode.CHAT -> false
+                    AssistantMode.AGENT -> agentCapabilityProfile?.allows(tool.name) ?: true
+                    AssistantMode.PROJECT -> true
+                }
+            }
+            .map { tool ->
+                tool.copy(
+                    description = tool.description.let { if (it.length > 1023) it.take(1023) + "…" else it },
+                    parameters = tool.parameters.copy(
+                        properties = tool.parameters.properties.mapValues { (_, prop) ->
+                            prop.copy(description = prop.description.let { if (it.length > 1023) it.take(1023) + "…" else it })
+                        }
+                    )
                 )
-            )
-        }
+            }
         debugLog("AiRepository") { "Building tool defs: local=${localTools.size}, mcp=${mcpTools.size}" }
         return localTools + mcpTools
     }
