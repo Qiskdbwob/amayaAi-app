@@ -181,6 +181,7 @@ class LinuxSandboxTest {
             workspaceDir = null
         )
 
+        assertTrue(args.contains("--kill-on-exit"))
         assertTrue(args.contains("--link2symlink"))
         assertTrue(args.contains("-0"))
         assertTrue(args.contains("-r"))

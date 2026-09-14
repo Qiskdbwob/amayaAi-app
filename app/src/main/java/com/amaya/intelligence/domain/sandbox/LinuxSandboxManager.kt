@@ -264,11 +264,13 @@ class LinuxSandboxManager @Inject constructor(
             prootPath: String?,
             rootfsDir: File,
             command: String,
-            workspaceDir: String?
+            workspaceDir: String?,
+            prootTmpDir: File? = null
         ): List<String> {
             return if (prootPath != null) {
                 val list = mutableListOf(
                     prootPath,
+                    "--kill-on-exit",
                     "--link2symlink",
                     "-0",
                     "-r", rootfsDir.absolutePath,
@@ -276,6 +278,10 @@ class LinuxSandboxManager @Inject constructor(
                     "-b", "/proc",
                     "-b", "/sys"
                 )
+                if (prootTmpDir != null) {
+                    list.add("-b")
+                    list.add("${prootTmpDir.absolutePath}:/tmp")
+                }
                 if (workspaceDir != null && File(workspaceDir).exists()) {
                     list.add("-b")
                     list.add("$workspaceDir:/workspace")
@@ -300,7 +306,8 @@ class LinuxSandboxManager @Inject constructor(
         internal fun buildExecutionEnv(
             hasProot: Boolean,
             prootTmpDir: File,
-            prootLoaderPath: String? = null
+            prootLoaderPath: String? = null,
+            is64Bit: Boolean? = null
         ): Map<String, String> {
             return buildMap {
                 put("HOME", "/root")
@@ -316,8 +323,14 @@ class LinuxSandboxManager @Inject constructor(
                     put("PROOT_IGNORE_MISSING_BINDINGS", "1")
                     if (!prootLoaderPath.isNullOrBlank()) {
                         put("PROOT_LOADER", prootLoaderPath)
-                        put("PROOT_LOADER_32", prootLoaderPath)
-                        put("PROOT_LOADER_64", prootLoaderPath)
+                        when (is64Bit) {
+                            true -> put("PROOT_LOADER_64", prootLoaderPath)
+                            false -> put("PROOT_LOADER_32", prootLoaderPath)
+                            null -> {
+                                put("PROOT_LOADER_32", prootLoaderPath)
+                                put("PROOT_LOADER_64", prootLoaderPath)
+                            }
+                        }
                     }
                     put("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
                     put("GIT_SSL_CAINFO", "/etc/ssl/certs/ca-certificates.crt")
@@ -650,10 +663,16 @@ class LinuxSandboxManager @Inject constructor(
         command: String,
         workspaceDir: String?
     ): Pair<List<String>, Map<String, String>> {
-        // Idempotent pre-exec provisioning (only when a rootfs is really installed):
-        // guest tmp dir + DNS resolver. Also keeps rootfs installs created before
-        // these steps existed fully working.
-        if (File(rootfsDir, "bin/busybox").exists()) {
+        val rootfsReady = File(rootfsDir, "bin/busybox").exists()
+        val prootTmpDir = File(sandboxBaseDir, "tmp")
+        prootTmpDir.mkdirs() // writable host dir for PRoot's loader extraction & guest /tmp bind
+        try {
+            prootTmpDir.setReadable(true, false)
+            prootTmpDir.setWritable(true, false)
+            prootTmpDir.setExecutable(true, false)
+        } catch (_: Exception) {}
+
+        if (rootfsReady) {
             File(rootfsDir, "tmp").mkdirs()
             File(rootfsDir, "root").mkdirs()
             ensureGuestDns()
@@ -665,18 +684,15 @@ class LinuxSandboxManager @Inject constructor(
             ?: prootFile.takeIf { it.exists() && it.canExecute() }?.absolutePath
         val hasProot = prootPath != null
 
-        val cmdList = buildExecutionArgs(prootPath, rootfsDir, command, workspaceDir)
-
-        val prootTmpDir = File(sandboxBaseDir, "tmp")
-        prootTmpDir.mkdirs() // writable host dir for PRoot's loader extraction
-        try {
-            prootTmpDir.setReadable(true, false)
-            prootTmpDir.setWritable(true, false)
-            prootTmpDir.setExecutable(true, false)
-        } catch (_: Exception) {}
+        val cmdList = buildExecutionArgs(prootPath, rootfsDir, command, workspaceDir, prootTmpDir)
 
         val loaderFile = getOrExtractProotLoader()
-        val envMap = buildExecutionEnv(hasProot, prootTmpDir, loaderFile?.absolutePath)
+        val envMap = buildExecutionEnv(
+            hasProot = hasProot,
+            prootTmpDir = prootTmpDir,
+            prootLoaderPath = loaderFile?.absolutePath,
+            is64Bit = LinuxArchitecture.detect().is64Bit
+        )
 
         return Pair(cmdList, envMap)
     }
@@ -716,9 +732,9 @@ class LinuxSandboxManager @Inject constructor(
         }
 
         val cmd = if (targetPackages.contains("ca-certificates")) {
-            "apk update && apk add --no-cache $targetPackages && (which update-ca-certificates >/dev/null 2>&1 && update-ca-certificates || true)"
+            "apk --timeout 20 update && apk --timeout 60 add --no-cache $targetPackages && (which update-ca-certificates >/dev/null 2>&1 && update-ca-certificates || true)"
         } else {
-            "apk update && apk add --no-cache $targetPackages"
+            "apk --timeout 20 update && apk --timeout 60 add --no-cache $targetPackages"
         }
 
         val (execCmd, envMap) = buildExecution(cmd, null)
@@ -739,7 +755,7 @@ class LinuxSandboxManager @Inject constructor(
             for (mirror in candidateMirrors) {
                 currentCoroutineContext().ensureActive()
                 writeApkRepositories(rootfsDir, mirror)
-                val (exitCode, outputStr) = execSandboxCommand(execCmd, envMap, timeoutSeconds = 180)
+                val (exitCode, outputStr) = execSandboxCommand(execCmd, envMap, timeoutSeconds = 60)
                 lastOutput = outputStr
                 if (exitCode == 0) {
                     succeeded = true
