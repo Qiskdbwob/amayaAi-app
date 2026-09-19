@@ -30,16 +30,17 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # Catatan: step android-actions/setup-android@v3 sengaja DIHAPUS. Action ini
+      # menjalankan `sdkmanager tools`, tetapi paket "tools" sudah dihapus dari
+      # repositori Android SDK sehingga step selalu crash (lihat run #34981122936).
+      # Image ubuntu-latest sudah memuat Android SDK lengkap dengan lisensi yang
+      # disetujui, dan AGP otomatis menginstal platform/build-tools yang belum ada.
 
-      - name: Ensure Gradle Wrapper
-        run: |
-          mkdir -p gradle/wrapper
-          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ] || [ ! -s "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "gradle-wrapper.jar missing, downloading wrapper jar..."
-            curl -sSL -o gradle/wrapper/gradle-wrapper.jar https://raw.githubusercontent.com/gradle/gradle/master/gradle/wrapper/gradle-wrapper.jar
-          fi
+      # gradle-wrapper.jar di-commit dan di-pin ke tag gradle v8.14.3 (bukan branch
+      # bergerak "master" — tidak reprodusibel dan berisiko supply-chain), lalu
+      # checksumnya divalidasi sebelum dipakai.
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -69,6 +70,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
+          shopt -s nullglob
           for f in app/build/test-results/testPerfUnitTest/*.xml; do
             if grep -q "<failure" "$f"; then
               echo "===== $f ====="
@@ -98,16 +100,17 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # Catatan: step android-actions/setup-android@v3 sengaja DIHAPUS. Action ini
+      # menjalankan `sdkmanager tools`, tetapi paket "tools" sudah dihapus dari
+      # repositori Android SDK sehingga step selalu crash (lihat run #34981122936).
+      # Image ubuntu-latest sudah memuat Android SDK lengkap dengan lisensi yang
+      # disetujui, dan AGP otomatis menginstal platform/build-tools yang belum ada.
 
-      - name: Ensure Gradle Wrapper
-        run: |
-          mkdir -p gradle/wrapper
-          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ] || [ ! -s "gradle/wrapper/gradle-wrapper.jar" ]; then
-            echo "gradle-wrapper.jar missing, downloading wrapper jar..."
-            curl -sSL -o gradle/wrapper/gradle-wrapper.jar https://raw.githubusercontent.com/gradle/gradle/master/gradle/wrapper/gradle-wrapper.jar
-          fi
+      # gradle-wrapper.jar di-commit dan di-pin ke tag gradle v8.14.3 (bukan branch
+      # bergerak "master" — tidak reprodusibel dan berisiko supply-chain), lalu
+      # checksumnya divalidasi sebelum dipakai.
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
