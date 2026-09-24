@@ -16,7 +16,9 @@ const val ALPINE_BRANCH = "v3.22"
  */
 val ALPINE_MIRRORS = listOf(
     "https://dl-cdn.alpinelinux.org/alpine",
+    "http://dl-cdn.alpinelinux.org/alpine",
     "https://mirrors.edge.kernel.org/alpine",
+    "http://mirrors.edge.kernel.org/alpine",
     "https://ftp.halifax.rwth-aachen.de/alpine",
     "https://alpine.ethz.ch/alpine",
     "https://mirror.csclub.uwaterloo.ca/alpine",

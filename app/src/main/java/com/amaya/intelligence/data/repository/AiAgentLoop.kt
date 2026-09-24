@@ -82,28 +82,29 @@ internal fun AiRepository.chatImpl(
 
         val activeSelection = settings.activeSelection
         val resolvedConnectionId = connectionId ?: activeSelection?.connectionId
-        val connection = settings.connections.firstOrNull { it.id == resolvedConnectionId }
+        val initialConnection = settings.connections.firstOrNull { it.id == resolvedConnectionId }
 
-        if (connection == null) {
+        if (initialConnection == null) {
             send(AgentEvent.Error("No model selected. Open Settings → Manage Models and select a model.", retryable = false))
             return@channelFlow
         }
+        var connection: ProviderConnection = initialConnection
 
-        val model = selectedModel?.takeIf { it.isNotBlank() }
+        var model = selectedModel?.takeIf { it.isNotBlank() }
             ?: activeSelection?.takeIf { it.connectionId == connection.id }?.modelId
             ?: ""
         if (model.isBlank() || connection.visibleModels.none { it.id == model && it.enabled }) {
             send(AgentEvent.Error("The selected model is unavailable. Open Settings → Manage Models and select another model.", retryable = false))
             return@channelFlow
         }
-        val provider = resolveProvider(connection)
-        val modelConfig = connection.visibleModels.first { it.id == model }
-        val maxOutputTokens = modelConfig.maxOutputTokens?.coerceIn(256, 32_768) ?: AiRepository.DEFAULT_MAX_OUTPUT_TOKENS
-        val providerContextWindowTokens = modelConfig.contextWindowTokens?.coerceAtLeast(maxOutputTokens + 1) ?: 32_768
-        val maxInputTokens = modelConfig.maxInputTokens
+        var provider = resolveProvider(connection)
+        var modelConfig = connection.visibleModels.first { it.id == model }
+        var maxOutputTokens = modelConfig.maxOutputTokens?.coerceIn(256, 32_768) ?: AiRepository.DEFAULT_MAX_OUTPUT_TOKENS
+        var providerContextWindowTokens = modelConfig.contextWindowTokens?.coerceAtLeast(maxOutputTokens + 1) ?: 32_768
+        var maxInputTokens = modelConfig.maxInputTokens
             ?.coerceIn(1, providerContextWindowTokens - maxOutputTokens)
             ?: providerContextWindowTokens - maxOutputTokens
-        val contextWindowTokens = minOf(providerContextWindowTokens, maxInputTokens + maxOutputTokens)
+        var contextWindowTokens = minOf(providerContextWindowTokens, maxInputTokens + maxOutputTokens)
         if (userImages.isNotEmpty() && !modelConfig.supportsImages) {
             send(AgentEvent.Error("The selected model does not support image input.", retryable = false))
             return@channelFlow
@@ -299,6 +300,7 @@ internal fun AiRepository.chatImpl(
         val repeatedToolErrors = mutableMapOf<String, Int>()
         val lastExecutedCallSignature = mutableMapOf<String, String>()
         val repeatedIdenticalCallCount = mutableMapOf<String, Int>()
+        val callSignatureFrequency = mutableMapOf<String, Int>()
         val invalidToolArgumentErrors = mutableMapOf<String, Throwable>()
         // Scheme C: how many tool calls actually executed this turn + how many verification
         // passes have run (bounded by MAX_VERIFICATION_PASSES).
@@ -481,7 +483,7 @@ internal fun AiRepository.chatImpl(
             val suppressUserStreaming = verificationActive
             verificationActive = false
 
-            provider.chat(request).collect { response ->
+            provider.chat(request).withInactivityTimeout().collect { response ->
                 if (providerTerminal) {
                     // Some providers flush buffered events after the terminal one (Done/Incomplete/
                     // Error). They are stale by definition — ignore them instead of failing the whole
@@ -603,8 +605,80 @@ internal fun AiRepository.chatImpl(
                             }
                             return@collect
                         }
+
+                        val errorCategory = classifyError(
+                            message = response.message,
+                            code = response.code,
+                            isEmptyResponse = false
+                        )
+
+                        // 1. Auth error (API key salah): berhenti dan minta user periksa settings
+                        if (errorCategory == ErrorCategory.AUTH_ERROR) {
+                            send(AgentEvent.Error(
+                                message = "API key salah atau belum diatur untuk provider '${connection.name.ifBlank { connection.providerId }}'. Silakan periksa di Settings → Manage Models.",
+                                retryable = false
+                            ))
+                            terminalError = true
+                            continueLoop = false
+                            return@collect
+                        }
+
+                        // 2. Model error: coba beralih ke model cadangan
+                        if (errorCategory == ErrorCategory.MODEL_ERROR) {
+                            val fallbackCandidate = findFallbackCandidate(
+                                currentConnectionId = connection.id,
+                                currentModelId = model,
+                                requiresImages = userImages.isNotEmpty(),
+                                requiresTools = tools.isNotEmpty(),
+                                connections = settings.connections,
+                                hasApiKey = { connId -> settingsManager.getConnectionApiKey(connId).isNotBlank() }
+                            )
+                            if (fallbackCandidate != null) {
+                                val (fallbackConn, fallbackMod) = fallbackCandidate
+                                send(AgentEvent.TextDelta("\n\n*[Model error pada '$model': ${response.message}. Beralih ke model cadangan: ${fallbackMod.displayName.ifBlank { fallbackMod.id }}]*\n\n"))
+                                StreamDebugLog.event(conversationId, null, "MODEL_FALLBACK", "from=$model to=${fallbackMod.id}")
+                                connection = fallbackConn
+                                model = fallbackMod.id
+                                modelConfig = fallbackMod
+                                provider = resolveProvider(fallbackConn)
+                                maxOutputTokens = fallbackMod.maxOutputTokens?.coerceIn(256, 32_768) ?: AiRepository.DEFAULT_MAX_OUTPUT_TOKENS
+                                providerContextWindowTokens = fallbackMod.contextWindowTokens?.coerceAtLeast(maxOutputTokens + 1) ?: 32_768
+                                maxInputTokens = fallbackMod.maxInputTokens?.coerceIn(1, providerContextWindowTokens - maxOutputTokens) ?: (providerContextWindowTokens - maxOutputTokens)
+                                contextWindowTokens = minOf(providerContextWindowTokens, maxInputTokens + maxOutputTokens)
+                                streamContinuations = 0
+                                textBuffer.clear()
+                                return@collect
+                            }
+                        }
+
                         retryableFailure = response.message.takeIf { canContinueStream(response, hasToolCalls) }
                         if (retryableFailure == null && !shouldExecuteReceivedToolCalls(response, hasToolCalls)) {
+                            // Non-retryable error and no tool calls: attempt fallback before failing
+                            val fallbackCandidate = findFallbackCandidate(
+                                currentConnectionId = connection.id,
+                                currentModelId = model,
+                                requiresImages = userImages.isNotEmpty(),
+                                requiresTools = tools.isNotEmpty(),
+                                connections = settings.connections,
+                                hasApiKey = { connId -> settingsManager.getConnectionApiKey(connId).isNotBlank() }
+                            )
+                            if (fallbackCandidate != null) {
+                                val (fallbackConn, fallbackMod) = fallbackCandidate
+                                send(AgentEvent.TextDelta("\n\n*[Kendala pada model '$model': ${response.message}. Beralih ke model cadangan: ${fallbackMod.displayName.ifBlank { fallbackMod.id }}]*\n\n"))
+                                StreamDebugLog.event(conversationId, null, "MODEL_FALLBACK", "from=$model to=${fallbackMod.id}")
+                                connection = fallbackConn
+                                model = fallbackMod.id
+                                modelConfig = fallbackMod
+                                provider = resolveProvider(fallbackConn)
+                                maxOutputTokens = fallbackMod.maxOutputTokens?.coerceIn(256, 32_768) ?: AiRepository.DEFAULT_MAX_OUTPUT_TOKENS
+                                providerContextWindowTokens = fallbackMod.contextWindowTokens?.coerceAtLeast(maxOutputTokens + 1) ?: 32_768
+                                maxInputTokens = fallbackMod.maxInputTokens?.coerceIn(1, providerContextWindowTokens - maxOutputTokens) ?: (providerContextWindowTokens - maxOutputTokens)
+                                contextWindowTokens = minOf(providerContextWindowTokens, maxInputTokens + maxOutputTokens)
+                                streamContinuations = 0
+                                textBuffer.clear()
+                                return@collect
+                            }
+
                             send(AgentEvent.Error(response.message, response.retryable))
                             terminalError = true
                             continueLoop = false
@@ -651,23 +725,59 @@ internal fun AiRepository.chatImpl(
 
             if (!providerTerminal && !hasToolCalls) retryableFailure = "Provider stream ended without a terminal event"
             if (providerTerminal && !hasToolCalls && textBuffer.isBlank() && responseItemOutputText(responseItems).isNullOrBlank()) {
-                retryableFailure = "Provider completed without a final response"
+                retryableFailure = "Empty response: Provider completed without output text or tool calls"
             }
 
             if (retryableFailure != null) {
-                if (streamContinuations == MAX_STREAM_CONTINUATIONS) {
-                    send(AgentEvent.Incomplete(retryableFailure!!, retryable = true))
-                    terminalError = true
-                    break
+                val errorCategory = classifyError(
+                    message = retryableFailure!!,
+                    code = null,
+                    isEmptyResponse = (textBuffer.isBlank() && !hasToolCalls)
+                )
+
+                if (streamContinuations >= MAX_STREAM_CONTINUATIONS) {
+                    val fallbackCandidate = findFallbackCandidate(
+                        currentConnectionId = connection.id,
+                        currentModelId = model,
+                        requiresImages = userImages.isNotEmpty(),
+                        requiresTools = tools.isNotEmpty(),
+                        connections = settings.connections,
+                        hasApiKey = { connId -> settingsManager.getConnectionApiKey(connId).isNotBlank() }
+                    )
+                    if (fallbackCandidate != null) {
+                        val (fallbackConn, fallbackMod) = fallbackCandidate
+                        send(AgentEvent.TextDelta("\n\n*[Model '$model' gagal setelah $streamContinuations kali percobaan ($retryableFailure). Beralih ke model cadangan: ${fallbackMod.displayName.ifBlank { fallbackMod.id }}]*\n\n"))
+                        StreamDebugLog.event(conversationId, null, "MODEL_FALLBACK_AFTER_RETRIES", "from=$model to=${fallbackMod.id}")
+                        connection = fallbackConn
+                        model = fallbackMod.id
+                        modelConfig = fallbackMod
+                        provider = resolveProvider(fallbackConn)
+                        maxOutputTokens = fallbackMod.maxOutputTokens?.coerceIn(256, 32_768) ?: AiRepository.DEFAULT_MAX_OUTPUT_TOKENS
+                        providerContextWindowTokens = fallbackMod.contextWindowTokens?.coerceAtLeast(maxOutputTokens + 1) ?: 32_768
+                        maxInputTokens = fallbackMod.maxInputTokens?.coerceIn(1, providerContextWindowTokens - maxOutputTokens) ?: (providerContextWindowTokens - maxOutputTokens)
+                        contextWindowTokens = minOf(providerContextWindowTokens, maxInputTokens + maxOutputTokens)
+                        streamContinuations = 0
+                        textBuffer.clear()
+                        continue
+                    } else {
+                        send(AgentEvent.Incomplete(retryableFailure!!, retryable = true))
+                        terminalError = true
+                        break
+                    }
                 }
                 streamContinuations++
+                val backoffDelay = if (errorCategory == ErrorCategory.RATE_LIMIT) {
+                    calculateRateLimitBackoff(streamContinuations)
+                } else {
+                    calculateBackoffWithJitter(streamContinuations, MAX_STREAM_BACKOFF_MS)
+                }
                 if (textBuffer.isNotBlank()) {
                     messages = messages + ChatMessage(
                         role = MessageRole.ASSISTANT,
                         content = textBuffer.toString()
                     ) + ChatMessage(role = MessageRole.USER, content = STREAM_CONTINUATION_PROMPT)
                 }
-                delay(minOf(1_000L shl (streamContinuations - 1), MAX_STREAM_BACKOFF_MS))
+                delay(backoffDelay)
                 continue
             }
 
@@ -768,10 +878,21 @@ internal fun AiRepository.chatImpl(
                         lastExecutedCallSignature[toolCall.name] = currentCallSig
                         repeatedIdenticalCallCount[toolCall.name] = identicalCallCount
 
-                        if (identicalCallCount >= 3) {
-                            StreamDebugLog.event(conversationId, null, "TOOL_CIRCUIT_BREAKER", "tool=${toolCall.name} count=$identicalCallCount")
+                        val totalFrequency = (callSignatureFrequency[currentCallSig] ?: 0) + 1
+                        callSignatureFrequency[currentCallSig] = totalFrequency
+
+                        val isConsecutiveBreak = shouldCircuitBreakConsecutiveCalls(identicalCallCount)
+                        val isFrequencyBreak = shouldCircuitBreakFrequency(totalFrequency)
+
+                        if (isConsecutiveBreak || isFrequencyBreak) {
+                            val triggerReason = if (isConsecutiveBreak) {
+                                "invoked $identicalCallCount times consecutively"
+                            } else {
+                                "invoked $totalFrequency times in this turn"
+                            }
+                            StreamDebugLog.event(conversationId, null, "TOOL_CIRCUIT_BREAKER", "tool=${toolCall.name} reason=$triggerReason")
                             ToolResult.Error(
-                                message = "[Circuit Breaker Triggered]: Tool '${toolCall.name}' has been invoked $identicalCallCount times consecutively with identical arguments without strategy change. Invocation suppressed to prevent an infinite loop. Please analyze existing data, alter parameters, or conclude your answer directly.",
+                                message = "[Circuit Breaker Triggered]: Tool '${toolCall.name}' has been $triggerReason with identical arguments without strategy change. Invocation suppressed to prevent an infinite loop. Please analyze existing data, alter parameters, or conclude your answer directly.",
                                 errorType = com.amaya.intelligence.tools.ErrorType.VALIDATION_ERROR,
                                 recoverable = true
                             )

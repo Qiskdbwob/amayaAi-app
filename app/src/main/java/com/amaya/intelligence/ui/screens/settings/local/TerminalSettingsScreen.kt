@@ -40,6 +40,8 @@ import com.amaya.intelligence.domain.sandbox.SandboxStatus
 import com.amaya.intelligence.ui.screens.amaya.AmayaScaffold
 import com.amaya.intelligence.ui.screens.amaya.AmayaSection
 import com.amaya.intelligence.ui.screens.amaya.AmayaSwitchRow
+import androidx.compose.ui.platform.LocalContext
+import com.amaya.intelligence.ui.activities.terminal.TerminalActivity
 import kotlinx.coroutines.launch
 
 @Composable
@@ -60,6 +62,7 @@ fun TerminalSettingsScreen(
     // Last-loaded settings snapshot so a single-field change (sandbox toggle) can be
     // persisted immediately without clobbering unrelated fields the user has not saved.
     var loadedSettings by remember { mutableStateOf<TerminalSettings?>(null) }
+    val context = LocalContext.current
 
     val detectedArch = remember { LinuxArchitecture.detect() }
     val sandboxStatus by (sandboxManager?.status?.collectAsState()
@@ -172,6 +175,15 @@ fun TerminalSettingsScreen(
                     }
                 }
 
+                Button(
+                    onClick = {
+                        TerminalActivity.start(context)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Buka Terminal Interaktif")
+                }
+
                 AmayaSwitchRow(
                     title = "Gunakan Linux Sandbox untuk Terminal",
                     subtitle = "Arahkan perintah terminal dan eksekusi AI ke dalam container Alpine Linux (PRoot) terisolasi.",
@@ -273,6 +285,26 @@ fun TerminalSettingsScreen(
                             OutlinedButton(
                                 onClick = {
                                     scope.launch {
+                                        packageActionStatus = "Memasang GitHub CLI (gh)..."
+                                        val res = sandboxManager?.runApkAdd("github-cli git")
+                                        packageActionStatus = null
+                                        if (res?.isSuccess == true) {
+                                            snackbar.showSnackbar("GitHub CLI (gh) siap digunakan!")
+                                        } else {
+                                            val err = res?.exceptionOrNull()?.message ?: "Gagal memasang GitHub CLI"
+                                            snackbar.showSnackbar("Gagal: $err", duration = SnackbarDuration.Long)
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                enabled = packageActionStatus == null
+                            ) {
+                                Text("GitHub CLI (gh)")
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
                                         packageActionStatus = "Memasang Git & Curl..."
                                         val res = sandboxManager?.runApkAdd("git curl")
                                         packageActionStatus = null
@@ -289,7 +321,9 @@ fun TerminalSettingsScreen(
                             ) {
                                 Text("Git / Curl")
                             }
+                        }
 
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(
                                 onClick = {
                                     scope.launch {
